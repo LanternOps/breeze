@@ -17,6 +17,7 @@ import {
   Minus
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { usePatchSelection } from './usePatchSelection';
 
 export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low';
@@ -247,6 +248,99 @@ export default function PatchList({
     }
   }, [onBulkDecline, selectedPendingIds, clearSelection]);
 
+  // Row pieces shared by the desktop table and the mobile cards so the two
+  // surfaces can't drift.
+  const renderTitleCell = (patch: Patch) => (
+    <>
+      <div className="font-medium text-foreground">
+        {patch.title}
+        {patch.source === 'third_party' && patch.vendor && (
+          <span
+            data-testid={`patch-row-${patch.id}-vendor`}
+            className="ml-2 text-xs text-muted-foreground font-normal"
+          >
+            by {patch.vendor}
+          </span>
+        )}
+      </div>
+      {patch.cveIds && patch.cveIds.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {patch.cveIds.slice(0, 3).map((cve) => (
+            <a
+              key={cve}
+              data-testid={`patch-row-${patch.id}-cve-${cve}`}
+              href={`https://nvd.nist.gov/vuln/detail/${cve}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-100 text-red-700 hover:bg-red-200"
+            >
+              {cve}
+            </a>
+          ))}
+          {patch.cveIds.length > 3 && (
+            <span className="text-[10px] text-muted-foreground">
+              +{patch.cveIds.length - 3} more
+            </span>
+          )}
+        </div>
+      )}
+      {patch.description && (
+        <div className="text-xs text-muted-foreground">{patch.description}</div>
+      )}
+    </>
+  );
+
+  const renderSeverityBadge = (patch: Patch) => {
+    const severity = severityConfig[patch.severity];
+    return (
+      <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium', severity.color)}>
+        {severity.label}
+      </span>
+    );
+  };
+
+  const renderApprovalBadge = (patch: Patch) => {
+    const approval = approvalConfig[patch.approvalStatus];
+    const ApprovalIcon = approval.icon;
+    return (
+      <span className={cn('inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium', approval.color)}>
+        <ApprovalIcon className="h-3.5 w-3.5" />
+        {approval.label}
+      </span>
+    );
+  };
+
+  const renderRowActions = (patch: Patch) => (
+    <div className="flex items-center justify-end gap-2">
+      {patch.approvalStatus === 'approved' ? (
+        <button
+          type="button"
+          onClick={() => onDeploy?.(patch)}
+          className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Deploy
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onReview?.(patch)}
+          className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium hover:bg-muted"
+        >
+          <Eye className="h-3.5 w-3.5" />
+          Review
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => onView?.(patch)}
+        className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
+      >
+        Details
+      </button>
+    </div>
+  );
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -433,7 +527,9 @@ export default function PatchList({
           )}
         </div>
       ) : (
-        <div className="mt-6 overflow-hidden rounded-md border">
+        <ResponsiveTable
+          className="mt-6"
+          table={
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -498,9 +594,6 @@ export default function PatchList({
                 </tr>
               ) : (
                 paginatedPatches.map(patch => {
-                  const severity = severityConfig[patch.severity];
-                  const approval = approvalConfig[patch.approvalStatus];
-                  const ApprovalIcon = approval.icon;
                   const isSelected = selectedIds.has(patch.id);
 
                   return (
@@ -519,94 +612,67 @@ export default function PatchList({
                           )}
                         </button>
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-foreground">
-                          {patch.title}
-                          {patch.source === 'third_party' && patch.vendor && (
-                            <span
-                              data-testid={`patch-row-${patch.id}-vendor`}
-                              className="ml-2 text-xs text-muted-foreground font-normal"
-                            >
-                              by {patch.vendor}
-                            </span>
-                          )}
-                        </div>
-                        {patch.cveIds && patch.cveIds.length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {patch.cveIds.slice(0, 3).map((cve) => (
-                              <a
-                                key={cve}
-                                data-testid={`patch-row-${patch.id}-cve-${cve}`}
-                                href={`https://nvd.nist.gov/vuln/detail/${cve}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-100 text-red-700 hover:bg-red-200"
-                              >
-                                {cve}
-                              </a>
-                            ))}
-                            {patch.cveIds.length > 3 && (
-                              <span className="text-[10px] text-muted-foreground">
-                                +{patch.cveIds.length - 3} more
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        {patch.description && (
-                          <div className="text-xs text-muted-foreground">{patch.description}</div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium', severity.color)}>
-                          {severity.label}
-                        </span>
-                      </td>
+                      <td className="px-4 py-3">{renderTitleCell(patch)}</td>
+                      <td className="px-4 py-3">{renderSeverityBadge(patch)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{patch.source}</td>
                       <td className="px-4 py-3 text-muted-foreground">{patch.os}</td>
                       <td className="px-4 py-3 text-muted-foreground">{formatDate(patch.releaseDate)}</td>
-                      <td className="px-4 py-3">
-                        <span className={cn('inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium', approval.color)}>
-                          <ApprovalIcon className="h-3.5 w-3.5" />
-                          {approval.label}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-2">
-                          {patch.approvalStatus === 'approved' ? (
-                            <button
-                              type="button"
-                              onClick={() => onDeploy?.(patch)}
-                              className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                              Deploy
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => onReview?.(patch)}
-                              className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium hover:bg-muted"
-                            >
-                              <Eye className="h-3.5 w-3.5" />
-                              Review
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => onView?.(patch)}
-                            className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
-                          >
-                            Details
-                          </button>
-                        </div>
-                      </td>
+                      <td className="px-4 py-3">{renderApprovalBadge(patch)}</td>
+                      <td className="px-4 py-3">{renderRowActions(patch)}</td>
                     </tr>
                   );
                 })
               )}
             </tbody>
           </table>
-        </div>
+          }
+          cards={
+            paginatedPatches.length === 0 ? (
+              <DataCard>
+                <p className="py-2 text-center text-sm text-muted-foreground">
+                  No patches found. Try adjusting your search or filters.
+                </p>
+              </DataCard>
+            ) : (
+              paginatedPatches.map(patch => {
+                const isSelected = selectedIds.has(patch.id);
+                return (
+                  <DataCard key={patch.id} className={isSelected ? 'bg-primary/5' : undefined}>
+                    <div className="flex items-start gap-3">
+                      <button
+                        type="button"
+                        onClick={() => toggleSelect(patch.id)}
+                        className="mt-0.5 flex shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                        aria-label={isSelected ? `Deselect ${patch.title}` : `Select ${patch.title}`}
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="h-4 w-4 text-primary" />
+                        ) : (
+                          <Square className="h-4 w-4" />
+                        )}
+                      </button>
+                      <div className="min-w-0 flex-1">{renderTitleCell(patch)}</div>
+                    </div>
+                    <div className="mt-3 space-y-2 border-t pt-3">
+                      <CardField label="Severity">{renderSeverityBadge(patch)}</CardField>
+                      <CardField label="Source">
+                        <span className="text-muted-foreground">{patch.source}</span>
+                      </CardField>
+                      <CardField label="OS">
+                        <span className="text-muted-foreground">{patch.os}</span>
+                      </CardField>
+                      <CardField label="Release">
+                        <span className="text-muted-foreground">{formatDate(patch.releaseDate)}</span>
+                      </CardField>
+                      <CardField label="Approval">{renderApprovalBadge(patch)}</CardField>
+                    </div>
+                    <CardActions>{renderRowActions(patch)}</CardActions>
+                  </DataCard>
+                );
+              })
+            )
+          }
+        />
       )}
 
       {!loading && !(error && patches.length === 0) && (

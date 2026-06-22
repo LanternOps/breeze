@@ -64,12 +64,16 @@ describe('SNMPTemplateList', () => {
       />
     );
 
-    await screen.findByText('Cisco Core');
-    expect(screen.getByText('Edge Custom')).not.toBeNull();
+    // ResponsiveTable renders both the desktop table and the mobile card list
+    // (CSS hides one, but jsdom ignores media queries), so text/buttons appear twice.
+    await screen.findAllByText('Cisco Core');
+    expect(screen.getAllByText('Edge Custom').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Add template' }));
     expect(onCreateTemplate).toHaveBeenCalledTimes(1);
 
+    // Two surfaces × two templates = four Edit buttons; tpl-2 (Edge Custom) is the
+    // second template, i.e. indices 1 (desktop) and 3 (mobile).
     const editButtons = screen.getAllByRole('button', { name: 'Edit' });
     fireEvent.click(editButtons[1]!);
     expect(onSelectTemplate).toHaveBeenCalledWith('tpl-2');
@@ -102,10 +106,11 @@ describe('SNMPTemplateList', () => {
     });
 
     render(<SNMPTemplateList />);
-    await screen.findByText('Edge Custom');
+    await screen.findAllByText('Edge Custom');
 
-    // Open the confirm dialog via the row's Delete button…
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    // Open the confirm dialog via the row's Delete button (rendered in both the
+    // desktop table and the mobile card list; either opens the same dialog).
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]!);
 
     // …then confirm it from the ConfirmDialog.
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Template' }));
@@ -118,7 +123,7 @@ describe('SNMPTemplateList', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByText('Edge Custom')).toBeNull();
+      expect(screen.queryAllByText('Edge Custom')).toHaveLength(0);
     });
   });
 });

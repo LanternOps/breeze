@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DiscoveryPage from './DiscoveryPage';
@@ -56,6 +56,12 @@ vi.mock('./NetworkTopologyMap', () => ({
 vi.mock('./NetworkChangesPanel', () => ({
   default: () => <div>Changes tab</div>
 }));
+
+// The discovery profiles render through ResponsiveTable, which puts both a
+// desktop <table> and a mobile card list in the DOM at once (the sm: breakpoint
+// is CSS-only, invisible to jsdom). Scope row text/label queries to the desktop
+// surface so duplicated content doesn't produce multiple-match errors.
+const desktop = () => within(screen.getByTestId('responsive-table-desktop'));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
@@ -131,11 +137,11 @@ describe('DiscoveryPage', () => {
 
     render(<DiscoveryPage />);
 
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
-    expect(screen.getByLabelText('Running HQ sweep')).toBeDisabled();
+    expect(desktop().getByLabelText('Running HQ sweep')).toBeDisabled();
     expect(fetchWithAuthMock).toHaveBeenLastCalledWith('/discovery/scan', {
       method: 'POST',
       body: JSON.stringify({ profileId: 'profile-1' })
@@ -159,9 +165,9 @@ describe('DiscoveryPage', () => {
     );
 
     render(<DiscoveryPage />);
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
     // Error toast fired (runAction surfaces non-401 ActionErrors).
     await waitFor(() => {
@@ -175,8 +181,7 @@ describe('DiscoveryPage', () => {
     expect(await screen.findByText('Scan queue is full')).toBeInTheDocument();
 
     // Spinner cleared (finally ran) — button is back to its idle, enabled state.
-    const runButton = await screen.findByLabelText('Run HQ sweep');
-    expect(runButton).not.toBeDisabled();
+    await waitFor(() => expect(desktop().getByLabelText('Run HQ sweep')).not.toBeDisabled());
 
     // A failed queue must NOT navigate the user to an empty jobs view.
     expect(screen.queryByTestId('jobs-filter')).not.toBeInTheDocument();
@@ -189,9 +194,9 @@ describe('DiscoveryPage', () => {
     );
 
     render(<DiscoveryPage />);
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalledWith({
@@ -200,7 +205,7 @@ describe('DiscoveryPage', () => {
       });
     });
     expect(screen.queryByTestId('jobs-filter')).not.toBeInTheDocument();
-    expect(await screen.findByLabelText('Run HQ sweep')).not.toBeDisabled();
+    await waitFor(() => expect(desktop().getByLabelText('Run HQ sweep')).not.toBeDisabled());
   });
 
   it('redirects to login on 401 without showing an inline error or switching tabs', async () => {
@@ -210,9 +215,9 @@ describe('DiscoveryPage', () => {
     );
 
     render(<DiscoveryPage />);
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
     await waitFor(() => {
       expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
@@ -226,6 +231,6 @@ describe('DiscoveryPage', () => {
     expect(screen.queryByTestId('jobs-filter')).not.toBeInTheDocument();
 
     // Spinner still cleared on the early-return path (finally ran).
-    expect(await screen.findByLabelText('Run HQ sweep')).not.toBeDisabled();
+    await waitFor(() => expect(desktop().getByLabelText('Run HQ sweep')).not.toBeDisabled());
   });
 });

@@ -54,8 +54,11 @@ describe('PatchList CVE chips', () => {
 
     render(<PatchList patches={[patch]} />);
 
-    expect(screen.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-1234`)).toBeTruthy();
-    expect(screen.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-5678`)).toBeTruthy();
+    // Both the desktop table and the mobile cards render (the sm: breakpoint is
+    // CSS-only in jsdom), so scope row assertions to the desktop surface.
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-1234`)).toBeTruthy();
+    expect(desktop.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-5678`)).toBeTruthy();
   });
 
   it('caps visible CVEs at 3 and shows a "+N more" suffix', () => {
@@ -66,11 +69,12 @@ describe('PatchList CVE chips', () => {
 
     render(<PatchList patches={[patch]} />);
 
-    expect(screen.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-1`)).toBeTruthy();
-    expect(screen.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-2`)).toBeTruthy();
-    expect(screen.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-3`)).toBeTruthy();
-    expect(screen.queryByTestId(`patch-row-${patch.id}-cve-CVE-2024-4`)).toBeNull();
-    expect(screen.getByText('+2 more')).toBeTruthy();
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-1`)).toBeTruthy();
+    expect(desktop.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-2`)).toBeTruthy();
+    expect(desktop.getByTestId(`patch-row-${patch.id}-cve-CVE-2024-3`)).toBeTruthy();
+    expect(desktop.queryByTestId(`patch-row-${patch.id}-cve-CVE-2024-4`)).toBeNull();
+    expect(desktop.getByText('+2 more')).toBeTruthy();
   });
 
   it('renders no CVE chips when cveIds is empty or missing', () => {
