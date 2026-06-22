@@ -7,7 +7,7 @@ import {
   s1Actions,
   s1Agents,
   s1Integrations,
-  s1SiteMappings,
+  s1OrgMappings,
   s1Threats
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
@@ -69,7 +69,7 @@ let s1SyncWorker: Worker<S1SyncJobData> | null = null;
 
 interface IntegrationForSync {
   id: string;
-  orgId: string;
+  partnerId: string;
   managementUrl: string;
   isActive: boolean;
   lastSyncAt: Date | null;
@@ -250,7 +250,7 @@ async function listActiveIntegrations(): Promise<IntegrationForSync[]> {
   return db
     .select({
       id: s1Integrations.id,
-      orgId: s1Integrations.orgId,
+      partnerId: s1Integrations.partnerId,
       managementUrl: s1Integrations.managementUrl,
       isActive: s1Integrations.isActive,
       lastSyncAt: s1Integrations.lastSyncAt
@@ -329,23 +329,173 @@ export function resolveThreatSyncTarget(
   return agentContext ?? { orgId: defaultOrgId, deviceId: null };
 }
 
-async function mapSiteOrgIds(integrationId: string): Promise<Map<string, string>> {
+/**
+ * Load s1_org_mappings rows that have a mapped org, keyed by s1_site_id.
+ * Only includes rows with non-null org_id (mirrors huntressSync loadMappedOrgIds).
+ * Excludes provisional rows (s1_site_id starting with 'name:') which will be
+ * reconciled by reconcileProvisionalSiteMappings before this is called.
+ */
+export async function mapSiteOrgIds(integrationId: string): Promise<Map<string, string>> {
   const rows = await db
     .select({
-      siteName: s1SiteMappings.siteName,
-      orgId: s1SiteMappings.orgId
+      s1SiteId: s1OrgMappings.s1SiteId,
+      orgId: s1OrgMappings.orgId
     })
-    .from(s1SiteMappings)
-    .where(eq(s1SiteMappings.integrationId, integrationId));
+    .from(s1OrgMappings)
+    .where(
+      and(
+        eq(s1OrgMappings.integrationId, integrationId),
+        isNotNull(s1OrgMappings.orgId)
+      )
+    );
 
   const result = new Map<string, string>();
   for (const row of rows) {
-    const normalized = normalizeS1SiteName(row.siteName);
-    if (normalized) {
-      result.set(normalized, row.orgId);
+    if (row.orgId) {
+      result.set(row.s1SiteId, row.orgId);
     }
   }
   return result;
+}
+
+/**
+ * Upsert discovered sites (derived from the fetched agent list) into s1_org_mappings.
+ * Sites are keyed on (integration_id, s1_site_id). On conflict, updates s1_site_name,
+ * agents_count, and last_seen_at but DOES NOT overwrite a mapped org_id with null —
+ * preserving any existing mapping.
+ */
+export async function upsertDiscoveredSites(params: {
+  integrationId: string;
+  partnerId: string;
+  sites: Array<{ siteId: string; siteName: string | null; count: number }>;
+}): Promise<void> {
+  if (params.sites.length === 0) return;
+
+  const now = new Date();
+  const values = params.sites.map((site) => ({
+    integrationId: params.integrationId,
+    partnerId: params.partnerId,
+    s1SiteId: site.siteId,
+    s1SiteName: site.siteName ?? null,
+    agentsCount: site.count,
+    lastSeenAt: now,
+    updatedAt: now,
+  }));
+
+  await db
+    .insert(s1OrgMappings)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [s1OrgMappings.integrationId, s1OrgMappings.s1SiteId],
+      set: {
+        s1SiteName: sql`excluded.s1_site_name`,
+        agentsCount: sql`excluded.agents_count`,
+        lastSeenAt: sql`excluded.last_seen_at`,
+        updatedAt: sql`excluded.updated_at`,
+        // partnerId is updated in case the composite FK partner changes (rare)
+        partnerId: sql`excluded.partner_id`,
+        // org_id is NOT included here — COALESCE preserves the existing mapped value.
+        // The full formula `COALESCE(s1_org_mappings.org_id, excluded.org_id)` would
+        // require a raw SET expression; omitting org_id from the set clause achieves
+        // the same effect (Drizzle leaves the column unchanged on conflict update).
+      }
+    });
+}
+
+/**
+ * For each discovered real site, find a provisional row
+ * (s1_site_id = 'name:' || siteName AND metadata->>'provisional' IS TRUE) for this
+ * integration and reconcile it:
+ *
+ * Collision rule:
+ *   - If NO real row yet exists for the discovered siteId: UPDATE the provisional row
+ *     → set s1_site_id to the real id, clear provisional flag, preserve org_id.
+ *   - If a real row ALREADY exists (would violate the unique index): DELETE the
+ *     provisional row instead (the real row wins). We do not attempt to merge org_id
+ *     because: (a) the real row was presumably created with the correct org_id or is
+ *     awaiting manual mapping; (b) the provisional org_id came from a name-match
+ *     heuristic and should not silently overwrite a deliberately-set real mapping.
+ *
+ * Run this BEFORE upsertDiscoveredSites so the carried org_id survives the upsert.
+ */
+export async function reconcileProvisionalSiteMappings(
+  integrationId: string,
+  discoveredSites: Array<{ siteId: string; siteName: string }>
+): Promise<void> {
+  if (discoveredSites.length === 0) return;
+
+  for (const site of discoveredSites) {
+    const provisionalKey = `name:${site.siteName}`;
+
+    // Find a provisional row for this integration + name
+    const [provisionalRow] = await db
+      .select({
+        id: s1OrgMappings.id,
+        orgId: s1OrgMappings.orgId,
+      })
+      .from(s1OrgMappings)
+      .where(
+        and(
+          eq(s1OrgMappings.integrationId, integrationId),
+          eq(s1OrgMappings.s1SiteId, provisionalKey),
+          // Only target rows flagged as provisional
+          sql`(${s1OrgMappings.metadata}->>'provisional')::boolean IS TRUE`
+        )
+      )
+      .limit(1);
+
+    if (!provisionalRow) continue;
+
+    // Check whether a real row for this siteId already exists
+    const [existingReal] = await db
+      .select({ id: s1OrgMappings.id })
+      .from(s1OrgMappings)
+      .where(
+        and(
+          eq(s1OrgMappings.integrationId, integrationId),
+          eq(s1OrgMappings.s1SiteId, site.siteId)
+        )
+      )
+      .limit(1);
+
+    if (existingReal) {
+      // Real row already exists — delete the provisional row (real wins).
+      await db
+        .delete(s1OrgMappings)
+        .where(eq(s1OrgMappings.id, provisionalRow.id));
+    } else {
+      // No real row yet — rewrite provisional row to real site id.
+      await db
+        .update(s1OrgMappings)
+        .set({
+          s1SiteId: site.siteId,
+          orgId: provisionalRow.orgId, // preserve mapped org
+          metadata: sql`${s1OrgMappings.metadata} - 'provisional'`,
+          updatedAt: new Date(),
+        })
+        .where(eq(s1OrgMappings.id, provisionalRow.id));
+    }
+  }
+}
+
+/**
+ * Resolve an S1 agent's sync target (orgId + deviceId) using the stable S1 site id.
+ * Returns null if the agent has no siteId or the site is not mapped to an org.
+ * A null return means the agent should be SKIPPED (counted but not written).
+ */
+export function resolveAgentSyncTargetById(
+  agent: { siteId: string | null; computerName?: string | null; networkInterfaces?: Array<{ inet?: string[] }> },
+  siteOrgIds: Map<string, string>,
+  candidatesByOrg: Map<string, DeviceCandidates>
+): AgentContext | null {
+  if (!agent.siteId) return null;
+  const orgId = siteOrgIds.get(agent.siteId);
+  if (!orgId) return null;
+  const candidates = candidatesByOrg.get(orgId) ?? { byHostname: new Map(), byIp: new Map() };
+  return {
+    orgId,
+    deviceId: resolveDeviceIdForAgent(agent as Record<string, unknown>, candidates)
+  };
 }
 
 async function mapDeviceCandidatesByOrg(orgIds: string[]): Promise<Map<string, DeviceCandidates>> {
@@ -385,25 +535,72 @@ async function mapDeviceCandidatesByOrg(orgIds: string[]): Promise<Map<string, D
 async function syncAgentsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
-): Promise<{ fetched: number; upserted: number; truncated: boolean }> {
-  const siteOrgIds = await mapSiteOrgIds(integration.id);
-  const candidatesByOrg = await mapDeviceCandidatesByOrg([integration.orgId, ...siteOrgIds.values()]);
+): Promise<{ fetched: number; upserted: number; skipped: number; truncated: boolean }> {
   const agentResult = await client.listAgents(integration.lastSyncAt ?? undefined);
   const fetchedAgents = agentResult.results;
 
+  // Derive distinct sites from the fetched agent list (skip agents with no siteId).
+  const siteCountMap = new Map<string, { siteName: string | null; count: number }>();
+  for (const agent of fetchedAgents) {
+    if (!agent.siteId) continue;
+    const existing = siteCountMap.get(agent.siteId);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      siteCountMap.set(agent.siteId, { siteName: agent.siteName, count: 1 });
+    }
+  }
+  const discoveredSites = Array.from(siteCountMap.entries()).map(([siteId, info]) => ({
+    siteId,
+    siteName: info.siteName,
+    count: info.count,
+  }));
+
+  // Step 1: Reconcile provisional mappings BEFORE upsert so carried org_id survives.
+  await reconcileProvisionalSiteMappings(
+    integration.id,
+    discoveredSites.map((s) => ({ siteId: s.siteId, siteName: s.siteName ?? s.siteId }))
+  );
+
+  // Step 2: Upsert discovered sites (sets agents_count, last_seen_at; preserves org_id).
+  await upsertDiscoveredSites({
+    integrationId: integration.id,
+    partnerId: integration.partnerId,
+    sites: discoveredSites,
+  });
+
+  // Step 3: Load the org mapping keyed by s1_site_id (only rows with mapped org_id).
+  const siteOrgIds = await mapSiteOrgIds(integration.id);
+  const candidatesByOrg = await mapDeviceCandidatesByOrg([...siteOrgIds.values()]);
+
   let upserted = 0;
+  let skipped = 0;
   for (let i = 0; i < fetchedAgents.length; i += 300) {
     const batch = fetchedAgents.slice(i, i + 300);
 
-    const values = batch.map((agent) => {
-      const target = resolveAgentSyncTarget(
-        agent as unknown as Record<string, unknown>,
-        integration.orgId,
-        siteOrgIds,
-        candidatesByOrg
-      );
+    const values: Array<{
+      orgId: string;
+      integrationId: string;
+      s1AgentId: string;
+      deviceId: string | null;
+      status: string;
+      infected: boolean;
+      threatCount: number;
+      policyName: string | null;
+      lastSeenAt: Date | null;
+      metadata: Record<string, unknown>;
+      updatedAt: Date;
+    }> = [];
+
+    for (const agent of batch) {
+      // Resolve the agent to an org via its stable siteId (no fallback default org).
+      const target = resolveAgentSyncTargetById(agent, siteOrgIds, candidatesByOrg);
+      if (!target) {
+        skipped += 1;
+        continue;
+      }
       const threatCount = Number(agent.activeThreats ?? 0);
-      return {
+      values.push({
         orgId: target.orgId,
         integrationId: integration.id,
         s1AgentId: agent.id,
@@ -417,11 +614,12 @@ async function syncAgentsForIntegration(
           uuid: agent.uuid ?? null,
           computerName: agent.computerName ?? null,
           osName: agent.osName ?? null,
-          siteName: agent.siteName ?? null
+          siteName: agent.siteName ?? null,
+          siteId: agent.siteId ?? null,
         },
         updatedAt: new Date()
-      };
-    });
+      });
+    }
 
     if (values.length === 0) continue;
 
@@ -451,6 +649,7 @@ async function syncAgentsForIntegration(
   return {
     fetched: fetchedAgents.length,
     upserted,
+    skipped,
     truncated: agentResult.truncated
   };
 }
@@ -458,9 +657,13 @@ async function syncAgentsForIntegration(
 async function syncThreatsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
-): Promise<{ fetched: number; upserted: number; emitted: number; emitFailures: number; truncated: boolean }> {
+): Promise<{ fetched: number; upserted: number; skipped: number; emitted: number; emitFailures: number; truncated: boolean }> {
   const threatResult = await client.listThreats(integration.lastSyncAt ?? undefined);
   const fetchedThreats = threatResult.results;
+
+  // Load agent contexts from already-synced s1_agents rows.
+  // If an agent was skipped during agent sync (unmapped site), it won't appear here
+  // and its threats will be skipped too — consistent with the partner-wide model.
   const agentRows = await db
     .select({
       s1AgentId: s1Agents.s1AgentId,
@@ -479,29 +682,56 @@ async function syncThreatsForIntegration(
   const threatsToEmit: Array<{ s1ThreatId: string; orgId: string; severity: string; deviceId: string | null; detectedAt: Date | null }> = [];
 
   let upserted = 0;
+  let skipped = 0;
   for (let i = 0; i < fetchedThreats.length; i += 300) {
     const batch = fetchedThreats.slice(i, i + 300);
-    const values = batch.map((threat) => {
+    const values: Array<{
+      orgId: string;
+      integrationId: string;
+      deviceId: string | null;
+      s1ThreatId: string;
+      classification: string | null;
+      severity: string;
+      threatName: string | null;
+      processName: string | null;
+      filePath: string | null;
+      mitreTactics: unknown;
+      status: string;
+      detectedAt: Date | null;
+      resolvedAt: Date | null;
+      details: unknown;
+      updatedAt: Date;
+    }> = [];
+
+    for (const threat of batch) {
       const detectedAt = toDateOrNull(threat.detectedAt);
       const resolvedAt = toDateOrNull(threat.resolvedAt);
       const status = normalizeThreatStatus(threat.mitigationStatus);
       const severity = normalizeSeverity(threat.threatSeverity);
-      const target = resolveThreatSyncTarget(threat.agentId, integration.orgId, agentContextByAgentId);
+
+      // Resolve the threat's org via its parent agent's already-written context.
+      // If the agent has no context (was skipped because its site is unmapped),
+      // skip this threat too — there is no fallback "default org" in the partner-wide model.
+      const agentContext = agentContextByAgentId.get(threat.agentId ?? '');
+      if (!agentContext) {
+        skipped += 1;
+        continue;
+      }
 
       if (status === 'active' && detectedAt && detectedAt >= emitSince) {
         threatsToEmit.push({
           s1ThreatId: threat.id,
-          orgId: target.orgId,
+          orgId: agentContext.orgId,
           severity,
-          deviceId: target.deviceId,
+          deviceId: agentContext.deviceId,
           detectedAt
         });
       }
 
-      return {
-        orgId: target.orgId,
+      values.push({
+        orgId: agentContext.orgId,
         integrationId: integration.id,
-        deviceId: target.deviceId,
+        deviceId: agentContext.deviceId,
         s1ThreatId: threat.id,
         classification: threat.classification ?? null,
         severity,
@@ -514,8 +744,8 @@ async function syncThreatsForIntegration(
         resolvedAt,
         details: threat,
         updatedAt: new Date()
-      };
-    });
+      });
+    }
 
     if (values.length === 0) continue;
 
@@ -573,6 +803,7 @@ async function syncThreatsForIntegration(
   return {
     fetched: fetchedThreats.length,
     upserted,
+    skipped,
     emitted,
     emitFailures,
     truncated: threatResult.truncated
@@ -590,7 +821,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
   const [integration] = await db
     .select({
       id: s1Integrations.id,
-      orgId: s1Integrations.orgId,
+      partnerId: s1Integrations.partnerId,
       managementUrl: s1Integrations.managementUrl,
       apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
       isActive: s1Integrations.isActive,
@@ -655,7 +886,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
     // Full detail (including the upstream response body, redacted) goes to the
     // SERVER-SIDE log only. The tenant-visible column gets a body-free message
     // via truncateError — a SentinelOneHttpError's `.message` carries no body.
-    logSyncFailureServerSide({ integrationId: integration.id, orgId: integration.orgId }, error);
+    logSyncFailureServerSide({ integrationId: integration.id, partnerId: integration.partnerId }, error);
     try {
       await db
         .update(s1Integrations)
@@ -718,20 +949,26 @@ async function processPollActions() {
     return { polled: 0, updated: 0 };
   }
 
+  // Legacy action polling: actions still carry org_id; find the integration via legacyOrgId.
+  // The partner-wide migration (C3+) will rework action dispatch; until then this uses the
+  // legacy org_id column that was preserved as s1Integrations.legacyOrgId.
   const orgIds = Array.from(new Set(pendingActions.map((row) => row.orgId)));
   const integrations = await db
     .select({
-      orgId: s1Integrations.orgId,
+      orgId: s1Integrations.legacyOrgId,
       managementUrl: s1Integrations.managementUrl,
       apiTokenEncrypted: s1Integrations.apiTokenEncrypted
     })
     .from(s1Integrations)
-    .where(and(inArray(s1Integrations.orgId, orgIds), eq(s1Integrations.isActive, true)));
+    .where(and(isNotNull(s1Integrations.legacyOrgId), eq(s1Integrations.isActive, true)));
 
   // Build a reusable client per org to avoid redundant decrypt + instantiation per action
   const clientByOrg = new Map<string, SentinelOneClient | null>();
   const clientErrorByOrg = new Map<string, string>();
   for (const integration of integrations) {
+    if (!integration.orgId) continue; // type guard: isNotNull filter ensures this
+    // Only include integrations whose legacy org_id matches a pending action
+    if (!orgIds.includes(integration.orgId)) continue;
     let token: string | null;
     try {
       token = decryptForColumn('s1_integrations', 'api_token_encrypted', integration.apiTokenEncrypted);

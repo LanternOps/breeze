@@ -10,6 +10,7 @@ import {
   resolveOrgIdForAgentSite,
   resolveThreatSyncTarget,
   resolveDeviceIdForAgent,
+  resolveAgentSyncTargetById,
   truncateError
 } from './s1Sync';
 import { SentinelOneHttpError } from '../services/sentinelOne/client';
@@ -252,5 +253,50 @@ describe('SentinelOne site-to-org mapping helpers', () => {
 
     expect(mapped).toEqual({ orgId: 'org-denver', deviceId: 'device-denver' });
     expect(unmapped).toEqual({ orgId: 'org-default', deviceId: null });
+  });
+});
+
+describe('C2 site-id based routing helpers', () => {
+  const candidatesByOrg = new Map([
+    ['org-acme', {
+      byHostname: new Map([['desktop-acme', 'device-acme']]),
+      byIp: new Map(),
+    }],
+    ['org-other', {
+      byHostname: new Map(),
+      byIp: new Map(),
+    }],
+  ]);
+
+  it('routes agent to org via siteId when site is mapped', () => {
+    const siteOrgIds = new Map([['site-123', 'org-acme']]);
+    const agent = { id: 'a1', siteId: 'site-123', siteName: 'Acme', computerName: 'desktop-acme' } as Parameters<typeof resolveAgentSyncTargetById>[0];
+    const result = resolveAgentSyncTargetById(agent, siteOrgIds, candidatesByOrg);
+    expect(result).not.toBeNull();
+    expect(result!.orgId).toBe('org-acme');
+    expect(result!.deviceId).toBe('device-acme');
+  });
+
+  it('returns null (skip) when siteId is absent', () => {
+    const siteOrgIds = new Map([['site-123', 'org-acme']]);
+    const agent = { id: 'a2', siteId: null, siteName: 'Acme', computerName: 'desktop-acme' } as Parameters<typeof resolveAgentSyncTargetById>[0];
+    const result = resolveAgentSyncTargetById(agent, siteOrgIds, candidatesByOrg);
+    expect(result).toBeNull();
+  });
+
+  it('returns null (skip) when siteId is not mapped to an org (org_id IS NULL)', () => {
+    const siteOrgIds = new Map<string, string>(); // empty: no org mapped
+    const agent = { id: 'a3', siteId: 'site-123', siteName: 'Acme', computerName: 'desktop-acme' } as Parameters<typeof resolveAgentSyncTargetById>[0];
+    const result = resolveAgentSyncTargetById(agent, siteOrgIds, candidatesByOrg);
+    expect(result).toBeNull();
+  });
+
+  it('does not fall back to a default integration org when unmapped', () => {
+    // Regression guard: there is no "default org" in the partner-wide model.
+    // An unmapped site must produce null, never a fallback org.
+    const siteOrgIds = new Map([['site-999', 'org-acme']]);
+    const agent = { id: 'a4', siteId: 'site-999-different', siteName: 'Unknown', computerName: 'desktop-unknown' } as Parameters<typeof resolveAgentSyncTargetById>[0];
+    const result = resolveAgentSyncTargetById(agent, siteOrgIds, candidatesByOrg);
+    expect(result).toBeNull();
   });
 });
