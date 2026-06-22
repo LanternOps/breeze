@@ -4,10 +4,16 @@ import { API_VERSION } from '../version';
 import { pgErrorCode } from '../utils/pgErrors';
 
 // SQLSTATE 42501 (insufficient_privilege) is what forced row-level security
-// raises when `breeze_app` is denied a row — the cross-tenant-isolation
-// tripwire. Tagging it (rather than leaving it buried in the message) makes a
-// spike of cross-tenant denials filterable in Sentry, which is the whole point
-// of the #1379 silent-failure surfacing work (#1375 was this class going unseen).
+// raises when `breeze_app` writes a row that fails a policy's WITH CHECK clause
+// (INSERT, or an UPDATE whose post-image violates the policy). Tagging it
+// (rather than leaving it buried in the message) makes a spike of cross-tenant
+// write denials filterable in Sentry — a breach attempt or an RLS regression.
+//
+// Scope note: this only catches WITH-CHECK *write* denials. RLS USING-clause
+// denials on reads/updates/deletes silently *filter* rows (0 rows, no SQLSTATE)
+// — that was the actual #1375 class (`users.last_login_at` froze) and it does
+// NOT surface here. Those need their own guards (withSystemDbAccessContext +
+// the contextless-write proxy guard from #1380); this tag is complementary.
 const RLS_DENY_SQLSTATE = '42501';
 
 let initialized = false;
@@ -66,11 +72,13 @@ export function captureException(err: unknown, c?: Context): void {
     }
 
     // Surface the Postgres SQLSTATE (unwrapping Drizzle's `.cause` chain) as a
-    // tag so DB errors are filterable. 42501 specifically flags an RLS denial,
-    // so a cross-tenant breach attempt — or a regression that strands a write
-    // on the bare `db` with no access context — shows up as a `rls_deny`
-    // spike instead of an anonymous 500. Best-effort: tagging never throws
-    // (pgErrorCode is total) and missing/non-pg errors are simply left untagged.
+    // tag so DB errors are filterable. 42501 specifically flags an RLS WITH-CHECK
+    // *write* denial (see RLS_DENY_SQLSTATE above for the scope caveat), so a
+    // cross-tenant breach attempt — or a regression that strands an insert on
+    // the bare `db` with no access context — shows up as a `rls_deny` spike
+    // instead of an anonymous 500. Best-effort: tagging never throws
+    // (pgErrorCode returns undefined rather than throwing for non-pg errors) and
+    // missing/non-pg errors are simply left untagged.
     const sqlState = pgErrorCode(err);
     if (sqlState) {
       scope.setTag('pg_code', sqlState);

@@ -67,6 +67,9 @@ describe('sentry service', () => {
 
     captureException(new Error('before init'));
     expect(captureMock).not.toHaveBeenCalled();
+    // The tag logic lives inside withScope, past the init guard — it must not
+    // run (against an undefined scope) before initSentry.
+    expect(setTagMock).not.toHaveBeenCalled();
 
     initSentry();
     captureException(new Error('after init'));
@@ -112,7 +115,9 @@ describe('sentry service', () => {
     captureException(conflict);
 
     expect(setTagMock).toHaveBeenCalledWith('pg_code', '23505');
-    expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', true);
+    expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', expect.anything());
+    // Tagging must never gate the capture itself.
+    expect(captureMock).toHaveBeenCalledTimes(1);
   });
 
   it('leaves a plain non-Postgres error untagged', async () => {
@@ -123,7 +128,7 @@ describe('sentry service', () => {
     captureException(new Error('something unrelated'));
 
     expect(setTagMock).not.toHaveBeenCalledWith('pg_code', expect.anything());
-    expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', true);
+    expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', expect.anything());
     expect(captureMock).toHaveBeenCalledTimes(1);
   });
 });
