@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   LayoutDashboard,
   Monitor,
@@ -83,6 +83,45 @@ function useCurrentPath(initialPath: string): string {
     };
   }, []);
   return path;
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar scroll-position persistence across Astro View Transitions
+// ---------------------------------------------------------------------------
+// The sidebar island is rendered with `transition:persist`, but the scrollable
+// nested `<nav>` is not covered by Astro's viewport-level scroll restoration —
+// it lands back at scrollTop=0 after every swap (#1714). We capture the live
+// scrollTop on `astro:before-swap` and reapply it on `astro:after-swap` so the
+// item the user just clicked (and its neighbours) stay in view.
+//
+// Returns a ref to attach to the scrollable `<nav>`. The captured value lives in
+// a per-instance `useRef` (not module state or storage), so it survives the swap
+// without persisting anywhere.
+function useSidebarScrollPersist(): React.RefObject<HTMLElement | null> {
+  const navRef = useRef<HTMLElement | null>(null);
+  const savedScrollTop = useRef<number | null>(null);
+
+  useEffect(() => {
+    const save = () => {
+      if (navRef.current) savedScrollTop.current = navRef.current.scrollTop;
+    };
+    const restore = () => {
+      // The persisted island re-renders during the swap; restore after the new
+      // DOM is in place. A pending value of 0 is still a real position (user
+      // scrolled to the top) so we only skip when nothing was captured.
+      if (navRef.current && savedScrollTop.current !== null) {
+        navRef.current.scrollTop = savedScrollTop.current;
+      }
+    };
+    document.addEventListener('astro:before-swap', save);
+    document.addEventListener('astro:after-swap', restore);
+    return () => {
+      document.removeEventListener('astro:before-swap', save);
+      document.removeEventListener('astro:after-swap', restore);
+    };
+  }, []);
+
+  return navRef;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +366,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
   const currentPath = useCurrentPath(initialPath);
+  const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const permissions = useAuthStore((s) => s.user?.permissions);
 
@@ -641,7 +681,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         )}
       </div>
 
-      <nav data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
+      <nav ref={navScrollRef} data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
         {topLevelNav.map((item) => renderNavItem(item))}
         {navSections.map((section) => renderCollapsibleSection(section))}
       </nav>

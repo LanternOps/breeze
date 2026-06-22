@@ -17,6 +17,7 @@ vi.mock('../../db/schema', () => ({
     orgId: 'orgId',
     siteId: 'siteId',
     agentId: 'agentId',
+    hostname: 'hostname',
   },
   elevationRequests: {
     id: 'id',
@@ -26,6 +27,12 @@ vi.mock('../../db/schema', () => ({
     id: 'id',
     orgId: 'orgId',
     elevationRequestId: 'elevationRequestId',
+  },
+  approvalRequests: {
+    id: 'id',
+    userId: 'userId',
+    elevationRequestId: 'elevationRequestId',
+    status: 'status',
   },
   pamRules: {
     id: 'id',
@@ -39,6 +46,21 @@ vi.mock('../../db/schema', () => ({
     orgId: 'orgId',
     defaultUnmatchedVerdict: 'defaultUnmatchedVerdict',
   },
+}));
+
+const bridgeMocks = vi.hoisted(() => ({
+  resolveElevationApprovers: vi.fn(),
+  getUserPushTokens: vi.fn(),
+  sendExpoPush: vi.fn(),
+  buildApprovalPush: vi.fn(() => ({ title: 'Approval requested', body: 'x' })),
+}));
+vi.mock('../../services/pamApprovers', () => ({
+  resolveElevationApprovers: bridgeMocks.resolveElevationApprovers,
+}));
+vi.mock('../../services/expoPush', () => ({
+  getUserPushTokens: bridgeMocks.getUserPushTokens,
+  sendExpoPush: bridgeMocks.sendExpoPush,
+  buildApprovalPush: bridgeMocks.buildApprovalPush,
 }));
 
 const pamMocks = vi.hoisted(() => ({
@@ -175,6 +197,10 @@ describe('agent elevation-requests ingestion route', () => {
     // Default: no software policy binds, no PAM rules -> 'pending'.
     pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
     pamMocks.publishEvent.mockResolvedValue('evt-1');
+    // Default: no eligible approvers -> mobile bridge is a no-op.
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
+    bridgeMocks.getUserPushTokens.mockResolvedValue([]);
+    bridgeMocks.sendExpoPush.mockResolvedValue([]);
   });
 
   it('inserts an elevation request and returns id + status', async () => {
@@ -343,6 +369,9 @@ describe('ingest decisioning (#1163)', () => {
     mockSelects([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }]);
     pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
     pamMocks.publishEvent.mockResolvedValue('evt-1');
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
+    bridgeMocks.getUserPushTokens.mockResolvedValue([]);
+    bridgeMocks.sendExpoPush.mockResolvedValue([]);
   });
 
   async function post(app: Hono) {
@@ -528,5 +557,138 @@ describe('ingest decisioning (#1163)', () => {
       expect.anything(),
       'pam-ingest',
     );
+  });
+});
+
+import { elevationVerdictToRiskTier } from './elevationRequests';
+
+describe('elevationVerdictToRiskTier', () => {
+  it('maps a blocklist verdict to critical', () => {
+    expect(
+      elevationVerdictToRiskTier({ match: 'blocklist', auditMatches: [] }, true),
+    ).toBe('critical');
+  });
+
+  it('maps an allowlist verdict to low', () => {
+    expect(
+      elevationVerdictToRiskTier({ match: 'allowlist', auditMatches: [] }, false),
+    ).toBe('low');
+  });
+
+  it('no verdict + signed -> medium', () => {
+    expect(elevationVerdictToRiskTier(null, true)).toBe('medium');
+    expect(elevationVerdictToRiskTier({ match: null, auditMatches: [] }, true)).toBe('medium');
+  });
+
+  it('no verdict + unsigned -> high', () => {
+    expect(elevationVerdictToRiskTier(null, false)).toBe('high');
+  });
+});
+
+describe('#1254 mobile approval bridge (fan-out)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.rateLimiter.mockResolvedValue({
+      allowed: true,
+      remaining: 599,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    mockSelects([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'WS-01' } as any]);
+    pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
+    pamMocks.publishEvent.mockResolvedValue('evt-1');
+    bridgeMocks.getUserPushTokens.mockResolvedValue(['ExponentPushToken[abc]']);
+    bridgeMocks.sendExpoPush.mockResolvedValue([{ status: 'ok', id: 'tk' }]);
+  });
+
+  async function post(app: Hono) {
+    return app.request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(goodPayload),
+    });
+  }
+
+  // Capture approval_requests inserts (the bridge) distinctly from the
+  // elevation/audit inserts that share the same db.insert mock.
+  function approvalValueCalls(values: ReturnType<typeof vi.fn>) {
+    return values.mock.calls.filter(
+      (args) => (args[0] as { actionToolName?: string }).actionToolName === 'uac_intercept',
+    );
+  }
+
+  it('pending uac_intercept fans out one approval per approver + pushes', async () => {
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a', 'user-b']);
+    const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+
+    expect(bridgeMocks.resolveElevationApprovers).toHaveBeenCalledWith('org-1');
+    const approvalCalls = approvalValueCalls(values);
+    expect(approvalCalls).toHaveLength(2);
+    expect(approvalCalls[0]![0]).toEqual(
+      expect.objectContaining({
+        userId: 'user-a',
+        elevationRequestId: 'req-uuid',
+        requestingClientLabel: 'Breeze Agent',
+        requestingMachineLabel: 'WS-01',
+        actionToolName: 'uac_intercept',
+        status: 'pending',
+      }),
+    );
+    expect(approvalCalls[1]![0]).toEqual(
+      expect.objectContaining({ userId: 'user-b', elevationRequestId: 'req-uuid' }),
+    );
+    // Push attempted for each approver.
+    expect(bridgeMocks.getUserPushTokens).toHaveBeenCalledTimes(2);
+    expect(bridgeMocks.sendExpoPush).toHaveBeenCalledTimes(2);
+  });
+
+  it('auto_approved elevation does NOT trigger the bridge', async () => {
+    pamMocks.evaluatePamBridge.mockResolvedValue({
+      match: 'allowlist',
+      policyId: 'pol-2',
+      auditMatches: [],
+    });
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a']);
+    happyPathInsert([{ id: 'req-auto', status: 'auto_approved' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    expect(bridgeMocks.resolveElevationApprovers).not.toHaveBeenCalled();
+  });
+
+  it('denied elevation does NOT trigger the bridge', async () => {
+    pamMocks.evaluatePamBridge.mockResolvedValue({
+      match: 'blocklist',
+      policyId: 'pol-1',
+      auditMatches: [],
+    });
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a']);
+    happyPathInsert([{ id: 'req-deny', status: 'denied' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    expect(bridgeMocks.resolveElevationApprovers).not.toHaveBeenCalled();
+  });
+
+  it('approver resolution throwing still returns 201 (best-effort)', async () => {
+    bridgeMocks.resolveElevationApprovers.mockRejectedValue(new Error('db down'));
+    happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending' });
+  });
+
+  it('a failing push does not abort the remaining approvers', async () => {
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a', 'user-b']);
+    bridgeMocks.sendExpoPush.mockRejectedValueOnce(new Error('expo 500'));
+    const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    // Both approval rows still inserted despite the first push throwing.
+    expect(approvalValueCalls(values)).toHaveLength(2);
   });
 });

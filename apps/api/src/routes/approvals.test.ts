@@ -7,7 +7,14 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
+  // Pass-throughs: the post-commit sibling-expiry wraps its db.update in
+  // runOutsideDbContext(() => withSystemDbAccessContext(...)). Unwrapping both
+  // lets the mocked db.update run inline so tests can assert on it (same shape
+  // as the other route tests that mock these helpers).
+  runOutsideDbContext: (fn: any) => fn(),
+  withSystemDbAccessContext: (fn: any) => fn(),
 }));
 
 vi.mock('../services/expoPush', () => ({
@@ -21,7 +28,16 @@ vi.mock('../services/expoPush', () => ({
 }));
 
 vi.mock('../db/schema/approvals', () => ({
-  approvalRequests: {},
+  approvalRequests: {
+    id: 'id',
+    elevationRequestId: 'elevation_request_id',
+    status: 'status',
+  },
+}));
+
+vi.mock('../db/schema/elevations', () => ({
+  elevationRequests: { id: 'id', orgId: 'org_id', status: 'status' },
+  elevationAudit: { id: 'id', orgId: 'org_id', elevationRequestId: 'elevation_request_id' },
 }));
 
 vi.mock('../db/schema/authenticatorDevices', () => ({
@@ -215,6 +231,7 @@ beforeEach(() => {
   vi.mocked(db.update).mockReset();
   vi.mocked(db.insert).mockReset();
   vi.mocked(db.delete).mockReset();
+  vi.mocked(db.transaction).mockReset();
   // Re-establish the default no-proof (L1 session_tap) assurance after
   // clearAllMocks wipes the implementation, so the unchanged approve tests
   // keep recording session_tap and per-case overrides start from a clean slate.
@@ -956,6 +973,142 @@ describe('POST /approvals/:id/deny', () => {
     expect(aiSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'rejected', approvedBy: TEST_USER.id }),
     );
+  });
+});
+
+describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
+  // Builds a tx stub for db.transaction(fn). `elevationUpdateRows` is what the
+  // elevation CAS returns ([] = lost the race). The tx now does ONLY the
+  // elevation CAS (.update) + the audit insert (.values) — the sibling-expiry
+  // moved OUT of the tx to a post-commit system-scoped db.update (see
+  // mockSiblingExpireUpdate). Captures the elevation .set arg and the
+  // elevationAudit .values arg.
+  function mockElevationTx(elevationUpdateRows: unknown[]) {
+    const elevationSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(elevationUpdateRows) }),
+    });
+    const auditValues = vi.fn().mockResolvedValue(undefined);
+    const tx = {
+      update: vi.fn(() => ({ set: elevationSet } as any)),
+      insert: vi.fn(() => ({ values: auditValues } as any)),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return { elevationSet, auditValues };
+  }
+
+  // The decideHandler pre-fetch select + the approval_requests CAS update. The
+  // updated row carries elevationRequestId so the mirror block runs.
+  //
+  // On the win path the route now calls db.update TWICE: first the
+  // approval_requests CAS (inside decideHandler), then the post-commit
+  // system-scoped sibling-expiry. Wire both via mockReturnValueOnce so the
+  // sibling set arg is captured separately; return that captured set.
+  function mockDecideWithElevation(opts: { status: 'pending'; riskTier: string; elevationRequestId: string | null }) {
+    const updatedRow = {
+      id: 'appr-1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'Breeze Agent',
+      requestingMachineLabel: 'WS-01',
+      actionLabel: 'Elevate setup.exe',
+      actionToolName: 'uac_intercept',
+      actionArguments: {},
+      riskTier: opts.riskTier,
+      riskSummary: 'admin requested',
+      status: 'approved',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: new Date(),
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: opts.elevationRequestId,
+      isRecursive: false,
+      createdAt: new Date(),
+    };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ ...updatedRow, status: 'pending' }]),
+      }),
+    } as any);
+    // 1) approval_requests CAS update
+    const casReturning = vi.fn().mockResolvedValue([updatedRow]);
+    const casSet = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) });
+    // 2) post-commit sibling-expiry (system scope) — a terminal .set().where()
+    const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update)
+      .mockReturnValueOnce({ set: casSet } as any)
+      .mockReturnValueOnce({ set: siblingExpireSet } as any);
+    return { updatedRow, casSet, siblingExpireSet };
+  }
+
+  it('approve mirrors elevation to approved + expires siblings', async () => {
+    const { siblingExpireSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledOnce();
+    expect(tx.elevationSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'approved', approvedByUserId: TEST_USER.id }),
+    );
+    // #1254: the approve grant is bounded (parity with pam.ts's 15-min default),
+    // not left open-ended.
+    const elevationSetArg = tx.elevationSet.mock.calls[0]![0] as { expiresAt: Date };
+    expect(elevationSetArg.expiresAt).toBeInstanceOf(Date);
+    expect(elevationSetArg.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(tx.auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'approved', actor: 'technician', orgId: 'org-9' }),
+    );
+    // The sibling-expiry now runs POST-COMMIT in system scope (a second
+    // db.update), not as a second tx.update — proving the RLS-fix structure:
+    // the Shape-6 sibling rows belong to OTHER approvers, invisible to this
+    // user's request context, so the write must be system-scoped.
+    expect(siblingExpireSet).toHaveBeenCalledWith({ status: 'expired' });
+  });
+
+  it('deny mirrors elevation to denied', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'not allowed' }),
+    });
+    expect(res.status).toBe(200);
+    expect(tx.elevationSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'denied', deniedByUserId: TEST_USER.id, denialReason: 'not allowed' }),
+    );
+    expect(tx.auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'denied', actor: 'technician' }),
+    );
+  });
+
+  it('elevation already non-pending (CAS 0 rows) -> decide still 200, no audit/sibling write', async () => {
+    const { siblingExpireSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const tx = mockElevationTx([]); // lost the race
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(tx.elevationSet).toHaveBeenCalled();
+    expect(tx.auditValues).not.toHaveBeenCalled();
+    // wonElevation stays false on a lost race, so the post-commit sibling-expiry
+    // db.update is never invoked.
+    expect(siblingExpireSet).not.toHaveBeenCalled();
+  });
+
+  it('approval without elevationRequestId never opens the mirror transaction', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'low', elevationRequestId: null });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('mirror failure is non-fatal: decide still returns 200', async () => {
+    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    vi.mocked(db.transaction).mockRejectedValue(new Error('tx blew up'));
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
   });
 });
 

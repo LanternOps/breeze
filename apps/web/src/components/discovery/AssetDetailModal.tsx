@@ -40,6 +40,7 @@ export default function AssetDetailModal({
   const [selectedDevice, setSelectedDevice] = useState(asset?.linkedDeviceId ?? '');
   const [linking, setLinking] = useState(false);
   const [linkError, setLinkError] = useState<string>();
+  const [linkSuccess, setLinkSuccess] = useState<string>();
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string>();
   const [editLabel, setEditLabel] = useState('');
@@ -61,6 +62,7 @@ export default function AssetDetailModal({
       setSelectedDevice('');
     }
     setLinkError(undefined);
+    setLinkSuccess(undefined);
     setDeleteError(undefined);
     setEditLabel(asset?.label ?? '');
     setEditNotes(asset?.notes ?? '');
@@ -75,6 +77,7 @@ export default function AssetDetailModal({
   const handleLink = async () => {
     if (!asset) return;
     if (!selectedDevice) {
+      setLinkSuccess(undefined);
       setLinkError('Select a device to link.');
       return;
     }
@@ -82,6 +85,7 @@ export default function AssetDetailModal({
     try {
       setLinking(true);
       setLinkError(undefined);
+      setLinkSuccess(undefined);
       const response = await fetchWithAuth(`/discovery/assets/${asset.id}/link`, {
         method: 'POST',
         body: JSON.stringify({ deviceId: selectedDevice })
@@ -91,6 +95,12 @@ export default function AssetDetailModal({
         throw new Error('Failed to link asset');
       }
 
+      const deviceName = devices.find(d => d.id === selectedDevice)?.name;
+      setLinkSuccess(
+        deviceName
+          ? `Asset linked to ${deviceName}. It is now marked approved.`
+          : 'Asset linked. It is now marked approved.'
+      );
       onLinked?.(asset.id);
     } catch (err) {
       setLinkError(err instanceof Error ? err.message : 'An error occurred');
@@ -370,14 +380,19 @@ export default function AssetDetailModal({
             </div>
 
             <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">Link to Device</h3>
+              <h3 className="text-sm font-semibold">Link to managed device</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Associate this discovered asset with an existing agent-managed device so Breeze
+                treats them as the same machine. This does not install an agent or create a new
+                device. The asset will be marked as approved.
+              </p>
               <div className="mt-3 flex items-center gap-3">
                 <select
                   value={selectedDevice}
                   onChange={event => setSelectedDevice(event.target.value)}
                   className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
-                  <option value="">Select device</option>
+                  <option value="">Select a managed device</option>
                   {devices.map(device => (
                     <option key={device.id} value={device.id}>
                       {device.name}
@@ -390,9 +405,14 @@ export default function AssetDetailModal({
                   disabled={linking}
                   className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {linking ? 'Linking...' : 'Link'}
+                  {linking ? 'Linking...' : 'Link asset'}
                 </button>
               </div>
+              {linkSuccess && (
+                <div className="mt-3 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
+                  {linkSuccess}
+                </div>
+              )}
               {linkError && (
                 <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                   {linkError}

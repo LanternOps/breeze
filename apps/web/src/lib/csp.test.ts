@@ -24,23 +24,29 @@ describe('web CSP helpers', () => {
   it('allows the hosted docs origin so the in-app help panel iframe loads', () => {
     const directive = resolveFrameSrcDirective({ env: {} });
 
-    expect(directive).toBe("frame-src 'self' https://docs.breezermm.com");
+    expect(directive).toBe("frame-src 'self' blob: https://docs.breezermm.com");
+  });
+
+  it('allows blob: so the auth-fetched quote/invoice PDF preview iframe loads', () => {
+    const directive = resolveFrameSrcDirective({ env: {} });
+
+    expect(directive).toContain('blob:');
   });
 
   it('also allows a self-hosted docs origin from PUBLIC_DOCS_URL without duplicating the default', () => {
     expect(
       resolveFrameSrcDirective({ env: { PUBLIC_DOCS_URL: 'https://docs.example.com/help/' } }),
-    ).toBe("frame-src 'self' https://docs.breezermm.com https://docs.example.com");
+    ).toBe("frame-src 'self' blob: https://docs.breezermm.com https://docs.example.com");
 
     expect(
       resolveFrameSrcDirective({ env: { PUBLIC_DOCS_URL: 'https://docs.breezermm.com' } }),
-    ).toBe("frame-src 'self' https://docs.breezermm.com");
+    ).toBe("frame-src 'self' blob: https://docs.breezermm.com");
   });
 
   it('ignores an invalid PUBLIC_DOCS_URL and never widens to a bare scheme', () => {
     const directive = resolveFrameSrcDirective({ env: { PUBLIC_DOCS_URL: 'not a url' } });
 
-    expect(directive).toBe("frame-src 'self' https://docs.breezermm.com");
+    expect(directive).toBe("frame-src 'self' blob: https://docs.breezermm.com");
     expect(directive).not.toMatch(/frame-src[^;]*\bhttps:(\s|$)/);
   });
 

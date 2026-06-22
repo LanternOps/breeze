@@ -24,8 +24,9 @@ import { SQL, and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'driz
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
+  approvalRequests,
   authenticatorDevices,
   devices,
   elevationAudit,
@@ -630,6 +631,34 @@ pamRoutes.post(
       resourceId: result.row.id,
       details: { reason: body.reason, duration_minutes: approve ? durationMinutes : undefined },
     });
+
+    // #1254: a uac_intercept elevation may also have been fanned out to the
+    // mobile approval surface. This web decision is authoritative, so expire any
+    // still-pending mobile approval_requests rows linked to this elevation —
+    // they vanish from approvers' phones. MUST run in system scope:
+    // approval_requests is Shape-6 (user-id-scoped), so those rows belong to the
+    // fanned-out approvers and are invisible to THIS user's request context — a
+    // bare context-scoped UPDATE would silently match zero rows. Best-effort,
+    // post-commit; only uac_intercept fans out.
+    if (result.row.flowType === 'uac_intercept') {
+      try {
+        await runOutsideDbContext(() =>
+          withSystemDbAccessContext(async () => {
+            await db
+              .update(approvalRequests)
+              .set({ status: 'expired' })
+              .where(
+                and(
+                  eq(approvalRequests.elevationRequestId, result.row.id),
+                  eq(approvalRequests.status, 'pending'),
+                ),
+              );
+          }),
+        );
+      } catch (err) {
+        console.error('[pam] Failed to expire sibling mobile approvals:', err);
+      }
+    }
 
     await safePublish(
       approve ? 'elevation.approved' : 'elevation.denied',

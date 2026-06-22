@@ -61,6 +61,7 @@ vi.mock('../db/schema', () => ({
     denialReason: 'denialReason',
   },
   elevationAudit: { id: 'id' },
+  approvalRequests: { id: 'id', elevationRequestId: 'elevationRequestId', status: 'status' },
   pamRules: {
     id: 'id',
     orgId: 'orgId',
@@ -1250,6 +1251,14 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
 
   it('uac_intercept respond never touches the execution mirror', async () => {
     const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
+    // #1254: the mobile-approval expiry moved OUT of the respond tx to a
+    // post-commit system-scoped db.update — approval_requests is Shape-6
+    // (user-id-scoped), so the fanned-out approver rows belong to OTHER users
+    // and are invisible to this web caller's request context; a bare in-tx
+    // update would silently match zero rows. Wire that post-commit db.update
+    // and capture its .set arg.
+    const expireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: expireSet } as any);
 
     const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
       method: 'POST',
@@ -1258,7 +1267,13 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
     });
 
     expect(res.status).toBe(200);
+    // In the tx, only the elevation-status CAS runs — no execution mirror (that
+    // only happens for ai_tool_action) and no in-tx approval expiry anymore.
     expect(updateSetCalls.length).toBe(1);
+    // The #1254 mobile-approval expiry now runs post-commit via the system-scoped
+    // db.update (clears any fanned-out approval_requests rows so a web decision
+    // also removes the request from approvers' phones).
+    expect(expireSet).toHaveBeenCalledWith({ status: 'expired' });
   });
 });
 

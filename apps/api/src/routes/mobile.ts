@@ -21,6 +21,7 @@ import { userRateLimit } from '../middleware/userRateLimit';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
+import { escapeLike } from '../utils/sql';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { dispatchWake } from '../services/wakeOnLan';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -900,7 +901,7 @@ mobileRoutes.get(
     }
 
     if (query.search) {
-      conditions.push(like(devices.hostname, `%${query.search}%`));
+      conditions.push(like(devices.hostname, `%${escapeLike(query.search)}%`));
     }
 
     if (!query.status) {
@@ -1279,7 +1280,7 @@ mobileRoutes.get(
       return c.json({ results: [] });
     }
 
-    const term = `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+    const term = `%${escapeLike(q)}%`;
     const cappedLimit = Math.min(50, Math.max(1, limit));
     // Distribute results so one kind never starves others. Each kind gets
     // up to ~ceil(limit/3) candidates; we then trim to cappedLimit total.
