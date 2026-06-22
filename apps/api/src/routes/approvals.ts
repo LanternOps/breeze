@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, gt, desc, inArray, isNull, ne } from 'drizzle-orm';
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { elevationRequests, elevationAudit } from '../db/schema/elevations';
@@ -507,6 +507,7 @@ async function decideHandler(
   // fail the user's decide call.
   if (updated?.elevationRequestId) {
     const elevationId = updated.elevationRequestId;
+    let wonElevation = false;
     try {
       await db.transaction(async (tx) => {
         const now = new Date();
@@ -545,6 +546,7 @@ async function decideHandler(
         // Lost the race (already decided/expired by a sibling or the web path):
         // leave everything as-is. Our approval_requests row is still decided.
         if (elevationUpdate.length === 0) return;
+        wonElevation = true;
         const elevation = elevationUpdate[0]!;
 
         await tx.insert(elevationAudit).values({
@@ -560,24 +562,38 @@ async function decideHandler(
           },
           occurredAt: now,
         });
-
-        // Expire the sibling approval rows so they vanish from other approvers'
-        // queues — first-wins fan-in.
-        await tx
-          .update(approvalRequests)
-          .set({ status: 'expired' })
-          .where(
-            and(
-              eq(approvalRequests.elevationRequestId, elevationId),
-              ne(approvalRequests.id, updated.id),
-              eq(approvalRequests.status, 'pending'),
-            ),
-          );
       });
     } catch (err) {
       console.error('[approvals] Failed to mirror decision to elevation_requests:', err);
       // Non-fatal: the approval_request row is the source of truth for the
       // mobile decision; the elevation mirror can be reconciled out of band.
+    }
+
+    // Expire the sibling approval rows so they vanish from other approvers'
+    // queues — first-wins fan-in. MUST run in system scope: approval_requests is
+    // Shape-6 (user-id-scoped), so the sibling rows belong to OTHER approvers and
+    // are invisible to this approver's request context — a bare context-scoped
+    // UPDATE would silently match zero rows. Best-effort, post-commit, and only
+    // when this decide won the elevation CAS (the winner owns the fan-in cleanup).
+    if (wonElevation) {
+      try {
+        await runOutsideDbContext(() =>
+          withSystemDbAccessContext(async () => {
+            await db
+              .update(approvalRequests)
+              .set({ status: 'expired' })
+              .where(
+                and(
+                  eq(approvalRequests.elevationRequestId, elevationId),
+                  ne(approvalRequests.id, updated.id),
+                  eq(approvalRequests.status, 'pending'),
+                ),
+              );
+          }),
+        );
+      } catch (err) {
+        console.error('[approvals] Failed to expire sibling approvals:', err);
+      }
     }
   }
 

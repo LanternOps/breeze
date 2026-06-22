@@ -9,6 +9,12 @@ vi.mock('../db', () => ({
     delete: vi.fn(),
     transaction: vi.fn(),
   },
+  // Pass-throughs: the post-commit sibling-expiry wraps its db.update in
+  // runOutsideDbContext(() => withSystemDbAccessContext(...)). Unwrapping both
+  // lets the mocked db.update run inline so tests can assert on it (same shape
+  // as the other route tests that mock these helpers).
+  runOutsideDbContext: (fn: any) => fn(),
+  withSystemDbAccessContext: (fn: any) => fn(),
 }));
 
 vi.mock('../services/expoPush', () => ({
@@ -972,29 +978,31 @@ describe('POST /approvals/:id/deny', () => {
 
 describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
   // Builds a tx stub for db.transaction(fn). `elevationUpdateRows` is what the
-  // elevation CAS returns ([] = lost the race). Captures the elevation .set arg,
-  // the elevationAudit .values arg, and the sibling-expiry .set arg.
+  // elevation CAS returns ([] = lost the race). The tx now does ONLY the
+  // elevation CAS (.update) + the audit insert (.values) — the sibling-expiry
+  // moved OUT of the tx to a post-commit system-scoped db.update (see
+  // mockSiblingExpireUpdate). Captures the elevation .set arg and the
+  // elevationAudit .values arg.
   function mockElevationTx(elevationUpdateRows: unknown[]) {
     const elevationSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(elevationUpdateRows) }),
     });
-    const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const auditValues = vi.fn().mockResolvedValue(undefined);
-    let updateCall = 0;
     const tx = {
-      update: vi.fn(() => {
-        updateCall += 1;
-        // 1st update in the tx = elevation CAS; 2nd = sibling expiry.
-        return { set: updateCall === 1 ? elevationSet : siblingExpireSet } as any;
-      }),
+      update: vi.fn(() => ({ set: elevationSet } as any)),
       insert: vi.fn(() => ({ values: auditValues } as any)),
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
-    return { elevationSet, siblingExpireSet, auditValues };
+    return { elevationSet, auditValues };
   }
 
   // The decideHandler pre-fetch select + the approval_requests CAS update. The
   // updated row carries elevationRequestId so the mirror block runs.
+  //
+  // On the win path the route now calls db.update TWICE: first the
+  // approval_requests CAS (inside decideHandler), then the post-commit
+  // system-scoped sibling-expiry. Wire both via mockReturnValueOnce so the
+  // sibling set arg is captured separately; return that captured set.
   function mockDecideWithElevation(opts: { status: 'pending'; riskTier: string; elevationRequestId: string | null }) {
     const updatedRow = {
       id: 'appr-1',
@@ -1020,14 +1028,19 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
         where: vi.fn().mockResolvedValue([{ ...updatedRow, status: 'pending' }]),
       }),
     } as any);
-    const returning = vi.fn().mockResolvedValue([updatedRow]);
-    const set = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) });
-    vi.mocked(db.update).mockReturnValue({ set } as any);
-    return updatedRow;
+    // 1) approval_requests CAS update
+    const casReturning = vi.fn().mockResolvedValue([updatedRow]);
+    const casSet = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) });
+    // 2) post-commit sibling-expiry (system scope) — a terminal .set().where()
+    const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update)
+      .mockReturnValueOnce({ set: casSet } as any)
+      .mockReturnValueOnce({ set: siblingExpireSet } as any);
+    return { updatedRow, casSet, siblingExpireSet };
   }
 
   it('approve mirrors elevation to approved + expires siblings', async () => {
-    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const { siblingExpireSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
     const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
@@ -1044,7 +1057,11 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(tx.auditValues).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'approved', actor: 'technician', orgId: 'org-9' }),
     );
-    expect(tx.siblingExpireSet).toHaveBeenCalledWith({ status: 'expired' });
+    // The sibling-expiry now runs POST-COMMIT in system scope (a second
+    // db.update), not as a second tx.update — proving the RLS-fix structure:
+    // the Shape-6 sibling rows belong to OTHER approvers, invisible to this
+    // user's request context, so the write must be system-scoped.
+    expect(siblingExpireSet).toHaveBeenCalledWith({ status: 'expired' });
   });
 
   it('deny mirrors elevation to denied', async () => {
@@ -1066,14 +1083,16 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
   });
 
   it('elevation already non-pending (CAS 0 rows) -> decide still 200, no audit/sibling write', async () => {
-    mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
+    const { siblingExpireSet } = mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
     const tx = mockElevationTx([]); // lost the race
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(tx.elevationSet).toHaveBeenCalled();
     expect(tx.auditValues).not.toHaveBeenCalled();
-    expect(tx.siblingExpireSet).not.toHaveBeenCalled();
+    // wonElevation stays false on a lost race, so the post-commit sibling-expiry
+    // db.update is never invoked.
+    expect(siblingExpireSet).not.toHaveBeenCalled();
   });
 
   it('approval without elevationRequestId never opens the mirror transaction', async () => {
