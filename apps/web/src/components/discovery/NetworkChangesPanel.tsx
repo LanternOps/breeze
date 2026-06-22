@@ -133,12 +133,12 @@ export default function NetworkChangesPanel({
         // the worker gates each insert on `enabled && alertOn{New,Changed,...}`
         // (assetApproval.ts), so `enabled: true` with every sub-toggle off
         // still records nothing. Mirror that here so the hint stays accurate.
-        const alert = row.alertSettings;
-        const recordsChanges = !!(alert && typeof alert === 'object'
-          && (alert as Record<string, unknown>).enabled === true
-          && [(alert as Record<string, unknown>).alertOnNew,
-            (alert as Record<string, unknown>).alertOnChanged,
-            (alert as Record<string, unknown>).alertOnDisappeared]
+        const alert = (row.alertSettings && typeof row.alertSettings === 'object')
+          ? row.alertSettings as Record<string, unknown>
+          : null;
+        const recordsChanges = !!(alert
+          && alert.enabled === true
+          && [alert.alertOnNew, alert.alertOnChanged, alert.alertOnDisappeared]
             .some((flag) => flag === true));
         const siteId = typeof row.siteId === 'string' ? row.siteId : null;
         return { id, name, siteId, recordsChanges };
