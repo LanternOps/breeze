@@ -25,6 +25,10 @@ describe('CSP directives drop the jsdelivr CDN (#1023)', () => {
       expect(csp).toContain("style-src-elem 'self' 'unsafe-inline'");
       expect(csp).toContain("worker-src 'self' blob:");
       expect(csp).toMatch(/script-src 'self'/);
+      // #1750: the auth-fetched quote/invoice PDF preview frames a blob: URL,
+      // so frame-src must allow blob: (browsers don't fall back to img-src/
+      // worker-src for an iframe source).
+      expect(csp).toMatch(/frame-src[^;]*\bblob:/);
     }
   );
 
