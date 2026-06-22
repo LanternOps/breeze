@@ -11,6 +11,8 @@ import { formatInvoiceNumber } from './invoiceNumbers';
 import { isQuoteExpired } from './quoteExpiry';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
+import { buildContractSpecsFromQuote } from './quoteToContract';
+import { createContractWithLines } from './contractService';
 
 export interface AcceptQuoteParams {
   quoteId: string;
@@ -43,7 +45,7 @@ type QuoteRow = typeof quotes.$inferSelect;
  */
 export async function acceptQuote(
   params: AcceptQuoteParams
-): Promise<{ quote: QuoteRow; acceptanceId: string; invoiceId: string; invoiceIssued: boolean }> {
+): Promise<{ quote: QuoteRow; acceptanceId: string; invoiceId: string; invoiceIssued: boolean; contractIds: string[] }> {
   // FOR UPDATE: serialize concurrent accepts on the same quote (we're already in
   // the caller's transaction). Without the row lock two READ COMMITTED accepts
   // both pass the status guard and each create an invoice (atom-1/C2).
@@ -208,11 +210,45 @@ export async function acceptQuote(
   // Note: the public token's jti is revoked by the CALLER after the transaction
   // commits (atom-2) — revoking here would fire even if the txn later rolled back.
 
+  // Phase 4: recurring (monthly/annual) lines -> draft Contracts, grouped by
+  // cadence. Runs inside this same system-scope accept transaction, so a failure
+  // rolls back the whole accept. accept's SELECT ... FOR UPDATE convert guard
+  // already makes this at-most-once. Quotes carry currency/terms snapshotted at
+  // send, so the contract inherits the accepted terms.
+  const startDate = new Date().toISOString().slice(0, 10); // accept date, date-only UTC
+  const contractSpecs = buildContractSpecsFromQuote(
+    {
+      orgId: quote.orgId,
+      partnerId: quote.partnerId,
+      quoteNumber: quote.quoteNumber ?? quote.id,
+      currencyCode: quote.currencyCode ?? null,
+      terms: quote.terms ?? null,
+    },
+    lines.map((l) => ({
+      recurrence: l.recurrence,
+      customerVisible: l.customerVisible,
+      description: l.description,
+      unitPrice: l.unitPrice,
+      quantity: l.quantity,
+      taxable: l.taxable,
+      catalogItemId: l.catalogItemId ?? null,
+      termMonths: l.termMonths ?? null,
+    })),
+    startDate,
+    params.actorUserId ?? null,
+  );
+
+  const contractIds: string[] = [];
+  for (const spec of contractSpecs) {
+    const contract = await createContractWithLines(spec);
+    contractIds.push(contract.id);
+  }
+
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, quote.id)).limit(1);
   // invoiceIssued mirrors the `oneTime.length > 0` branch above that flips the
   // invoice to status='sent' with a real number; a $0/no-one-time accept leaves
   // the invoice unissued. The caller emits lifecycle side effects post-commit.
-  return { quote: updated!, acceptanceId: acceptance!.id, invoiceId: invoice!.id, invoiceIssued: oneTime.length > 0 };
+  return { quote: updated!, acceptanceId: acceptance!.id, invoiceId: invoice!.id, invoiceIssued: oneTime.length > 0, contractIds };
 }
 
 /**

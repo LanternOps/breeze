@@ -61,6 +61,7 @@ import { eq, and, desc, sql, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -369,6 +370,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         if (latest.length === 0) return JSON.stringify({ message: 'No compliance data available yet' });
 
+        // Approvals are partner-scoped: derive partner from org for the approval stats query.
+        const compliancePartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
+        if (!compliancePartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
+
         // Also get approval stats
         const approvalStats = await db.select({
           total: sql<number>`count(*)`,
@@ -377,7 +382,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           rejected: sql<number>`count(*) filter (where ${patchApprovals.status} = 'rejected')`,
           deferred: sql<number>`count(*) filter (where ${patchApprovals.status} = 'deferred')`,
         }).from(patchApprovals)
-          .where(eq(patchApprovals.orgId, orgId));
+          .where(eq(patchApprovals.partnerId, compliancePartnerId));
 
         return JSON.stringify({ snapshot: latest[0], approvals: approvalStats[0] });
       }
@@ -391,17 +396,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!input.patchId) return JSON.stringify({ error: 'patchId is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
+        const approveDeclinePartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
+        if (!approveDeclinePartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
+
         const status = action === 'approve' ? 'approved' : 'rejected';
-        await db.insert(patchApprovals).values({
-          orgId,
+        await upsertPatchApproval({
+          partnerId: approveDeclinePartnerId,
           patchId: input.patchId as string,
+          ringId: null,
           status,
           approvedBy: auth.user.id,
           approvedAt: new Date(),
           notes: (input.notes as string) ?? null,
-        }).onConflictDoUpdate({
-          target: [patchApprovals.orgId, patchApprovals.patchId],
-          set: { status, approvedBy: auth.user.id, approvedAt: new Date(), notes: (input.notes as string) ?? null, updatedAt: new Date() },
         });
 
         return JSON.stringify({ success: true, message: `Patch ${action}d` });
@@ -411,17 +417,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!input.patchId) return JSON.stringify({ error: 'patchId is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
+        const deferPartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
+        if (!deferPartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
+
         const deferUntil = input.deferUntil ? new Date(input.deferUntil as string) : null;
-        await db.insert(patchApprovals).values({
-          orgId,
+        await upsertPatchApproval({
+          partnerId: deferPartnerId,
           patchId: input.patchId as string,
+          ringId: null,
           status: 'deferred',
           approvedBy: auth.user.id,
           deferUntil,
           notes: (input.notes as string) ?? null,
-        }).onConflictDoUpdate({
-          target: [patchApprovals.orgId, patchApprovals.patchId],
-          set: { status: 'deferred', deferUntil, notes: (input.notes as string) ?? null, updatedAt: new Date() },
         });
 
         return JSON.stringify({ success: true, message: `Patch deferred${deferUntil ? ` until ${deferUntil.toISOString()}` : ''}` });
@@ -431,20 +438,21 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!Array.isArray(input.patchIds) || input.patchIds.length === 0) return JSON.stringify({ error: 'patchIds is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
+        const bulkPartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
+        if (!bulkPartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
+
         let approved = 0;
         const failed: string[] = [];
         for (const patchId of (input.patchIds as string[]).slice(0, 50)) {
           try {
-            await db.insert(patchApprovals).values({
-              orgId,
+            await upsertPatchApproval({
+              partnerId: bulkPartnerId,
               patchId,
+              ringId: null,
               status: 'approved',
               approvedBy: auth.user.id,
               approvedAt: new Date(),
               notes: (input.notes as string) ?? null,
-            }).onConflictDoUpdate({
-              target: [patchApprovals.orgId, patchApprovals.patchId],
-              set: { status: 'approved', approvedBy: auth.user.id, approvedAt: new Date(), updatedAt: new Date() },
             });
             approved++;
           } catch (err) {

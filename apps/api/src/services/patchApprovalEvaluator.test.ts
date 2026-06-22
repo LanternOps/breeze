@@ -11,7 +11,8 @@ vi.mock('../db/schema', () => ({
     severity: 'severity', releaseDate: 'releaseDate', requiresReboot: 'requiresReboot',
     source: 'source', packageId: 'packageId', version: 'version',
   },
-  patchApprovals: { patchId: 'patchId', status: 'status', ringId: 'ringId', orgId: 'orgId' },
+  patchApprovals: { patchId: 'patchId', status: 'status', ringId: 'ringId', partnerId: 'partnerId' },
+  organizations: { id: 'id', partnerId: 'partnerId' },
   OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending'],
 }));
 
@@ -139,6 +140,8 @@ describe('buildAllowedPatchSources', () => {
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 const RING_ID = '33333333-3333-3333-3333-333333333333';
+const PARTNER_ID = '44444444-4444-4444-4444-444444444444';
+const OTHER_PARTNER_ID = '55555555-5555-5555-5555-555555555555';
 const P1 = 'aaaaaaaa-0000-0000-0000-000000000001';
 const P2 = 'aaaaaaaa-0000-0000-0000-000000000002';
 
@@ -173,7 +176,22 @@ function pendingRow(overrides: Partial<PendingRow>): PendingRow {
   };
 }
 
-function mockPendingAndApprovals(pendingRows: PendingRow[], approvalRows: Array<{ patchId: string; status: string; ringId: string | null }>) {
+/**
+ * Mock three sequential db.select calls:
+ *   1. organizations lookup (org → partnerId)
+ *   2. devicePatches + patches join (pending patches)
+ *   3. patchApprovals (manual approvals for this partner)
+ */
+function mockPendingAndApprovals(
+  pendingRows: PendingRow[],
+  approvalRows: Array<{ patchId: string; status: string; ringId: string | null }>,
+  partnerId: string = PARTNER_ID,
+) {
+  const orgChain: any = {
+    from: vi.fn(() => orgChain),
+    where: vi.fn(() => orgChain),
+    limit: vi.fn(() => Promise.resolve([{ partnerId }])),
+  };
   const pendingChain: any = {
     from: vi.fn(() => pendingChain),
     innerJoin: vi.fn(() => pendingChain),
@@ -184,6 +202,7 @@ function mockPendingAndApprovals(pendingRows: PendingRow[], approvalRows: Array<
     where: vi.fn(() => Promise.resolve(approvalRows)),
   };
   vi.mocked(db.select)
+    .mockReturnValueOnce(orgChain)
     .mockReturnValueOnce(pendingChain)
     .mockReturnValueOnce(approvalChain);
 }
@@ -383,14 +402,14 @@ describe('app rules in resolveApprovedPatchesForDevice', () => {
   });
 });
 
-describe('policy-level auto-approve (ring-less)', () => {
-  const policyAutoApprove = { enabled: true, severities: ['critical', 'important'], deferralDays: 0 };
-
+describe('ring-less path: only manual approvals apply', () => {
+  // policyAutoApprove has been removed. With no ring, only partner-wide manual
+  // approvals (ring_id NULL) or ring-specific approvals matching null apply.
   beforeEach(() => {
     vi.mocked(db.select).mockReset();
   });
 
-  it('approves a ring-less matching-severity patch with reason policy_auto_approve', async () => {
+  it('does not auto-approve patches with no ring and no manual approval', async () => {
     mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', source: 'third_party', packageId: 'X.Y' })], []);
 
     const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
@@ -399,93 +418,57 @@ describe('policy-level auto-approve (ring-less)', () => {
       autoApprove: {},
       deferralDays: 0,
       sources: ['third_party'],
-      policyAutoApprove,
+    });
+
+    expect(result).toHaveLength(0);
+  });
+
+  it('approves a ring-less patch via partner-wide manual approval (ring_id NULL)', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: 'critical', source: 'microsoft' })],
+      [{ patchId: P1, status: 'approved', ringId: null }],
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: null,
+      categoryRules: [],
+      autoApprove: {},
+      deferralDays: 0,
     });
 
     expect(result).toHaveLength(1);
-    expect(result[0]?.approvalReason).toBe('policy_auto_approve');
+    expect(result[0]?.approvalReason).toBe('manual');
   });
 
-  it('does not approve severities outside the list, or null severity', async () => {
-    mockPendingAndApprovals([
-      pendingRow({ patchId: P1, devicePatchId: 'dp-1', severity: 'low' }),
-      pendingRow({ patchId: P2, devicePatchId: 'dp-2', severity: null }),
-    ], []);
+  it('returns [] when no patches are pending', async () => {
+    // Even with ring-less config, no pending patches → empty
+    mockPendingAndApprovals([], []);
 
     const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
       ringId: null,
       categoryRules: [],
       autoApprove: {},
       deferralDays: 0,
-      policyAutoApprove,
     });
 
     expect(result).toEqual([]);
   });
 
-  it('holds patches inside the deferral window', async () => {
-    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: yesterday })], []);
+  it('source filter also gates manually approved patches without a ring', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P2, source: 'third_party', severity: 'low' })],
+      [{ patchId: P2, status: 'approved', ringId: null }]
+    );
 
-    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
       ringId: null,
       categoryRules: [],
       autoApprove: {},
       deferralDays: 0,
-      policyAutoApprove: { ...policyAutoApprove, deferralDays: 7 },
+      sources: ['os'],
     });
 
-    expect(result).toEqual([]);
-  });
-
-  it('approves a patch whose deferral window has elapsed', async () => {
-    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
-    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: tenDaysAgo })], []);
-
-    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-      ringId: null,
-      categoryRules: [],
-      autoApprove: {},
-      deferralDays: 0,
-      policyAutoApprove: { ...policyAutoApprove, deferralDays: 7 },
-    });
-
-    expect(result).toHaveLength(1);
-    expect(result[0]?.approvalReason).toBe('policy_auto_approve');
-  });
-
-  it('fails closed (holds + warns) when deferralDays > 0 and releaseDate is missing', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical', releaseDate: null })], []);
-
-      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-        ringId: null,
-        categoryRules: [],
-        autoApprove: {},
-        deferralDays: 0,
-        policyAutoApprove: { ...policyAutoApprove, deferralDays: 7 },
-      });
-
-      expect(result).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cannot prove its age'));
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('ignores policyAutoApprove entirely when a ring is linked', async () => {
-    mockPendingAndApprovals([pendingRow({ patchId: P1, severity: 'critical' })], []);
-
-    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-      ringId: RING_ID,
-      categoryRules: [],
-      autoApprove: { enabled: false },
-      deferralDays: 0,
-      policyAutoApprove,
-    });
-
-    expect(result).toEqual([]);
+    expect(approved).toHaveLength(0);
   });
 });
 
@@ -816,5 +799,150 @@ describe('ring-level auto-approve', () => {
     });
 
     expect(result).toEqual([]);
+  });
+});
+
+// ---- Partner-scoped approvals + cross-partner ring guard ----
+describe('partner-scoped approval evaluation', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('returns [] when org has no partner', async () => {
+    // Simulate org lookup returning no row
+    const orgChain: any = {
+      from: vi.fn(() => orgChain),
+      where: vi.fn(() => orgChain),
+      limit: vi.fn(() => Promise.resolve([])), // no org row
+    };
+    vi.mocked(db.select).mockReturnValueOnce(orgChain);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: null,
+      categoryRules: [],
+      autoApprove: {},
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('ring-specific manual approval wins over partner-wide for same patchId', async () => {
+    // Both a ring-specific and a partner-wide (null ringId) row exist for P1.
+    // The ring-specific row is still returned from the partner query; the
+    // manualApprovalSet accepts both (ring-specific OR null ringId). This
+    // confirms ring-specific approvals are correctly included when partner-scoped.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: 'critical' })],
+      [
+        { patchId: P1, status: 'approved', ringId: RING_ID },  // ring-specific
+        { patchId: P1, status: 'approved', ringId: null },     // partner-wide blanket
+      ],
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: false },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('manual');
+  });
+
+  it('partner-wide (ringId NULL) manual approval applies under any ring', async () => {
+    // A partner-wide blanket (ring_id NULL) approval should approve the patch
+    // for this device regardless of which ring the device is in.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: 'critical' })],
+      [{ patchId: P1, status: 'approved', ringId: null }],  // ring_id NULL = partner-wide
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: false },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('manual');
+  });
+
+  it('ring auto-approve by severity works with partner-scoped query', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: 'critical' })],
+      [],  // no manual approvals
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('cross-partner ring is ignored (treated as no ring)', async () => {
+    // ringPartnerId differs from the device-org's partner → ring is dropped.
+    // Without a ring and no manual approvals, nothing is approved.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: 'critical' })],
+      [],  // no manual approvals
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      ringPartnerId: OTHER_PARTNER_ID,  // different partner from PARTNER_ID
+      categoryRules: [],
+      // ring auto-approve that would have approved if ring wasn't dropped
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    // Ring was dropped → ring auto-approve never runs → nothing approved
+    expect(result).toEqual([]);
+  });
+
+  it('same-partner ring is NOT dropped (guard is partner-equality check)', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: 'critical' })],
+      [],
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      ringPartnerId: PARTNER_ID,  // same as device-org's partner
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('ring guard is skipped when ringPartnerId is absent (legacy/unset configs)', async () => {
+    // When ringPartnerId is not set on the config, the guard does not drop the
+    // ring (legacy callers that have not yet been updated).
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, severity: 'critical' })],
+      [],
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      // ringPartnerId intentionally absent
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0 },
+      deferralDays: 0,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
   });
 });

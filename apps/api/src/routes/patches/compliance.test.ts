@@ -25,14 +25,18 @@ vi.mock('../../db/schema', () => ({
     lastCheckedAt: 'devicePatches.lastCheckedAt',
   },
   patchApprovals: {
-    orgId: 'patchApprovals.orgId',
+    partnerId: 'patchApprovals.partnerId',
     ringId: 'patchApprovals.ringId',
     patchId: 'patchApprovals.patchId',
     status: 'patchApprovals.status',
   },
   patchPolicies: {
     id: 'patchPolicies.id',
-    orgId: 'patchPolicies.orgId',
+    partnerId: 'patchPolicies.partnerId',
+  },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
   },
   patchComplianceReports: {
     id: 'patchComplianceReports.id',

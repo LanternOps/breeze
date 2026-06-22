@@ -49,6 +49,15 @@ export const devices = pgTable('devices', {
   osType: osTypeEnum('os_type').notNull(),
   deviceRole: varchar('device_role', { length: 30 }).notNull().default('unknown'),
   deviceRoleSource: varchar('device_role_source', { length: 20 }).notNull().default('auto'),
+  // Orthogonal virtualization attribute (issue #1387): is this box running on a
+  // hypervisor, and which one. Set by the agent from SMBIOS hardware identity
+  // strings. Distinct from device_role — a virtual workstation is still a
+  // workstation and keeps matching role-based policies; virtualization is a
+  // second policy-targeting axis. virtualization_platform is one of
+  // VIRTUALIZATION_PLATFORMS (vmware/hyperv/virtualbox/qemu/kvm/xen/bochs/
+  // parallels), or null when physical or undetermined.
+  isVirtual: boolean('is_virtual').notNull().default(false),
+  virtualizationPlatform: varchar('virtualization_platform', { length: 30 }),
   osVersion: varchar('os_version', { length: 100 }).notNull(),
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),

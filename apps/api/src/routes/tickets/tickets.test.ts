@@ -14,6 +14,8 @@ const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, l
       unlinkAlertFromTicket: vi.fn(),
       updateTicketFields: vi.fn(),
       getAssigneeForValidation: vi.fn(),
+      editTicketComment: vi.fn(),
+      deleteTicketComment: vi.fn(),
     },
     ticketTriageMocks: {
       getTicketTriageSuggestion: vi.fn(),
@@ -73,6 +75,7 @@ vi.mock('../../middleware/auth', async () => ({
     await next();
   },
   requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
   // Real implementation, not a re-implementation: siteAccessCheck is a pure
   // function and the single source of truth for site-allowlist semantics —
   // re-exporting it keeps these route tests honest if those semantics change.
@@ -131,7 +134,7 @@ vi.mock('../../db', () => ({
         where: vi.fn((...args: unknown[]) => {
           lastWhereArgs.push({ conditions: args });
           const result = {
-          orderBy: vi.fn(() => Promise.resolve([])),
+          orderBy: vi.fn(() => Promise.resolve(dbSelectMock())),
           groupBy: vi.fn(() => dbGroupByMock()),
           // getScopedTicketOr404 and GET /:id single-row lookups both use .limit(1)
           limit: vi.fn(() => dbSelectMock()),
@@ -565,6 +568,35 @@ describe('GET /tickets/:id — scoped pre-check', () => {
     expect(body.data.orgName).toBeNull();
     expect(body.data.deviceHostname).toBeNull();
     expect(body.data.assigneeName).toBeNull();
+  });
+
+  it('returns soft-deleted comments to staff as tombstones with empty content', async () => {
+    const deletedAt = new Date('2026-06-20T10:00:00Z').toISOString();
+    dbSelectMock
+      .mockResolvedValueOnce([STUB_TICKET])  // scoped ticket lookup
+      .mockResolvedValueOnce([])             // decoration query
+      .mockResolvedValueOnce([              // comments query
+        { id: 'c-1', ticketId: TICKET_ID, content: 'visible', deletedAt: null,  editedAt: null, createdAt: new Date().toISOString() },
+        { id: 'c-2', ticketId: TICKET_ID, content: 'secret',  deletedAt: deletedAt, editedAt: null, createdAt: new Date().toISOString() }
+      ])
+      .mockResolvedValue([]);               // alert links
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const comments = body.data.comments;
+
+    // Non-deleted comment: real content, deleted:false
+    const live = comments.find((c: any) => c.id === 'c-1');
+    expect(live).toBeTruthy();
+    expect(live.content).toBe('visible');
+    expect(live.deleted).toBe(false);
+
+    // Deleted comment: tombstone with empty content — prior text must not reach client
+    const tomb = comments.find((c: any) => c.id === 'c-2');
+    expect(tomb).toBeTruthy();
+    expect(tomb.deleted).toBe(true);
+    expect(tomb.content).toBe('');  // prior text must not leak to the client
   });
 });
 
@@ -1624,5 +1656,102 @@ describe('authMiddleware wiring', () => {
     expect(res.status).toBe(200);
     const { authMiddleware } = await import('../../middleware/auth');
     expect(authMiddleware).toHaveBeenCalledTimes(1);
+  });
+});
+
+const COMMENT_ID = 'cccccccc-1111-4222-8333-444455556666';
+const jsonHeaders = { 'Content-Type': 'application/json' };
+
+describe('PATCH /tickets/:id/comments/:commentId', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('edits a comment via the service and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404
+    serviceMocks.editTicketComment.mockResolvedValue({
+      id: COMMENT_ID, content: 'new content', editedAt: new Date()
+    });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ content: 'new content' })
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.editTicketComment).toHaveBeenCalledWith(
+      COMMENT_ID,
+      expect.objectContaining({ content: 'new content' }),
+      expect.objectContaining({ userId: 'u-1' }),
+      expect.objectContaining({ canManageAny: expect.any(Boolean) })
+    );
+  });
+
+  it('404s when the ticket is out of scope', async () => {
+    dbSelectMock.mockResolvedValueOnce([]); // getScopedTicketOr404 → not found
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ content: 'x' })
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.editTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('maps TicketServiceError status through from service (403 forbidden)', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.editTicketComment.mockRejectedValue(
+      new TicketServiceError('Not allowed to edit this comment', 403)
+    );
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ content: 'x' })
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('DELETE /tickets/:id/comments/:commentId', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('soft-deletes and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404
+    serviceMocks.deleteTicketComment.mockResolvedValue({ id: COMMENT_ID, deletedAt: new Date() });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: jsonHeaders
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.deleteTicketComment).toHaveBeenCalledWith(
+      COMMENT_ID,
+      expect.objectContaining({ userId: 'u-1' }),
+      expect.objectContaining({ canManageAny: expect.any(Boolean) })
+    );
+  });
+
+  it('404s when the ticket is out of scope', async () => {
+    dbSelectMock.mockResolvedValueOnce([]); // getScopedTicketOr404 → not found
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: jsonHeaders
+    });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.deleteTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('maps TicketServiceError status through from service (403 forbidden)', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.deleteTicketComment.mockRejectedValue(
+      new TicketServiceError('Not allowed to delete this comment', 403)
+    );
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/comments/${COMMENT_ID}`, {
+      method: 'DELETE',
+      headers: jsonHeaders
+    });
+    expect(res.status).toBe(403);
   });
 });

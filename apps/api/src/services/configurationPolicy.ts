@@ -12,6 +12,7 @@ import {
   configPolicySensitiveDataSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
+  configPolicyRemoteAccessSettings,
   configPolicyBackupSettings,
   devices,
   deviceGroups,
@@ -33,10 +34,22 @@ import { z } from 'zod';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
+import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
 // ============================================
 // Inline settings schemas
 // ============================================
+
+// Remote access session consent/notification settings.
+// Exported so routes can import the same schema (single source of truth).
+// All fields are optional with spec-defined defaults so {} is always valid.
+export const remoteAccessInlineSettingsSchema = z.object({
+  sessionPromptMode: z.enum(['off', 'notify', 'consent']).default('notify'),
+  consentUnavailableBehavior: z.enum(['proceed', 'block']).default('proceed'),
+  notifyOnSessionEnd: z.boolean().default(true),
+  showActiveIndicator: z.boolean().default(true),
+  technicianIdentityLevel: z.enum(['name_email', 'name', 'generic']).default('name_email'),
+}).strict();
 
 // Exported so the route can import the same schema (single source of truth).
 // uacInterceptionEnabled defaults to true on the read side (parsePamSettings),
@@ -469,9 +482,21 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'remote_access': {
+      const parsed = remoteAccessInlineSettingsSchema.parse(s);
+      await tx.insert(configPolicyRemoteAccessSettings).values({
+        featureLinkId: linkId,
+        sessionPromptMode: parsed.sessionPromptMode,
+        consentUnavailableBehavior: parsed.consentUnavailableBehavior,
+        notifyOnSessionEnd: parsed.notifyOnSessionEnd,
+        showActiveIndicator: parsed.showActiveIndicator,
+        technicianIdentityLevel: parsed.technicianIdentityLevel,
+      });
+      break;
+    }
+
     case 'warranty':
     case 'helper':
-    case 'remote_access':
     case 'pam':
       // Pure JSONB — no normalized table needed
       break;
@@ -523,9 +548,11 @@ async function deleteNormalizedRows(
     case 'backup':
       await tx.delete(configPolicyBackupSettings).where(eq(configPolicyBackupSettings.featureLinkId, linkId));
       break;
+    case 'remote_access':
+      await tx.delete(configPolicyRemoteAccessSettings).where(eq(configPolicyRemoteAccessSettings.featureLinkId, linkId));
+      break;
     case 'warranty':
     case 'helper':
-    case 'remote_access':
     case 'pam':
       // Pure JSONB — no normalized table to delete
       break;
@@ -785,9 +812,24 @@ async function assembleInlineSettings(
       };
     }
 
+    case 'remote_access': {
+      const [row] = await db
+        .select()
+        .from(configPolicyRemoteAccessSettings)
+        .where(eq(configPolicyRemoteAccessSettings.featureLinkId, linkId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        sessionPromptMode: row.sessionPromptMode,
+        consentUnavailableBehavior: row.consentUnavailableBehavior,
+        notifyOnSessionEnd: row.notifyOnSessionEnd,
+        showActiveIndicator: row.showActiveIndicator,
+        technicianIdentityLevel: row.technicianIdentityLevel,
+      };
+    }
+
     case 'warranty':
     case 'helper':
-    case 'remote_access':
     case 'pam':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -1304,7 +1346,7 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  patch: { table: patchPolicies, orgIdCol: patchPolicies.orgId },
+  // patch is handled separately in validateFeaturePolicyExists (partner-scoped, not org-scoped)
   alert_rule: { table: alertRules, orgIdCol: alertRules.orgId },
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
   security: { table: securityPolicies, orgIdCol: securityPolicies.orgId },
@@ -1325,20 +1367,26 @@ export async function validateFeaturePolicyExists(
       return { valid: true };
     }
 
+    // Rings are partner-scoped: derive the partner from the config policy's org.
+    const partnerId = await resolvePartnerIdForOrg(orgId);
+    if (!partnerId) {
+      return { valid: false, error: `Update ring "${featurePolicyId}" not found — organization has no partner` };
+    }
+
     const [ring] = await db
       .select({ id: patchPolicies.id })
       .from(patchPolicies)
       .where(
         and(
           eq(patchPolicies.id, featurePolicyId),
-          eq(patchPolicies.orgId, orgId),
+          eq(patchPolicies.partnerId, partnerId),
           eq(patchPolicies.kind, 'ring')
         )
       )
       .limit(1);
 
     if (!ring) {
-      return { valid: false, error: `Update ring "${featurePolicyId}" not found in this organization` };
+      return { valid: false, error: `Update ring "${featurePolicyId}" not found for this partner` };
     }
 
     return { valid: true };

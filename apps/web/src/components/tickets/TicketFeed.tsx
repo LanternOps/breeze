@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { statusConfig, type TicketComment, type TicketStatus } from './ticketConfig';
 import { formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 
@@ -62,38 +63,149 @@ function SystemRun({ items }: { items: TicketComment[] }) {
   );
 }
 
-export default function TicketFeed({ comments }: { comments: TicketComment[] }) {
+export default function TicketFeed({
+  comments,
+  onEditComment,
+  onDeleteComment,
+  canManageComment,
+}: {
+  comments: TicketComment[];
+  onEditComment?: (id: string, content: string) => void;
+  onDeleteComment?: (id: string) => void;
+  canManageComment?: (c: TicketComment) => boolean;
+}) {
   const blocks = useMemo(() => groupFeed(comments), [comments]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (comments.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="ticket-feed-empty">No activity yet.</p>;
   }
 
+  const openEditor = (id: string, content: string) => {
+    setEditingId(id);
+    setDraft(content);
+  };
+
+  const closeEditor = () => {
+    setEditingId(null);
+    setDraft('');
+  };
+
+  const saveEdit = (id: string, originalContent: string) => {
+    if (!draft.trim() || draft === originalContent) {
+      closeEditor();
+      return;
+    }
+    onEditComment?.(id, draft);
+    closeEditor();
+  };
+
   return (
-    <div className="space-y-3 p-4" data-testid="ticket-feed">
-      {blocks.map((b, i) =>
-        b.kind === 'system-run' ? (
-          <SystemRun key={`run-${i}`} items={b.items} />
-        ) : (
-          <div
-            key={b.item.id}
-            className={cn(
-              'rounded-lg border p-3',
-              !b.item.isPublic && 'border-warning/30 bg-warning/10'
-            )}
-            data-testid={`ticket-comment-${b.item.id}`}
-          >
-            <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">{b.item.authorName ?? (b.item.portalUserId ? 'Requester' : 'Technician')}</span>
-              {!b.item.isPublic && <span className="font-medium text-warning">Internal</span>}
-              <span className="ml-auto" title={formatDateTime(b.item.createdAt)}>
-                {formatDateTime(b.item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-              </span>
+    <>
+      <div className="space-y-3 p-4" data-testid="ticket-feed">
+        {blocks.map((b, i) =>
+          b.kind === 'system-run' ? (
+            <SystemRun key={`run-${i}`} items={b.items} />
+          ) : b.item.deleted ? (
+            <div
+              key={b.item.id}
+              className="rounded-lg border border-dashed p-3 text-sm italic text-muted-foreground"
+              data-testid={`ticket-comment-deleted-${b.item.id}`}
+            >
+              {(b.item.authorName ?? 'A comment')} — deleted
             </div>
-            <p className="whitespace-pre-wrap text-sm">{b.item.content}</p>
-          </div>
-        )
-      )}
-    </div>
+          ) : (
+            <div
+              key={b.item.id}
+              className={cn(
+                'rounded-lg border p-3',
+                !b.item.isPublic && 'border-warning/30 bg-warning/10'
+              )}
+              data-testid={`ticket-comment-${b.item.id}`}
+            >
+              <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">{b.item.authorName ?? (b.item.portalUserId ? 'Requester' : 'Technician')}</span>
+                {!b.item.isPublic && <span className="font-medium text-warning">Internal</span>}
+                {b.item.editedAt && (
+                  <span data-testid={`ticket-comment-edited-${b.item.id}`} title={formatDateTime(b.item.editedAt)}>edited</span>
+                )}
+                <span className="ml-auto" title={formatDateTime(b.item.createdAt)}>
+                  {formatDateTime(b.item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </span>
+                {canManageComment?.(b.item) && onEditComment && (
+                  <button
+                    type="button"
+                    className="text-xs hover:text-foreground"
+                    data-testid={`ticket-comment-edit-${b.item.id}`}
+                    onClick={() => openEditor(b.item.id, b.item.content)}
+                  >
+                    Edit
+                  </button>
+                )}
+                {canManageComment?.(b.item) && onDeleteComment && (
+                  <button
+                    type="button"
+                    className="text-xs hover:text-destructive"
+                    data-testid={`ticket-comment-delete-${b.item.id}`}
+                    onClick={() => setConfirmDeleteId(b.item.id)}
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+              {editingId === b.item.id ? (
+                <div className="space-y-2 mt-1">
+                  <textarea
+                    className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                    rows={3}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    data-testid={`ticket-comment-edit-textarea-${b.item.id}`}
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={closeEditor}
+                      className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+                      data-testid={`ticket-comment-edit-cancel-${b.item.id}`}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => saveEdit(b.item.id, b.item.content)}
+                      className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
+                      data-testid={`ticket-comment-edit-save-${b.item.id}`}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="whitespace-pre-wrap text-sm">{b.item.content}</p>
+              )}
+            </div>
+          )
+        )}
+      </div>
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        onClose={() => setConfirmDeleteId(null)}
+        onConfirm={() => {
+          if (confirmDeleteId) {
+            onDeleteComment?.(confirmDeleteId);
+          }
+          setConfirmDeleteId(null);
+        }}
+        title="Delete comment"
+        message="Are you sure you want to delete this comment? This action cannot be undone."
+        confirmLabel="Delete"
+        variant="destructive"
+        confirmTestId="ticket-comment-delete-confirm"
+      />
+    </>
   );
 }

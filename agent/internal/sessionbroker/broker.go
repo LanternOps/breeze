@@ -213,7 +213,9 @@ var (
 	watchdogHelperScopes = []string{"watchdog"}
 	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
 	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
-	assistHelperScopes = []string{ipc.ScopeAssist}
+	// consent_ui is a narrow UI-only scope that lets the assist helper receive
+	// remote-session consent prompts and active-session banner messages.
+	assistHelperScopes = []string{ipc.ScopeAssist, ipc.ScopeConsentUI}
 )
 
 // MessageHandler is called when a user helper sends a message that isn't

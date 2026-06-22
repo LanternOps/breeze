@@ -1,4 +1,7 @@
 import { z } from 'zod';
+// Spread the readonly SSOT tuples into z.enum (keep it a direct spread of the
+// const — a `string[]` intermediate would widen the schema to z.enum(string)).
+import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 
 const money = z.number().nonnegative().multipleOf(0.01);
 const positiveQty = z.number().positive().multipleOf(0.01);
@@ -54,7 +57,7 @@ export const updateInvoiceSchema = z.object({
 
 export const recordPaymentSchema = z.object({
   amount: z.number().positive().multipleOf(0.01),
-  method: z.enum(['cash', 'check', 'bank_transfer', 'card', 'other']),
+  method: z.enum([...PAYMENT_METHODS]),
   reference: z.string().max(255).optional(),
   receivedAt: isoDate,
   note: z.string().max(2000).optional()
@@ -67,7 +70,7 @@ export const voidInvoiceSchema = z.object({
 
 export const listInvoicesQuerySchema = z.object({
   orgId: z.string().guid().optional(),
-  status: z.enum(['draft', 'sent', 'partially_paid', 'overdue', 'paid', 'void']).optional(),
+  status: z.enum([...INVOICE_STATUSES]).optional(),
   from: isoDate.optional(),
   to: isoDate.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),

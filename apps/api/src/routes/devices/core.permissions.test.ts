@@ -208,7 +208,11 @@ function rigDeviceListRows(rows: unknown[]) {
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
   const where = vi.fn().mockReturnValue({ orderBy });
-  const leftJoin = vi.fn().mockReturnValue({ where });
+  // Two chained leftJoins (deviceHardware, then deviceReliability #1720), so
+  // each leftJoin returns a node exposing both the next leftJoin and where().
+  const chain: Record<string, unknown> = { where };
+  const leftJoin = vi.fn().mockReturnValue(chain);
+  chain.leftJoin = leftJoin;
   const from = vi.fn().mockReturnValue({ leftJoin });
   vi.mocked(db.select).mockReturnValue({ from } as never);
   vi.mocked(db.execute).mockResolvedValue([] as never);

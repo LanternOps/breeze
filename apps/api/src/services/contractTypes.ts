@@ -16,6 +16,8 @@ export interface Period {
 export type ContractServiceErrorCode =
   | 'ORG_DENIED'
   | 'CONTRACT_NOT_FOUND'
+  | 'CONTRACT_CREATE_FAILED'
+  | 'CONTRACT_LINE_CREATE_FAILED'
   | 'NOT_A_DRAFT'
   | 'NO_LINES'
   | 'INVALID_STATE'

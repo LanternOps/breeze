@@ -4,6 +4,7 @@
 //! `agent/internal/ipc` package byte-for-byte.
 
 pub mod client;
+pub mod desktop;
 pub mod envelope;
 pub mod token;
 pub mod transport;

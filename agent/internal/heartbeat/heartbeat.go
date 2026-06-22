@@ -69,7 +69,13 @@ type HeartbeatPayload struct {
 	LastUser         string                    `json:"lastUser,omitempty"`
 	UptimeSeconds    int64                     `json:"uptime,omitempty"`
 	DeviceRole       string                    `json:"deviceRole,omitempty"`
-	HealthStatus     map[string]any            `json:"healthStatus,omitempty"`
+	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
+	// pointer so an old-agent omission (nil) is distinguishable from a
+	// genuine "physical" report (false) — the server only overwrites the
+	// stored value when the agent actually sends one.
+	IsVirtual              *bool          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
 	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
@@ -224,6 +230,26 @@ type Heartbeat struct {
 	// Cached device role classification (computed once at startup)
 	cachedDeviceRole string
 
+	// Cached virtualization classification (issue #1387) — the orthogonal
+	// "is this a VM and on what hypervisor" attribute. Computed in the same
+	// hardware-collection pass as cachedDeviceRole and guarded by h.mu.
+	//
+	// cachedVirtComputed gates the heartbeat send: virtualization is derivable
+	// ONLY from full hardware collection (CollectHardware), which runs in a
+	// background goroutine that can take ~75s on Windows and may fail. Until it
+	// succeeds, cachedIsVirtual is its zero value (false) — an affirmative
+	// "physical" claim we have NOT actually established. Sending that false
+	// would overwrite the correct is_virtual/platform that synchronous
+	// enrollment already persisted for a real VM (the server treats a present
+	// false as authoritative and clears the platform). So we send the
+	// virtualization fields only once cachedVirtComputed is true; before that
+	// the heartbeat omits them (nil) and the server leaves the stored value
+	// untouched — same "don't touch" semantics as an old agent that lacks the
+	// field entirely.
+	cachedIsVirtual    bool
+	cachedVirtPlatform string
+	cachedVirtComputed bool
+
 	// Cached system info (hostname, OS version) — refreshed every 10 min
 	cachedSysInfo      *collectors.SystemInfo
 	lastSysInfoRefresh time.Time
@@ -356,11 +382,15 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			defer observability.Recoverer("heartbeat.hardwareCollect")
 			hwInfo, err := h.hardwareCol.CollectHardware()
 			if err != nil {
-				log.Warn("hardware collection failed in background; device role will use system-info-only classification", "error", err.Error())
+				log.Warn("hardware collection failed in background; device role will use system-info-only classification and virtualization detection (#1387) is unavailable — heartbeat will omit is_virtual so the enroll-time value is preserved", "error", err.Error())
 				return
 			}
+			virt := collectors.ClassifyVirtualization(hwInfo)
 			h.mu.Lock()
 			h.cachedDeviceRole = collectors.ClassifyDeviceRole(sysInfo, hwInfo)
+			h.cachedIsVirtual = virt.IsVirtual
+			h.cachedVirtPlatform = virt.Platform
+			h.cachedVirtComputed = true
 			h.mu.Unlock()
 		}(sysInfo)
 	} else {
@@ -661,6 +691,13 @@ func (h *Heartbeat) sendUpdateStatus(targetVersion string) {
 // connection dropped so it can mark the session as disconnected and allow
 // the viewer to reconnect.
 func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
+	// Fire the end-of-session UX (banner hide + ended notice) for any session
+	// that carried a consent/notify prompt. Runs on every disconnect path
+	// (direct OnSessionStopped, IPC peer-disconnect, darwin handoff) and is a
+	// no-op for un-prompted sessions. Done before the wsClient guard so the
+	// local UX still tears down even if the WS link is gone.
+	h.handleConsentSessionEnd(sessionID)
+
 	if h.wsClient == nil {
 		return
 	}
@@ -2181,6 +2218,9 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 	sysInfo := h.cachedSysInfo
 	deviceRole := h.cachedDeviceRole
+	isVirtual := h.cachedIsVirtual
+	virtPlatform := h.cachedVirtPlatform
+	virtComputed := h.cachedVirtComputed
 	h.mu.Unlock()
 
 	payload := HeartbeatPayload{
@@ -2190,6 +2230,16 @@ func (h *Heartbeat) sendHeartbeat() {
 		HealthStatus:  h.healthMon.Summary(),
 		DeviceRole:    deviceRole,
 		IsHeadless:    h.isHeadless,
+	}
+
+	// Only report virtualization once background hardware collection has
+	// actually classified it (#1387). Before then — or if hardware collection
+	// failed — leave IsVirtual nil so the field is omitted and the server keeps
+	// the value synchronous enrollment already established, rather than letting
+	// a not-yet-determined zero value flip a real VM to "physical".
+	if virtComputed {
+		payload.IsVirtual = &isVirtual
+		payload.VirtualizationPlatform = virtPlatform
 	}
 
 	// Include hostname/OS version so the server can detect changes
