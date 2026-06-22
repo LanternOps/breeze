@@ -190,6 +190,37 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
     expect(result.integrationId).toBe('integration-1');
   });
 
+  it('marks the integration running before the fetch and records result counts on success (#1736)', async () => {
+    await syncIntegrationById('integration-1', 'scheduled');
+
+    // A 'running' status is written before any external fetch, on a real context
+    // (depth > 0), so the UI can observe a definitive running → terminal flip.
+    const runningWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'running');
+    expect(runningWrite).toBeDefined();
+    expect(runningWrite!.depth).toBeGreaterThan(0);
+    expect(runningWrite!.payload.lastSyncError).toBeNull();
+
+    // The success write carries the per-run result counts in the same write as
+    // the success status, so counts never drift from "succeeded at <lastSyncAt>".
+    const successWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'success');
+    expect(successWrite).toBeDefined();
+    expect(successWrite!.payload).toMatchObject({
+      lastSyncAgents: 0,
+      lastSyncIncidents: 0,
+      lastSyncOrgs: 0,
+    });
+
+    // Ordering: running is written before success.
+    expect(updatePayloads.indexOf(runningWrite!)).toBeLessThan(updatePayloads.indexOf(successWrite!));
+  });
+
+  it('does NOT write a running status on the webhook path (synchronous, same context)', async () => {
+    await syncIntegrationById('integration-1', 'webhook', { agents: [], incidents: [] });
+
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'running')).toBe(false);
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'success')).toBe(true);
+  });
+
   it('skips an inactive integration without fetching', async () => {
     const { db } = (await import('../db')) as unknown as { db: { select: ReturnType<typeof vi.fn> } };
     db.select.mockReturnValueOnce(chain([{ ...INTEGRATION_ROW, isActive: false }]) as never);

@@ -29,6 +29,12 @@ export const huntressIntegrations = pgTable('huntress_integrations', {
   lastSyncAt: timestamp('last_sync_at'),
   lastSyncStatus: varchar('last_sync_status', { length: 20 }),
   lastSyncError: text('last_sync_error'),
+  // Per-run result counts from the last successful sync (#1736), so the UI can
+  // surface "synced N agents / M incidents / K orgs" and distinguish a real
+  // success from a stale "Connected" badge. Null until the first success.
+  lastSyncAgents: integer('last_sync_agents'),
+  lastSyncIncidents: integer('last_sync_incidents'),
+  lastSyncOrgs: integer('last_sync_orgs'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

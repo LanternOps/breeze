@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import HuntressIntegration from './HuntressIntegration';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -22,7 +22,25 @@ function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Res
   } as unknown as Response;
 }
 
-const existingIntegration = {
+type TestIntegration = {
+  id: string;
+  partnerId: string;
+  name: string;
+  accountId: string | null;
+  apiBaseUrl: string;
+  isActive: boolean;
+  lastSyncAt: string | null;
+  lastSyncStatus: string | null;
+  lastSyncError: string | null;
+  lastSyncAgents?: number | null;
+  lastSyncIncidents?: number | null;
+  lastSyncOrgs?: number | null;
+  hasWebhookSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const existingIntegration: TestIntegration = {
   id: 'huntress-1',
   partnerId: 'partner-1',
   name: 'Existing Huntress',
@@ -63,7 +81,7 @@ const discoveredHuntressOrg = {
 };
 
 function mockPartnerLoad(options: {
-  integration?: typeof existingIntegration | null;
+  integration?: TestIntegration | null;
   mappings?: unknown[];
   statusOk?: boolean;
 } = {}) {
@@ -95,6 +113,10 @@ describe('HuntressIntegration', () => {
     useOrgStore.setState({
       currentOrgId: '00000000-0000-4000-8000-000000000001'
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('loads the partner connection and mapping table in all-orgs scope', async () => {
@@ -367,5 +389,158 @@ describe('HuntressIntegration', () => {
     // the "you just generated this, copy it now" banner no longer applies.
     await user.type(screen.getByPlaceholderText('Enter or generate a webhook secret'), 'x');
     expect(screen.queryByText(/Copy this webhook secret now/i)).not.toBeInTheDocument();
+  });
+
+  // ---- #1736 -------------------------------------------------------------
+
+  it('surfaces a failed last sync prominently rather than an all-clear', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({
+      integration: {
+        ...existingIntegration,
+        lastSyncStatus: 'error',
+        lastSyncError: 'scheduled: write CONNECTION_CLOSED',
+      },
+    });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() => expect(screen.getByText(/Last sync failed:/)).toBeInTheDocument());
+    expect(screen.getByText(/CONNECTION_CLOSED/)).toBeInTheDocument();
+    // The badge reads "Error", never "Connected", when the last sync errored.
+    expect(screen.getAllByText('Error').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument();
+  });
+
+  it('shows the persisted last-run result counts when the last sync succeeded', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({
+      integration: {
+        ...existingIntegration,
+        lastSyncStatus: 'success',
+        lastSyncAgents: 12,
+        lastSyncIncidents: 3,
+        lastSyncOrgs: 26,
+      },
+    });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Synced 12 agents · 3 incidents · 26 orgs')).toBeInTheDocument()
+    );
+  });
+
+  it('filters the mapping table by search and by "unmapped only"', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({
+      integration: existingIntegration,
+      mappings: [
+        { ...discoveredHuntressOrg, huntressOrgId: 'h1', huntressOrgName: 'Williams & Associates', mappedOrgId: breezeOrg.id, mappedOrgName: breezeOrg.name },
+        { ...discoveredHuntressOrg, huntressOrgId: 'h2', huntressOrgName: 'Mountain Capital', mappedOrgId: null, mappedOrgName: null },
+      ],
+    });
+
+    render(<HuntressIntegration />);
+    await waitFor(() => expect(screen.getByText('Williams & Associates')).toBeInTheDocument());
+    expect(screen.getByText('Mountain Capital')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Search Huntress or Breeze organizations/), { target: { value: 'mountain' } });
+    expect(screen.queryByText('Williams & Associates')).not.toBeInTheDocument();
+    expect(screen.getByText('Mountain Capital')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Search Huntress or Breeze organizations/), { target: { value: '' } });
+    fireEvent.click(screen.getByLabelText('Unmapped only'));
+    expect(screen.queryByText('Williams & Associates')).not.toBeInTheDocument();
+    expect(screen.getByText('Mountain Capital')).toBeInTheDocument();
+  });
+
+  it('offers an explicit Unmap button that maps the org to null', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({
+      integration: existingIntegration,
+      mappings: [
+        { ...discoveredHuntressOrg, huntressOrgId: 'h1', huntressOrgName: 'Williams & Associates', mappedOrgId: breezeOrg.id, mappedOrgName: breezeOrg.name },
+      ],
+    });
+
+    render(<HuntressIntegration />);
+    const unmapButton = await screen.findByRole('button', { name: /Unmap/ });
+    fireEvent.click(unmapButton);
+
+    await waitFor(() =>
+      expect(
+        fetchWithAuthMock.mock.calls.some(([url, init]) => url === '/huntress/organizations/map' && init?.method === 'POST')
+      ).toBe(true)
+    );
+    const mapCall = fetchWithAuthMock.mock.calls.find(([url]) => url === '/huntress/organizations/map');
+    expect(JSON.parse(String(mapCall?.[1]?.body))).toMatchObject({ huntressOrgId: 'h1', orgId: null });
+  });
+
+  it('paginates the mapping table beyond the page size', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      ...discoveredHuntressOrg,
+      huntressOrgId: `h${i}`,
+      huntressOrgName: `Org ${String(i).padStart(2, '0')}`,
+      mappedOrgId: null,
+      mappedOrgName: null,
+    }));
+    mockPartnerLoad({ integration: existingIntegration, mappings: many });
+
+    render(<HuntressIntegration />);
+    await waitFor(() => expect(screen.getByText('Org 00')).toBeInTheDocument());
+    expect(screen.getByText('Org 24')).toBeInTheDocument();
+    expect(screen.queryByText('Org 25')).not.toBeInTheDocument();
+    expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Org 25')).toBeInTheDocument();
+    expect(screen.queryByText('Org 24')).not.toBeInTheDocument();
+  });
+
+  it('polls the sync to a terminal state and reports the result counts', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    let syncStarted = false;
+    let pollCount = 0;
+    const running = { ...existingIntegration, lastSyncStatus: 'running', lastSyncError: null };
+    const succeeded = {
+      ...existingIntegration,
+      lastSyncAt: '2026-06-21T00:00:00.000Z',
+      lastSyncStatus: 'success',
+      lastSyncAgents: 12,
+      lastSyncIncidents: 3,
+      lastSyncOrgs: 26,
+    };
+
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url === '/huntress/sync' && init?.method === 'POST') {
+        syncStarted = true;
+        pollCount = 0;
+        return makeResponse({ queued: true, jobId: 'job-1' });
+      }
+      if (url === '/huntress/integration') {
+        if (!syncStarted) return makeResponse({ data: existingIntegration });
+        pollCount += 1;
+        return makeResponse({ data: pollCount === 1 ? running : succeeded });
+      }
+      if (url === '/huntress/status') return makeResponse(emptyStatus);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      if (url === '/huntress/organizations') return makeResponse({ data: [] });
+      if (url === '/orgs/organizations') return makeResponse({ data: [breezeOrg] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+    const syncButton = await screen.findByRole('button', { name: /Sync Now/ });
+
+    vi.useFakeTimers();
+    fireEvent.click(syncButton);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.getByText('Syncing…')).toBeInTheDocument();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.getAllByText('Synced 12 agents · 3 incidents · 26 orgs').length).toBeGreaterThan(0);
   });
 });

@@ -35,6 +35,19 @@ const DEFAULT_SYNC_INTERVAL_MINUTES = 15;
 const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const EVENT_PUBLISH_CONCURRENCY = 10;
 
+// #1736 — a per-integration sync persists agents/incidents in one transaction.
+// Transient US managed-Postgres connection drops (CONNECTION_CLOSED under the
+// 25-conn pool ceiling) were failing the whole job with NO retry, so the
+// per-agent/per-incident rows were never persisted and Coverage stayed at zero.
+// The upserts are idempotent (onConflictDoUpdate), so retrying with backoff is
+// safe and recovers from a transient drop without operator intervention.
+const SYNC_INTEGRATION_JOB_OPTS: Omit<JobsOptions, 'jobId'> = {
+  removeOnComplete: { count: 50 },
+  removeOnFail: { count: 200 },
+  attempts: 3,
+  backoff: { type: 'exponential', delay: 5000 },
+};
+
 interface SyncAllJobData {
   type: 'sync-all';
 }
@@ -745,6 +758,26 @@ export async function syncIntegrationById(
     };
   }
 
+  // Mark the integration as actively syncing (#1736) so the UI can poll a
+  // definitive running → terminal transition and stop guessing with a one-shot
+  // timeout. Only on the queued (scheduled/manual) path: the webhook path runs
+  // synchronously inside the caller's DB context, so a 'running' write there
+  // would commit atomically with the final status and never be observable —
+  // skip the extra write. Best-effort: a failure to flip the badge must never
+  // abort the sync itself.
+  if (!webhookPayload) {
+    try {
+      await runWithSystemDbAccess(() =>
+        db
+          .update(huntressIntegrations)
+          .set({ lastSyncStatus: 'running', lastSyncError: null, updatedAt: new Date() })
+          .where(eq(huntressIntegrations.id, integration.id))
+      );
+    } catch (err) {
+      console.warn(`[HuntressSync] Failed to mark integration ${integrationId} as running:`, err);
+    }
+  }
+
   try {
     let organizations: HuntressOrganizationRecord[];
     let agents: HuntressAgentRecord[];
@@ -838,12 +871,18 @@ export async function syncIntegrationById(
         updatedIncidents += incidentResult.updated;
       }
 
+      // Persist this run's result counts (#1736) in the SAME transaction as the
+      // success status + lastSyncAt, so the counts the UI shows can never get
+      // out of step with "succeeded at <lastSyncAt>".
       await db
         .update(huntressIntegrations)
         .set({
           lastSyncAt: new Date(),
           lastSyncStatus: 'success',
           lastSyncError: null,
+          lastSyncAgents: upsertedAgents,
+          lastSyncIncidents: createdIncidents + updatedIncidents,
+          lastSyncOrgs: discoveredOrganizations.length,
           updatedAt: new Date(),
         })
         .where(eq(huntressIntegrations.id, integration.id));
@@ -918,7 +957,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
     'sync-integration',
     { type: 'sync-integration', integrationId: integration.id },
     `huntress-sync-integration-${integration.id}`,
-    { removeOnComplete: { count: 50 }, removeOnFail: { count: 200 } }
+    SYNC_INTEGRATION_JOB_OPTS
   )));
 
   return { queued: due.length };
@@ -936,7 +975,7 @@ export async function scheduleHuntressSync(integrationId?: string): Promise<stri
       'sync-integration',
       { type: 'sync-integration', integrationId },
       `huntress-sync-integration-${integrationId}`,
-      { removeOnComplete: { count: 50 }, removeOnFail: { count: 200 } }
+      SYNC_INTEGRATION_JOB_OPTS
     );
   }
 

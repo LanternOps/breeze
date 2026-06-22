@@ -301,6 +301,9 @@ huntressRoutes.get(
         lastSyncAt: huntressIntegrations.lastSyncAt,
         lastSyncStatus: huntressIntegrations.lastSyncStatus,
         lastSyncError: huntressIntegrations.lastSyncError,
+        lastSyncAgents: huntressIntegrations.lastSyncAgents,
+        lastSyncIncidents: huntressIntegrations.lastSyncIncidents,
+        lastSyncOrgs: huntressIntegrations.lastSyncOrgs,
         createdAt: huntressIntegrations.createdAt,
         updatedAt: huntressIntegrations.updatedAt,
         hasApiKey: sql<boolean>`(${huntressIntegrations.apiKeyEncrypted} is not null and ${huntressIntegrations.apiKeyEncrypted} != '')`,
@@ -675,6 +678,9 @@ huntressRoutes.get(
         lastSyncAt: huntressIntegrations.lastSyncAt,
         lastSyncStatus: huntressIntegrations.lastSyncStatus,
         lastSyncError: huntressIntegrations.lastSyncError,
+        lastSyncAgents: huntressIntegrations.lastSyncAgents,
+        lastSyncIncidents: huntressIntegrations.lastSyncIncidents,
+        lastSyncOrgs: huntressIntegrations.lastSyncOrgs,
       })
       .from(huntressIntegrations)
       .where(and(
