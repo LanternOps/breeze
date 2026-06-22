@@ -92,7 +92,9 @@ vi.mock('../db/schema', () => ({
   organizations: {},
   // Give sites.id a recognizable sentinel so the site-allowlist test can assert
   // inArray was called against the sites.id column specifically.
-  sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } }
+  sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
+  // GET /orgs/sites enriches each site with a grouped device count (#1790).
+  devices: { siteId: { __column: 'devices.siteId' } }
 }));
 
 // Spy on inArray so the site-allowlist test can assert the GET /orgs/sites
@@ -1377,6 +1379,18 @@ describe('org routes', () => {
     });
   });
 
+  // Mocks the grouped per-site device-count query the GET /orgs/sites handler
+  // runs after fetching the site page (issue #1790). The handler shapes the
+  // call as db.select({...}).from(devices).where(...).groupBy(...).
+  const mockSiteDeviceCounts = (rows: Array<{ siteId: string; count: number }>) =>
+    ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          groupBy: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    }) as any;
+
   describe('GET /orgs/sites', () => {
     it('should return sites with pagination', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
@@ -1396,13 +1410,16 @@ describe('org routes', () => {
               })
             })
           })
-        } as any);
+        } as any)
+        // Per-site device-count query (issue #1790): grouped count over devices.
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 4 }]));
 
       const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceCount).toBe(4);
       expect(body.pagination.total).toBe(1);
     });
 
@@ -1428,13 +1445,15 @@ describe('org routes', () => {
               })
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 2 }]));
 
       const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
+      expect(body.data[0].deviceCount).toBe(2);
     });
 
     it('should deny access when org scope does not match', async () => {
@@ -1987,14 +2006,15 @@ describe('org routes', () => {
                 })
               })
             })
-          } as any);
+          } as any)
+          .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-x', count: 3 }]));
 
         const res = await app.request(`/orgs/sites?orgId=${ORG}`);
 
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.data).toEqual([{ id: 'site-x' }]);
-        expect(body.data).not.toContainEqual({ id: 'site-y' });
+        expect(body.data).toEqual([{ id: 'site-x', deviceCount: 3 }]);
+        expect(body.data.map((s: { id: string }) => s.id)).not.toContain('site-y');
         // Meaningful assertion: the handler must have intersected the query with
         // inArray(sites.id, allowedSiteIds). This fails if the intersection in
         // orgs.ts is removed (mocked DB would echo site-x regardless otherwise).
@@ -2019,13 +2039,17 @@ describe('org routes', () => {
                 })
               })
             })
-          } as any);
+          } as any)
+          .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-x', count: 1 }]));
 
         const res = await app.request(`/orgs/sites?orgId=${ORG}`);
 
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.data).toHaveLength(2);
+        // site-x has a device count; site-y (no devices) defaults to 0.
+        expect(body.data.find((s: { id: string }) => s.id === 'site-x').deviceCount).toBe(1);
+        expect(body.data.find((s: { id: string }) => s.id === 'site-y').deviceCount).toBe(0);
       });
     });
   });

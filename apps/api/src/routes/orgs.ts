@@ -5,7 +5,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { partners, organizations, sites } from '../db/schema';
+import { partners, organizations, sites, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
@@ -1267,8 +1267,32 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     .offset(offset)
     .orderBy(sites.createdAt);
 
+  // Enrich each site with its device count. The `sites` row carries no count
+  // column, so without this the web SiteList renders `deviceCount` as 0 for
+  // every site even when the org has devices (issue #1790). Compute it with a
+  // single grouped query over the returned page's site ids — `devices` is
+  // org-scoped under RLS so this stays tenant-isolated. Guard on a non-empty
+  // page so an empty list never issues a `site_id IN ()` query.
+  const deviceCountBySite = new Map<string, number>();
+  const siteIds = data.map((s) => s.id);
+  if (siteIds.length > 0) {
+    const counts = await db
+      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+      .from(devices)
+      .where(inArray(devices.siteId, siteIds))
+      .groupBy(devices.siteId);
+    for (const row of counts) {
+      deviceCountBySite.set(row.siteId, Number(row.count));
+    }
+  }
+
+  const dataWithCounts = data.map((site) => ({
+    ...site,
+    deviceCount: deviceCountBySite.get(site.id) ?? 0
+  }));
+
   return c.json({
-    data,
+    data: dataWithCounts,
     pagination: { page, limit, total: Number(count) }
   });
 });
