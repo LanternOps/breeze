@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -12,12 +12,15 @@ import {
   Unplug
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import { navigateTo } from '@/lib/navigation';
+import { loginPathWithNext } from '../../lib/authScope';
+import { type Organization, useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Integration = {
   id: string;
-  orgId: string;
+  partnerId: string;
   name: string;
   managementUrl: string;
   isActive: boolean;
@@ -38,490 +41,489 @@ type StatusSummary = {
   reportedThreatCount: number;
 };
 
+// One discovered SentinelOne site (from s1_org_mappings). `provisional` rows are
+// legacy name-keyed mappings awaiting the next sync to bind their real site id.
 type SiteRow = {
-  siteName: string;
-  agentCount: number;
+  s1SiteId: string;
+  s1SiteName: string;
+  agentsCount: number;
   mappedOrgId: string | null;
   mappedOrgName: string | null;
+  provisional: boolean;
 };
 
-type OrgOption = {
-  id: string;
-  name: string;
-};
+type SaveState = { status: 'idle' | 'saving' | 'saved' | 'error'; message?: string };
+type SyncState = { status: 'idle' | 'syncing' | 'done' | 'error'; message?: string };
 
-type SaveState = {
-  status: 'idle' | 'saving' | 'saved' | 'error';
-  message?: string;
-};
+const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
-type SyncState = {
-  status: 'idle' | 'syncing' | 'done' | 'error';
-  message?: string;
-};
+function readError(json: unknown, fallback: string): string {
+  if (json && typeof json === 'object' && 'error' in json) {
+    return String((json as { error?: unknown }).error ?? fallback);
+  }
+  return fallback;
+}
+
+function syncStatusBadge(integration: Integration | null) {
+  if (!integration) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+        <Unplug className="h-3.5 w-3.5" /> Not configured
+      </span>
+    );
+  }
+  if (integration.lastSyncStatus === 'success' || integration.lastSyncStatus === 'partial') {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
+        <CheckCircle2 className="h-3.5 w-3.5" /> Connected
+      </span>
+    );
+  }
+  if (integration.lastSyncStatus === 'running') {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Syncing
+      </span>
+    );
+  }
+  if (integration.lastSyncStatus === 'error') {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700">
+        <AlertTriangle className="h-3.5 w-3.5" /> Error
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+      <Activity className="h-3.5 w-3.5" /> Pending
+    </span>
+  );
+}
 
 export default function SecurityIntegration() {
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const [integration, setIntegration] = useState<Integration | null>(null);
+  const [mappedForOrg, setMappedForOrg] = useState(true);
+  const [summary, setSummary] = useState<StatusSummary | null>(null);
+  const [sites, setSites] = useState<SiteRow[]>([]);
+  const [integrationId, setIntegrationId] = useState<string | null>(null);
+  const [orgOptions, setOrgOptions] = useState<Organization[]>([]);
+
   const [name, setName] = useState('');
   const [managementUrl, setManagementUrl] = useState('');
   const [apiToken, setApiToken] = useState('');
   const [showToken, setShowToken] = useState(false);
 
-  const [integration, setIntegration] = useState<Integration | null>(null);
-  const [summary, setSummary] = useState<StatusSummary | null>(null);
-  const [sites, setSites] = useState<SiteRow[]>([]);
-  const [integrationId, setIntegrationId] = useState<string | null>(null);
-  const [orgs, setOrgs] = useState<OrgOption[]>([]);
-
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [syncState, setSyncState] = useState<SyncState>({ status: 'idle' });
-  const [siteMapSaving, setSiteMapSaving] = useState<Record<string, boolean>>({});
-  const [siteMapError, setSiteMapError] = useState<string | null>(null);
+  const [mappingSaving, setMappingSaving] = useState<Record<string, boolean>>({});
+  const [mappingError, setMappingError] = useState<string | null>(null);
 
-  // The SentinelOne integration is per organization. When no org is selected
-  // (null) there is no single org to load, and the API returns a 400; show a
-  // prompt instead of firing a doomed call.
+  // SentinelOne is configured once at the partner level (no org selected) and
+  // shared across every organization. Org scope is read-only.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const isAllOrgs = !currentOrgId;
+  const isPartnerView = !currentOrgId;
+
+  const unmappedCount = useMemo(() => sites.filter((row) => !row.mappedOrgId).length, [sites]);
+  const canSave =
+    name.trim().length > 0 &&
+    managementUrl.trim().length > 0 &&
+    (apiToken.trim().length > 0 || !!integration);
 
   const fetchIntegration = useCallback(async () => {
-    try {
-      const res = await fetchWithAuth('/s1/integration');
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        setLoadError(`Failed to load integration: ${json.error ?? `HTTP ${res.status}`}`);
-        return;
-      }
-      const json = await res.json();
-      const data = json.data as Integration | null;
-      setIntegration(data);
-      if (data) {
-        setName(data.name);
-        setManagementUrl(data.managementUrl);
-        setApiToken('');
-      }
-    } catch (err) {
-      setLoadError(`Failed to load integration: ${err instanceof Error ? err.message : 'Network error'}`);
+    const res = await fetchWithAuth('/s1/integration');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(readError(json, `Failed to load integration (${res.status})`));
+    const data = (json as { data?: Integration | null }).data ?? null;
+    setMappedForOrg((json as { mapped?: boolean }).mapped !== false);
+    setIntegration(data);
+    if (data) {
+      setName(data.name);
+      setManagementUrl(data.managementUrl);
+      setApiToken('');
     }
   }, []);
 
   const fetchStatus = useCallback(async () => {
-    try {
-      const res = await fetchWithAuth('/s1/status');
-      if (!res.ok) {
-        console.error(`[SecurityIntegration] Status fetch failed: HTTP ${res.status}`);
-        return;
-      }
-      const json = await res.json();
-      setSummary(json.summary as StatusSummary);
-    } catch (err) {
-      console.error('[SecurityIntegration] Failed to fetch status:', err);
+    const res = await fetchWithAuth('/s1/status');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error(`[SecurityIntegration] Status fetch failed: HTTP ${res.status}`);
+      return;
     }
+    setMappedForOrg((json as { mapped?: boolean }).mapped !== false);
+    setSummary((json as { summary?: StatusSummary }).summary ?? null);
   }, []);
 
   const fetchSites = useCallback(async () => {
-    try {
-      const res = await fetchWithAuth('/s1/sites');
-      if (!res.ok) {
-        console.error(`[SecurityIntegration] Sites fetch failed: HTTP ${res.status}`);
-        return;
-      }
-      const json = await res.json();
-      setSites(json.data as SiteRow[]);
-      if (json.integrationId) setIntegrationId(json.integrationId);
-    } catch (err) {
-      console.error('[SecurityIntegration] Failed to fetch sites:', err);
-    }
-  }, []);
-
-  const fetchOrgs = useCallback(async () => {
-    try {
-      const res = await fetchWithAuth('/orgs/organizations');
-      if (!res.ok) {
-        console.error(`[SecurityIntegration] Organizations fetch failed: HTTP ${res.status}`);
-        return;
-      }
-      const json = await res.json();
-      const list = (json.data ?? json) as Array<{ id: string; name: string }>;
-      setOrgs(list.map((o) => ({ id: o.id, name: o.name })));
-    } catch (err) {
-      console.error('[SecurityIntegration] Failed to fetch organizations:', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isAllOrgs) {
-      setIsLoading(false);
-      setLoadError(null);
+    if (!isPartnerView) return;
+    const res = await fetchWithAuth('/s1/sites');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error(`[SecurityIntegration] Sites fetch failed: HTTP ${res.status}`);
       return;
     }
-    const load = async () => {
-      setIsLoading(true);
-      setLoadError(null);
+    setSites((json as { data?: SiteRow[] }).data ?? []);
+    const id = (json as { integrationId?: string }).integrationId;
+    if (id) setIntegrationId(id);
+  }, [isPartnerView]);
+
+  const fetchOrgs = useCallback(async () => {
+    if (!isPartnerView) return;
+    const res = await fetchWithAuth('/orgs/organizations');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error(`[SecurityIntegration] Organizations fetch failed: HTTP ${res.status}`);
+      return;
+    }
+    const data = (json as { data?: Organization[] }).data;
+    setOrgOptions(Array.isArray(data) ? data : []);
+  }, [isPartnerView]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
       await fetchIntegration();
       await Promise.all([fetchStatus(), fetchSites(), fetchOrgs()]);
-      setIsLoading(false);
-    };
-    load();
-  }, [fetchIntegration, fetchStatus, fetchSites, fetchOrgs, currentOrgId]);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load SentinelOne integration');
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchIntegration, fetchStatus, fetchSites, fetchOrgs]);
 
-  const handleSave = async () => {
+  useEffect(() => {
+    void load();
+  }, [load, currentOrgId, isPartnerView]);
+
+  const handleSave = useCallback(async () => {
+    if (!isPartnerView) return;
     setSaveState({ status: 'saving' });
     try {
-      const payload: Record<string, unknown> = {
-        name,
-        managementUrl,
+      const body: Record<string, unknown> = {
+        name: name.trim(),
+        managementUrl: managementUrl.trim(),
         isActive: true
       };
-      if (apiToken.trim().length > 0) {
-        payload.apiToken = apiToken;
-      }
-      const res = await fetchWithAuth('/s1/integration', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        setSaveState({ status: 'error', message: json.error ?? 'Failed to save' });
-        return;
-      }
-      setSaveState({ status: 'saved', message: json.warning ?? 'Integration saved' });
-      setApiToken('');
-      await fetchIntegration();
-      await Promise.all([fetchStatus(), fetchSites()]);
-    } catch (err) {
-      setSaveState({ status: 'error', message: err instanceof Error ? err.message : 'Network error' });
-    }
-  };
+      if (apiToken.trim().length > 0) body.apiToken = apiToken.trim();
 
-  const handleSync = async () => {
+      const result = await runAction<{ warning?: string }>({
+        request: () => fetchWithAuth('/s1/integration', { method: 'POST', body: JSON.stringify(body) }),
+        errorFallback: 'Failed to save the SentinelOne integration.',
+        successMessage: integration ? 'SentinelOne integration updated' : 'SentinelOne integration connected',
+        onUnauthorized: UNAUTHORIZED
+      });
+      setSaveState({ status: 'saved', message: result?.warning ?? 'Integration saved' });
+      setApiToken('');
+      await load();
+    } catch (err) {
+      const message = err instanceof ActionError ? err.message : 'Network error';
+      setSaveState({ status: 'error', message });
+      handleActionError(err, 'Failed to save the SentinelOne integration.');
+    }
+  }, [isPartnerView, name, managementUrl, apiToken, integration, load]);
+
+  const handleSync = useCallback(async () => {
+    if (!isPartnerView) return;
     setSyncState({ status: 'syncing' });
     try {
-      const res = await fetchWithAuth('/s1/sync', {
-        method: 'POST',
-        body: JSON.stringify({})
+      await runAction({
+        request: () => fetchWithAuth('/s1/sync', { method: 'POST', body: JSON.stringify({}) }),
+        errorFallback: 'Failed to schedule a SentinelOne sync.',
+        successMessage: 'SentinelOne sync triggered',
+        onUnauthorized: UNAUTHORIZED
       });
-      if (!res.ok) {
-        const json = await res.json();
-        setSyncState({ status: 'error', message: json.error ?? 'Sync failed' });
-        return;
-      }
       setSyncState({ status: 'done', message: 'Sync triggered' });
+      // The sync runs in the background; re-load shortly to surface lastSync*.
       setTimeout(() => {
-        Promise.all([fetchIntegration(), fetchStatus(), fetchSites()]).catch((err) => {
-          console.error('[SecurityIntegration] Post-sync refresh failed:', err);
-        });
+        void load();
       }, 3000);
     } catch (err) {
-      setSyncState({ status: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      const message = err instanceof ActionError ? err.message : 'Network error';
+      setSyncState({ status: 'error', message });
+      handleActionError(err, 'Failed to schedule a SentinelOne sync.');
     }
-  };
+  }, [isPartnerView, load]);
 
-  const handleSiteMap = async (siteName: string, orgId: string | null) => {
-    if (!integrationId) return;
-    setSiteMapSaving((prev) => ({ ...prev, [siteName]: true }));
-    setSiteMapError(null);
-    try {
-      const res = await fetchWithAuth('/s1/sites/map', {
-        method: 'POST',
-        body: JSON.stringify({ integrationId, siteName, orgId })
-      });
-      if (res.ok) {
+  const handleMap = useCallback(
+    async (s1SiteId: string, orgId: string | null) => {
+      if (!integrationId) return;
+      setMappingSaving((prev) => ({ ...prev, [s1SiteId]: true }));
+      setMappingError(null);
+      try {
+        await runAction({
+          request: () =>
+            fetchWithAuth('/s1/organizations/map', {
+              method: 'POST',
+              body: JSON.stringify({ integrationId, s1SiteId, orgId })
+            }),
+          errorFallback: 'Failed to map the SentinelOne site.',
+          successMessage: orgId ? 'SentinelOne site mapped' : 'SentinelOne site unmapped',
+          onUnauthorized: UNAUTHORIZED
+        });
         await fetchSites();
-      } else {
-        const json = await res.json().catch(() => ({}));
-        setSiteMapError(`Failed to map "${siteName}": ${json.error ?? 'Unknown error'}`);
+        await fetchStatus();
+      } catch (err) {
+        setMappingError(err instanceof ActionError ? err.message : 'Network error');
+        handleActionError(err, 'Failed to map the SentinelOne site.');
+      } finally {
+        setMappingSaving((prev) => ({ ...prev, [s1SiteId]: false }));
       }
-    } catch (err) {
-      setSiteMapError(`Failed to map "${siteName}": ${err instanceof Error ? err.message : 'Network error'}`);
-    } finally {
-      setSiteMapSaving((prev) => ({ ...prev, [siteName]: false }));
-    }
-  };
+    },
+    [integrationId, fetchSites, fetchStatus]
+  );
 
-  if (isAllOrgs) {
+  if (loading) {
     return (
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold">SentinelOne Integration</h1>
-          <p className="text-sm text-muted-foreground">Connect your SentinelOne tenant for endpoint detection and response.</p>
-        </div>
-        <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
-          The SentinelOne integration is configured per organization. Switch the scope in the top bar
-          from <span className="font-medium text-foreground">All orgs</span> to a single organization
-          to view or edit its connection.
-        </div>
-      </div>
-    );
-  }
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-20">
+      <div className="flex items-center justify-center py-20" data-testid="s1-loading">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
-  const syncStatusBadge = () => {
-    if (!integration) {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-          <Unplug className="h-3.5 w-3.5" /> Not configured
-        </span>
-      );
-    }
-    if (integration.lastSyncStatus === 'success' || integration.lastSyncStatus === 'partial') {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
-          <CheckCircle2 className="h-3.5 w-3.5" /> Connected
-        </span>
-      );
-    }
-    if (integration.lastSyncStatus === 'running') {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Syncing
-        </span>
-      );
-    }
-    if (integration.lastSyncStatus === 'error') {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700">
-          <AlertTriangle className="h-3.5 w-3.5" /> Error
-        </span>
-      );
-    }
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-        <Activity className="h-3.5 w-3.5" /> Pending
-      </span>
-    );
-  };
-
-  const canSave = name.trim().length > 0 && managementUrl.trim().length > 0 && (apiToken.trim().length > 0 || !!integration);
-
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-6" data-testid="s1-panel">
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <Shield className="h-5 w-5" />
         </div>
         <div>
           <h1 className="text-2xl font-semibold">SentinelOne Integration</h1>
-          <p className="text-sm text-muted-foreground">Connect your SentinelOne tenant for endpoint detection and response.</p>
+          <p className="text-sm text-muted-foreground">
+            Connect one partner-level SentinelOne tenant and map SentinelOne sites to Breeze organizations.
+          </p>
         </div>
       </div>
 
       {loadError && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" data-testid="s1-load-error">
           {loadError}
         </div>
       )}
 
-      {/* Connection Setup */}
-      <div className="rounded-xl border bg-card p-6 shadow-sm">
-        <h2 className="text-lg font-semibold">Connection</h2>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Enter your SentinelOne management console URL and API token.
-          {!integration && ' Saving requires MFA verification.'}
-        </p>
+      {/* Org scope, not connected: SentinelOne is partner-level. */}
+      {!isPartnerView && !integration && (
+        <div className="rounded-xl border bg-card p-8 text-center shadow-sm" data-testid="s1-org-not-connected">
+          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <Unplug className="h-5 w-5" />
+          </div>
+          <h2 className="mt-3 text-lg font-semibold">SentinelOne isn&apos;t connected yet</h2>
+          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+            SentinelOne is configured once at the partner level and shared across every organization. Switch your
+            scope to <span className="font-medium text-foreground">All orgs</span> to add the management URL and API token.
+          </p>
+        </div>
+      )}
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-sm font-medium">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My S1 Tenant"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
+      {/* Org scope, connected but this org isn't mapped to a site. */}
+      {!isPartnerView && integration && !mappedForOrg && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800" data-testid="s1-org-unmapped">
+          This organization isn&apos;t mapped to a SentinelOne site yet. Switch to All orgs as a partner admin to map it.
+        </div>
+      )}
+
+      {/* Partner connection form */}
+      {isPartnerView && (
+        <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-connection">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold">Partner connection</h2>
+              <p className="text-sm text-muted-foreground">
+                One management URL and API token covers every SentinelOne site under this partner account.
+              </p>
+            </div>
+            {syncStatusBadge(integration)}
           </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium">Management URL</label>
-            <input
-              type="url"
-              value={managementUrl}
-              onChange={(e) => setManagementUrl(e.target.value)}
-              placeholder="https://your-tenant.sentinelone.net"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-          <div className="md:col-span-2">
-            <label className="mb-1 block text-sm font-medium">
-              API Token
-              {integration && <span className="ml-1 text-xs text-muted-foreground">(leave blank to keep existing)</span>}
-            </label>
-            <div className="relative">
+
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium">Name</label>
               <input
-                type={showToken ? 'text' : 'password'}
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                placeholder={integration ? '••••••••••••••••' : 'Paste your API token'}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="My S1 Tenant"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                data-testid="s1-name"
               />
-              <button
-                type="button"
-                onClick={() => setShowToken(!showToken)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium">Management URL</label>
+              <input
+                type="url"
+                value={managementUrl}
+                onChange={(e) => setManagementUrl(e.target.value)}
+                placeholder="https://your-tenant.sentinelone.net"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                data-testid="s1-management-url"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="mb-1 block text-sm font-medium">
+                API Token
+                {integration && <span className="ml-1 text-xs text-muted-foreground">(leave blank to keep existing)</span>}
+              </label>
+              <div className="relative">
+                <input
+                  type={showToken ? 'text' : 'password'}
+                  value={apiToken}
+                  onChange={(e) => setApiToken(e.target.value)}
+                  placeholder={integration ? '••••••••••••••••' : 'Paste your API token'}
+                  className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  data-testid="s1-api-token"
+                />
+                <button
+                  type="button"
+                  aria-label={showToken ? 'Hide API token' : 'Show API token'}
+                  onClick={() => setShowToken((value) => !value)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="mt-4 flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={!canSave || saveState.status === 'saving'}
-            className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-          >
-            {saveState.status === 'saving' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {integration ? 'Update' : 'Save & Connect'}
-          </button>
-          {saveState.status === 'saved' && (
-            <span className="text-sm text-emerald-600">{saveState.message}</span>
-          )}
-          {saveState.status === 'error' && (
-            <span className="text-sm text-red-600">{saveState.message}</span>
-          )}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={!canSave || saveState.status === 'saving'}
+              className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              data-testid="s1-save"
+            >
+              {saveState.status === 'saving' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {integration ? 'Update' : 'Save & Connect'}
+            </button>
+            {integration && (
+              <button
+                type="button"
+                onClick={() => void handleSync()}
+                disabled={syncState.status === 'syncing'}
+                className="inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                data-testid="s1-sync"
+              >
+                {syncState.status === 'syncing' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Sync Now
+              </button>
+            )}
+            {saveState.message && (
+              <span className={`text-sm ${saveState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`} data-testid="s1-save-message">
+                {saveState.message}
+              </span>
+            )}
+            {syncState.message && (
+              <span className={`text-sm ${syncState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>
+                {syncState.message}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Status + Summary (only when integration exists) */}
+      {/* Sync status + coverage (any scope, once connected) */}
       {integration && (
         <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-          {/* Sync Status */}
-          <div className="rounded-xl border bg-card p-6 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Sync Status</h2>
-              {syncStatusBadge()}
+          <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-sync-status">
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-lg font-semibold">Sync status</h2>
+              {syncStatusBadge(integration)}
             </div>
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex justify-between text-muted-foreground">
                 <span>Last sync</span>
-                <span className="text-foreground">
-                  {integration.lastSyncAt
-                    ? formatDateTime(integration.lastSyncAt)
-                    : 'Never'}
-                </span>
+                <span className="text-foreground">{integration.lastSyncAt ? formatDateTime(integration.lastSyncAt) : 'Never'}</span>
               </div>
               {integration.lastSyncError && (
-                <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
-                  {integration.lastSyncError}
-                </div>
-              )}
-            </div>
-            <div className="mt-4">
-              <button
-                type="button"
-                onClick={handleSync}
-                disabled={syncState.status === 'syncing'}
-                className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                {syncState.status === 'syncing'
-                  ? <Loader2 className="h-4 w-4 animate-spin" />
-                  : <RefreshCw className="h-4 w-4" />}
-                Sync Now
-              </button>
-              {syncState.message && (
-                <span className={`ml-3 text-xs ${syncState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>
-                  {syncState.message}
-                </span>
+                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">{integration.lastSyncError}</div>
               )}
             </div>
           </div>
 
-          {/* Coverage Summary */}
           {summary && (
-            <div className="rounded-xl border bg-card p-6 shadow-sm">
+            <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-coverage">
               <h2 className="text-lg font-semibold">Coverage</h2>
               <div className="mt-4 grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-2xl font-bold">{summary.totalAgents}</p>
-                  <p className="text-xs text-muted-foreground">S1 Agents</p>
-                </div>
-                <div>
-                  <p className="text-2xl font-bold">{summary.mappedDevices}</p>
-                  <p className="text-xs text-muted-foreground">Mapped Devices</p>
-                </div>
-                <div>
-                  <p className={`text-2xl font-bold ${summary.infectedAgents > 0 ? 'text-red-600' : ''}`}>
-                    {summary.infectedAgents}
-                  </p>
-                  <p className="text-xs text-muted-foreground">Infected</p>
-                </div>
-                <div>
-                  <p className={`text-2xl font-bold ${summary.activeThreats > 0 ? 'text-red-600' : ''}`}>
-                    {summary.activeThreats}
-                  </p>
-                  <p className="text-xs text-muted-foreground">Active Threats</p>
-                </div>
-                <div>
-                  <p className="text-2xl font-bold">{summary.pendingActions}</p>
-                  <p className="text-xs text-muted-foreground">Pending Actions</p>
-                </div>
-                <div>
-                  <p className={`text-2xl font-bold ${summary.highOrCriticalThreats > 0 ? 'text-amber-600' : ''}`}>
-                    {summary.highOrCriticalThreats}
-                  </p>
-                  <p className="text-xs text-muted-foreground">High/Critical</p>
-                </div>
+                <Metric label="S1 Agents" value={summary.totalAgents} />
+                <Metric label="Mapped Devices" value={summary.mappedDevices} />
+                <Metric label="Infected" value={summary.infectedAgents} warn={summary.infectedAgents > 0} danger />
+                <Metric label="Active Threats" value={summary.activeThreats} warn={summary.activeThreats > 0} danger />
+                <Metric label="Pending Actions" value={summary.pendingActions} />
+                <Metric label="High/Critical" value={summary.highOrCriticalThreats} warn={summary.highOrCriticalThreats > 0} />
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* Site Mapping (only when sites exist) */}
-      {integration && sites.length > 0 && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
-          <h2 className="text-lg font-semibold">Site-to-Organization Mapping</h2>
-          <p className="mb-4 text-sm text-muted-foreground">
-            Map each SentinelOne site to a Breeze organization. Unmapped sites will inherit the integration's default org.
-          </p>
+      {/* Site → organization mapping (partner scope, once connected) */}
+      {isPartnerView && integration && (
+        <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-mapping">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold">Site mapping</h2>
+              <p className="text-sm text-muted-foreground">
+                Map each SentinelOne site to a Breeze organization. Unmapped sites stay quarantined until assigned.
+              </p>
+            </div>
+            {unmappedCount > 0 && (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
+                {unmappedCount} unmapped
+              </span>
+            )}
+          </div>
 
-          {siteMapError && (
-            <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {siteMapError}
+          {mappingError && (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" data-testid="s1-mapping-error">
+              {mappingError}
             </div>
           )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="pb-2 pr-4">S1 Site</th>
+                  <th className="pb-2 pr-4">S1 site</th>
                   <th className="pb-2 pr-4">Agents</th>
-                  <th className="pb-2 pr-4">Breeze Organization</th>
+                  <th className="pb-2 pr-4">Breeze organization</th>
                   <th className="pb-2">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {sites.map((site) => (
-                  <tr key={site.siteName} className="border-b last:border-0">
-                    <td className="py-3 pr-4 font-medium">{site.siteName}</td>
-                    <td className="py-3 pr-4 text-muted-foreground">{site.agentCount}</td>
+                  <tr key={site.s1SiteId} className="border-b last:border-0" data-testid={`s1-site-${site.s1SiteId}`}>
+                    <td className="py-3 pr-4">
+                      <div className="font-medium">{site.s1SiteName || site.s1SiteId}</div>
+                      <div className="text-xs text-muted-foreground">
+                        ID {site.s1SiteId}
+                        {site.provisional && (
+                          <span className="ml-2 inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700">
+                            pending sync
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 pr-4 text-muted-foreground">{site.agentsCount}</td>
                     <td className="py-3 pr-4">
                       <select
                         value={site.mappedOrgId ?? ''}
-                        onChange={(e) => handleSiteMap(site.siteName, e.target.value || null)}
-                        disabled={siteMapSaving[site.siteName]}
+                        onChange={(e) => void handleMap(site.s1SiteId, e.target.value || null)}
+                        disabled={mappingSaving[site.s1SiteId]}
                         className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                        data-testid={`s1-site-map-${site.s1SiteId}`}
+                        aria-label={`Map ${site.s1SiteName || site.s1SiteId} to a Breeze organization`}
                       >
-                        <option value="">— Select organization —</option>
-                        {orgs.map((org) => (
+                        <option value="">Select organization</option>
+                        {orgOptions.map((org) => (
                           <option key={org.id} value={org.id}>{org.name}</option>
                         ))}
                       </select>
                     </td>
                     <td className="py-3">
-                      {siteMapSaving[site.siteName] ? (
+                      {mappingSaving[site.s1SiteId] ? (
                         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                       ) : site.mappedOrgId ? (
                         <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -531,11 +533,28 @@ export default function SecurityIntegration() {
                     </td>
                   </tr>
                 ))}
+                {sites.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="py-6 text-sm text-muted-foreground" data-testid="s1-sites-empty">
+                      No SentinelOne sites discovered yet. Save credentials and run Sync Now.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function Metric({ label, value, warn = false, danger = false }: { label: string; value: number; warn?: boolean; danger?: boolean }) {
+  const color = warn ? (danger ? 'text-red-600' : 'text-amber-600') : '';
+  return (
+    <div>
+      <p className={`text-2xl font-bold ${color}`}>{value}</p>
+      <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );
 }
