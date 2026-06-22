@@ -195,6 +195,27 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(sql).not.toMatch(/exists/i);
     expect(sql).toMatch(/ilike/i);
   });
+
+  // Regression: a scalar enum `in` (e.g. Status is any of online/offline, which
+  // the unified chip bar emits when two status presets are selected) must build
+  // an explicit IN list. The old `= ANY($1)` bound the JS array as a row tuple
+  // `($1, $2)` and Postgres 500'd with "op ANY/ALL (array) requires array".
+  it('scalar in → explicit IN list, never = ANY(array)', () => {
+    const sql = render({ field: 'status', operator: 'in', value: ['online', 'offline'] });
+    expect(sql).toMatch(/ in \(/i);
+    expect(sql).not.toMatch(/any\s*\(/i);
+  });
+  it('scalar notIn → explicit NOT IN list', () => {
+    const sql = render({ field: 'status', operator: 'notIn', value: ['online', 'offline'] });
+    expect(sql).toMatch(/not in \(/i);
+    expect(sql).not.toMatch(/all\s*\(/i);
+  });
+  it('scalar in [] → FALSE (matches nothing)', () => {
+    expect(render({ field: 'status', operator: 'in', value: [] })).toMatch(/false/i);
+  });
+  it('scalar notIn [] → TRUE (matches everything)', () => {
+    expect(render({ field: 'status', operator: 'notIn', value: [] })).toMatch(/true/i);
+  });
 });
 
 describe('filterEngine device-row catalog completion', () => {

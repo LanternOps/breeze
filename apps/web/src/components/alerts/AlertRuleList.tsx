@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Pencil, Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import type { AlertSeverity } from './AlertList';
 
 export type AlertRuleTargetType = 'org' | 'site' | 'group' | 'device' | 'all';
@@ -158,6 +159,58 @@ export default function AlertRuleList({
     onDelete?.(rule);
   };
 
+  // Row pieces shared by the desktop table and the mobile cards.
+  const renderStatusToggle = (rule: AlertRule) => {
+    const status = getStatus(rule);
+    return (
+      <button
+        type="button"
+        onClick={event => {
+          event.stopPropagation();
+          handleToggle(rule);
+        }}
+        className={cn(
+          'flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-medium transition',
+          statusConfig[status].className
+        )}
+      >
+        {status === 'active' ? (
+          <ToggleRight className="h-4 w-4" />
+        ) : (
+          <ToggleLeft className="h-4 w-4" />
+        )}
+        {statusConfig[status].label}
+      </button>
+    );
+  };
+
+  const renderActions = (rule: AlertRule) => (
+    <div className="flex items-center justify-end gap-1">
+      <button
+        type="button"
+        onClick={event => {
+          event.stopPropagation();
+          onEdit?.(rule);
+        }}
+        className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+        title="Edit rule"
+      >
+        <Pencil className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={event => {
+          event.stopPropagation();
+          handleDelete(rule);
+        }}
+        className="flex h-8 w-8 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
+        title="Delete rule"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -212,100 +265,119 @@ export default function AlertRuleList({
         </select>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-md border">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Template</th>
-              <th className="px-4 py-3">Target</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Alerts Triggered</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {filteredRules.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No alert rules found. Adjust your filters to see results.
-                </td>
+      <ResponsiveTable
+        className="mt-6"
+        table={
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Template</th>
+                <th className="px-4 py-3">Target</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Alerts Triggered</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            ) : (
-              filteredRules.map(rule => {
-                const status = getStatus(rule);
-                const templateName = rule.templateName ?? 'Custom Template';
+            </thead>
+            <tbody className="divide-y">
+              {filteredRules.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    No alert rules found. Adjust your filters to see results.
+                  </td>
+                </tr>
+              ) : (
+                filteredRules.map(rule => {
+                  const templateName = rule.templateName ?? 'Custom Template';
 
-                return (
-                  <tr key={rule.id} className="transition hover:bg-muted/40">
-                    <td className="px-4 py-3">
+                  return (
+                    <tr key={rule.id} className="transition hover:bg-muted/40">
+                      <td className="px-4 py-3">
+                        <div>
+                          <p className="text-sm font-medium">{rule.name}</p>
+                          {rule.description && (
+                            <p className="text-xs text-muted-foreground truncate max-w-xs">{rule.description}</p>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="text-sm font-medium">{templateName}</p>
+                        {rule.templateId && (
+                          <p className="text-xs text-muted-foreground">Template ID: {rule.templateId}</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="text-sm">{getTargetLabel(rule)}</p>
+                        <p className="text-xs text-muted-foreground">Type: {getTargetType(rule)}</p>
+                      </td>
+                      <td className="px-4 py-3">{renderStatusToggle(rule)}</td>
+                      <td className="px-4 py-3">
+                        <p className="text-sm font-medium">{rule.alertsTriggered ?? 0}</p>
+                        {rule.lastTriggered && (
+                          <p className="text-xs text-muted-foreground">Last: {rule.lastTriggered}</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">{renderActions(rule)}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          filteredRules.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">
+                No alert rules found. Adjust your filters to see results.
+              </p>
+            </DataCard>
+          ) : (
+            filteredRules.map(rule => {
+              const templateName = rule.templateName ?? 'Custom Template';
+
+              return (
+                <DataCard key={rule.id}>
+                  <div>
+                    <p className="text-sm font-medium">{rule.name}</p>
+                    {rule.description && (
+                      <p className="text-xs text-muted-foreground">{rule.description}</p>
+                    )}
+                  </div>
+                  <div className="mt-3 space-y-2 border-t pt-3">
+                    <CardField label="Template">
                       <div>
-                        <p className="text-sm font-medium">{rule.name}</p>
-                        {rule.description && (
-                          <p className="text-xs text-muted-foreground truncate max-w-xs">{rule.description}</p>
+                        <p className="text-sm font-medium">{templateName}</p>
+                        {rule.templateId && (
+                          <p className="text-xs text-muted-foreground">Template ID: {rule.templateId}</p>
                         )}
                       </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <p className="text-sm font-medium">{templateName}</p>
-                      {rule.templateId && (
-                        <p className="text-xs text-muted-foreground">Template ID: {rule.templateId}</p>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <p className="text-sm">{getTargetLabel(rule)}</p>
-                      <p className="text-xs text-muted-foreground">Type: {getTargetType(rule)}</p>
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        type="button"
-                        onClick={() => handleToggle(rule)}
-                        className={cn(
-                          'flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-medium transition',
-                          statusConfig[status].className
-                        )}
-                      >
-                        {status === 'active' ? (
-                          <ToggleRight className="h-4 w-4" />
-                        ) : (
-                          <ToggleLeft className="h-4 w-4" />
-                        )}
-                        {statusConfig[status].label}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3">
-                      <p className="text-sm font-medium">{rule.alertsTriggered ?? 0}</p>
-                      {rule.lastTriggered && (
-                        <p className="text-xs text-muted-foreground">Last: {rule.lastTriggered}</p>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => onEdit?.(rule)}
-                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title="Edit rule"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(rule)}
-                          className="flex h-8 w-8 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
-                          title="Delete rule"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                    </CardField>
+                    <CardField label="Target">
+                      <div>
+                        <p className="text-sm">{getTargetLabel(rule)}</p>
+                        <p className="text-xs text-muted-foreground">Type: {getTargetType(rule)}</p>
                       </div>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                    </CardField>
+                    <CardField label="Status">{renderStatusToggle(rule)}</CardField>
+                    <CardField label="Alerts triggered">
+                      <div>
+                        <p className="text-sm font-medium">{rule.alertsTriggered ?? 0}</p>
+                        {rule.lastTriggered && (
+                          <p className="text-xs text-muted-foreground">Last: {rule.lastTriggered}</p>
+                        )}
+                      </div>
+                    </CardField>
+                  </div>
+                  <CardActions className="flex flex-wrap justify-end gap-2">
+                    {renderActions(rule)}
+                  </CardActions>
+                </DataCard>
+              );
+            })
+          )
+        }
+      />
     </div>
   );
 }

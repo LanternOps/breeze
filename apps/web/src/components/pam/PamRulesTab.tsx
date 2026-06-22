@@ -6,7 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import PamRuleModal from './PamRuleModal';
-import { type PamRule, VERDICT_LABELS } from './types';
+import { type PamRule, type PamUnmatchedVerdict, VERDICT_LABELS } from './types';
 
 function ruleCriteriaSummary(rule: PamRule): string {
   const parts: string[] = [];
@@ -14,6 +14,7 @@ function ruleCriteriaSummary(rule: PamRule): string {
   if (rule.matchHash) parts.push(`hash=${rule.matchHash.slice(0, 12)}…`);
   if (rule.matchPathGlob) parts.push(`path=${rule.matchPathGlob}`);
   if (rule.matchParentImage) parts.push(`parent=${rule.matchParentImage}`);
+  if (rule.matchCommandLine) parts.push(`cmdline=${rule.matchCommandLine}`);
   if (rule.matchUser) parts.push(`user=${rule.matchUser}`);
   if (rule.matchAdGroup) parts.push(`group=${rule.matchAdGroup}`);
   if (rule.matchToolName) parts.push(`tool=${rule.matchToolName}`);
@@ -34,6 +35,9 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
   // siteId → name, resolved once for the Scope column (GET /pam/rules returns
   // only siteId; no per-row lookups).
   const [siteNames, setSiteNames] = useState<Record<string, string>>({});
+  // Org default verdict for an elevation matching no policy and no rule.
+  const [defaultVerdict, setDefaultVerdict] = useState<PamUnmatchedVerdict>('require_approval');
+  const [savingDefault, setSavingDefault] = useState(false);
 
   useEffect(() => {
     fetchWithAuth('/orgs/sites?limit=100')
@@ -45,6 +49,45 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetchWithAuth('/pam/config')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const body = await res.json();
+        if (body?.config?.defaultUnmatchedVerdict) {
+          setDefaultVerdict(body.config.defaultUnmatchedVerdict as PamUnmatchedVerdict);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const changeDefaultVerdict = async (next: PamUnmatchedVerdict) => {
+    if (savingDefault) return;
+    const prev = defaultVerdict;
+    setDefaultVerdict(next);
+    setSavingDefault(true);
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth('/pam/config', {
+            method: 'PUT',
+            body: JSON.stringify({ defaultUnmatchedVerdict: next }),
+          }),
+        errorFallback: 'Failed to update default verdict',
+        successMessage: `Default verdict set to ${VERDICT_LABELS[next]}`,
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+    } catch (err) {
+      setDefaultVerdict(prev); // roll back the optimistic change on failure
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: 'Failed to update default verdict' });
+      }
+    } finally {
+      setSavingDefault(false);
+    }
+  };
 
   const fetchRules = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -136,6 +179,26 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           <Plus className="h-4 w-4" />
           Add rule
         </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-md border bg-card px-3 py-2">
+        <label htmlFor="pam-default-unmatched-verdict" className="text-sm font-medium">
+          Default verdict
+        </label>
+        <select
+          id="pam-default-unmatched-verdict"
+          value={defaultVerdict}
+          onChange={(e) => void changeDefaultVerdict(e.target.value as PamUnmatchedVerdict)}
+          disabled={savingDefault}
+          data-testid="pam-default-unmatched-verdict"
+          className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-50"
+        >
+          <option value="require_approval">Require approval</option>
+          <option value="auto_deny">Auto-deny</option>
+        </select>
+        <span className="text-xs text-muted-foreground">
+          Verdict when an elevation matches no policy or rule.
+        </span>
       </div>
 
       {error && (

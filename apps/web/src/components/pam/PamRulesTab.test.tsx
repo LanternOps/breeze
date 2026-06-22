@@ -49,15 +49,23 @@ function installFetchRoutes({
   rules = [] as PamRule[],
   sites = [] as Array<{ id: string; name: string }>,
   orgs = [{ id: 'org-1', name: 'Acme' }],
+  defaultUnmatchedVerdict = 'require_approval' as 'require_approval' | 'auto_deny',
 }: {
   rules?: PamRule[];
   sites?: Array<{ id: string; name: string }>;
   orgs?: Array<{ id: string; name: string }>;
+  defaultUnmatchedVerdict?: 'require_approval' | 'auto_deny';
 } = {}) {
   fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: orgs });
     if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: sites });
+    if (url === '/pam/config' && method === 'GET') {
+      return makeJsonResponse({ success: true, config: { orgId: 'org-1', defaultUnmatchedVerdict } });
+    }
+    if (url === '/pam/config' && method === 'PUT') {
+      return makeJsonResponse({ success: true, config: {} });
+    }
     if (url === '/pam/rules' && method === 'POST') {
       return makeJsonResponse({ success: true, rule: rules[0] ?? signedRule }, true, 201);
     }
@@ -103,6 +111,39 @@ describe('PamRulesTab', () => {
     expect(
       screen.getByText(/Software policies are evaluated first/i),
     ).toBeInTheDocument();
+  });
+
+  describe('default unmatched verdict', () => {
+    it('loads the current default verdict from GET /pam/config', async () => {
+      installFetchRoutes({ rules: [], defaultUnmatchedVerdict: 'auto_deny' });
+      render(<PamRulesTab />);
+      await waitFor(() => {
+        expect((screen.getByTestId('pam-default-unmatched-verdict') as HTMLSelectElement).value).toBe(
+          'auto_deny',
+        );
+      });
+    });
+
+    it('PUTs the new default verdict on change', async () => {
+      installFetchRoutes({ rules: [] });
+      render(<PamRulesTab />);
+      await waitFor(() => {
+        expect((screen.getByTestId('pam-default-unmatched-verdict') as HTMLSelectElement).value).toBe(
+          'require_approval',
+        );
+      });
+
+      fireEvent.change(screen.getByTestId('pam-default-unmatched-verdict'), {
+        target: { value: 'auto_deny' },
+      });
+
+      await waitFor(() => {
+        expect(findMutationCall('/pam/config', 'PUT')).toBeDefined();
+      });
+      expect(bodyOf(findMutationCall('/pam/config', 'PUT'))).toEqual({
+        defaultUnmatchedVerdict: 'auto_deny',
+      });
+    });
   });
 
   it('re-fetches rules when the liveTick prop changes', async () => {

@@ -3,7 +3,7 @@
 // the condition is present the chip is marked active (check icon,
 // aria-pressed) and clicking again removes it.
 import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
-import { Check, Plus } from 'lucide-react';
+import { Check } from 'lucide-react';
 
 export interface QuickAddChip {
   id: string;
@@ -60,10 +60,15 @@ export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
   return (
     <div
       data-testid="quick-add-chips"
-      className="flex gap-2 overflow-x-auto pb-1"
+      className="flex items-center gap-2 overflow-x-auto pb-1"
       role="toolbar"
       aria-label="Quick-add filters"
     >
+      {/* Leading label so this strip reads as one-click toggles, distinct from
+          the "+ Add filter" builder below it. The chips toggle a filter on/off
+          (Check when active), so they deliberately drop the "+" glyph — "+"
+          means *create* elsewhere on this page (Add filter / Add Device). */}
+      <span className="shrink-0 text-xs font-medium text-muted-foreground">Quick filters</span>
       {QUICK_ADD_CHIPS.map(chip => {
         const added = isAdded(value, chip.condition);
         return (
@@ -73,11 +78,11 @@ export function QuickAddChips({ value, onChange }: QuickAddChipsProps) {
             data-testid={`quick-add-${chip.id}`}
             aria-pressed={added}
             onClick={() => handleToggle(chip)}
-            className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs ${
+            className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
               added ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'hover:bg-muted'
             }`}
           >
-            {added ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+            {added && <Check className="h-3 w-3" />}
             {chip.label}
           </button>
         );

@@ -343,6 +343,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.deviceRole = data.deviceRole;
   }
 
+  // Orthogonal virtualization attribute (issue #1387). Old agents omit
+  // isVirtual entirely (undefined) — leave the stored value untouched in that
+  // case. A present value (true/false) is authoritative; the platform is
+  // cleared when the agent reports virtual=false or sends no platform, so a
+  // box that stops reporting a hypervisor doesn't keep a stale platform.
+  if (data.isVirtual !== undefined) {
+    deviceUpdates.isVirtual = data.isVirtual;
+    deviceUpdates.virtualizationPlatform = data.isVirtual
+      ? (data.virtualizationPlatform ?? null)
+      : null;
+  }
+
   // Update hostname/OS version when agent reports changes
   if (data.hostname && data.hostname !== device.hostname) {
     deviceUpdates.hostname = data.hostname;

@@ -13,35 +13,37 @@ import {
   approvalActionSchema,
   deferSchema
 } from './schemas';
-import { getPagination, resolvePatchApprovalOrgIdForRing, upsertPatchApproval } from './helpers';
+import { getPagination, resolvePatchApprovalPartnerIdForRing, upsertPatchApproval } from './helpers';
 
 export const approvalsRoutes = new Hono();
 
-// GET /patches/approvals - List patch approvals for org
+// GET /patches/approvals - List patch approvals for partner
 approvalsRoutes.get(
   '/approvals',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   zValidator('query', listApprovalsSchema),
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
 
-    // Check org access
-    if (query.orgId && !auth.canAccessOrg(query.orgId)) {
-      return c.json({ error: 'Access denied to this organization' }, 403);
+    const partnerResolution = await resolvePatchApprovalPartnerIdForRing(
+      auth,
+      query.partnerId ?? undefined,
+      query.ringId ?? null
+    );
+    if ('error' in partnerResolution) {
+      return c.json({ error: partnerResolution.error }, partnerResolution.status);
     }
+    const targetPartnerId = partnerResolution.partnerId;
 
     const { page, limit, offset } = getPagination(query);
 
-    const conditions = [];
-    const orgCond = auth.orgCondition(patchApprovals.orgId);
-    if (orgCond) conditions.push(orgCond);
-    if (query.orgId) conditions.push(eq(patchApprovals.orgId, query.orgId));
+    const conditions = [eq(patchApprovals.partnerId, targetPartnerId)];
     if (query.ringId) conditions.push(eq(patchApprovals.ringId, query.ringId));
     if (query.status) conditions.push(eq(patchApprovals.status, query.status));
     if (query.patchId) conditions.push(eq(patchApprovals.patchId, query.patchId));
 
-    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const whereClause = and(...conditions);
 
     const approvals = await db
       .select()
@@ -66,7 +68,7 @@ approvalsRoutes.get(
 // POST /patches/bulk-approve - Bulk approve patches
 approvalsRoutes.post(
   '/bulk-approve',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', bulkApproveSchema),
@@ -74,18 +76,15 @@ approvalsRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // The frontend always sends ?orgId=<currentOrgId> in the query for
-    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
-    // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = await resolvePatchApprovalOrgIdForRing(
+    const partnerResolution = await resolvePatchApprovalPartnerIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.partnerId ?? c.req.query('partnerId') ?? undefined,
       data.ringId ?? null
     );
-    if ('error' in orgResolution) {
-      return c.json({ error: orgResolution.error }, orgResolution.status);
+    if ('error' in partnerResolution) {
+      return c.json({ error: partnerResolution.error }, partnerResolution.status);
     }
-    const targetOrgId = orgResolution.orgId;
+    const targetPartnerId = partnerResolution.partnerId;
 
     const approved: string[] = [];
     const failed: string[] = [];
@@ -93,7 +92,7 @@ approvalsRoutes.post(
     for (const patchId of data.patchIds) {
       try {
         await upsertPatchApproval({
-          orgId: targetOrgId,
+          partnerId: targetPartnerId,
           patchId,
           ringId: data.ringId ?? null,
           status: 'approved',
@@ -108,10 +107,11 @@ approvalsRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId: targetOrgId,
+      orgId: null,
       action: 'patch.bulk_approve',
       resourceType: 'patch',
       details: {
+        partnerId: targetPartnerId,
         approvedCount: approved.length,
         failedCount: failed.length,
         patchIds: data.patchIds,
@@ -126,7 +126,7 @@ approvalsRoutes.post(
 // POST /patches/:id/approve - Approve patch
 approvalsRoutes.post(
   '/:id/approve',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('param', patchIdParamSchema),
@@ -136,18 +136,15 @@ approvalsRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    // The frontend always sends ?orgId=<currentOrgId> in the query for
-    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
-    // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = await resolvePatchApprovalOrgIdForRing(
+    const partnerResolution = await resolvePatchApprovalPartnerIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.partnerId ?? c.req.query('partnerId') ?? undefined,
       data.ringId ?? null
     );
-    if ('error' in orgResolution) {
-      return c.json({ error: orgResolution.error }, orgResolution.status);
+    if ('error' in partnerResolution) {
+      return c.json({ error: partnerResolution.error }, partnerResolution.status);
     }
-    const targetOrgId = orgResolution.orgId;
+    const targetPartnerId = partnerResolution.partnerId;
 
     // Verify patch exists
     const [patch] = await db
@@ -161,7 +158,7 @@ approvalsRoutes.post(
     }
 
     await upsertPatchApproval({
-      orgId: targetOrgId,
+      partnerId: targetPartnerId,
       patchId: id,
       ringId: data.ringId ?? null,
       status: 'approved',
@@ -171,11 +168,12 @@ approvalsRoutes.post(
     });
 
     writeRouteAudit(c, {
-      orgId: targetOrgId,
+      orgId: null,
       action: 'patch.approve',
       resourceType: 'patch',
       resourceId: id,
       details: {
+        partnerId: targetPartnerId,
         note: data.note ?? null,
         ringId: data.ringId ?? null
       }
@@ -188,7 +186,7 @@ approvalsRoutes.post(
 // POST /patches/:id/decline - Decline patch
 approvalsRoutes.post(
   '/:id/decline',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('param', patchIdParamSchema),
@@ -198,18 +196,15 @@ approvalsRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    // The frontend always sends ?orgId=<currentOrgId> in the query for
-    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
-    // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = await resolvePatchApprovalOrgIdForRing(
+    const partnerResolution = await resolvePatchApprovalPartnerIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.partnerId ?? c.req.query('partnerId') ?? undefined,
       data.ringId ?? null
     );
-    if ('error' in orgResolution) {
-      return c.json({ error: orgResolution.error }, orgResolution.status);
+    if ('error' in partnerResolution) {
+      return c.json({ error: partnerResolution.error }, partnerResolution.status);
     }
-    const targetOrgId = orgResolution.orgId;
+    const targetPartnerId = partnerResolution.partnerId;
 
     const [patch] = await db
       .select({ id: patches.id })
@@ -222,7 +217,7 @@ approvalsRoutes.post(
     }
 
     await upsertPatchApproval({
-      orgId: targetOrgId,
+      partnerId: targetPartnerId,
       patchId: id,
       ringId: data.ringId ?? null,
       status: 'rejected',
@@ -230,11 +225,12 @@ approvalsRoutes.post(
     });
 
     writeRouteAudit(c, {
-      orgId: targetOrgId,
+      orgId: null,
       action: 'patch.decline',
       resourceType: 'patch',
       resourceId: id,
       details: {
+        partnerId: targetPartnerId,
         note: data.note ?? null,
         ringId: data.ringId ?? null
       }
@@ -247,7 +243,7 @@ approvalsRoutes.post(
 // POST /patches/:id/defer - Defer patch to later date
 approvalsRoutes.post(
   '/:id/defer',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('param', patchIdParamSchema),
@@ -257,18 +253,15 @@ approvalsRoutes.post(
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
-    // The frontend always sends ?orgId=<currentOrgId> in the query for
-    // partner-scope POSTs, not in the JSON body. Reading only from data.orgId
-    // left partner-scope users with no resolvable org (#805 and class).
-    const orgResolution = await resolvePatchApprovalOrgIdForRing(
+    const partnerResolution = await resolvePatchApprovalPartnerIdForRing(
       auth,
-      data.orgId ?? c.req.query('orgId') ?? undefined,
+      data.partnerId ?? c.req.query('partnerId') ?? undefined,
       data.ringId ?? null
     );
-    if ('error' in orgResolution) {
-      return c.json({ error: orgResolution.error }, orgResolution.status);
+    if ('error' in partnerResolution) {
+      return c.json({ error: partnerResolution.error }, partnerResolution.status);
     }
-    const targetOrgId = orgResolution.orgId;
+    const targetPartnerId = partnerResolution.partnerId;
 
     const [patch] = await db
       .select({ id: patches.id })
@@ -281,7 +274,7 @@ approvalsRoutes.post(
     }
 
     await upsertPatchApproval({
-      orgId: targetOrgId,
+      partnerId: targetPartnerId,
       patchId: id,
       ringId: data.ringId ?? null,
       status: 'deferred',
@@ -290,11 +283,12 @@ approvalsRoutes.post(
     });
 
     writeRouteAudit(c, {
-      orgId: targetOrgId,
+      orgId: null,
       action: 'patch.defer',
       resourceType: 'patch',
       resourceId: id,
       details: {
+        partnerId: targetPartnerId,
         deferUntil: data.deferUntil,
         note: data.note ?? null,
         ringId: data.ringId ?? null

@@ -18,6 +18,12 @@ export default defineConfig({
       // is a MOCKED unit test that mocks `../db` and must NOT hook the real-DB
       // setup — it runs under the default unit config instead.
       'src/services/inboundEmail/**/*.integration.test.ts',
+      // Co-located real-DB integration test for the contract renewal sweep
+      // service. Follows the same pattern as the inboundEmail test above.
+      'src/services/contractRenewal.integration.test.ts',
+      // Worker-level integration test: renewal pre-pass runs before billing sweep
+      // so an at-boundary auto-renew contract bills instead of expiring.
+      'src/jobs/contractWorker.renewal.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's

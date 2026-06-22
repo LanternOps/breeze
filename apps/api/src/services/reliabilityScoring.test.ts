@@ -133,6 +133,73 @@ describe('scoreUptime', () => {
   it('returns 50 at 95% uptime (midpoint of linear range)', () => expect(scoreUptime(95)).toBe(50));
 });
 
+describe('computeUptimePercent', () => {
+  const { computeUptimePercent } = reliabilityScoringInternals;
+  const now = new Date('2026-02-20T00:00:00.000Z');
+  const DAY = 24 * 60 * 60;
+
+  function makeLatest(uptimeSeconds: number, bootOffsetSeconds: number) {
+    return {
+      collectedAt: now,
+      uptimeSeconds,
+      // bootTime = now - bootOffsetSeconds
+      bootTime: new Date(now.getTime() - bootOffsetSeconds * 1000),
+    };
+  }
+
+  it('returns 100 with no history snapshot', () => {
+    expect(computeUptimePercent(null, 90, now)).toBe(100);
+    expect(computeUptimePercent(null, 90, now, new Date(now.getTime() - 2 * DAY * 1000))).toBe(100);
+  });
+
+  it('penalizes a young device against the full window when enrollment is ignored', () => {
+    // Device enrolled 2 days ago, up its whole life, but no enrollment clamp:
+    // 2 days of uptime against a 90-day denominator ≈ 2.2%.
+    const latest = makeLatest(2 * DAY, 2 * DAY);
+    expect(computeUptimePercent(latest, 90, now)).toBeCloseTo((2 / 90) * 100, 1);
+  });
+
+  it('clamps the window to enrollment so a 2-day-old all-up device scores 100%', () => {
+    // Enrolled 2 days ago, booted at enrollment, up the whole time → 100%.
+    const enrolledAt = new Date(now.getTime() - 2 * DAY * 1000);
+    const latest = makeLatest(2 * DAY, 2 * DAY);
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
+    expect(computeUptimePercent(latest, 30, now, enrolledAt)).toBe(100);
+  });
+
+  it('counts a reboot within a young device lifetime as partial downtime', () => {
+    // Enrolled 4 days ago but only up 2 days (rebooted 2 days ago) →
+    // 2 days up over a 4-day clamped window = 50%.
+    const enrolledAt = new Date(now.getTime() - 4 * DAY * 1000);
+    const latest = makeLatest(2 * DAY, 2 * DAY);
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(50);
+  });
+
+  it('leaves an old device (older than the window) unchanged', () => {
+    // Enrolled 200 days ago — older than the 90-day window. Continuously up
+    // for the full window → 100% either way; enrollment clamp is a no-op.
+    const enrolledAt = new Date(now.getTime() - 200 * DAY * 1000);
+    const latest = makeLatest(120 * DAY, 120 * DAY);
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(computeUptimePercent(latest, 90, now));
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
+  });
+
+  it('is a no-op when enrollment falls exactly on the window start (boundary)', () => {
+    // enrolledAt === now - windowDays: the clamp Math.max picks fixedStartSeconds,
+    // so the denominator stays the full window — identical to the no-enrollment call.
+    const enrolledAt = new Date(now.getTime() - 90 * DAY * 1000);
+    const latest = makeLatest(120 * DAY, 120 * DAY);
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(computeUptimePercent(latest, 90, now));
+    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
+  });
+
+  it('returns 100 when enrollment is at or after now (zero-length window)', () => {
+    const latest = makeLatest(0, 0);
+    expect(computeUptimePercent(latest, 90, now, now)).toBe(100);
+    expect(computeUptimePercent(latest, 90, now, new Date(now.getTime() + DAY * 1000))).toBe(100);
+  });
+});
+
 describe('scoreCrashes', () => {
   const { scoreCrashes } = reliabilityScoringInternals;
 
@@ -231,6 +298,53 @@ describe('computeTopIssues', () => {
       criticalHardwareCount30d: 2,
     });
     expect(issues.length).toBeLessThanOrEqual(5);
+  });
+
+  // #1738: a newly-enrolled device that has been up its whole (short) life now
+  // computes uptime30d === 100 thanks to the enrollment clamp, so it must NOT
+  // be flagged with an `uptime` top-issue purely for time before it existed.
+  it('does not flag an uptime issue when uptime30d is 100 (young all-up device)', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 100,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+    });
+    expect(issues.find((i) => i.type === 'uptime')).toBeUndefined();
+  });
+
+  it('flags an uptime issue (warning) when uptime30d is between 90 and 95', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 92,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+    });
+    const uptime = issues.find((i) => i.type === 'uptime');
+    expect(uptime?.severity).toBe('warning');
+  });
+
+  it('flags an uptime issue (critical) when uptime30d is below 90', () => {
+    const issues = computeTopIssues({
+      dailyBuckets: [],
+      now,
+      uptime30d: 80,
+      crashCount30d: 0,
+      hangCount30d: 0,
+      serviceFailureCount30d: 0,
+      hardwareErrorCount30d: 0,
+      criticalHardwareCount30d: 0,
+    });
+    const uptime = issues.find((i) => i.type === 'uptime');
+    expect(uptime?.severity).toBe('critical');
   });
 });
 

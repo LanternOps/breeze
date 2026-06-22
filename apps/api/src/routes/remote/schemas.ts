@@ -32,7 +32,19 @@ export const webrtcOfferSchema = z.object({
 });
 
 export const webrtcAnswerSchema = z.object({
-  answer: z.string().min(1).max(65536)
+  answer: z.string().min(1).max(65536),
+  // Optional, additive: present only when the agent answers a session that was
+  // in `consent` mode, so the API can emit a `session_consent_granted` audit
+  // alongside the existing `session_connected` audit. Absent for notify/off.
+  consentReason: z.enum(['user']).optional()
+});
+
+// Agent-facing deny verdict for a remote-session consent prompt. `reason`
+// distinguishes a genuine user/timeout denial (audited as
+// `session_consent_denied`) from a policy bypass / unavailable path
+// (`session_consent_bypassed`).
+export const sessionDenySchema = z.object({
+  reason: z.enum(['user', 'timeout', 'no_user', 'helper_absent', 'policy_proceed'])
 });
 
 export const iceCandidateSchema = z.object({

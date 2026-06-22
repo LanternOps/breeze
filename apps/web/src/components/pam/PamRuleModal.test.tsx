@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRuleModal from './PamRuleModal';
 import { fetchWithAuth } from '../../stores/auth';
-import type { PamRuleDraft } from './types';
+import type { PamRuleDraft, PamRuleNegateKey } from './types';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -66,6 +66,90 @@ describe('PamRuleModal', () => {
     expect((screen.getByTestId('pam-rule-signer') as HTMLInputElement).value).toBe('Acme Corp');
     // Executable shape selected by the seed.
     expect(screen.getByTestId('pam-rule-shape-executable')).toHaveClass('border-primary');
+  });
+
+  it('sends matchCommandLine and a matchNegate array for negated criteria', async () => {
+    const user = userEvent.setup();
+    installFetchRoutes();
+    let postBody: Record<string, unknown> | null = null;
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      if (url === '/pam/rules' && method === 'POST') {
+        postBody = JSON.parse(init!.body as string);
+        return makeJsonResponse({ success: true, rule: {} }, true, 201);
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<PamRuleModal rule={null} onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('pam-rule-match-command-line')).toBeInTheDocument());
+
+    await user.type(screen.getByTestId('pam-rule-name'), 'Only printui rundll32');
+    await user.type(screen.getByTestId('pam-rule-path'), 'C:\\Windows\\System32\\rundll32.exe');
+    await user.type(screen.getByTestId('pam-rule-match-command-line'), 'printui.dll,PrintUIEntry');
+    // Negate the path glob: "rundll32 unless ..." — the path stays, but the
+    // command-line criterion is the positive match.
+    await user.click(screen.getByTestId('pam-rule-negate-pathGlob'));
+    await user.click(screen.getByTestId('pam-rule-submit'));
+
+    await waitFor(() => expect(postBody).not.toBeNull());
+    expect(postBody!.matchCommandLine).toBe('printui.dll,PrintUIEntry');
+    expect(postBody!.matchNegate).toEqual(['pathGlob']);
+  });
+
+  it('omits a dangling negate key whose criterion is empty', async () => {
+    const user = userEvent.setup();
+    installFetchRoutes();
+    let postBody: Record<string, unknown> | null = null;
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme' }] });
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      if (url === '/pam/rules' && method === 'POST') {
+        postBody = JSON.parse(init!.body as string);
+        return makeJsonResponse({ success: true, rule: {} }, true, 201);
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<PamRuleModal rule={null} onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('pam-rule-signer')).toBeInTheDocument());
+
+    await user.type(screen.getByTestId('pam-rule-name'), 'Signer only');
+    await user.type(screen.getByTestId('pam-rule-signer'), 'Acme Corp');
+    // Toggle parentImage negation but leave the parent-image field empty.
+    await user.click(screen.getByTestId('pam-rule-negate-parentImage'));
+    await user.click(screen.getByTestId('pam-rule-submit'));
+
+    await waitFor(() => expect(postBody).not.toBeNull());
+    // No populated negatable criterion → matchNegate is null, not ['parentImage'].
+    expect(postBody!.matchNegate).toBeNull();
+  });
+
+  it('seeds the negate toggles and command line from an edited rule', async () => {
+    installFetchRoutes();
+    const rule = {
+      id: 'rule-x',
+      orgId: 'org-1',
+      name: 'rundll32 not printui',
+      enabled: true,
+      priority: 100,
+      matchPathGlob: 'C:\\Windows\\System32\\rundll32.exe',
+      matchCommandLine: 'printui.dll',
+      matchNegate: ['commandLine'] as PamRuleNegateKey[],
+      verdict: 'require_approval' as const,
+      createdAt: '2026-06-10T00:00:00.000Z',
+      updatedAt: '2026-06-10T00:00:00.000Z',
+    };
+    render(<PamRuleModal rule={rule} onClose={() => {}} onSaved={() => {}} />);
+
+    await waitFor(() =>
+      expect((screen.getByTestId('pam-rule-match-command-line') as HTMLInputElement).value).toBe('printui.dll'),
+    );
+    expect((screen.getByTestId('pam-rule-negate-commandLine') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('pam-rule-negate-pathGlob') as HTMLInputElement).checked).toBe(false);
   });
 
   it('seeds tool-shape fields from a draft', async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -29,8 +29,6 @@ type ActivityEvent = {
 type DeviceActivityFeedProps = {
   deviceId: string;
   timezone?: string;
-  /** How many activity rows to show on the overview. */
-  limit?: number;
 };
 
 // "Deliberate actions taken on this endpoint." An event is shown only if its
@@ -54,6 +52,15 @@ function ruleFor(action?: string) {
   if (!action) return undefined;
   return ACTION_RULES.find((r) => action.startsWith(r.prefix));
 }
+
+// The same prefix set, sent to the API so the "deliberate action" filter runs
+// server-side (index-backed) instead of over-fetching raw rows and discarding
+// most of them client-side (issue #1726).
+const ACTION_PREFIXES = ACTION_RULES.map((r) => r.prefix).join(',');
+
+// How many filtered rows to request per page. Small fixed window for a fast,
+// predictable first paint; "Load more" pulls the next page on demand.
+const PAGE_SIZE = 10;
 
 // initiatedBy values worth surfacing — a person doing something is implicit via
 // the actor name, but "this happened automatically" is the interesting signal.
@@ -86,48 +93,120 @@ function absoluteTime(value?: string, timezone?: string): string | undefined {
   return formatDateTime(d, timezone ? { timeZone: timezone } : undefined);
 }
 
-export default function DeviceActivityFeed({ deviceId, timezone, limit = 8 }: DeviceActivityFeedProps) {
+export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivityFeedProps) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [activeAlerts, setActiveAlerts] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
+  // A failed "Load more" is surfaced separately from the whole-pane `error` so a
+  // failed append never blanks the rows already on screen.
+  const [loadMoreError, setLoadMoreError] = useState(false);
+  // Whether the last page came back full, i.e. there may be more to load.
+  const [hasMore, setHasMore] = useState(false);
+  // Highest page already appended to `events`. The next "Load more" fetches
+  // loadedPage + 1 and only advances on success, so a failed page can be retried
+  // without skipping rows.
+  const [loadedPage, setLoadedPage] = useState(0);
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(false);
-    try {
-      // Over-fetch raw events, then keep only the endpoint actions. Alerts are
-      // a separate source — we only need the active count for the pinned strip.
-      const [eventsRes, alertsRes] = await Promise.all([
-        fetchWithAuth(`/devices/${deviceId}/events?limit=40`),
-        fetchWithAuth(`/devices/${deviceId}/alerts?status=active`),
-      ]);
-      if (signal?.aborted) return;
-      if (!eventsRes.ok) throw new Error('events');
+  // Single in-flight controller for the component. Aborting it on a device
+  // switch (or unmount) cancels BOTH the initial load and any in-flight "Load
+  // more", so a slow request can't append the previous device's rows.
+  const abortRef = useRef<AbortController | null>(null);
+  // Synchronous in-flight guard for "Load more". `disabled={loadingMore}` is
+  // driven by async React state, so a fast double-click can slip two clicks
+  // through before the re-render — both would fetch the same page and append
+  // duplicate rows. This ref flips synchronously at click time to serialize.
+  const loadMoreInFlight = useRef(false);
 
-      const eventsJson = await eventsRes.json();
-      const rawEvents: ActivityEvent[] = Array.isArray(eventsJson?.data) ? eventsJson.data : [];
-      setEvents(rawEvents.filter((e) => ruleFor(e.action)));
-
-      if (alertsRes.ok) {
-        const alertsJson = await alertsRes.json();
-        const payload = alertsJson?.data ?? alertsJson;
-        setActiveAlerts(Array.isArray(payload) ? payload.length : 0);
+  // Fetch one page of deliberate-action events. page 1 (re)loads from scratch;
+  // higher pages append. Filtering runs server-side and the count(*) is skipped
+  // (withTotal omitted), so each page is a bounded index-backed read.
+  const loadPage = useCallback(
+    async (page: number, signal: AbortSignal) => {
+      const isFirst = page === 1;
+      if (isFirst) {
+        setLoading(true);
+        setError(false);
+      } else {
+        setLoadingMore(true);
+        setLoadMoreError(false);
       }
-    } catch {
-      if (!signal?.aborted) setError(true);
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }, [deviceId]);
+      try {
+        const eventsUrl = `/devices/${deviceId}/events?limit=${PAGE_SIZE}&page=${page}&actions=${encodeURIComponent(
+          ACTION_PREFIXES
+        )}`;
+        // The active-alert count is only needed on the initial load.
+        const [eventsRes, alertsRes] = await Promise.all([
+          fetchWithAuth(eventsUrl, { signal }),
+          isFirst
+            ? fetchWithAuth(`/devices/${deviceId}/alerts?status=active`, { signal })
+            : Promise.resolve(null),
+        ]);
+        if (signal.aborted) return;
+        if (!eventsRes.ok) throw new Error('events');
 
+        const eventsJson = await eventsRes.json();
+        const pageEvents: ActivityEvent[] = Array.isArray(eventsJson?.data) ? eventsJson.data : [];
+        setEvents((prev) => (isFirst ? pageEvents : [...prev, ...pageEvents]));
+        setHasMore(pageEvents.length === PAGE_SIZE);
+        setLoadedPage(page);
+
+        if (isFirst && alertsRes && alertsRes.ok) {
+          const alertsJson = await alertsRes.json();
+          const payload = alertsJson?.data ?? alertsJson;
+          setActiveAlerts(Array.isArray(payload) ? payload.length : 0);
+        }
+        // Deliberate: if the events fetch succeeded but the alerts fetch failed,
+        // we don't fail the whole pane — the feed is the primary content and the
+        // pinned alert banner is a secondary signal. activeAlerts stays at its
+        // prior value (0 on first load) and the banner simply doesn't render.
+      } catch {
+        if (signal.aborted) return;
+        // Surface the failure: whole-pane error on the first page, inline
+        // "Load more" error otherwise — never swallowed.
+        if (isFirst) setError(true);
+        else setLoadMoreError(true);
+      } finally {
+        if (!signal.aborted) {
+          if (isFirst) setLoading(false);
+          else setLoadingMore(false);
+        }
+      }
+    },
+    [deviceId]
+  );
+
+  // Reload from page 1 whenever the device changes; abort any in-flight request
+  // (initial or load-more) on switch/unmount.
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
+    abortRef.current = controller;
+    setLoadedPage(0);
+    void loadPage(1, controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [loadPage]);
 
-  const visible = useMemo(() => events.slice(0, limit), [events, limit]);
+  // Retry the whole pane from page 1 on a fresh controller (the mount effect's
+  // controller is aborted once its cleanup runs).
+  const reload = useCallback(() => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoadedPage(0);
+    void loadPage(1, controller.signal);
+  }, [loadPage]);
+
+  const loadMore = useCallback(() => {
+    const signal = abortRef.current?.signal;
+    if (!signal || signal.aborted || loadMoreInFlight.current) return;
+    loadMoreInFlight.current = true;
+    void loadPage(loadedPage + 1, signal).finally(() => {
+      loadMoreInFlight.current = false;
+    });
+  }, [loadedPage, loadPage]);
+
+  const visible = events;
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -166,7 +245,11 @@ export default function DeviceActivityFeed({ deviceId, timezone, limit = 8 }: De
         ) : error ? (
           <p className="text-sm text-muted-foreground">
             Couldn&apos;t load activity.{' '}
-            <button type="button" onClick={() => void load()} className="font-medium text-primary hover:underline">
+            <button
+              type="button"
+              onClick={reload}
+              className="font-medium text-primary hover:underline"
+            >
               Retry
             </button>
           </p>
@@ -209,6 +292,22 @@ export default function DeviceActivityFeed({ deviceId, timezone, limit = 8 }: De
               );
             })}
           </ul>
+        )}
+
+        {!loading && !error && hasMore && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="text-sm font-medium text-primary hover:underline disabled:opacity-60"
+            >
+              {loadingMore ? 'Loading…' : loadMoreError ? 'Try again' : 'Load more'}
+            </button>
+            {loadMoreError && !loadingMore && (
+              <span className="text-xs text-destructive">Couldn&apos;t load more.</span>
+            )}
+          </div>
         )}
       </div>
 

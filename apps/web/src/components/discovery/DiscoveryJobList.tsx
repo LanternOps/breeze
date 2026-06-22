@@ -4,6 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { widthPercentClass } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
 
@@ -287,6 +288,82 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
     );
   }
 
+  // Row pieces shared by the desktop table and the mobile cards.
+  const renderProfile = (job: DiscoveryJob) =>
+    onViewProfile ? (
+      <button
+        type="button"
+        onClick={onViewProfile}
+        className="text-primary underline-offset-2 hover:underline"
+      >
+        {job.profileName}
+      </button>
+    ) : (
+      <span>{job.profileName}</span>
+    );
+
+  const renderStatus = (job: DiscoveryJob) => {
+    const status = statusConfig[job.status];
+    const StatusIcon = status.icon;
+    return (
+      <>
+        <span className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium ${status.color}`}>
+          <StatusIcon className="h-3.5 w-3.5" />
+          {status.label}
+        </span>
+        {job.errors && (
+          <span className="mt-1 block text-xs text-destructive">{job.errors}</span>
+        )}
+      </>
+    );
+  };
+
+  const renderProgress = (job: DiscoveryJob) => (
+    <div className="flex items-center gap-3">
+      <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+        {job.isIndeterminate ? (
+          <div className="h-full w-full animate-pulse rounded-full bg-yellow-500" />
+        ) : (
+          <div
+            className={`h-full rounded-full ${progressBarColor[job.status]} ${widthPercentClass(job.progress)}`}
+          />
+        )}
+      </div>
+      <span className="w-10 text-right text-xs">
+        {job.isIndeterminate ? '...' : `${job.progress}%`}
+      </span>
+    </div>
+  );
+
+  const renderActions = (job: DiscoveryJob) => (
+    <div className="flex items-center gap-1">
+      {(job.status === 'scheduled' || job.status === 'running') && (
+        <button
+          type="button"
+          onClick={() => cancelJob(job.id)}
+          disabled={cancellingId === job.id}
+          title="Cancel job"
+          className="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      )}
+      {job.status === 'completed' && job.hostsDiscovered > 0 && onViewAssets && (
+        <button
+          type="button"
+          onClick={onViewAssets}
+          title="View discovered assets"
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
+        >
+          Assets
+          <ArrowRight className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
+
+  const emptyMessage = profileFilter ? 'No jobs for this profile yet.' : 'No discovery jobs yet.';
+
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div>
@@ -384,58 +461,36 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
         </div>
       )}
 
-      <div className="mt-6 overflow-hidden rounded-md border">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Profile</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Progress</th>
-              <th className="px-4 py-3">Hosts discovered</th>
-              <th className="px-4 py-3">New assets</th>
-              <th className="px-4 py-3">Duration</th>
-              <th className="px-4 py-3">Scheduled</th>
-              <th className="px-4 py-3">Started</th>
-              <th className="px-4 py-3">Finished</th>
-              <th className="px-4 py-3">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {filteredJobs.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  {profileFilter ? 'No jobs for this profile yet.' : 'No discovery jobs yet.'}
-                </td>
+      <ResponsiveTable
+        className="mt-6"
+        table={
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Profile</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Progress</th>
+                <th className="px-4 py-3">Hosts discovered</th>
+                <th className="px-4 py-3">New assets</th>
+                <th className="px-4 py-3">Duration</th>
+                <th className="px-4 py-3">Scheduled</th>
+                <th className="px-4 py-3">Started</th>
+                <th className="px-4 py-3">Finished</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
-            ) : (
-              filteredJobs.map(job => {
-                const status = statusConfig[job.status];
-                const StatusIcon = status.icon;
-
-                return (
+            </thead>
+            <tbody className="divide-y">
+              {filteredJobs.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    {emptyMessage}
+                  </td>
+                </tr>
+              ) : (
+                filteredJobs.map(job => (
                   <tr key={job.id} className="transition hover:bg-muted/40">
-                    <td className="px-4 py-3 text-sm font-medium">
-                      {onViewProfile ? (
-                        <button
-                          type="button"
-                          onClick={onViewProfile}
-                          className="text-primary underline-offset-2 hover:underline"
-                        >
-                          {job.profileName}
-                        </button>
-                      ) : (
-                        job.profileName
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium ${status.color}`}>
-                        <StatusIcon className="h-3.5 w-3.5" />
-                        {status.label}
-                      </span>
-                      {job.errors && (
-                        <span className="mt-1 block text-xs text-destructive">{job.errors}</span>
-                      )}
-                    </td>
+                    <td className="px-4 py-3 text-sm font-medium">{renderProfile(job)}</td>
+                    <td className="px-4 py-3">{renderStatus(job)}</td>
                     {job.status === 'pending' ? (
                       <>
                         <td className="px-4 py-3 text-sm text-muted-foreground">—</td>
@@ -449,22 +504,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
                       </>
                     ) : (
                       <>
-                        <td className="px-4 py-3 text-sm">
-                          <div className="flex items-center gap-3">
-                            <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
-                              {job.isIndeterminate ? (
-                                <div className="h-full w-full animate-pulse rounded-full bg-yellow-500" />
-                              ) : (
-                                <div
-                                  className={`h-full rounded-full ${progressBarColor[job.status]} ${widthPercentClass(job.progress)}`}
-                                />
-                              )}
-                            </div>
-                            <span className="w-10 text-right text-xs">
-                              {job.isIndeterminate ? '...' : `${job.progress}%`}
-                            </span>
-                          </div>
-                        </td>
+                        <td className="px-4 py-3 text-sm">{renderProgress(job)}</td>
                         <td className="px-4 py-3 text-sm">
                           {job.hostsDiscovered} / {job.hostsTargeted}
                         </td>
@@ -477,41 +517,69 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
                         <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.startedAt, timezone)}</td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{formatTimestamp(job.finishedAt, timezone)}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1">
-                            {(job.status === 'scheduled' || job.status === 'running') && (
-                              <button
-                                type="button"
-                                onClick={() => cancelJob(job.id)}
-                                disabled={cancellingId === job.id}
-                                title="Cancel job"
-                                className="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                              >
-                                <X className="h-4 w-4" />
-                              </button>
-                            )}
-                            {job.status === 'completed' && job.hostsDiscovered > 0 && onViewAssets && (
-                              <button
-                                type="button"
-                                onClick={onViewAssets}
-                                title="View discovered assets"
-                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
-                              >
-                                Assets
-                                <ArrowRight className="h-3 w-3" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
+                        <td className="px-4 py-3">{renderActions(job)}</td>
                       </>
                     )}
                   </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          filteredJobs.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">{emptyMessage}</p>
+            </DataCard>
+          ) : (
+            filteredJobs.map(job => (
+              <DataCard key={job.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 text-sm font-medium">{renderProfile(job)}</div>
+                  <div className="shrink-0 text-right">{renderStatus(job)}</div>
+                </div>
+                <div className="mt-3 space-y-2 border-t pt-3">
+                  {job.status === 'pending' ? (
+                    <CardField label="Scheduled">
+                      <span className="text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</span>
+                    </CardField>
+                  ) : (
+                    <>
+                      <div>
+                        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Progress</span>
+                        <div className="mt-1">{renderProgress(job)}</div>
+                      </div>
+                      <CardField label="Hosts discovered">
+                        {job.hostsDiscovered} / {job.hostsTargeted}
+                      </CardField>
+                      <CardField label="New assets">
+                        {job.newAssets != null ? job.newAssets : '—'}
+                      </CardField>
+                      <CardField label="Duration">
+                        <span className="text-muted-foreground">{job.duration ?? '—'}</span>
+                      </CardField>
+                      <CardField label="Scheduled">
+                        <span className="text-xs text-muted-foreground">{formatTimestamp(job.scheduledAt, timezone)}</span>
+                      </CardField>
+                      <CardField label="Started">
+                        <span className="text-xs text-muted-foreground">{formatTimestamp(job.startedAt, timezone)}</span>
+                      </CardField>
+                      <CardField label="Finished">
+                        <span className="text-xs text-muted-foreground">{formatTimestamp(job.finishedAt, timezone)}</span>
+                      </CardField>
+                    </>
+                  )}
+                </div>
+                {job.status !== 'pending' &&
+                  ((job.status === 'scheduled' || job.status === 'running') ||
+                    (job.status === 'completed' && job.hostsDiscovered > 0 && onViewAssets)) && (
+                    <CardActions>{renderActions(job)}</CardActions>
+                  )}
+              </DataCard>
+            ))
+          )
+        }
+      />
     </div>
   );
 }

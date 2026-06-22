@@ -10,7 +10,7 @@ import { captureException } from './sentry';
 export const CONTRACT_EVENTS_QUEUE = 'contract-events';
 
 export type ContractEvent = {
-  type: 'contract.activated' | 'contract.invoiced' | 'contract.paused' | 'contract.cancelled' | 'contract.expired';
+  type: 'contract.activated' | 'contract.invoiced' | 'contract.paused' | 'contract.cancelled' | 'contract.expired' | 'contract.auto_renewed' | 'contract.renewal_notice';
   contractId: string;
   orgId: string;
   partnerId: string;

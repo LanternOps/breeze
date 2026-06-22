@@ -385,7 +385,7 @@ export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
         />
       )}
 
-      <div className="overflow-hidden rounded-lg border bg-card">
+      <div className="overflow-x-auto rounded-lg border bg-card">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr>

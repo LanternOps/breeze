@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import {
   createContract,
   updateContract,
@@ -71,6 +72,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   );
   const [endDate, setEndDate] = useState(contract?.endDate ?? '');
   const [autoIssue, setAutoIssue] = useState(contract?.autoIssue ?? false);
+  const [autoRenew, setAutoRenew] = useState<boolean>(contract?.autoRenew ?? false);
+  const [renewalTermMonths, setRenewalTermMonths] = useState<string>(contract?.renewalTermMonths != null ? String(contract.renewalTermMonths) : '');
+  const [renewalNoticeDays, setRenewalNoticeDays] = useState<string>(contract?.renewalNoticeDays != null ? String(contract.renewalNoticeDays) : '30');
   const [notes, setNotes] = useState(contract?.notes ?? '');
   const [terms, setTerms] = useState(contract?.terms ?? '');
   const [liveEstimate, setLiveEstimate] = useState<ContractEstimate | null>(null);
@@ -176,6 +180,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     if (busy || !canSaveHeader) return;
     setBusy(true);
     try {
+      if (autoRenew && !renewalTermMonths) {
+        showToast({ type: 'error', message: 'Enter a renewal term (months) before saving.' });
+        return;
+      }
       const result = await runAction<{ data: { id: string } }>({
         request: () => createContract({
           orgId,
@@ -185,6 +193,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           startDate,
           endDate: endDate || null,
           autoIssue,
+          autoRenew,
+          renewalTermMonths: autoRenew ? Number(renewalTermMonths) : null,
+          renewalNoticeDays: autoRenew ? (renewalNoticeDays === '' ? null : Number(renewalNoticeDays)) : null,
           notes: notes.trim() || null,
           terms: terms.trim() || null,
         }),
@@ -199,13 +210,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, canSaveHeader, orgId, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, notes, terms]);
+  }, [busy, canSaveHeader, orgId, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms]);
 
   // ---- edit flow -----------------------------------------------------------
   const saveHeader = useCallback(async () => {
     if (busy || !contract || !canSaveHeader) return;
     setBusy(true);
     try {
+      if (autoRenew && !renewalTermMonths) {
+        showToast({ type: 'error', message: 'Enter a renewal term (months) before saving.' });
+        return;
+      }
       await runAction({
         request: () => updateContract(contract.id, {
           name: name.trim(),
@@ -214,6 +229,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           startDate,
           endDate: endDate || null,
           autoIssue,
+          autoRenew,
+          renewalTermMonths: autoRenew ? Number(renewalTermMonths) : null,
+          renewalNoticeDays: autoRenew ? (renewalNoticeDays === '' ? null : Number(renewalNoticeDays)) : null,
           notes: notes.trim() || null,
           terms: terms.trim() || null,
         }),
@@ -227,7 +245,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, canSaveHeader, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, notes, terms, refresh]);
+  }, [busy, contract, canSaveHeader, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms, refresh]);
 
   const addLine = useCallback(async () => {
     if (busy || !contract || !lineDesc.trim()) return;
@@ -381,7 +399,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 End date (optional)
                 <input
-                  type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+                  type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); if (!e.target.value) setAutoRenew(false); }}
                   data-testid="contract-form-end"
                   className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 />
@@ -393,6 +411,37 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 />
                 Auto-issue generated invoices (otherwise they land as drafts)
               </label>
+              <div className="sm:col-span-2">
+                <label className="flex items-center gap-2 text-sm" data-testid="contract-auto-renew-toggle">
+                  <input
+                    type="checkbox" checked={autoRenew} disabled={!endDate}
+                    onChange={(e) => setAutoRenew(e.target.checked)}
+                  />
+                  <span>Auto-renew at end of term{!endDate ? ' (set an end date first)' : ''}</span>
+                </label>
+                {autoRenew && (
+                  <div className="mt-2 grid grid-cols-2 gap-3" data-testid="contract-renewal-fields">
+                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                      Renewal term (months)
+                      <input
+                        type="number" min={1} max={120} value={renewalTermMonths}
+                        onChange={(e) => setRenewalTermMonths(e.target.value)}
+                        data-testid="contract-renewal-term"
+                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                      Advance notice (days)
+                      <input
+                        type="number" min={0} max={365} value={renewalNoticeDays}
+                        onChange={(e) => setRenewalNoticeDays(e.target.value)}
+                        data-testid="contract-renewal-notice-days"
+                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
                 Notes (optional)
                 <textarea

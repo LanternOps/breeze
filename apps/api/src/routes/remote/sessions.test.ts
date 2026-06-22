@@ -74,6 +74,7 @@ vi.mock('../../db/schema', () => ({
   },
   deviceHardware: { deviceId: 'deviceHardware.deviceId', gpuModel: 'deviceHardware.gpuModel' },
   users: { id: 'users.id', name: 'users.name', email: 'users.email' },
+  organizations: { id: 'organizations.id', name: 'organizations.name' },
 }));
 
 // requireScope seeds auth; requirePermission seeds permissions (mirrors prod — only
@@ -121,6 +122,21 @@ vi.mock('./helpers', () => ({
   checkSessionRateLimit,
   checkUserSessionRateLimit,
   logSessionAudit: vi.fn(),
+  // Default to mode 'off' here so the offer handler ships no prompt block and
+  // makes no extra technician/org selects — keeps these site-scope tests focused.
+  // The consent path (prompt stamping + redaction) is covered in
+  // promptConfig.integration.test.ts and the granted/denied audits in
+  // sessions.deny.test.ts.
+  resolveRemoteSessionPromptConfig: vi.fn(() =>
+    Promise.resolve({
+      mode: 'off',
+      consentUnavailableBehavior: 'proceed',
+      notifyOnEnd: true,
+      showIndicator: true,
+      identityLevel: 'name_email',
+    })
+  ),
+  buildTechnicianDisplay: vi.fn(() => ({ name: null, email: null, orgName: null })),
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG: 10,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 5,
 }));

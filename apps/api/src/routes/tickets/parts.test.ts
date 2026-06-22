@@ -39,6 +39,7 @@ vi.mock('../../middleware/auth', async () => ({
     await next();
   },
   requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
   siteAccessCheck: (await vi.importActual<typeof import('../../middleware/auth')>('../../middleware/auth')).siteAccessCheck,
 }));
 

@@ -75,6 +75,14 @@ export const addTicketCommentSchema = z.object({
   isPublic: z.boolean().default(true)
 });
 
+export const editCommentSchema = z.object({
+  content: z.string().min(1).max(50_000)
+});
+
+export const moveTicketOrgSchema = z.object({
+  orgId: z.string().guid()
+});
+
 export const listTicketsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),

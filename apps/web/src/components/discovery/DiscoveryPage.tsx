@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, useEffect } from 'react';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Building2 } from 'lucide-react';
 import DiscoveryProfileList, { type DiscoveryProfile, type DiscoveryProfileStatus } from './DiscoveryProfileList';
 import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings, type ProfileAlertSettings, defaultAlertSettings } from './DiscoveryProfileForm';
 import DiscoveryJobList from './DiscoveryJobList';
@@ -244,6 +244,25 @@ function getTabFromHash(): DiscoveryTab {
 }
 
 export default function DiscoveryPage() {
+  const { currentOrgId, currentSiteId, sites, allOrgs } = useOrgStore();
+  // "All orgs" mode: a partner/multi-org user who has *explicitly* chosen the
+  // All-orgs scope via the switcher. Network discovery is inherently
+  // org/site/agent-scoped — the API deliberately refuses an unscoped list
+  // request (400 "orgId is required …") rather than fan out across orgs. So
+  // instead of firing requests that 400 and surfacing a generic page error
+  // (#1727), we render a "select an organization" prompt and skip the
+  // org-scoped fetches entirely, matching the Patches page UX. (The refusal is
+  // specifically for a partner spanning multiple orgs / system scope —
+  // resolveOrgId auto-resolves a single-org partner — but those callers are
+  // exactly the ones who can reach the All-orgs scope.)
+  //
+  // Gate on the store's explicit `allOrgs` intent flag, NOT raw
+  // `currentOrgId === null`: the store also reports a *transient* null org on a
+  // fresh session before the first org is auto-selected (orgStore.ts:35-43), and
+  // keying on the bare null would flash this prompt at single-org users on every
+  // cold load before hydration completes.
+  const allOrgsMode = allOrgs && currentOrgId === null;
+
   const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
   // Sync tab from the hash after hydration + listen for hash changes.
@@ -274,9 +293,11 @@ export default function DiscoveryPage() {
     if (assetId) setTopologyAssetId(assetId);
   }, []);
 
-  // Fetch asset detail when a topology node is clicked
+  // Fetch asset detail when a topology node is clicked (or via the `?asset=`
+  // deep link above). Skip in All-Orgs mode: this asset-detail endpoint is
+  // org-scoped too, so an unscoped fetch would 400 just like the list requests.
   useEffect(() => {
-    if (!topologyAssetId) {
+    if (!topologyAssetId || allOrgsMode) {
       setTopologyAsset(null);
       return;
     }
@@ -300,7 +321,7 @@ export default function DiscoveryPage() {
         if (!cancelled) setTopologyAssetLoading(false);
       });
     return () => { cancelled = true; };
-  }, [topologyAssetId]);
+  }, [topologyAssetId, allOrgsMode]);
 
   const tabLabels: Record<DiscoveryTab, string> = {
     profiles: 'Profiles',
@@ -312,6 +333,22 @@ export default function DiscoveryPage() {
   const tabButtons = DISCOVERY_TABS.map((id) => ({ id, label: tabLabels[id] }));
 
   const fetchProfiles = useCallback(async () => {
+    // No concrete org → don't fire the unscoped request (it would 400). This
+    // covers two null-org cases: explicit All-Orgs scope (the page shows the
+    // prompt; clear to an empty list) and the transient pre-hydration null
+    // before the first org is auto-selected (keep the spinner up so the
+    // profiles tab doesn't flash "no profiles"). The effect re-runs once
+    // `currentOrgId` resolves.
+    if (currentOrgId === null) {
+      setProfilesError(undefined);
+      if (allOrgsMode) {
+        setProfiles([]);
+        setProfilesLoading(false);
+      } else {
+        setProfilesLoading(true);
+      }
+      return;
+    }
     try {
       setProfilesLoading(true);
       setProfilesError(undefined);
@@ -326,7 +363,7 @@ export default function DiscoveryPage() {
     } finally {
       setProfilesLoading(false);
     }
-  }, []);
+  }, [currentOrgId, allOrgsMode]);
 
   useEffect(() => {
     fetchProfiles();
@@ -342,7 +379,6 @@ export default function DiscoveryPage() {
     return map;
   }, [profiles]);
 
-  const { currentOrgId, currentSiteId, sites } = useOrgStore();
   const siteOptions = useMemo(() => sites.map(s => ({ id: s.id, name: s.name })), [sites]);
 
   const formInitialValues = useMemo<DiscoveryProfileFormValues | undefined>(() => {
@@ -577,7 +613,7 @@ export default function DiscoveryPage() {
             Configure discovery profiles, monitor scans, and manage network assets.
           </p>
         </div>
-        {activeTab === 'profiles' && (
+        {activeTab === 'profiles' && !allOrgsMode && (
           <button
             type="button"
             className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
@@ -593,6 +629,18 @@ export default function DiscoveryPage() {
         )}
       </div>
 
+      {allOrgsMode ? (
+        <div className="flex flex-col items-center justify-center rounded-lg border bg-card p-12 text-center shadow-sm">
+          <Building2 className="h-10 w-10 text-muted-foreground" />
+          <h2 className="mt-4 text-lg font-semibold">Select an organization to view network discovery</h2>
+          <p className="mt-2 max-w-md text-sm text-muted-foreground">
+            Network discovery is scoped to a single organization, site, and agent.
+            Choose an organization in the scope switcher to view its discovered
+            assets, profiles, scan jobs, and topology.
+          </p>
+        </div>
+      ) : (
+        <>
       <div className="flex flex-wrap gap-2">
         {tabButtons.map(tab => (
           <button
@@ -658,6 +706,8 @@ export default function DiscoveryPage() {
           currentSiteId={currentSiteId}
           siteOptions={siteOptions}
         />
+      )}
+        </>
       )}
 
       {isProfileModalOpen && (

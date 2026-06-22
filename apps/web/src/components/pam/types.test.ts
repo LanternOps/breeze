@@ -87,4 +87,27 @@ describe('requestToRuleDraft precedence', () => {
     expect(d.orgId).toBe('org-7');
     expect(d.siteId).toBe('site-3');
   });
+
+  it('seeds observed command line + parent image alongside the primary criterion', () => {
+    const d = requestToRuleDraft({
+      ...base,
+      targetExecutablePath: 'C:\\Windows\\System32\\rundll32.exe',
+      targetExecutableSigner: 'Microsoft Windows',
+      commandLine: 'rundll32.exe printui.dll,PrintUIEntry /il',
+      parentImage: 'C:\\Windows\\explorer.exe',
+    });
+    expect(d.shape).toBe('executable');
+    if (d.shape !== 'executable') throw new Error('unreachable');
+    expect(d.matchSigner).toBe('Microsoft Windows');
+    expect(d.matchCommandLine).toBe('rundll32.exe printui.dll,PrintUIEntry /il');
+    expect(d.matchParentImage).toBe('C:\\Windows\\explorer.exe');
+  });
+
+  it('omits command line / parent image when the request did not capture them', () => {
+    const d = requestToRuleDraft({ ...base, targetExecutableSigner: 'Acme Corp' });
+    expect(d.shape).toBe('executable');
+    if (d.shape !== 'executable') throw new Error('unreachable');
+    expect(d.matchCommandLine).toBeNull();
+    expect(d.matchParentImage).toBeNull();
+  });
 });

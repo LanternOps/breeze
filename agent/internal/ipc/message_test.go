@@ -36,6 +36,21 @@ func TestHelperTokenUpdateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConsentRequestRoundTrip(t *testing.T) {
+	in := ConsentRequest{SessionID: "s1", TechnicianName: "Jordan Lee", TimeoutMs: 30000, OnTimeout: "proceed"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out ConsentRequest
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OnTimeout != "proceed" || out.TimeoutMs != 30000 {
+		t.Fatalf("round-trip mismatch: %+v", out)
+	}
+}
+
 func TestPamDialogMessagesRoundTrip(t *testing.T) {
 	req := PamRequestDialog{
 		ExePath:        `C:\Windows\System32\cmd.exe`,
@@ -81,5 +96,8 @@ func TestPamDialogMessagesRoundTrip(t *testing.T) {
 	}
 	if ScopePam != "pam" {
 		t.Fatalf("ScopePam = %q, want pam", ScopePam)
+	}
+	if ScopeConsentUI != "consent_ui" {
+		t.Fatalf("ScopeConsentUI = %q, want consent_ui", ScopeConsentUI)
 	}
 }

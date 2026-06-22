@@ -6,6 +6,7 @@ import { createHash, randomBytes } from 'crypto';
 import {
   devices,
   deviceHardware,
+  deviceReliability,
   deviceNetwork,
   deviceMetrics,
   deviceGroupMemberships,
@@ -539,10 +540,16 @@ coreRoutes.get(
         cpuModel: deviceHardware.cpuModel,
         cpuCores: deviceHardware.cpuCores,
         ramTotalMb: deviceHardware.ramTotalMb,
-        diskTotalGb: deviceHardware.diskTotalGb
+        diskTotalGb: deviceHardware.diskTotalGb,
+        // Reliability headline score (#1720) — surfaced as a sortable list
+        // column. device_reliability is org-scoped (RLS shape #1), so the
+        // leftJoin stays tenant-safe; null when no score computed yet.
+        reliabilityScore: deviceReliability.reliabilityScore,
+        reliabilityTrend: deviceReliability.trendDirection
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
+      .leftJoin(deviceReliability, eq(devices.id, deviceReliability.deviceId))
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(fetchLimit)
@@ -653,6 +660,10 @@ coreRoutes.get(
           ramTotalMb: d.ramTotalMb,
           diskTotalGb: d.diskTotalGb
         },
+        // Reliability column (#1720): null when the device has no computed
+        // score yet (no device_reliability row) — the list renders a dash.
+        reliabilityScore: d.reliabilityScore ?? null,
+        reliabilityTrend: d.reliabilityTrend ?? null,
         metrics: latestMetrics
           ? {
             cpuPercent: latestMetrics.cpuPercent,
