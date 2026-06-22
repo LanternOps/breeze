@@ -41,7 +41,86 @@ vi.mock('../../services/sentry', () => ({
   captureException
 }));
 
-import { generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit } from './helpers';
+import { buildTechnicianDisplay, classifyConsentDenyAction, generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit, resolveConsentMarkerSessionId } from './helpers';
+
+describe('buildTechnicianDisplay', () => {
+  it('returns name + email + orgName at name_email level', () => {
+    expect(buildTechnicianDisplay('name_email', 'Jordan Lee', 'j@acme.com', 'Acme')).toEqual({
+      name: 'Jordan Lee',
+      email: 'j@acme.com',
+      orgName: 'Acme',
+    });
+  });
+
+  it('drops the email at name level, keeping name + orgName', () => {
+    expect(buildTechnicianDisplay('name', 'Jordan Lee', 'j@acme.com', 'Acme')).toEqual({
+      name: 'Jordan Lee',
+      email: null,
+      orgName: 'Acme',
+    });
+  });
+
+  it('redacts name + email at generic level, keeping only orgName', () => {
+    expect(buildTechnicianDisplay('generic', 'Jordan Lee', 'j@acme.com', 'Acme')).toEqual({
+      name: null,
+      email: null,
+      orgName: 'Acme',
+    });
+  });
+
+  it('passes through null inputs without inventing values', () => {
+    expect(buildTechnicianDisplay('name_email', null, null, null)).toEqual({
+      name: null,
+      email: null,
+      orgName: null,
+    });
+  });
+});
+
+describe('classifyConsentDenyAction', () => {
+  // The agent WS command-result path and the operator deny route both feed
+  // reasons through this single classifier; these cases pin the taxonomy so the
+  // two paths can never drift (type-design finding #5).
+  it('classifies an explicit user denial as session_consent_denied', () => {
+    expect(classifyConsentDenyAction('user')).toBe('session_consent_denied');
+  });
+
+  it('classifies a consent timeout as session_consent_denied', () => {
+    expect(classifyConsentDenyAction('timeout')).toBe('session_consent_denied');
+  });
+
+  it('classifies unavailable/technical reasons as session_consent_bypassed', () => {
+    expect(classifyConsentDenyAction('no_user')).toBe('session_consent_bypassed');
+    expect(classifyConsentDenyAction('helper_absent')).toBe('session_consent_bypassed');
+    expect(classifyConsentDenyAction('policy_proceed')).toBe('session_consent_bypassed');
+  });
+
+  it('defaults an unknown/empty reason to the safer bypassed bucket', () => {
+    expect(classifyConsentDenyAction('')).toBe('session_consent_bypassed');
+    expect(classifyConsentDenyAction('something-new')).toBe('session_consent_bypassed');
+  });
+});
+
+describe('resolveConsentMarkerSessionId', () => {
+  const id = 'sess-abc';
+
+  it('uses the command-id session when the result carries no session id', () => {
+    expect(resolveConsentMarkerSessionId(id, null)).toBe(id);
+  });
+
+  it('accepts a result session id that matches the command id', () => {
+    expect(resolveConsentMarkerSessionId(id, id)).toBe(id);
+  });
+
+  it('rejects a mismatched result session id (no cross-session write)', () => {
+    expect(resolveConsentMarkerSessionId(id, 'sess-other')).toBeNull();
+  });
+
+  it('rejects when the command id yields no session id', () => {
+    expect(resolveConsentMarkerSessionId(null, id)).toBeNull();
+    expect(resolveConsentMarkerSessionId(null, null)).toBeNull();
+  });
+});
 
 describe('logSessionAudit', () => {
   beforeEach(() => {

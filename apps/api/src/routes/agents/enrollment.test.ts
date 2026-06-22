@@ -1357,3 +1357,162 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
     expect(db.transaction).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /agents/enroll — virtualization attribute persistence (#1387)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+  });
+
+  // Stands up the full happy enrollment path and returns the spy that captures
+  // the device INSERT .values(...) payload so a test can assert the persisted
+  // virtualization columns.
+  function arrangeFreshEnroll() {
+    mockKeyLookup({
+      id: 'key-virt',
+      orgId: 'org-virt',
+      siteId: 'site-virt',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([
+            { id: 'key-virt', orgId: 'org-virt', siteId: 'site-virt' },
+          ]),
+        })),
+      })),
+    } as any);
+    mockSelectRows([{ partnerId: 'partner-virt' }]); // org lookup
+    mockSelectRows([{ maxDevices: null }]); // partner.maxDevices
+    mockSelectRows([]); // existing-device lookup → fresh
+
+    const deviceInsertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        { id: 'device-virt', orgId: 'org-virt', siteId: 'site-virt', hostname: 'host-1' },
+      ]),
+      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({ values: deviceInsertValues }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'key-virt' }]),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      };
+      return fn(fakeTx);
+    });
+    return deviceInsertValues;
+  }
+
+  it('persists isVirtual + virtualizationPlatform from the enroll payload', async () => {
+    const deviceInsertValues = arrangeFreshEnroll();
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...baseEnrollBody, isVirtual: true, virtualizationPlatform: 'hyperv' }),
+    });
+    expect(resp.status).toBe(201);
+    // First insert call is the devices row.
+    const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(deviceValues.isVirtual).toBe(true);
+    expect(deviceValues.virtualizationPlatform).toBe('hyperv');
+  });
+
+  it('defaults to isVirtual=false / null platform when the agent omits the fields', async () => {
+    const deviceInsertValues = arrangeFreshEnroll();
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody), // no virtualization fields
+    });
+    expect(resp.status).toBe(201);
+    const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(deviceValues.isVirtual).toBe(false);
+    expect(deviceValues.virtualizationPlatform).toBeNull();
+  });
+
+  it('carries the virtualization fields onto the fresh-id INSERT when re-enrolling over a decommissioned row (#914 path)', async () => {
+    // The decom-bypass-fresh-id branch is a SECOND device INSERT site (it
+    // renames the old row then inserts a new one). Assert it also persists the
+    // virtualization attribute so a VM reinstalling onto a decommissioned
+    // hostname keeps its is_virtual/platform.
+    mockKeyLookup({
+      id: 'key-decom-virt',
+      orgId: 'org-decom-virt',
+      siteId: 'site-decom-virt',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([
+            { id: 'key-decom-virt', orgId: 'org-decom-virt', siteId: 'site-decom-virt' },
+          ]),
+        })),
+      })),
+    } as any);
+    mockSelectRows([{ partnerId: 'partner-decom-virt' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    // Existing row is DECOMMISSIONED, no token on the request → decom-bypass-fresh-id.
+    mockSelectRows([{
+      id: 'device-decom-existing',
+      status: 'decommissioned',
+      agentTokenHash: 'old-decom-hash',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+    }]);
+
+    const deviceInsertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        { id: 'device-decom-fresh', orgId: 'org-decom-virt', siteId: 'site-decom-virt', hostname: 'host-1' },
+      ]),
+      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 0 }]) }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn(() => Object.assign(
+              Promise.resolve(undefined) as any,
+              { returning: vi.fn().mockResolvedValue([{ id: 'key-decom-virt' }]) },
+            )),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({ values: deviceInsertValues }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      };
+      return fn(fakeTx);
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...baseEnrollBody, isVirtual: true, virtualizationPlatform: 'vmware' }),
+    });
+    expect(resp.status).toBe(201);
+    const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(deviceValues.isVirtual).toBe(true);
+    expect(deviceValues.virtualizationPlatform).toBe('vmware');
+  });
+});

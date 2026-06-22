@@ -150,6 +150,21 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 <dt className="text-xs uppercase text-muted-foreground">Auto-issue</dt>
                 <dd className="mt-1 font-medium">{contract.autoIssue ? 'Yes' : 'No (drafts)'}</dd>
               </div>
+              <div>
+                <dt className="text-xs uppercase text-muted-foreground">Renewal</dt>
+                <dd className="mt-1 font-medium" data-testid="contract-renewal-status">
+                  {contract.autoRenew ? (
+                    <>
+                      <span>Auto-renews</span>
+                      {' '}every {contract.renewalTermMonths ?? '—'} months
+                      {contract.endDate ? <> · current term ends {formatDate(contract.endDate)}</> : null}
+                      {contract.renewalNoticeDays != null ? <> · {contract.renewalNoticeDays}-day notice</> : null}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Does not auto-renew</span>
+                  )}
+                </dd>
+              </div>
               {/* Estimated value per billing period, from live device/seat counts. */}
               <div>
                 <dt className="text-xs uppercase text-muted-foreground">Est. / period</dt>

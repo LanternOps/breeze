@@ -620,6 +620,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             previousHelperTokenExpiresAt: null,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
+            isVirtual: data.isVirtual ?? false,
+            virtualizationPlatform: data.virtualizationPlatform ?? null,
             status: 'online',
             lastSeenAt: new Date(),
             updatedAt: new Date(),
@@ -646,6 +648,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             helperTokenIssuedAt: tokenIssuedAt,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
+            isVirtual: data.isVirtual ?? false,
+            virtualizationPlatform: data.virtualizationPlatform ?? null,
             status: 'online',
             lastSeenAt: new Date(),
             tags: []

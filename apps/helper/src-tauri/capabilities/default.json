@@ -1,13 +1,14 @@
 {
   "identifier": "default",
   "description": "Default permissions for Breeze Helper",
-  "windows": ["main"],
+  "windows": ["main", "consent", "session-banner"],
   "permissions": [
     "core:default",
     "core:event:default",
     "core:event:allow-listen",
     "core:event:allow-emit",
     "core:window:default",
+    "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:allow-show",
     "core:window:allow-hide",

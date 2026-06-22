@@ -12,7 +12,7 @@ vi.mock('../../db', () => ({
 vi.mock('../../db/schema', () => ({
   patches: { id: 'patches.id' },
   patchApprovals: {
-    orgId: 'patchApprovals.orgId',
+    partnerId: 'patchApprovals.partnerId',
     ringId: 'patchApprovals.ringId',
     patchId: 'patchApprovals.patchId',
     status: 'patchApprovals.status',
@@ -62,16 +62,17 @@ vi.mock('../../services/permissions', () => ({
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
+const PARTNER_ID = '11111111-1111-1111-1111-111111111111';
+
 vi.mock('./helpers', () => ({
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
-  resolvePatchApprovalOrgIdForRing: vi.fn(async () => ({ orgId: ORG_ID })),
+  resolvePatchApprovalPartnerIdForRing: vi.fn(async () => ({ partnerId: PARTNER_ID })),
   upsertPatchApproval: vi.fn(async () => undefined),
 }));
 
 import { approvalsRoutes } from './approvals';
 import { db } from '../../db';
 
-const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const PATCH_ID = '22222222-2222-4222-8222-222222222222';
 
 function mountApp() {
@@ -79,10 +80,8 @@ function mountApp() {
   app.use('*', async (c, next) => {
     (c as any).set('auth', {
       user: { id: 'user-1' },
-      scope: 'organization',
-      orgId: ORG_ID,
-      canAccessOrg: (orgId: string) => orgId === ORG_ID,
-      orgCondition: (column: unknown) => ({ orgCondition: column, orgId: ORG_ID }),
+      scope: 'partner',
+      partnerId: PARTNER_ID,
     });
     await next();
   });

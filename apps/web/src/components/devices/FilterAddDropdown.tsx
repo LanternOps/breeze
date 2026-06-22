@@ -1,5 +1,6 @@
 // "+ Add filter" popover. Lists all V2_FILTER_FIELDS grouped by category,
 // with a search-as-you-type box at top. Calls onSelect(field) when user picks.
+import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Plus } from 'lucide-react';
 import type { FilterFieldDefinition } from '@breeze/shared';
@@ -8,9 +9,23 @@ import { useClickOutside } from '../../hooks/useClickOutside';
 
 export interface FilterAddDropdownProps {
   onSelect: (field: FilterFieldDefinition) => void;
+  // Custom trigger renderer. Receives the open state + a toggle so callers can
+  // present a differently-labeled button (e.g. the Devices toolbar's "More")
+  // while reusing the same field-picker popover. Defaults to the dashed
+  // "+ Add filter" pill used inside FilterChipBar.
+  renderTrigger?: (args: { open: boolean; toggle: () => void }) => ReactNode;
+  // Which edge the popover aligns to. Default 'left'; pass 'right' when the
+  // trigger sits near the right edge (the Devices toolbar) so the 320px menu
+  // doesn't spill off-screen.
+  align?: 'left' | 'right';
+  // Optional footer shortcut to create a new device group — restores the
+  // "+ New Group" affordance the old group-filter dropdown had. Shown only when
+  // provided. The "Device Group" field above is the start of the group-filter
+  // journey, so creating one from here keeps that flow in one place.
+  onCreateGroup?: () => void;
 }
 
-export function FilterAddDropdown({ onSelect }: FilterAddDropdownProps) {
+export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onCreateGroup }: FilterAddDropdownProps) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,18 +55,22 @@ export function FilterAddDropdown({ onSelect }: FilterAddDropdownProps) {
 
   return (
     <div className="relative inline-block" ref={containerRef}>
-      <button
-        type="button"
-        data-testid="filter-add-button"
-        onClick={() => setOpen(o => !o)}
-        className="inline-flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-sm text-muted-foreground hover:bg-muted"
-      >
-        <Plus className="h-3.5 w-3.5" />
-        Add filter
-      </button>
+      {renderTrigger ? (
+        renderTrigger({ open, toggle: () => setOpen(o => !o) })
+      ) : (
+        <button
+          type="button"
+          data-testid="filter-add-button"
+          onClick={() => setOpen(o => !o)}
+          className="inline-flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-sm text-muted-foreground hover:bg-muted"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add filter
+        </button>
+      )}
 
       {open && (
-        <div className="absolute left-0 top-9 z-30 w-80 rounded-md border bg-popover shadow-lg" role="dialog">
+        <div className={`absolute top-9 z-30 w-80 rounded-md border bg-popover shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`} role="dialog">
           <div className="flex items-center gap-2 border-b px-3 py-2">
             <Search className="h-4 w-4 text-muted-foreground" />
             <input
@@ -94,6 +113,21 @@ export function FilterAddDropdown({ onSelect }: FilterAddDropdownProps) {
               </div>
             ))}
           </div>
+          {onCreateGroup && (
+            <button
+              type="button"
+              data-testid="filter-add-new-group"
+              onClick={() => {
+                onCreateGroup();
+                setOpen(false);
+                setQ('');
+              }}
+              className="flex w-full items-center gap-2 border-t px-3 py-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Plus className="h-3.5 w-3.5 shrink-0" />
+              New group…
+            </button>
+          )}
         </div>
       )}
     </div>

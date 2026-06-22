@@ -140,7 +140,7 @@ export default function ScoreDetailPage() {
       </div>
 
       <div className="rounded-lg border bg-card shadow-sm">
-        <div className="overflow-hidden rounded-lg">
+        <div className="overflow-x-auto rounded-lg">
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

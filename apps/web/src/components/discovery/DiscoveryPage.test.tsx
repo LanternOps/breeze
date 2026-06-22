@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DiscoveryPage from './DiscoveryPage';
@@ -10,12 +10,20 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
 
+const orgStoreState: {
+  currentOrgId: string | null;
+  currentSiteId: string | null;
+  sites: unknown[];
+  allOrgs: boolean;
+} = {
+  currentOrgId: 'org-1',
+  currentSiteId: 'site-1',
+  sites: [],
+  allOrgs: false
+};
+
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: () => ({
-    currentOrgId: 'org-1',
-    currentSiteId: 'site-1',
-    sites: []
-  })
+  useOrgStore: () => orgStoreState
 }));
 
 vi.mock('../../lib/navigation', () => ({
@@ -57,6 +65,12 @@ vi.mock('./NetworkChangesPanel', () => ({
   default: () => <div>Changes tab</div>
 }));
 
+// The discovery profiles render through ResponsiveTable, which puts both a
+// desktop <table> and a mobile card list in the DOM at once (the sm: breakpoint
+// is CSS-only, invisible to jsdom). Scope row text/label queries to the desktop
+// surface so duplicated content doesn't produce multiple-match errors.
+const desktop = () => within(screen.getByTestId('responsive-table-desktop'));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 const navigateToMock = vi.mocked(navigateTo);
@@ -85,6 +99,10 @@ function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('DiscoveryPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.currentSiteId = 'site-1';
+    orgStoreState.sites = [];
+    orgStoreState.allOrgs = false;
     window.history.pushState({}, '', '/discovery#profiles');
   });
 
@@ -131,11 +149,11 @@ describe('DiscoveryPage', () => {
 
     render(<DiscoveryPage />);
 
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
-    expect(screen.getByLabelText('Running HQ sweep')).toBeDisabled();
+    expect(desktop().getByLabelText('Running HQ sweep')).toBeDisabled();
     expect(fetchWithAuthMock).toHaveBeenLastCalledWith('/discovery/scan', {
       method: 'POST',
       body: JSON.stringify({ profileId: 'profile-1' })
@@ -159,9 +177,9 @@ describe('DiscoveryPage', () => {
     );
 
     render(<DiscoveryPage />);
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
     // Error toast fired (runAction surfaces non-401 ActionErrors).
     await waitFor(() => {
@@ -175,8 +193,7 @@ describe('DiscoveryPage', () => {
     expect(await screen.findByText('Scan queue is full')).toBeInTheDocument();
 
     // Spinner cleared (finally ran) — button is back to its idle, enabled state.
-    const runButton = await screen.findByLabelText('Run HQ sweep');
-    expect(runButton).not.toBeDisabled();
+    await waitFor(() => expect(desktop().getByLabelText('Run HQ sweep')).not.toBeDisabled());
 
     // A failed queue must NOT navigate the user to an empty jobs view.
     expect(screen.queryByTestId('jobs-filter')).not.toBeInTheDocument();
@@ -189,9 +206,9 @@ describe('DiscoveryPage', () => {
     );
 
     render(<DiscoveryPage />);
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalledWith({
@@ -200,7 +217,7 @@ describe('DiscoveryPage', () => {
       });
     });
     expect(screen.queryByTestId('jobs-filter')).not.toBeInTheDocument();
-    expect(await screen.findByLabelText('Run HQ sweep')).not.toBeDisabled();
+    await waitFor(() => expect(desktop().getByLabelText('Run HQ sweep')).not.toBeDisabled());
   });
 
   it('redirects to login on 401 without showing an inline error or switching tabs', async () => {
@@ -210,9 +227,9 @@ describe('DiscoveryPage', () => {
     );
 
     render(<DiscoveryPage />);
-    await screen.findByText('HQ sweep');
+    await screen.findAllByText('HQ sweep');
 
-    fireEvent.click(screen.getByLabelText('Run HQ sweep'));
+    fireEvent.click(desktop().getByLabelText('Run HQ sweep'));
 
     await waitFor(() => {
       expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
@@ -226,6 +243,99 @@ describe('DiscoveryPage', () => {
     expect(screen.queryByTestId('jobs-filter')).not.toBeInTheDocument();
 
     // Spinner still cleared on the early-return path (finally ran).
-    expect(await screen.findByLabelText('Run HQ sweep')).not.toBeDisabled();
+    await waitFor(() => expect(desktop().getByLabelText('Run HQ sweep')).not.toBeDisabled());
+  });
+
+  describe('All-Orgs mode (explicit allOrgs scope, currentOrgId === null)', () => {
+    beforeEach(() => {
+      // Explicit All-Orgs scope: allOrgs flag set, not a transient hydration null.
+      orgStoreState.currentOrgId = null;
+      orgStoreState.currentSiteId = null;
+      orgStoreState.allOrgs = true;
+    });
+
+    it('renders the select-an-organization prompt and does not fire org-scoped requests', async () => {
+      window.history.pushState({}, '', '/discovery#assets');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      // Prompt is shown instead of an error state.
+      expect(
+        await screen.findByText('Select an organization to view network discovery')
+      ).toBeInTheDocument();
+
+      // No tab content is rendered (none of the org-scoped tabs mount).
+      expect(screen.queryByText('Assets tab')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Topology' })).not.toBeInTheDocument();
+
+      // Crucially, the page never fires the org-scoped request that would 400.
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/profiles');
+    });
+
+    it('does not fire the org-scoped asset-detail fetch for an ?asset= deep link', async () => {
+      // The `?asset=<id>` deep link sets topologyAssetId, which would otherwise
+      // fetch the org-scoped /discovery/assets/<id> endpoint and 400 in All-Orgs
+      // mode. The guard must suppress it.
+      window.history.pushState({}, '', '/discovery?asset=asset-9#assets');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      await screen.findByText('Select an organization to view network discovery');
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/assets/asset-9');
+    });
+
+    it('hides the New Profile action while in All-Orgs mode', async () => {
+      window.history.pushState({}, '', '/discovery#profiles');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      await screen.findByText('Select an organization to view network discovery');
+      expect(screen.queryByRole('button', { name: /New Profile/ })).not.toBeInTheDocument();
+    });
+
+    it('restores normal behavior and fetches profiles when a single org is selected', async () => {
+      window.history.pushState({}, '', '/discovery#profiles');
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse(profilesPayload));
+
+      const { rerender } = render(<DiscoveryPage />);
+
+      // Starts on the prompt, no profiles request.
+      await screen.findByText('Select an organization to view network discovery');
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/profiles');
+
+      // User picks a concrete org via the switcher -> store updates, re-render.
+      orgStoreState.currentOrgId = 'org-1';
+      orgStoreState.currentSiteId = 'site-1';
+      orgStoreState.allOrgs = false;
+      rerender(<DiscoveryPage />);
+
+      // Prompt is gone, the profiles tab mounts, and the org-scoped fetch fires.
+      expect(await screen.findByText('HQ sweep')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Select an organization to view network discovery')
+      ).not.toBeInTheDocument();
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/discovery/profiles');
+    });
+  });
+
+  it('does not flash the prompt on a transient pre-hydration null org', async () => {
+    // Before the first org is auto-selected, currentOrgId is null but allOrgs is
+    // false. Single-org users must NOT see the "select an organization" prompt
+    // in this window -- the guard keys on the explicit allOrgs flag.
+    orgStoreState.currentOrgId = null;
+    orgStoreState.currentSiteId = null;
+    orgStoreState.allOrgs = false;
+    window.history.pushState({}, '', '/discovery#assets');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+
+    expect(await screen.findByText('Assets tab')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Select an organization to view network discovery')
+    ).not.toBeInTheDocument();
   });
 });

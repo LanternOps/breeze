@@ -18,6 +18,7 @@ import { captureException } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contracts } from '../db/schema';
 import { generateDueInvoice } from '../services/contractService';
+import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
 import { sendInvoiceEmail } from '../services/invoicePdf';
 
@@ -101,6 +102,9 @@ export function createContractWorker(): Worker {
     CONTRACT_QUEUE,
     async (job) => {
       if (job.name === 'billing-sweep') {
+        // Renewal pre-pass MUST run before billing so an about-to-expire auto-renew
+        // contract has its term extended before generateDueInvoice decides expiry.
+        await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep()));
         return runContractBillingSweep();
       }
       throw new Error(`Unknown contract job: ${job.name}`);

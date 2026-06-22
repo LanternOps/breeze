@@ -74,3 +74,124 @@ func TestClassifyDeviceRole(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyVirtualization(t *testing.T) {
+	tests := []struct {
+		name         string
+		hw           *HardwareInfo
+		wantVirtual  bool
+		wantPlatform string
+	}{
+		{
+			name:         "vmware manufacturer + model",
+			hw:           &HardwareInfo{Manufacturer: "VMware, Inc.", Model: "VMware Virtual Platform"},
+			wantVirtual:  true,
+			wantPlatform: "vmware",
+		},
+		{
+			name:         "vmware modern model string (VMware20,1)",
+			hw:           &HardwareInfo{Manufacturer: "VMware, Inc.", Model: "VMware20,1"},
+			wantVirtual:  true,
+			wantPlatform: "vmware",
+		},
+		{
+			name:         "hyper-v: microsoft manufacturer + Virtual Machine model",
+			hw:           &HardwareInfo{Manufacturer: "Microsoft Corporation", Model: "Virtual Machine"},
+			wantVirtual:  true,
+			wantPlatform: "hyperv",
+		},
+		{
+			name:         "virtualbox via innotek manufacturer",
+			hw:           &HardwareInfo{Manufacturer: "innotek GmbH", Model: "VirtualBox"},
+			wantVirtual:  true,
+			wantPlatform: "virtualbox",
+		},
+		{
+			name:         "qemu manufacturer",
+			hw:           &HardwareInfo{Manufacturer: "QEMU", Model: "Standard PC (Q35 + ICH9, 2009)"},
+			wantVirtual:  true,
+			wantPlatform: "qemu",
+		},
+		{
+			name:         "kvm product name",
+			hw:           &HardwareInfo{Manufacturer: "Red Hat", Model: "KVM"},
+			wantVirtual:  true,
+			wantPlatform: "kvm",
+		},
+		{
+			name:         "xen HVM domU model",
+			hw:           &HardwareInfo{Manufacturer: "Xen", Model: "HVM domU"},
+			wantVirtual:  true,
+			wantPlatform: "xen",
+		},
+		{
+			name:         "parallels virtual platform (mac VDI)",
+			hw:           &HardwareInfo{Manufacturer: "Parallels Software International Inc.", Model: "Parallels Virtual Platform"},
+			wantVirtual:  true,
+			wantPlatform: "parallels",
+		},
+		{
+			name:         "marker matched in BIOS vendor string when model is generic",
+			hw:           &HardwareInfo{Manufacturer: "", Model: "Standard PC", BIOSVersion: "SeaBIOS / VirtualBox"},
+			wantVirtual:  true,
+			wantPlatform: "virtualbox",
+		},
+		{
+			name:         "physical Microsoft Surface is NOT virtual (model is not Virtual Machine)",
+			hw:           &HardwareInfo{Manufacturer: "Microsoft Corporation", Model: "Surface Laptop 5"},
+			wantVirtual:  false,
+			wantPlatform: "",
+		},
+		{
+			name:         "physical Dell workstation is not virtual",
+			hw:           &HardwareInfo{Manufacturer: "Dell Inc.", Model: "OptiPlex 7090"},
+			wantVirtual:  false,
+			wantPlatform: "",
+		},
+		{
+			name:         "physical Apple Mac is not virtual",
+			hw:           &HardwareInfo{Manufacturer: "Apple", Model: "MacBookPro18,3"},
+			wantVirtual:  false,
+			wantPlatform: "",
+		},
+		{
+			name:         "case-insensitive match (lowercased vendor string)",
+			hw:           &HardwareInfo{Manufacturer: "vmware, inc.", Model: "vmware7,1"},
+			wantVirtual:  true,
+			wantPlatform: "vmware",
+		},
+		{
+			// Marker precedence: a QEMU/KVM guest can carry BOTH "qemu" and
+			// "kvm" tokens; qemu is listed before kvm, so first-match-wins must
+			// resolve to qemu (the more specific identifier).
+			name:         "qemu wins over kvm when both tokens present (precedence)",
+			hw:           &HardwareInfo{Manufacturer: "QEMU", Model: "KVM"},
+			wantVirtual:  true,
+			wantPlatform: "qemu",
+		},
+		{
+			name:         "nil hardware is not virtual",
+			hw:           nil,
+			wantVirtual:  false,
+			wantPlatform: "",
+		},
+		{
+			name:         "empty hardware is not virtual",
+			hw:           &HardwareInfo{},
+			wantVirtual:  false,
+			wantPlatform: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyVirtualization(tc.hw)
+			if got.IsVirtual != tc.wantVirtual {
+				t.Errorf("ClassifyVirtualization().IsVirtual = %v, want %v", got.IsVirtual, tc.wantVirtual)
+			}
+			if got.Platform != tc.wantPlatform {
+				t.Errorf("ClassifyVirtualization().Platform = %q, want %q", got.Platform, tc.wantPlatform)
+			}
+		})
+	}
+}

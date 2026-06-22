@@ -11,6 +11,7 @@ import { cn, formatNumber, formatSafeDate, friendlyFetchError } from '@/lib/util
 import { fetchWithAuth } from '@/stores/auth';
 import SecurityPageHeader from './SecurityPageHeader';
 import SecurityStatCard from './SecurityStatCard';
+import { ResponsiveTable, DataCard, CardField } from '../shared/ResponsiveTable';
 
 type Threat = {
   id: string;
@@ -122,6 +123,19 @@ export default function VulnerabilitiesPage() {
 
   const { active, quarantined, critical } = summary;
 
+  // Cell pieces shared by the desktop table and the mobile cards.
+  const renderSeverity = (t: Threat) => (
+    <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize', severityBadge[t.severity])}>
+      {t.severity}
+    </span>
+  );
+
+  const renderStatus = (t: Threat) => (
+    <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize', statusBadge[t.status])}>
+      {t.status}
+    </span>
+  );
+
   if (loading && threats.length === 0) {
     return (
       <div className="space-y-6">
@@ -206,67 +220,101 @@ export default function VulnerabilitiesPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
-        <table className="min-w-full divide-y">
-          <thead className="bg-muted/40">
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
-                  onChange={(e) => toggleAll(e.target.checked)}
-                  className="h-4 w-4 rounded border-border"
-                />
-              </th>
-              <th className="px-4 py-3">Device</th>
-              <th className="px-4 py-3">Threat</th>
-              <th className="px-4 py-3">Category</th>
-              <th className="px-4 py-3">Severity</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Detected</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {threats.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No threats found.
-                </td>
+      <ResponsiveTable
+        table={
+          <table className="min-w-full divide-y bg-card">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                    onChange={(e) => toggleAll(e.target.checked)}
+                    className="h-4 w-4 rounded border-border"
+                  />
+                </th>
+                <th className="px-4 py-3">Device</th>
+                <th className="px-4 py-3">Threat</th>
+                <th className="px-4 py-3">Category</th>
+                <th className="px-4 py-3">Severity</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Detected</th>
               </tr>
-            ) : (
-              threats.map((t) => (
-                <tr key={t.id} className="transition hover:bg-muted/40">
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(t.id)}
-                      onChange={(e) => toggleOne(t.id, e.target.checked)}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-sm font-medium">{t.deviceName}</td>
-                  <td className="px-4 py-3 text-sm">{t.name}</td>
-                  <td className="px-4 py-3 text-sm capitalize text-muted-foreground">{t.category}</td>
-                  <td className="px-4 py-3">
-                    <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize', severityBadge[t.severity])}>
-                      {t.severity}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize', statusBadge[t.status])}>
-                      {t.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatSafeDate(t.detectedAt)}
+            </thead>
+            <tbody className="divide-y">
+              {threats.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    No threats found.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                threats.map((t) => (
+                  <tr key={t.id} className="transition hover:bg-muted/40">
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(t.id)}
+                        onChange={(e) => toggleOne(t.id, e.target.checked)}
+                        className="h-4 w-4 rounded border-border"
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-sm font-medium">{t.deviceName}</td>
+                    <td className="px-4 py-3 text-sm">{t.name}</td>
+                    <td className="px-4 py-3 text-sm capitalize text-muted-foreground">{t.category}</td>
+                    <td className="px-4 py-3">{renderSeverity(t)}</td>
+                    <td className="px-4 py-3">{renderStatus(t)}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">
+                      {formatSafeDate(t.detectedAt)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        }
+        cards={
+          threats.length === 0 ? (
+            <DataCard>
+              <p className="py-2 text-center text-sm text-muted-foreground">No threats found.</p>
+            </DataCard>
+          ) : (
+            threats.map((t) => (
+              <DataCard
+                key={t.id}
+                className={t.severity === 'critical' ? 'bg-destructive/5' : undefined}
+              >
+                <div className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    aria-label={`Select threat ${t.name}`}
+                    checked={selectedIds.has(t.id)}
+                    onChange={(e) => toggleOne(t.id, e.target.checked)}
+                    className="mt-1 h-4 w-4 shrink-0 rounded border-border"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 break-words text-sm font-semibold">{t.name}</span>
+                      {renderSeverity(t)}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">{t.deviceName}</div>
+                  </div>
+                </div>
+                <div className="mt-3 space-y-2 border-t pt-3">
+                  <CardField label="Category">
+                    <span className="text-sm capitalize text-muted-foreground">{t.category}</span>
+                  </CardField>
+                  <CardField label="Status">{renderStatus(t)}</CardField>
+                  <CardField label="Detected">
+                    <span className="text-sm text-muted-foreground">{formatSafeDate(t.detectedAt)}</span>
+                  </CardField>
+                </div>
+              </DataCard>
+            ))
+          )
+        }
+      />
 
       {pagination.totalPages > 1 && (
         <div className="flex items-center justify-between">

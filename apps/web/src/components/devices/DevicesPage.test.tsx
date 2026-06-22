@@ -109,8 +109,7 @@ vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
-vi.mock('./FilterChipBar', () => ({ FilterChipBar: () => null }));
-vi.mock('./QuickAddChips', () => ({ QuickAddChips: () => null }));
+vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable.

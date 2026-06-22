@@ -7,7 +7,8 @@ import {
   remoteSessions,
   devices,
   deviceHardware,
-  users
+  users,
+  organizations
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
@@ -20,6 +21,7 @@ import {
   sessionHistorySchema,
   webrtcOfferSchema,
   webrtcAnswerSchema,
+  sessionDenySchema,
   iceCandidateSchema
 } from './schemas';
 import {
@@ -31,6 +33,9 @@ import {
   checkSessionRateLimit,
   checkUserSessionRateLimit,
   logSessionAudit,
+  classifyConsentDenyAction,
+  resolveRemoteSessionPromptConfig,
+  buildTechnicianDisplay,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
@@ -905,6 +910,42 @@ sessionRoutes.post(
     // idle / max-duration limits) and ship it in the start payload so the agent
     // can enforce it locally — the viewer is untrusted. Findings #2 and #7.
     const desktopPolicy = await resolveDesktopSessionPolicy(device.id);
+
+    // Resolve the consent/notification prompt policy for this device and the
+    // redacted technician identity, then ship it in the start payload so the
+    // agent can render the consent/notification prompt to the end user before
+    // capture starts. The agent enforces consent/deny because the viewer is
+    // untrusted. Only attach `prompt` when the policy isn't `off` (a fully
+    // silent session ships no prompt block at all). Remote-session consent.
+    const promptCfg = await resolveRemoteSessionPromptConfig(device.id);
+    let prompt: Record<string, unknown> | undefined;
+    if (promptCfg.mode !== 'off') {
+      const [tech] = await db
+        .select({ name: users.name, email: users.email })
+        .from(users)
+        .where(eq(users.id, session.userId))
+        .limit(1);
+      const [org] = await db
+        .select({ name: organizations.name })
+        .from(organizations)
+        .where(eq(organizations.id, device.orgId))
+        .limit(1);
+      const technicianDisplay = buildTechnicianDisplay(
+        promptCfg.identityLevel,
+        tech?.name ?? null,
+        tech?.email ?? null,
+        org?.name ?? null,
+      );
+      prompt = {
+        mode: promptCfg.mode,
+        technicianDisplay,
+        consentUnavailableBehavior: promptCfg.consentUnavailableBehavior,
+        consentTimeoutMs: 30000,
+        notifyOnEnd: promptCfg.notifyOnEnd,
+        showIndicator: promptCfg.showIndicator,
+      };
+    }
+
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: `desk-start-${sessionId}`,
       type: 'start_desktop',
@@ -917,7 +958,8 @@ sessionRoutes.post(
         maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
         ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
         ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
-        ...(gpuVendor ? { gpuVendor } : {})
+        ...(gpuVendor ? { gpuVendor } : {}),
+        ...(prompt ? { prompt } : {})
       }
     });
 
@@ -986,11 +1028,105 @@ sessionRoutes.post(
       getTrustedClientIpOrUndefined(c)
     );
 
+    // When the agent answers a session that was gated by a `consent` prompt, it
+    // signals the user's grant via `consentReason: 'user'`. Emit a dedicated
+    // `session_consent_granted` audit alongside `session_connected` so the
+    // consent decision is independently recorded. Notify/off sessions never set
+    // this, so no consent audit is emitted for them.
+    if (data.consentReason === 'user') {
+      await logSessionAudit(
+        'session_consent_granted',
+        auth.user.id,
+        device.orgId,
+        { sessionId, type: session.type, reason: 'user' },
+        getTrustedClientIpOrUndefined(c)
+      );
+    }
+
     return c.json({
       id: updated.id,
       status: updated.status,
       webrtcAnswer: updated.webrtcAnswer,
       startedAt: updated.startedAt
+    });
+  }
+);
+
+// POST /remote/sessions/:id/deny - Report a consent denial / bypass verdict.
+//
+// Agent-facing in intent: the agent reports the end user denied (or the consent
+// prompt was unavailable and policy chose to block) so the session is finalized
+// as `denied` rather than left in `connecting` until it stale-expires.
+//
+// TRANSPORT NOTE (cross-task): the Go agent today relays its desktop verdict via
+// the command-result channel (WS `command_result` / HTTP command-result with
+// agent Bearer auth), NOT via this JWT-scoped route. This endpoint is
+// implemented per the Task 6 spec (mirroring `/answer`'s scope + ownership +
+// state guards) so the web/operator and tests have a first-class deny path;
+// Task 9 must wire the agent's denied verdict through the matching transport
+// (see the failure handler in agentWs.ts, `desk-start-` results) — this route
+// is not the agent's path.
+sessionRoutes.post(
+  '/sessions/:id/deny',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
+  zValidator('json', sessionDenySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: sessionId } = c.req.valid('param');
+    const { reason } = c.req.valid('json');
+
+    const result = await getSessionWithOrgCheck(sessionId, auth);
+    if (!result) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    const { session, device } = result;
+    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    // Only a session still negotiating (connecting) can be denied. Mirrors the
+    // `/answer` state guard: a session already active/disconnected/failed must
+    // not be flipped to denied by a late verdict.
+    if (session.status !== 'connecting') {
+      return c.json({
+        error: 'Cannot deny session in current state',
+        status: session.status
+      }, 400);
+    }
+
+    const [updated] = await db
+      .update(remoteSessions)
+      .set({ status: 'denied', endedAt: new Date() })
+      .where(eq(remoteSessions.id, sessionId))
+      .returning();
+
+    if (!updated) {
+      return c.json({ error: 'Failed to update session' }, 500);
+    }
+
+    // Kill any viewer token so a lingering token can't resurrect the denied
+    // session via /viewer/offer.
+    await revokeViewerSession(sessionId);
+
+    // A genuine user denial or consent timeout is a "denied" decision; any other
+    // reason (no user present, helper absent, policy chose proceed-then-block)
+    // is a bypass/unavailable path, audited distinctly. Shared classifier keeps
+    // this in lockstep with the agent WS command-result path (agentWs.ts).
+    const action = classifyConsentDenyAction(reason);
+    await logSessionAudit(
+      action,
+      session.userId,
+      device.orgId,
+      { sessionId, type: session.type, reason },
+      getTrustedClientIpOrUndefined(c)
+    );
+
+    return c.json({
+      id: updated.id,
+      status: updated.status,
+      endedAt: updated.endedAt
     });
   }
 );

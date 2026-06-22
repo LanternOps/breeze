@@ -19,7 +19,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema/patches', () => ({
   patchPolicies: {
     id: 'patchPolicies.id',
-    orgId: 'patchPolicies.orgId',
+    partnerId: 'patchPolicies.partnerId',
     kind: 'patchPolicies.kind',
     name: 'patchPolicies.name',
     enabled: 'patchPolicies.enabled',
@@ -41,16 +41,17 @@ vi.mock('../db/schema/backup', () => ({ backupConfigs: {} }));
 
 import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';
 
-const ORG_ID = '11111111-1111-1111-1111-111111111111';
+const PARTNER_ID = '00000000-0000-0000-0000-000000000001';
 const RING_ID = '22222222-2222-2222-2222-222222222222';
 
 function makeAuth() {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-    scope: 'organization',
-    orgId: ORG_ID,
-    accessibleOrgIds: [ORG_ID],
-    canAccessOrg: (orgId: string) => orgId === ORG_ID,
+    scope: 'partner',
+    partnerId: PARTNER_ID,
+    orgId: null,
+    accessibleOrgIds: [],
+    canAccessOrg: () => false,
     orgCondition: () => undefined,
   } as any;
 }
@@ -123,7 +124,7 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
   });
 
   it('rejects update with autoApprove { enabled: true, severities: [] } and does NOT write', async () => {
-    mockSelectReturns({ id: RING_ID, orgId: ORG_ID, name: 'Ring A', kind: 'ring' });
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
     mockUpdate();
     const tool = getTool();
     const output = await tool.handler(
@@ -212,7 +213,7 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
   });
 
   it('accepts a valid enabled update and writes the normalized autoApprove', async () => {
-    mockSelectReturns({ id: RING_ID, orgId: ORG_ID, name: 'Ring A', kind: 'ring' });
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
     mockUpdate();
     const tool = getTool();
     const output = await tool.handler(
@@ -228,5 +229,39 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     expect(updateMock).toHaveBeenCalledTimes(1);
     const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
     expect(setArg.autoApprove).toMatchObject({ enabled: true, severities: ['low'] });
+  });
+
+  it('rejects create and other actions for org-scope callers', async () => {
+    const tool = getTool();
+    const orgAuth = {
+      user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+      scope: 'organization',
+      partnerId: null,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      canAccessOrg: () => true,
+      orgCondition: () => undefined,
+    } as any;
+
+    for (const action of ['list', 'get', 'create', 'update']) {
+      const output = await tool.handler({ action, ringId: RING_ID, name: 'X' }, orgAuth);
+      const parsed = JSON.parse(output);
+      expect(parsed.error).toMatch(/partner scope/i);
+    }
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('create writes partnerId (not orgId) when called with partner scope', async () => {
+    mockInsertReturns({ id: RING_ID, name: 'Ring B' });
+    const tool = getTool();
+    const output = await tool.handler(
+      { action: 'create', name: 'Ring B' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const written = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(written.partnerId).toBe(PARTNER_ID);
+    expect(written.orgId).toBeUndefined();
   });
 });

@@ -52,9 +52,12 @@ RUN pnpm build
 FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS runner
 WORKDIR /app
 
-# Install security updates and wget for healthcheck.
+# Install security updates and wget for healthcheck; remove the base image's
+# bundled npm (CVE-2026-12151 vendored undici) since the runtime entrypoint is
+# `node`, not npm.
 RUN apk upgrade --no-cache libcrypto3 libssl3 && \
-    apk add --no-cache wget
+    apk add --no-cache wget && \
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Default base path used by the healthcheck (overridable at runtime).
 ENV NODE_ENV=production

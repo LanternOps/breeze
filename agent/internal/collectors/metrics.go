@@ -7,7 +7,6 @@ import (
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 )
@@ -120,12 +119,7 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 		metrics.CPUPercent = pct
 	}
 
-	// Memory
-	vmem, err := mem.VirtualMemory()
-	if err == nil {
-		metrics.RAMPercent = vmem.UsedPercent
-		metrics.RAMUsedMB = vmem.Used / 1024 / 1024
-	}
+	collectMemoryMetrics(metrics)
 
 	// Disk (root partition)
 	diskUsage, err := disk.Usage("/")
