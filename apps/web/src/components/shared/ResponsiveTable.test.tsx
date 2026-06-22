@@ -58,16 +58,18 @@ describe('CardField', () => {
 });
 
 describe('CardActions', () => {
-  it('enlarges contained buttons to a 44px touch target on mobile', () => {
+  it('floors contained buttons and links to a 44px touch target on mobile', () => {
     render(
       <CardActions>
         <button type="button">act</button>
       </CardActions>,
     );
     const row = screen.getByText('act').parentElement!;
-    // 44px == h-11/w-11; the [&_button] variant overrides the compact desktop size.
-    expect(row.className).toContain('[&_button]:h-11');
-    expect(row.className).toContain('[&_button]:w-11');
+    // 44px == min-h-11/min-w-11 (a floor, not a clamp), applied to both <button>
+    // and <a> actions so a link-style action isn't left below the tap minimum.
+    expect(row.className).toContain('[&_button]:min-h-11');
+    expect(row.className).toContain('[&_button]:min-w-11');
+    expect(row.className).toContain('[&_a]:min-h-11');
     expect(row.className).toContain('border-t');
   });
 

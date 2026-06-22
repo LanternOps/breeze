@@ -467,11 +467,13 @@ export default function NetworkBaselinesPanel({
                 </p>
               </DataCard>
             ) : (
-              baselines.map((baseline) => (
+              baselines.map((baseline) => {
+                const enabledAlerts = enabledAlertsFor(baseline);
+                return (
                 <DataCard key={baseline.id}>
                   <div className="font-mono text-sm font-semibold">{baseline.subnet}</div>
                   <div className="text-xs text-muted-foreground">
-                    Alerts: {enabledAlertsFor(baseline).length > 0 ? enabledAlertsFor(baseline).join(', ') : 'none'}
+                    Alerts: {enabledAlerts.length > 0 ? enabledAlerts.join(', ') : 'none'}
                   </div>
                   <div className="mt-3 space-y-2 border-t pt-3">
                     <CardField label="Site">
@@ -490,7 +492,8 @@ export default function NetworkBaselinesPanel({
                   </div>
                   <CardActions>{renderActions(baseline)}</CardActions>
                 </DataCard>
-              ))
+                );
+              })
             )
           }
         />
