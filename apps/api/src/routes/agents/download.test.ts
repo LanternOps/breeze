@@ -136,6 +136,61 @@ describe('public agent binary downloads', () => {
   });
 });
 
+describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)', () => {
+  const originalAgentDir = process.env.AGENT_BINARY_DIR;
+  const originalHelperDir = process.env.HELPER_BINARY_DIR;
+
+  beforeEach(() => {
+    // Point at non-existent dirs so any disk fallback would 404 — proving the
+    // 500 comes from the S3 guard, not from a disk hit.
+    process.env.AGENT_BINARY_DIR = '/tmp/breeze-nonexistent-agent-binaries';
+    process.env.HELPER_BINARY_DIR = '/tmp/breeze-nonexistent-helper-binaries';
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(isS3Configured).mockReturnValue(true);
+    vi.mocked(getPresignedUrl).mockRejectedValue(
+      Object.assign(new Error('credentials expired'), { name: 'CredentialsProviderError' }),
+    );
+  });
+
+  afterEach(() => {
+    if (originalAgentDir === undefined) delete process.env.AGENT_BINARY_DIR;
+    else process.env.AGENT_BINARY_DIR = originalAgentDir;
+    if (originalHelperDir === undefined) delete process.env.HELPER_BINARY_DIR;
+    else process.env.HELPER_BINARY_DIR = originalHelperDir;
+    vi.restoreAllMocks();
+    vi.mocked(getBinarySource).mockReset();
+    vi.mocked(isS3Configured).mockReset();
+    vi.mocked(getPresignedUrl).mockReset();
+  });
+
+  it.each([
+    ['agent', '/download/linux/amd64', '[agent-download]'],
+    ['helper', '/download/helper/linux/amd64', '[helper-download]'],
+    ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]'],
+  ])('returns 500 for the %s route on a non-NotFound S3 error', async (_name, path, logTag) => {
+    const res = await downloadRoutes.request(path);
+    const body = await res.text();
+
+    expect(res.status).toBe(500);
+    expect(body).not.toContain('not available');
+    expect(body).not.toContain('/tmp');
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(`${logTag} S3 presign failed`),
+      expect.anything(),
+    );
+  });
+
+  it('still falls back to disk and 404s when the S3 object genuinely does not exist', async () => {
+    vi.mocked(getPresignedUrl).mockRejectedValue(
+      Object.assign(new Error('missing'), { name: 'NotFound' }),
+    );
+    const res = await downloadRoutes.request('/download/linux/amd64');
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('public agent .pkg downloads — per-arch serving', () => {
   const originalAgentDir = process.env.AGENT_BINARY_DIR;
   let tmp: string;
@@ -214,6 +269,29 @@ describe('public agent .pkg downloads — per-arch serving', () => {
 
     expect(res.status).toBe(404);
     expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[pkg-download] S3 object missing'),
+      expect.anything(),
+    );
+  });
+
+  it('returns 500 (not a masked 404) when the S3 presign fails with a transport/auth error', async () => {
+    // issue #1802 item 3: a non-NotFound S3 fault (network/credentials/throttle)
+    // must NOT fall through to disk and 404 — on hosted infra there are no
+    // binaries on disk, so the real error would be hidden as "package not found".
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(isS3Configured).mockReturnValue(true);
+    vi.mocked(getPresignedUrl).mockRejectedValue(
+      Object.assign(new Error('connection reset'), { name: 'TimeoutError' }),
+    );
+
+    const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
+    const body = await res.text();
+
+    expect(res.status).toBe(500);
+    // Must not be masked as a not-found, and must not leak internals.
+    expect(body).not.toContain('not found');
+    expect(body).not.toContain('/tmp');
+    expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining('[pkg-download] S3 presign failed'),
       expect.anything(),
     );

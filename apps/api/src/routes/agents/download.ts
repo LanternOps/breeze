@@ -7,6 +7,17 @@ import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelp
 
 export const downloadRoutes = new Hono();
 
+// A presigned-URL failure is only "the object isn't there" for NotFound /
+// NoSuchKey — anything else (network, credentials, throttling, DNS) is a real
+// S3 transport/auth fault. Distinguishing them matters because the disk
+// fallback below 404s when the binary isn't on local disk: on hosted infra
+// (S3-only, no binaries on disk) a transport fault would otherwise be masked as
+// a misleading "binary not found" 404 instead of surfacing as a 500 (issue #1802).
+function isS3NotFound(err: unknown): boolean {
+  const errName = (err as { name?: string }).name;
+  return errName === 'NotFound' || errName === 'NoSuchKey';
+}
+
 // ============================================
 // Agent Binary Download (public, no auth)
 // ============================================
@@ -50,10 +61,13 @@ downloadRoutes.get('/download/:os/:arch', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[agent-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        // Real S3 transport/auth fault — surface it instead of masking it as a
+        // disk-fallback 404. The binary may well exist in S3; we just couldn't reach it.
+        console.error(`[agent-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+      }
+      console.warn(`[agent-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -141,10 +155,11 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
       const url = await getPresignedUrl(`agent/${filename}`);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[pkg-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        console.error(`[pkg-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve installer package' }, 500);
+      }
+      console.warn(`[pkg-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -230,10 +245,11 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[helper-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        console.error(`[helper-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+      }
+      console.warn(`[helper-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 
@@ -317,10 +333,11 @@ downloadRoutes.get('/download/watchdog/:os/:arch', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[watchdog-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        console.error(`[watchdog-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+      }
+      console.warn(`[watchdog-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 
