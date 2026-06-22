@@ -125,7 +125,6 @@ describe('AssetDetailModal — SNMP data card', () => {
   it('renders collected SNMP fields with friendly labels (#1731)', () => {
     const snmpAsset: AssetDetail = {
       ...asset,
-      discoveryMethods: ['ping', 'snmp'],
       snmpData: { sysName: 'core-sw-01', sysDescr: 'Cisco IOS', sysObjectId: '1.3.6.1.4.1.9.1.1' },
     };
     render(<AssetDetailModal open asset={snmpAsset} devices={devices} onClose={() => {}} />);
@@ -135,20 +134,28 @@ describe('AssetDetailModal — SNMP data card', () => {
     expect(screen.getByText('Description')).toBeInTheDocument();
     expect(screen.getByText('Cisco IOS')).toBeInTheDocument();
     expect(screen.getByText('Object ID')).toBeInTheDocument();
-    expect(screen.queryByText(/No SNMP/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No SNMP data was collected/i)).not.toBeInTheDocument();
   });
 
-  it('explains a blank card when SNMP was attempted but got no response', () => {
-    const noResponse: AssetDetail = { ...asset, discoveryMethods: ['ping', 'snmp'], snmpData: {} };
-    render(<AssetDetailModal open asset={noResponse} devices={devices} onClose={() => {}} />);
+  it('renders an unmapped SNMP OID key verbatim', () => {
+    const snmpAsset: AssetDetail = {
+      ...asset,
+      snmpData: { sysContact: 'noc@example.com' },
+    };
+    render(<AssetDetailModal open asset={snmpAsset} devices={devices} onClose={() => {}} />);
 
-    expect(screen.getByText(/No SNMP response/i)).toBeInTheDocument();
+    // Falls back to the raw key when not in SNMP_FIELD_LABELS.
+    expect(screen.getByText('sysContact')).toBeInTheDocument();
+    expect(screen.getByText('noc@example.com')).toBeInTheDocument();
   });
 
-  it('explains a blank card when SNMP was not probed at all', () => {
-    const notProbed: AssetDetail = { ...asset, discoveryMethods: ['ping'], snmpData: {} };
-    render(<AssetDetailModal open asset={notProbed} devices={devices} onClose={() => {}} />);
+  it('shows a non-asserting empty-state when no SNMP data was collected', () => {
+    // The blank card must not assert a definitive cause: discoveryMethods is a
+    // "method that returned data" signal, not "method attempted", so we cannot
+    // tell "not probed" from "probed, no response" (#1731 review).
+    const blank: AssetDetail = { ...asset, snmpData: {} };
+    render(<AssetDetailModal open asset={blank} devices={devices} onClose={() => {}} />);
 
-    expect(screen.getByText(/SNMP was not probed/i)).toBeInTheDocument();
+    expect(screen.getByText(/No SNMP data was collected/i)).toBeInTheDocument();
   });
 });

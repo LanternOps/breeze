@@ -243,7 +243,6 @@ export default function AssetDetailModal({
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';
   const snmpData = asset.snmpData ?? {};
-  const snmpAttempted = (asset.discoveryMethods ?? []).includes('snmp');
 
   return (
     <Dialog open={open} onClose={onClose} title={asset.label || asset.hostname || asset.ip} maxWidth="5xl" alignTop className="flex flex-col max-h-[calc(100vh-4rem)]">
@@ -320,9 +319,9 @@ export default function AssetDetailModal({
               <dl className="mt-3 space-y-2 text-sm">
                 {Object.keys(snmpData).length === 0 ? (
                   <div className="text-xs text-muted-foreground">
-                    {snmpAttempted
-                      ? 'No SNMP response — the asset did not answer the SNMP probe (check the community string in the discovery profile, or it may not have SNMP enabled).'
-                      : 'SNMP was not probed for this asset. Enable the SNMP method on the discovery profile to collect SNMP data.'}
+                    No SNMP data was collected — the device may not have responded, or
+                    SNMP was not probed. Check that the SNMP method is enabled and the
+                    community string is set on the discovery profile.
                   </div>
                 ) : (
                   Object.entries(snmpData).map(([key, value]) => (
