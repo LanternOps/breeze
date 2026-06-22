@@ -165,8 +165,8 @@ describe('PatchesPage', () => {
 
     render(<PatchesPage />);
 
-    await screen.findByText('Critical Security Update');
-    fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
+    await screen.findAllByText('Critical Security Update');
+    fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
     // Wait for selection state to commit before clicking the conditionally-rendered Approve button.
     fireEvent.click(await screen.findByRole('button', { name: 'Approve 1' }));
 
