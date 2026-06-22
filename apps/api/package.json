@@ -60,7 +60,7 @@
     "hono": "^4.12.25",
     "ioredis": "^5.10.1",
     "jose": "^6.2.3",
-    "nanoid": "^5.1.11",
+    "nanoid": "^5.1.15",
     "node-stream-zip": "^1.15.0",
     "nodemailer": "^9.0.1",
     "oidc-provider": "^9",
