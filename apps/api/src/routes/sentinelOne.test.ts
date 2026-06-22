@@ -467,6 +467,112 @@ describe('sentinel one routes', () => {
     });
   });
 
+  // ───────────────────── B2: GET /integration ─────────────────────
+  describe('GET /integration', () => {
+    const INTEGRATION_ROW = {
+      id: INTEGRATION_ID,
+      partnerId: PARTNER_ID,
+      name: 'S1 Prod',
+      managementUrl: 'https://example.sentinelone.net',
+      isActive: true,
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      hasApiToken: true,
+    };
+
+    // Mocks the integration lookup (db.select from s1Integrations)
+    function mockIntegrationLookup(result: typeof INTEGRATION_ROW | null) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(result ? [result] : [])
+          })
+        })
+      } as any);
+    }
+
+    // Mocks the s1OrgMappings mapped-check (db.select from s1OrgMappings)
+    function mockMappingLookup(found: boolean) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(found ? [{ id: 'mapping-1' }] : [])
+          })
+        })
+      } as any);
+    }
+
+    it('(a) org-scope caller whose org IS mapped returns 200 with integration data', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      authState.partnerId = PARTNER_ID;
+
+      mockIntegrationLookup(INTEGRATION_ROW);
+      mockMappingLookup(true);
+
+      const res = await app.request('/s1/integration');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).not.toBeNull();
+      expect(body.data.id).toBe(INTEGRATION_ID);
+      expect(body.data.partnerId).toBe(PARTNER_ID);
+      // Verify the mapping check ran (db.select called twice: integration + mapping)
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('(b) org-scope caller whose org is NOT mapped returns 200 with mapped:false and data:null', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      authState.partnerId = PARTNER_ID;
+
+      mockIntegrationLookup(INTEGRATION_ROW);
+      mockMappingLookup(false);
+
+      const res = await app.request('/s1/integration');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toBeNull();
+      expect(body.mapped).toBe(false);
+      // Verify the mapping check did run (not skipped)
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('(c) org-scope caller passing a different orgId than their own gets 403', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      authState.partnerId = PARTNER_ID;
+
+      // Integration lookup runs first (before resolveOrgId is called)
+      mockIntegrationLookup(INTEGRATION_ROW);
+      // No mapping lookup should run — the 403 fires first
+
+      const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
+      const res = await app.request(`/s1/integration?orgId=${OTHER_ORG_ID}`);
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/organization/i);
+      // Mapping check must NOT have run (only 1 select: the integration lookup)
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('(d) org-scope caller passing a partnerId that does not match their own gets 403', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      authState.partnerId = PARTNER_ID;
+
+      // resolvePartnerId fires before the DB lookup — no select should run
+      const res = await app.request(`/s1/integration?partnerId=${OTHER_PARTNER_ID}`);
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner/i);
+      // No DB calls should have been made
+      expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
   // ───────────────────── B3: POST /organizations/map ─────────────────────
   describe('POST /organizations/map', () => {
     it('rejects org scope with 403', async () => {

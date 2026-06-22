@@ -847,7 +847,6 @@ sentinelOneRoutes.post(
   '/sync',
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  requireMfa(),
   zValidator('json', syncSchema),
   async (c) => {
     const auth = c.get('auth');
