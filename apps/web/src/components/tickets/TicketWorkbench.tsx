@@ -63,6 +63,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [triageSuggestion, setTriageSuggestion] = useState<TicketTriageSuggestion | null>(null);
   const [triageLoading, setTriageLoading] = useState(false);
   const [applyingTriage, setApplyingTriage] = useState(false);
@@ -351,6 +353,36 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     afterMutation();
   }, [ticketId, afterMutation]);
 
+  // Generic field PATCH — saves any { subject } / { description } / etc. patch.
+  // afterMutation with the optimistic patch paints the change locally and
+  // reconciles in the background (same pattern as priority/category PATCHes).
+  const handleFieldSave = useCallback((patch: Record<string, unknown>) => {
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+      errorFallback: 'Update failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => afterMutation(patch as Partial<TicketDetail>)).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, afterMutation]);
+
+  const handleEditComment = useCallback((commentId: string, current: string) => {
+    const next = window.prompt('Edit comment', current);
+    if (next == null || next.trim() === '' || next === current) return;
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ content: next }) }),
+      errorFallback: 'Comment edit failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, load]);
+
+  const handleDeleteComment = useCallback((commentId: string) => {
+    if (!window.confirm('Delete this comment?')) return;
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'DELETE' }),
+      errorFallback: 'Comment delete failed. Retry.',
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, load]);
+
   // Skeleton only on the first load of a ticket. Refreshes (send, status
   // change, refreshToken bump) keep the tree mounted so composer state —
   // the public/internal tab in particular — survives; aria-busy marks them.
@@ -392,7 +424,32 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       <div className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm text-muted-foreground" data-testid="ticket-workbench-number">{ticket.internalNumber ?? ticket.id.slice(0, 8)}</span>
-          <h2 className="truncate text-base font-semibold">{ticket.subject}</h2>
+          <input
+            type="text"
+            defaultValue={ticket.subject}
+            key={ticket.subject}
+            className="min-w-0 flex-1 truncate bg-transparent text-base font-semibold outline-none hover:bg-muted/30 focus:bg-muted/30 focus:ring-1 focus:ring-ring rounded px-1 -mx-1"
+            data-testid="ticket-workbench-subject-edit"
+            aria-label="Ticket subject"
+            onBlur={(e) => {
+              const next = e.target.value.trim();
+              if (!next || next === ticket.subject) return;
+              handleFieldSave({ subject: next });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                const next = (e.target as HTMLInputElement).value.trim();
+                if (!next || next === ticket.subject) return;
+                handleFieldSave({ subject: next });
+                (e.target as HTMLInputElement).blur();
+              }
+              if (e.key === 'Escape') {
+                (e.target as HTMLInputElement).value = ticket.subject;
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
           {!expanded && (
             <a href={`/tickets/${ticket.id}`} className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground" title="Open full page" data-testid="ticket-workbench-expand">
               <ExternalLink className="h-4 w-4" />
@@ -646,12 +703,64 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {ticket.description && (
-              <div className="border-b p-4">
-                <p className="whitespace-pre-wrap text-sm">{ticket.description}</p>
-              </div>
-            )}
-            <TicketFeed comments={ticket.comments} />
+            <div className="border-b p-4">
+              {editingDescription ? (
+                <div className="space-y-2">
+                  <textarea
+                    ref={descriptionTextareaRef}
+                    className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                    rows={4}
+                    defaultValue={ticket.description ?? ''}
+                    data-testid="ticket-workbench-description-textarea"
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingDescription(false)}
+                      className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+                      data-testid="ticket-workbench-description-cancel-btn"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = descriptionTextareaRef.current?.value ?? '';
+                        handleFieldSave({ description: next });
+                        setEditingDescription(false);
+                      }}
+                      className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
+                      data-testid="ticket-workbench-description-save-btn"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="group flex items-start gap-2">
+                  {ticket.description ? (
+                    <p className="flex-1 whitespace-pre-wrap text-sm">{ticket.description}</p>
+                  ) : (
+                    <p className="flex-1 text-sm text-muted-foreground italic">No description.</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setEditingDescription(true); }}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
+                    data-testid="ticket-workbench-description-edit-btn"
+                  >
+                    {ticket.description ? 'Edit' : 'Add description'}
+                  </button>
+                </div>
+              )}
+            </div>
+            <TicketFeed
+              comments={ticket.comments}
+              onEditComment={handleEditComment}
+              onDeleteComment={handleDeleteComment}
+              canManageComment={(c) => !c.portalUserId}
+            />
           </div>
           <TicketComposer requesterName={ticket.submitterName} onSend={sendComment} />
         </div>
