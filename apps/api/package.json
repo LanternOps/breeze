@@ -72,7 +72,7 @@
     "qrcode": "^1.5.4",
     "resend": "^6.12.4",
     "stripe": "^22.0.2",
-    "twilio": "^5.12.1",
+    "twilio": "^6.0.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
