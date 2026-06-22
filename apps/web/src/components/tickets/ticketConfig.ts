@@ -21,6 +21,7 @@ export interface TicketSummary {
   assigneeName: string | null;
   categoryId: string | null;
   dueDate: string | null;
+  tags: string[];
   slaBreachedAt: string | null;
   resolutionSlaMinutes?: number | null;
   responseSlaMinutes?: number | null;

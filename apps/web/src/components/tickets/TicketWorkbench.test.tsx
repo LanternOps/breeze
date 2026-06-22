@@ -48,6 +48,7 @@ const makeTicket = (overrides: Partial<TicketDetail> = {}): TicketDetail => ({
   assigneeName: null,
   categoryId: null,
   dueDate: null,
+  tags: [],
   slaBreachedAt: null,
   firstResponseAt: null,
   createdAt: '2026-06-01T10:00:00.000Z',
@@ -1339,5 +1340,201 @@ describe('TicketWorkbench comment edit/delete', () => {
     await screen.findByTestId('ticket-comment-delete-c-staff');
     expect(screen.getByTestId('ticket-comment-edit-c-staff')).toBeInTheDocument();
     expect(screen.getByTestId('ticket-comment-delete-c-staff')).toBeInTheDocument();
+  });
+});
+
+// ─── Due date, tags, device editors ──────────────────────────────────────────
+
+describe('TicketWorkbench due-date editor', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('renders a date input with testid ticket-workbench-due', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ dueDate: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-due')).toBeInTheDocument();
+  });
+
+  it('PATCHes dueDate when the date input changes', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ dueDate: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-due');
+    fireEvent.change(screen.getByTestId('ticket-workbench-due'), {
+      target: { value: '2026-07-15' },
+    });
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.dueDate).toBeTruthy();
+      expect(body.dueDate).toContain('2026-07-15');
+    });
+  });
+
+  it('PATCHes dueDate as null when the date input is cleared', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ dueDate: '2026-07-15T00:00:00.000Z' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-due');
+    fireEvent.change(screen.getByTestId('ticket-workbench-due'), {
+      target: { value: '' },
+    });
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.dueDate).toBeNull();
+    });
+  });
+});
+
+describe('TicketWorkbench tags editor', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('renders the tag editor container with testid ticket-workbench-tags', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: [] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-tags')).toBeInTheDocument();
+  });
+
+  it('PATCHes tags when a tag is added', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: ['existing'] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-tags');
+    const tagInput = screen.getByTestId('ticket-workbench-tag-input');
+    fireEvent.change(tagInput, { target: { value: 'urgent' } });
+    fireEvent.keyDown(tagInput, { key: 'Enter' });
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.tags).toEqual(['existing', 'urgent']);
+    });
+  });
+
+  it('does NOT add a duplicate tag', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: ['existing'] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-tags');
+    const tagInput = screen.getByTestId('ticket-workbench-tag-input');
+    fireEvent.change(tagInput, { target: { value: 'existing' } });
+    fireEvent.keyDown(tagInput, { key: 'Enter' });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('tags')
+      )
+    ).toHaveLength(0);
+  });
+
+  it('PATCHes tags when a chip is removed', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ tags: ['alpha', 'beta'] }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-tags');
+    fireEvent.click(screen.getByTestId('ticket-workbench-tag-remove-alpha'));
+
+    await waitFor(() => {
+      const patchCalls = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1'
+      );
+      expect(patchCalls.length).toBeGreaterThan(0);
+      const body = JSON.parse(patchCalls[patchCalls.length - 1][1]?.body as string);
+      expect(body.tags).toEqual(['beta']);
+    });
+  });
+});
+
+describe('TicketWorkbench device link/unlink', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    }
+  });
+
+  it('renders the device container with testid ticket-workbench-device', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-device')).toBeInTheDocument();
+  });
+
+  it('shows "No device" when deviceId is null', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.getByTestId('ticket-workbench-device')).toHaveTextContent('No device');
+  });
+
+  it('shows the device hostname when linked', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.getByTestId('ticket-workbench-device')).toHaveTextContent('DESKTOP-123');
+  });
+
+  it('clears the device link when Unlink is clicked (PATCHes {deviceId: null})', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-unlink'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ deviceId: null }) })
+      );
+    });
+  });
+
+  it('does NOT show an Unlink button when deviceId is null', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.queryByTestId('ticket-workbench-device-unlink')).toBeNull();
   });
 });

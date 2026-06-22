@@ -16,6 +16,63 @@ import { fetchTicketConfig, statusLabel, priorityLabel, activeStatusesByCore, ty
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
+// ─── TagEditor ───────────────────────────────────────────────────────────────
+
+interface TagEditorProps {
+  value: string[];
+  max?: number;
+  onChange: (tags: string[]) => void;
+  'data-testid'?: string;
+}
+
+function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEditorProps) {
+  const [input, setInput] = useState('');
+
+  const addTag = () => {
+    const trimmed = input.trim().slice(0, 50);
+    if (!trimmed || value.includes(trimmed) || value.length >= max) return;
+    onChange([...value, trimmed]);
+    setInput('');
+  };
+
+  return (
+    <div data-testid={testId} className="flex flex-wrap gap-1">
+      {value.map((tag) => (
+        <span key={tag} className="flex items-center gap-0.5 rounded border bg-muted px-1.5 py-0.5 text-xs">
+          {tag}
+          <button
+            type="button"
+            data-testid={`ticket-workbench-tag-remove-${tag}`}
+            className="ml-0.5 hover:text-destructive"
+            onClick={() => onChange(value.filter((t) => t !== tag))}
+            aria-label={`Remove tag ${tag}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      {value.length < max && (
+        <input
+          type="text"
+          data-testid="ticket-workbench-tag-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); addTag(); }
+          }}
+          onBlur={addTag}
+          placeholder="Add tag…"
+          maxLength={50}
+          className="rounded border bg-background px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          aria-label="Add tag"
+        />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface Props {
   ticketId: string;
   onChanged?: () => void;       // queue refresh hook (debounced background reconcile)
@@ -775,7 +832,48 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 <div><dt className="text-xs text-muted-foreground">Requester</dt><dd>{ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}</dd></div>
                 <div><dt className="text-xs text-muted-foreground">Source</dt><dd className="capitalize">{ticket.source}</dd></div>
                 <div><dt className="text-xs text-muted-foreground">Created</dt><dd>{formatDateTime(ticket.createdAt)}</dd></div>
-                {ticket.dueDate && <div><dt className="text-xs text-muted-foreground">Due</dt><dd>{formatDateTime(ticket.dueDate)}</dd></div>}
+                <div>
+                  <dt className="text-xs text-muted-foreground">Due date</dt>
+                  <dd>
+                    <input
+                      type="date"
+                      data-testid="ticket-workbench-due"
+                      aria-label="Due date"
+                      value={ticket.dueDate ? ticket.dueDate.slice(0, 10) : ''}
+                      onChange={(e) => handleFieldSave({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                      className="rounded-md border bg-background px-2 py-1 text-xs"
+                    />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Tags</dt>
+                  <dd>
+                    <TagEditor
+                      data-testid="ticket-workbench-tags"
+                      value={ticket.tags ?? []}
+                      max={20}
+                      onChange={(tags) => handleFieldSave({ tags })}
+                    />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Device</dt>
+                  <dd>
+                    <div data-testid="ticket-workbench-device" className="flex items-center gap-2 text-xs">
+                      <span>{ticket.deviceHostname ?? 'No device'}</span>
+                      {ticket.deviceId && (
+                        <button
+                          type="button"
+                          data-testid="ticket-workbench-device-unlink"
+                          className="hover:text-destructive"
+                          onClick={() => handleFieldSave({ deviceId: null })}
+                        >
+                          Unlink
+                        </button>
+                      )}
+                    </div>
+                  </dd>
+                </div>
                 {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">Waiting on</dt><dd>{ticket.pendingReason}</dd></div>}
                 {ticket.resolutionNote && (ticket.status === 'resolved' || ticket.status === 'closed') && (
                   <div><dt className="text-xs text-muted-foreground">Resolution</dt><dd>{ticket.resolutionNote}</dd></div>
