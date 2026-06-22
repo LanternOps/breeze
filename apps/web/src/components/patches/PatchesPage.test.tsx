@@ -113,7 +113,8 @@ describe('PatchesPage', () => {
 
     fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
     fireEvent.click(desktop().getByRole('button', { name: 'Select Feature Update' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Approve 2' }));
+    // Wait for selection state to commit before clicking the conditionally-rendered Approve button.
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve 2' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -166,7 +167,8 @@ describe('PatchesPage', () => {
 
     await screen.findByText('Critical Security Update');
     fireEvent.click(screen.getByRole('button', { name: 'Select Critical Security Update' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
+    // Wait for selection state to commit before clicking the conditionally-rendered Approve button.
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve 1' }));
 
     // Guard must NOT throw — the request must fire
     await waitFor(() => {
@@ -206,7 +208,8 @@ describe('PatchesPage', () => {
 
     await screen.findAllByText('Critical Security Update');
     fireEvent.click(desktop().getByRole('button', { name: 'Select Critical Security Update' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Approve 1' }));
+    // Wait for selection state to commit before clicking the conditionally-rendered Approve button.
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve 1' }));
 
     await screen.findByText(/patch approvals are managed at the partner level/i);
     expect(fetchMock).not.toHaveBeenCalledWith('/patches/bulk-approve', expect.anything());
