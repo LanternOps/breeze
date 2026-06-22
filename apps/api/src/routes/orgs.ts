@@ -1268,11 +1268,12 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     .orderBy(sites.createdAt);
 
   // Enrich each site with its device count. The `sites` row carries no count
-  // column, so without this the web SiteList renders `deviceCount` as 0 for
-  // every site even when the org has devices (issue #1790). Compute it with a
-  // single grouped query over the returned page's site ids — `devices` is
-  // org-scoped under RLS so this stays tenant-isolated. Guard on a non-empty
-  // page so an empty list never issues a `site_id IN ()` query.
+  // column, so without this the API omits `deviceCount` entirely and the web
+  // SiteList (which renders `site.deviceCount` with no fallback) shows a blank
+  // count for every site even when the org has devices (issue #1790). Compute
+  // it with a single grouped query over the returned page's site ids —
+  // `devices` is org-scoped under RLS so this stays tenant-isolated. Guard on a
+  // non-empty page so an empty list never issues a `site_id IN ()` query.
   const deviceCountBySite = new Map<string, number>();
   const siteIds = data.map((s) => s.id);
   if (siteIds.length > 0) {

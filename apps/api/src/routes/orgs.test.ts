@@ -2051,6 +2051,40 @@ describe('org routes', () => {
         expect(body.data.find((s: { id: string }) => s.id === 'site-x').deviceCount).toBe(1);
         expect(body.data.find((s: { id: string }) => s.id === 'site-y').deviceCount).toBe(0);
       });
+
+      it('skips the device-count query when the site page is empty (#1790 guard)', async () => {
+        // The org is accessible and the count/page queries run, but the page
+        // comes back empty (e.g. an org with no sites). The handler's
+        // `siteIds.length > 0` guard must skip the device-count query rather
+        // than issue a malformed `site_id IN ()`. Only TWO db.select calls
+        // (count + page) should happen — never a third.
+        setAuthContext({ scope: 'organization', orgId: ORG });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 0 }])
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockResolvedValue([])
+                  })
+                })
+              })
+            })
+          } as any);
+
+        const res = await app.request(`/orgs/sites?orgId=${ORG}`);
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([]);
+        // Exactly two selects: the device-count query was skipped for the empty page.
+        expect(db.select).toHaveBeenCalledTimes(2);
+      });
     });
   });
 
