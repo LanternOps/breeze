@@ -1734,6 +1734,31 @@ describe('editTicketComment', () => {
     expect(result.content).toBe('x');
   });
 
+  it('throws 404 when expectedTicketId is provided but does not match the comment ticketId', async () => {
+    // Comment belongs to ticket 't1'; caller supplies a different URL ticket id.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])  // loadCommentWithTicket: comment lookup (ticketId='t1')
+      .mockResolvedValueOnce([BASE_TICKET]);  // loadCommentWithTicket: getTicketOrThrow
+
+    const err = await editTicketComment('c1', { content: 'x' }, { userId: 'tech-1' }, { canManageAny: true, expectedTicketId: 'other-ticket-id' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    // Must not reveal the comment exists or write any audit/event
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('passes through when expectedTicketId is omitted (backward-compat)', async () => {
+    const updatedRow = { ...BASE_COMMENT, content: 'compat', editedAt: new Date() };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([updatedRow]);
+
+    // No expectedTicketId in opts — must still succeed
+    const result = await editTicketComment('c1', { content: 'compat' }, { userId: 'tech-1' }, { canManageAny: false });
+    expect(result.content).toBe('compat');
+  });
+
   it('rejects editing a system-type comment (400)', async () => {
     const sysComment = { ...BASE_COMMENT, id: 'c-sys', commentType: 'system' };
     dbMocks.selectResult
@@ -1829,6 +1854,30 @@ describe('deleteTicketComment', () => {
     dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
 
     const res = await deleteTicketComment('c1', { userId: 'admin' }, { canManageAny: true });
+    expect(res.id).toBe('c1');
+  });
+
+  it('throws 404 when expectedTicketId is provided but does not match the comment ticketId', async () => {
+    // Comment belongs to ticket 't1'; caller supplies a different URL ticket id.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])  // loadCommentWithTicket: comment lookup (ticketId='t1')
+      .mockResolvedValueOnce([BASE_TICKET]);  // loadCommentWithTicket: getTicketOrThrow
+
+    const err = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: true, expectedTicketId: 'other-ticket-id' }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    // Must not reveal the comment exists or write any audit/event
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('passes through when expectedTicketId is omitted (backward-compat)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_COMMENT])
+      .mockResolvedValueOnce([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'c1' }]);
+
+    // No expectedTicketId in opts — must still succeed
+    const res = await deleteTicketComment('c1', { userId: 'tech-1' }, { canManageAny: false });
     expect(res.id).toBe('c1');
   });
 

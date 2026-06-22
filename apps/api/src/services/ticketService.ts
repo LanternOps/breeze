@@ -940,9 +940,14 @@ export async function editTicketComment(
   commentId: string,
   input: { content: string },
   actor: TicketActor,
-  opts: { canManageAny: boolean }
+  opts: { canManageAny: boolean; expectedTicketId?: string }
 ) {
   const { comment, ticket } = await loadCommentWithTicket(commentId);
+  // Defense-in-depth: reject comment/ticket id mismatch before any
+  // existence-revealing check so the response is indistinguishable from missing.
+  if (opts.expectedTicketId !== undefined && comment.ticketId !== opts.expectedTicketId) {
+    throw new TicketServiceError('Comment not found', 404);
+  }
   assertCommentEditable(comment, actor, opts.canManageAny);
 
   const previousContent = comment.content;
@@ -974,9 +979,14 @@ export async function editTicketComment(
 export async function deleteTicketComment(
   commentId: string,
   actor: TicketActor,
-  opts: { canManageAny: boolean }
+  opts: { canManageAny: boolean; expectedTicketId?: string }
 ) {
   const { comment, ticket } = await loadCommentWithTicket(commentId);
+  // Defense-in-depth: reject comment/ticket id mismatch before any
+  // existence-revealing check so the response is indistinguishable from missing.
+  if (opts.expectedTicketId !== undefined && comment.ticketId !== opts.expectedTicketId) {
+    throw new TicketServiceError('Comment not found', 404);
+  }
   assertCommentEditable(comment, actor, opts.canManageAny);
 
   const previousContent = comment.content;

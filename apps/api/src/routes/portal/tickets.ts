@@ -321,7 +321,7 @@ ticketRoutes.patch(
       commentId,
       body,
       { userId: auth.user.id, name: auth.user.name ?? auth.user.email },
-      { canManageAny: true }
+      { canManageAny: true, expectedTicketId: id }
     );
 
     writePortalAudit(c, {
@@ -361,7 +361,7 @@ ticketRoutes.delete(
     await deleteTicketComment(
       commentId,
       { userId: auth.user.id },
-      { canManageAny: true }
+      { canManageAny: true, expectedTicketId: id }
     );
 
     writePortalAudit(c, {

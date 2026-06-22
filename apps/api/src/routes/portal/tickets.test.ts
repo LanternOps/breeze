@@ -407,7 +407,7 @@ describe('portal PATCH /tickets/:id/comments/:commentId', () => {
       COMMENT_ID,
       { content: 'fixed typo' },
       expect.objectContaining({ userId: PORTAL_USER.id }),
-      { canManageAny: true }
+      { canManageAny: true, expectedTicketId: TICKET_ID }
     );
   });
 
@@ -534,7 +534,7 @@ describe('portal DELETE /tickets/:id/comments/:commentId', () => {
     expect(deleteTicketCommentMock).toHaveBeenCalledWith(
       COMMENT_ID,
       expect.objectContaining({ userId: PORTAL_USER.id }),
-      { canManageAny: true }
+      { canManageAny: true, expectedTicketId: TICKET_ID }
     );
   });
 

@@ -745,7 +745,7 @@ ticketsRoutes.patch(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const canManageAny = perms ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action) : false;
     try {
-      const comment = await editTicketComment(commentId, body, actorFrom(c), { canManageAny });
+      const comment = await editTicketComment(commentId, body, actorFrom(c), { canManageAny, expectedTicketId: id });
       return c.json({ data: comment });
     } catch (err) {
       return handleServiceError(c, err);
@@ -770,7 +770,7 @@ ticketsRoutes.delete(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const canManageAny = perms ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action) : false;
     try {
-      const result = await deleteTicketComment(commentId, actorFrom(c), { canManageAny });
+      const result = await deleteTicketComment(commentId, actorFrom(c), { canManageAny, expectedTicketId: id });
       return c.json({ data: result });
     } catch (err) {
       return handleServiceError(c, err);
