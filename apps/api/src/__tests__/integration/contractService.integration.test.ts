@@ -125,6 +125,27 @@ describe('contractService CRUD', () => {
     expect(c.partnerId).not.toBe(corruptActor.partnerId);
   });
 
+  // Finding 1: createContract must persist auto-renew fields
+  it('createContract persists autoRenew, renewalTermMonths, and renewalNoticeDays', async () => {
+    const { actor, orgId } = await seedOrg();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'AutoRenewCreate', billingTiming: 'advance', intervalMonths: 12,
+      startDate: '2026-07-01', endDate: '2027-07-01',
+      autoRenew: true, renewalTermMonths: 12, renewalNoticeDays: 30,
+    }, actor));
+    // Re-read the raw row under system context to assert persisted values.
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({
+        autoRenew: contracts.autoRenew,
+        renewalTermMonths: contracts.renewalTermMonths,
+        renewalNoticeDays: contracts.renewalNoticeDays,
+      }).from(contracts).where(eq(contracts.id, c.id)).limit(1)
+    );
+    expect(row!.autoRenew).toBe(true);
+    expect(row!.renewalTermMonths).toBe(12);
+    expect(row!.renewalNoticeDays).toBe(30);
+  });
+
   // Fix 2: listContracts defense-in-depth inArray filter
   it('listContracts returns only the calling actor\'s accessible org contracts', async () => {
     const a = await seedOrg();

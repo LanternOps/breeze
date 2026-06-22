@@ -399,7 +399,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 End date (optional)
                 <input
-                  type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+                  type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); if (!e.target.value) setAutoRenew(false); }}
                   data-testid="contract-form-end"
                   className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 />

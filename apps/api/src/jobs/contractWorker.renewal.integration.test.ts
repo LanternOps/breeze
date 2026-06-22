@@ -76,7 +76,7 @@ it.runIf(!!process.env.DATABASE_URL)(
     const periods = await withSystemDbAccessContext(() =>
       db.select().from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, contractId))
     );
-    expect(periods.length).toBeGreaterThanOrEqual(1);
+    expect(periods.length).toBe(1);
   },
   30000
 );
