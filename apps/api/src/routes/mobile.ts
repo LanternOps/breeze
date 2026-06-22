@@ -901,7 +901,7 @@ mobileRoutes.get(
     }
 
     if (query.search) {
-      conditions.push(like(devices.hostname, `%${query.search}%`));
+      conditions.push(like(devices.hostname, `%${escapeLike(query.search)}%`));
     }
 
     if (!query.status) {
