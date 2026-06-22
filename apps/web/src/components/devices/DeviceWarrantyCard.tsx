@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 
@@ -33,6 +34,9 @@ type WarrantyData = {
 type DeviceWarrantyCardProps = {
   deviceId: string;
   compact?: boolean;
+  /** Override the refresh poll timeout (ms). Test seam only — defaults to
+   *  REFRESH_POLL_TIMEOUT_MS in production. */
+  pollTimeoutMs?: number;
 };
 
 const statusConfig: Record<string, { label: string; color: string }> = {
@@ -82,7 +86,22 @@ function timeAgo(dateStr: string | null): string {
 const REFRESH_POLL_INTERVAL_MS = 2000;
 const REFRESH_POLL_TIMEOUT_MS = 30000;
 
-export default function DeviceWarrantyCard({ deviceId, compact = false }: DeviceWarrantyCardProps) {
+// The worker stamps lastSyncAt on BOTH success and failure (a failed provider
+// lookup populates lastSyncError but still advances the timestamp), so a fresher
+// lastSyncAt alone does not mean the refresh succeeded — we must inspect
+// lastSyncError to avoid reporting a failed refresh as success (#1723).
+// The legacy "No configured provider" string is an expected, non-error outcome
+// (the manufacturer simply has no warranty provider) and is shown inline, not
+// toasted as an error.
+function isProviderNotConfigured(err: string | null): boolean {
+  return !!err && err.includes('No configured provider');
+}
+
+export default function DeviceWarrantyCard({
+  deviceId,
+  compact = false,
+  pollTimeoutMs = REFRESH_POLL_TIMEOUT_MS,
+}: DeviceWarrantyCardProps) {
   const [warranty, setWarranty] = useState<WarrantyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -151,13 +170,37 @@ export default function DeviceWarrantyCard({ deviceId, compact = false }: Device
     }
 
     // Poll until the worker stamps a newer lastSyncAt or we hit the timeout,
-    // then settle (success or "still working") and stop the spinner.
+    // then surface the outcome and stop the spinner. A fresher timestamp can
+    // mean success OR a worker-side failure, so inspect lastSyncError before
+    // declaring success — otherwise a failed refresh reads as success.
     const startedAt = Date.now();
     const poll = async () => {
       const next = await fetchWarranty();
-      const advanced = next?.lastSyncAt && next.lastSyncAt !== previousSyncAt;
-      if (advanced || Date.now() - startedAt >= REFRESH_POLL_TIMEOUT_MS) {
-        if (mountedRef.current) setRefreshing(false);
+      const advanced = !!next?.lastSyncAt && next.lastSyncAt !== previousSyncAt;
+      if (advanced) {
+        if (mountedRef.current) {
+          setRefreshing(false);
+          if (next?.lastSyncError && !isProviderNotConfigured(next.lastSyncError)) {
+            showToast({ message: `Warranty refresh failed: ${next.lastSyncError}`, type: 'error' });
+          } else if (isProviderNotConfigured(next?.lastSyncError ?? null)) {
+            showToast({ message: 'No warranty provider is configured for this manufacturer.', type: 'warning' });
+          } else {
+            showToast({ message: 'Warranty information updated.', type: 'success' });
+          }
+        }
+        return;
+      }
+      if (Date.now() - startedAt >= pollTimeoutMs) {
+        // Timed out before the worker produced a fresher result. Don't settle
+        // silently (that's the #1723 confusion) — tell the user it's still
+        // running and will update on its own.
+        if (mountedRef.current) {
+          setRefreshing(false);
+          showToast({
+            message: 'Warranty refresh is still in progress; the card will update when it completes.',
+            type: 'warning',
+          });
+        }
         return;
       }
       if (mountedRef.current) {

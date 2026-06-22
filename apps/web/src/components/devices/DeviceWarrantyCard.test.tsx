@@ -118,6 +118,101 @@ describe('DeviceWarrantyCard — refresh feedback (#1723)', () => {
       },
       { timeout: 8000 }
     );
+    // A successful refresh surfaces a success toast.
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'Warranty information updated.' })
+    );
+  }, 12000);
+
+  it('surfaces an error toast when the worker reports a failure (lastSyncError) despite advancing lastSyncAt', async () => {
+    let payload = warrantyPayload({ lastSyncAt: '2026-06-20T00:00:00.000Z' });
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/warranty/refresh') && method === 'POST') {
+        return jsonResponse({ message: 'Warranty refresh queued' });
+      }
+      return jsonResponse(payload);
+    });
+
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    const refreshBtn = await screen.findByRole('button', { name: /refresh/i });
+    fireEvent.click(refreshBtn);
+
+    // Worker advances lastSyncAt but stamps a failure — this must NOT read as success.
+    payload = warrantyPayload({
+      lastSyncAt: '2026-06-21T00:00:00.000Z',
+      lastSyncError: 'Dell API returned 500',
+    });
+    await waitFor(
+      () => {
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining('Dell API returned 500') })
+        );
+      },
+      { timeout: 8000 }
+    );
+    expect(showToastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'Warranty information updated.' })
+    );
+  }, 12000);
+
+  it('surfaces an in-progress toast and stops the spinner when the poll times out', async () => {
+    // GET always returns the same lastSyncAt → the poll never detects an advance
+    // and must settle on the timeout branch. A tiny pollTimeoutMs makes it fast.
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/warranty/refresh') && method === 'POST') {
+        return jsonResponse({ message: 'Warranty refresh queued' });
+      }
+      return jsonResponse(warrantyPayload({ lastSyncAt: '2026-06-20T00:00:00.000Z' }));
+    });
+
+    render(<DeviceWarrantyCard deviceId={deviceId} pollTimeoutMs={1} />);
+    const refreshBtn = await screen.findByRole('button', { name: /refresh/i });
+    fireEvent.click(refreshBtn);
+
+    await waitFor(
+      () => {
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'warning', message: expect.stringContaining('still in progress') })
+        );
+      },
+      { timeout: 8000 }
+    );
+    // Spinner cleared even though no fresher sync ever arrived.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^refresh$/i })).toBeInTheDocument();
+    });
+  }, 12000);
+
+  it('cleans up the poll timer on unmount without erroring', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/warranty/refresh') && method === 'POST') {
+        return jsonResponse({ message: 'Warranty refresh queued' });
+      }
+      // Never advances → poll keeps scheduling until unmount.
+      return jsonResponse(warrantyPayload({ lastSyncAt: '2026-06-20T00:00:00.000Z' }));
+    });
+
+    const { unmount } = render(<DeviceWarrantyCard deviceId={deviceId} />);
+    const refreshBtn = await screen.findByRole('button', { name: /refresh/i });
+    fireEvent.click(refreshBtn);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /checking/i })).toBeInTheDocument();
+    });
+
+    const callsBefore = fetchWithAuthMock.mock.calls.length;
+    unmount();
+    // Give a poll interval a chance to fire; the cleared timer must not run.
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(fetchWithAuthMock.mock.calls.length).toBe(callsBefore);
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   }, 12000);
 
   it('surfaces an error toast when the queue request fails', async () => {
