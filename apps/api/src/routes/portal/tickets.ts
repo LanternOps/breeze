@@ -7,6 +7,7 @@ import {
   listSchema,
   createTicketSchema,
   ticketParamSchema,
+  ticketCommentParamSchema,
   commentSchema,
 } from './schemas';
 import {
@@ -17,7 +18,8 @@ import {
   validatePortalCookieCsrfRequest,
   writePortalAudit,
 } from './helpers';
-import { createTicket, TicketServiceError } from '../../services/ticketService';
+import { createTicket, TicketServiceError, portalCommentMutable, editTicketComment, deleteTicketComment } from '../../services/ticketService';
+import { editCommentSchema } from '@breeze/shared';
 
 export const ticketRoutes = new Hono();
 
@@ -278,5 +280,94 @@ ticketRoutes.post(
     });
 
     return c.json({ comment }, 201);
+  }
+);
+
+ticketRoutes.patch(
+  '/tickets/:id/comments/:commentId',
+  zValidator('param', ticketCommentParamSchema),
+  zValidator('json', editCommentSchema),
+  async (c) => {
+    const csrfError = validatePortalCookieCsrfRequest(c);
+    if (csrfError) return c.json({ error: csrfError }, 403);
+
+    const auth = c.get('portalAuth');
+    const { id, commentId } = c.req.valid('param');
+    const body = c.req.valid('json');
+
+    const mutable = await portalCommentMutable(commentId, auth.user.id);
+    if (!mutable.ok) {
+      if (mutable.reason === 'staff_replied') {
+        return c.json({ error: 'This reply can no longer be edited — support has already responded.' }, 409);
+      }
+      return c.json({ error: 'Ticket not found' }, 404); // not_author / not_found
+    }
+
+    // Ownership already proven by portalCommentMutable (portal_user_id match).
+    // Pass canManageAny so the service's staff-author rule (keyed on user_id,
+    // which is NULL for portal rows) does not reject the legitimate edit.
+    //
+    // NOTE: audit_logs.actor_id has NO FK to users(id) — it is a plain NOT NULL
+    // uuid column. Passing a portal user id here is safe; the service audit row
+    // is supplementary (authoritative trail is writePortalAudit below).
+    const updated = await editTicketComment(
+      commentId,
+      body,
+      { userId: auth.user.id, name: auth.user.name ?? auth.user.email },
+      { canManageAny: true }
+    );
+
+    writePortalAudit(c, {
+      orgId: auth.user.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'portal.ticket.comment.edit',
+      resourceType: 'ticket_comment',
+      resourceId: commentId,
+      details: { ticketId: id },
+    });
+
+    return c.json({ comment: { id: updated.id, content: updated.content, editedAt: updated.editedAt } });
+  }
+);
+
+ticketRoutes.delete(
+  '/tickets/:id/comments/:commentId',
+  zValidator('param', ticketCommentParamSchema),
+  async (c) => {
+    const csrfError = validatePortalCookieCsrfRequest(c);
+    if (csrfError) return c.json({ error: csrfError }, 403);
+
+    const auth = c.get('portalAuth');
+    const { id, commentId } = c.req.valid('param');
+
+    const mutable = await portalCommentMutable(commentId, auth.user.id);
+    if (!mutable.ok) {
+      if (mutable.reason === 'staff_replied') {
+        return c.json({ error: 'This reply can no longer be deleted — support has already responded.' }, 409);
+      }
+      return c.json({ error: 'Ticket not found' }, 404); // not_author / not_found
+    }
+
+    // Same audit_logs.actor_id FK caveat as PATCH above — no FK, portal id is safe.
+    await deleteTicketComment(
+      commentId,
+      { userId: auth.user.id },
+      { canManageAny: true }
+    );
+
+    writePortalAudit(c, {
+      orgId: auth.user.orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'portal.ticket.comment.delete',
+      resourceType: 'ticket_comment',
+      resourceId: commentId,
+      details: { ticketId: id },
+    });
+
+    return c.json({ success: true });
   }
 );
