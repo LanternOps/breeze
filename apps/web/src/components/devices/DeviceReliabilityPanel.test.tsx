@@ -36,6 +36,10 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
   }) as unknown as Response;
 
 describe('DeviceReliabilityPanel', () => {
+  const openOutcomeMenu = async () => {
+    fireEvent.click(await screen.findByTestId('reliability-outcome-trigger'));
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     showToast.mockReset();
@@ -115,8 +119,8 @@ describe('DeviceReliabilityPanel', () => {
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
-    const falseAlarm = await screen.findByRole('button', { name: /false alarm/i });
-    fireEvent.click(falseAlarm);
+    await openOutcomeMenu();
+    fireEvent.click(screen.getByTestId('reliability-outcome-false_alarm'));
 
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
@@ -162,7 +166,8 @@ describe('DeviceReliabilityPanel', () => {
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /false alarm/i }));
+    await openOutcomeMenu();
+    fireEvent.click(screen.getByTestId('reliability-outcome-false_alarm'));
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
@@ -250,6 +255,6 @@ describe('DeviceReliabilityPanel', () => {
 
     expect(await screen.findByText('Reliability scoring is disabled for this organization.')).toBeTruthy();
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/reliability/dev-1');
-    expect(screen.queryByRole('button', { name: /false alarm/i })).toBeNull();
+    expect(screen.queryByTestId('reliability-outcome-trigger')).toBeNull();
   });
 });

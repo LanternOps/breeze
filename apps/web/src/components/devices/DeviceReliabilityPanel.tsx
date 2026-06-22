@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle, RefreshCw, ShieldCheck, Sparkles, Wrench, XCircle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ChevronDown, RefreshCw, ShieldCheck, Sparkles, Wrench, XCircle } from 'lucide-react';
 
 import type { AiPageContext } from '@breeze/shared';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
+import { useClickOutside } from '../../hooks/useClickOutside';
 import { useAiStore } from '../../stores/aiStore';
 
 type ReliabilityTopIssue = {
@@ -54,6 +55,17 @@ const issueLabels: Record<ReliabilityTopIssue['type'], string> = {
   hardware: 'Hardware errors',
   uptime: 'Uptime',
 };
+
+const OUTCOME_ITEMS: Array<{
+  outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
+  label: string;
+  Icon: typeof AlertTriangle;
+  iconClass: string;
+}> = [
+  { outcome: 'failure_confirmed', label: 'Device failed', Icon: AlertTriangle, iconClass: 'text-destructive' },
+  { outcome: 'replaced', label: 'Device replaced', Icon: Wrench, iconClass: 'text-muted-foreground' },
+  { outcome: 'false_alarm', label: 'False alarm', Icon: XCircle, iconClass: 'text-muted-foreground' },
+];
 
 function scoreClass(score: number): string {
   if (score <= 50) return 'text-destructive';
@@ -161,6 +173,15 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     };
     void startDeviceTask(deviceId, ctx, buildReliabilitySeedPrompt(snapshot, drivers));
   }, [snapshot, deviceId, drivers, startDeviceTask]);
+
+  const [outcomeMenuOpen, setOutcomeMenuOpen] = useState(false);
+  const outcomeMenuRef = useRef<HTMLDivElement>(null);
+  useClickOutside(outcomeMenuOpen, outcomeMenuRef, () => setOutcomeMenuOpen(false));
+
+  function handleOutcome(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
+    setOutcomeMenuOpen(false);
+    void submitFeedback(outcome);
+  }
 
   async function submitFeedback(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
     setLabeling(outcome);
@@ -296,34 +317,48 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             <Sparkles className="h-4 w-4" />
             Ask AI about reliability
           </button>
-          <div className="flex flex-wrap gap-2">
+          <div ref={outcomeMenuRef} className="relative">
             <button
               type="button"
-              onClick={() => void submitFeedback('failure_confirmed')}
+              data-testid="reliability-outcome-trigger"
+              aria-haspopup="true"
+              aria-expanded={outcomeMenuOpen}
               disabled={labeling !== null}
-              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => setOutcomeMenuOpen((o) => !o)}
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <CheckCircle className="h-4 w-4" />
-              Failure
+              Mark outcome
+              <ChevronDown className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              onClick={() => void submitFeedback('replaced')}
-              disabled={labeling !== null}
-              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Wrench className="h-4 w-4" />
-              Replaced
-            </button>
-            <button
-              type="button"
-              onClick={() => void submitFeedback('false_alarm')}
-              disabled={labeling !== null}
-              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <XCircle className="h-4 w-4" />
-              False alarm
-            </button>
+
+            {outcomeMenuOpen && (
+              <div
+                role="menu"
+                data-testid="reliability-outcome-menu"
+                className="absolute right-0 top-9 z-30 w-64 rounded-md border bg-popover p-1 shadow-lg"
+              >
+                <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Was this accurate?
+                </p>
+                {OUTCOME_ITEMS.map(({ outcome, label, Icon, iconClass }) => (
+                  <button
+                    key={outcome}
+                    type="button"
+                    data-testid={`reliability-outcome-${outcome}`}
+                    disabled={labeling !== null}
+                    onClick={() => handleOutcome(outcome)}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Icon className={`h-4 w-4 shrink-0 ${iconClass}`} />
+                    {label}
+                  </button>
+                ))}
+                <hr className="my-1" />
+                <p className="px-2 pb-1.5 pt-0.5 text-xs text-muted-foreground">
+                  These train the reliability model — they don't change the device.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
