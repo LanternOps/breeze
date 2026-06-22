@@ -174,6 +174,34 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
     expect(errorWrite!.depth).toBeGreaterThan(0);
   });
 
+  it('does NOT record a terminal error on a non-final retry attempt (#1736)', async () => {
+    const boom = new Error('transient CONNECTION_CLOSED');
+    listAgents.mockRejectedValueOnce(boom);
+
+    // The original error still propagates so BullMQ schedules the retry...
+    await expect(
+      syncIntegrationById('integration-1', 'scheduled', undefined, { isFinalAttempt: false })
+    ).rejects.toBe(boom);
+
+    // ...but the row is left at 'running' (no terminal 'error' write), so the UI
+    // keeps showing "Syncing" while the backoff/retry runs.
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'running')).toBe(true);
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(false);
+  });
+
+  it('records a terminal error on the final retry attempt (#1736)', async () => {
+    const boom = new Error('exhausted CONNECTION_CLOSED');
+    listAgents.mockRejectedValueOnce(boom);
+
+    await expect(
+      syncIntegrationById('integration-1', 'scheduled', undefined, { isFinalAttempt: true })
+    ).rejects.toBe(boom);
+
+    const errorWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'error');
+    expect(errorWrite).toBeDefined();
+    expect(String(errorWrite!.payload.lastSyncError)).toContain('scheduled:');
+  });
+
   it('on the webhook path, persists without any external fetch', async () => {
     const result = await syncIntegrationById('integration-1', 'webhook', { agents: [], incidents: [] });
 

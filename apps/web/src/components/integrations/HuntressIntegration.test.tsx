@@ -503,10 +503,11 @@ describe('HuntressIntegration', () => {
     useOrgStore.setState({ currentOrgId: null });
     let syncStarted = false;
     let pollCount = 0;
-    const running = { ...existingIntegration, lastSyncStatus: 'running', lastSyncError: null };
+    const running = { ...existingIntegration, lastSyncStatus: 'running', lastSyncError: null, updatedAt: '2026-06-21T00:00:01.000Z' };
     const succeeded = {
       ...existingIntegration,
       lastSyncAt: '2026-06-21T00:00:00.000Z',
+      updatedAt: '2026-06-21T00:00:05.000Z',
       lastSyncStatus: 'success',
       lastSyncAgents: 12,
       lastSyncIncidents: 3,
@@ -542,5 +543,95 @@ describe('HuntressIntegration', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
     expect(screen.getAllByText('Synced 12 agents · 3 incidents · 26 orgs').length).toBeGreaterThan(0);
+  });
+
+  it('polls to an error terminal state and reports the failure (not an all-clear)', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    let syncStarted = false;
+    let pollCount = 0;
+    const running = { ...existingIntegration, lastSyncStatus: 'running', lastSyncError: null, updatedAt: '2026-06-21T00:00:01.000Z' };
+    const errored = {
+      ...existingIntegration,
+      lastSyncStatus: 'error',
+      lastSyncError: 'scheduled: write CONNECTION_CLOSED',
+      updatedAt: '2026-06-21T00:00:05.000Z',
+    };
+
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url === '/huntress/sync' && init?.method === 'POST') { syncStarted = true; pollCount = 0; return makeResponse({ queued: true }); }
+      if (url === '/huntress/integration') {
+        if (!syncStarted) return makeResponse({ data: existingIntegration });
+        pollCount += 1;
+        return makeResponse({ data: pollCount === 1 ? running : errored });
+      }
+      if (url === '/huntress/status') return makeResponse(emptyStatus);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      if (url === '/huntress/organizations') return makeResponse({ data: [] });
+      if (url === '/orgs/organizations') return makeResponse({ data: [breezeOrg] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+    const syncButton = await screen.findByRole('button', { name: /Sync Now/ });
+    vi.useFakeTimers();
+    fireEvent.click(syncButton);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); }); // running
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); }); // error
+    expect(screen.getAllByText(/scheduled: write CONNECTION_CLOSED/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Synced /)).not.toBeInTheDocument();
+  });
+
+  it('reports a neutral "taking longer" message when the sync never reaches a terminal state', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    let syncStarted = false;
+    const running = { ...existingIntegration, lastSyncStatus: 'running', lastSyncError: null, updatedAt: '2026-06-21T00:00:01.000Z' };
+
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url === '/huntress/sync' && init?.method === 'POST') { syncStarted = true; return makeResponse({ queued: true }); }
+      if (url === '/huntress/integration') return makeResponse({ data: syncStarted ? running : existingIntegration });
+      if (url === '/huntress/status') return makeResponse(emptyStatus);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      if (url === '/huntress/organizations') return makeResponse({ data: [] });
+      if (url === '/orgs/organizations') return makeResponse({ data: [breezeOrg] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+    const syncButton = await screen.findByRole('button', { name: /Sync Now/ });
+    vi.useFakeTimers();
+    fireEvent.click(syncButton);
+
+    // Drive past the 120s deadline; the row never leaves 'running'.
+    await act(async () => { await vi.advanceTimersByTimeAsync(123_000); });
+    expect(screen.getByText(/taking longer than expected/)).toBeInTheDocument();
+    expect(screen.queryByText(/Synced /)).not.toBeInTheDocument();
+  });
+
+  it('bails with an error after repeated status-read failures instead of spinning silently', async () => {
+    useOrgStore.setState({ currentOrgId: null });
+    let syncStarted = false;
+
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url === '/huntress/sync' && init?.method === 'POST') { syncStarted = true; return makeResponse({ queued: true }); }
+      if (url === '/huntress/integration') {
+        if (!syncStarted) return makeResponse({ data: existingIntegration });
+        return makeResponse({ error: 'upstream down' }, false, 500); // every poll read fails
+      }
+      if (url === '/huntress/status') return makeResponse(emptyStatus);
+      if (url === '/huntress/incidents?limit=5') return makeResponse({ data: [] });
+      if (url === '/huntress/organizations') return makeResponse({ data: [] });
+      if (url === '/orgs/organizations') return makeResponse({ data: [breezeOrg] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+    const syncButton = await screen.findByRole('button', { name: /Sync Now/ });
+    vi.useFakeTimers();
+    fireEvent.click(syncButton);
+
+    // 4 consecutive failed reads (interval 2500ms) → bail with an error message.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500 * 4 + 100); });
+    expect(screen.getByText(/Could not read sync status/)).toBeInTheDocument();
   });
 });

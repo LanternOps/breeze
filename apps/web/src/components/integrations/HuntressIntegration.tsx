@@ -33,6 +33,10 @@ type Integration = {
   lastSyncAgents: number | null;
   lastSyncIncidents: number | null;
   lastSyncOrgs: number | null;
+  // Bumped on every status write (running/success/error), so the poll can detect
+  // "this run wrote something new" without depending on lastSyncAt (which only
+  // advances on success) or on having witnessed the best-effort 'running' write.
+  updatedAt: string | null;
   hasWebhookSecret: boolean;
 };
 
@@ -42,6 +46,10 @@ type Integration = {
 // (#1736).
 const SYNC_POLL_INTERVAL_MS = 2500;
 const SYNC_POLL_MAX_MS = 120_000;
+// Stop polling and report an error once this many *consecutive* status reads
+// fail, rather than silently spinning to the deadline on a persistently broken
+// endpoint.
+const SYNC_POLL_MAX_FAILURES = 4;
 const MAPPING_PAGE_SIZE = 25;
 
 type StatusSummary = {
@@ -78,7 +86,7 @@ type HuntressOrgMapping = {
 };
 
 type SaveState = { status: 'idle' | 'saving' | 'saved' | 'error'; message?: string };
-type SyncState = { status: 'idle' | 'syncing' | 'done' | 'error'; message?: string };
+type SyncState = { status: 'idle' | 'syncing' | 'done' | 'warning' | 'error'; message?: string };
 
 const LIVE_STATUS_ERROR =
   'Live Huntress status could not be fully loaded. Coverage and incident data below may be incomplete or out of date.';
@@ -367,7 +375,10 @@ export default function HuntressIntegration() {
 
   const handleSync = async () => {
     if (!isPartnerView) return;
-    const baselineSyncAt = integration?.lastSyncAt ?? null;
+    // updatedAt is bumped by every status write, so "row changed since we started"
+    // detects this run's terminal write regardless of whether the best-effort
+    // 'running' write landed and without waiting on lastSyncAt (success-only).
+    const baselineUpdatedAt = integration?.updatedAt ?? null;
     const token = ++syncPollRef.current;
     setSyncState({ status: 'syncing', message: 'Sync queued…' });
 
@@ -383,12 +394,22 @@ export default function HuntressIntegration() {
       return;
     }
 
-    // Poll the integration row until it reaches a terminal state. The job writes
-    // 'running' at start, then 'success' (advancing lastSyncAt) or 'error', so we
-    // can report the actual outcome — counts on success, the error otherwise —
-    // instead of a static "Sync triggered" that proves nothing.
+    // Resolve `data.lastSyncStatus` to the syncState the UI should show, or null
+    // if the row hasn't reached a terminal write for THIS run yet (keep polling).
+    const settle = (data: Integration | null): SyncState | null => {
+      if (!data) return null;
+      const changed = data.updatedAt !== baselineUpdatedAt;
+      if (data.lastSyncStatus === 'success' && changed) return { status: 'done', message: formatSyncResult(data) };
+      if (data.lastSyncStatus === 'error' && changed) return { status: 'error', message: data.lastSyncError ?? 'Sync failed' };
+      return null;
+    };
+
+    // Poll the integration row until it reaches a terminal state, so we can
+    // report the actual outcome — counts on success, the error otherwise —
+    // instead of a static "Sync triggered" that proves nothing (the Huntress
+    // fetch alone is ~20s, and BullMQ may retry across several attempts).
     const deadline = Date.now() + SYNC_POLL_MAX_MS;
-    let sawRunning = false;
+    let consecutiveFailures = 0;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
       if (syncPollRef.current !== token) return; // superseded or unmounted
@@ -396,33 +417,50 @@ export default function HuntressIntegration() {
       let data: Integration | null;
       try {
         ({ data } = await fetchIntegrationData());
-      } catch {
-        continue; // transient read error — keep polling until the deadline
+      } catch (err) {
+        // Don't silently ride a broken endpoint to the deadline: log every
+        // failed read and bail with a real error after several in a row.
+        consecutiveFailures += 1;
+        console.warn('[HuntressIntegration] Failed to poll sync status:', err);
+        if (consecutiveFailures >= SYNC_POLL_MAX_FAILURES) {
+          if (syncPollRef.current !== token) return;
+          setSyncState({ status: 'error', message: 'Could not read sync status. Refresh to check the latest state.' });
+          return;
+        }
+        continue;
       }
       if (syncPollRef.current !== token) return;
-      if (!data) continue;
+      consecutiveFailures = 0;
 
-      if (data.lastSyncStatus === 'running') {
-        sawRunning = true;
+      if (data?.lastSyncStatus === 'running') {
         setSyncState({ status: 'syncing', message: 'Syncing…' });
         continue;
       }
-      const advanced = data.lastSyncAt !== baselineSyncAt;
-      if (data.lastSyncStatus === 'success' && advanced) {
-        setSyncState({ status: 'done', message: formatSyncResult(data) });
-        await load();
-        return;
-      }
-      if (data.lastSyncStatus === 'error' && (sawRunning || advanced)) {
-        setSyncState({ status: 'error', message: data.lastSyncError ?? 'Sync failed' });
+      const settled = settle(data);
+      if (settled) {
+        setSyncState(settled);
         await load();
         return;
       }
     }
 
-    // Deadline hit without a terminal status — refresh and let the badge speak.
+    // Deadline hit. Do one final read so we report the truth — success/error if
+    // it just landed, otherwise a neutral "still running" (NOT a green "done").
     if (syncPollRef.current !== token) return;
-    setSyncState({ status: 'done', message: 'Sync is still running — refreshing status.' });
+    try {
+      const { data } = await fetchIntegrationData();
+      if (syncPollRef.current !== token) return;
+      const settled = settle(data);
+      if (settled) {
+        setSyncState(settled);
+        await load();
+        return;
+      }
+    } catch (err) {
+      console.warn('[HuntressIntegration] Final sync-status read failed:', err);
+    }
+    if (syncPollRef.current !== token) return;
+    setSyncState({ status: 'warning', message: 'Sync is taking longer than expected — it will finish in the background.' });
     await load();
   };
 
@@ -618,7 +656,7 @@ export default function HuntressIntegration() {
               <span className={`text-sm ${saveState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>{saveState.message}</span>
             )}
             {syncState.message && (
-              <span className={`text-sm ${syncState.status === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>{syncState.message}</span>
+              <span className={`text-sm ${syncState.status === 'error' ? 'text-red-600' : syncState.status === 'warning' ? 'text-amber-600' : 'text-emerald-600'}`}>{syncState.message}</span>
             )}
           </div>
         </div>
