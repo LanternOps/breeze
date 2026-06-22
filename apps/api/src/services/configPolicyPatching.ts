@@ -292,7 +292,14 @@ export async function loadPolicyLocalPatchConfig(
       })
     : storedInline;
 
-  const partnerId = (await resolvePartnerIdForOrg(row.orgId)) ?? '';
+  const partnerId = await resolvePartnerIdForOrg(row.orgId);
+  if (!partnerId) {
+    console.warn(
+      `[configPolicyPatching] orphaned org has no partner — cannot resolve patch ring`,
+      { orgId: row.orgId, configPolicyId: row.configPolicyId }
+    );
+    return null;
+  }
   const ring = await resolvePatchPolicyReference(partnerId, row.featurePolicyId);
 
   return {
@@ -373,8 +380,16 @@ async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow
 
   // TODO: batch-fetch patch policy references to avoid N+1 queries
   for (const row of rows) {
-    const rowPartnerId = (await resolvePartnerIdForOrg(row.orgId)) ?? '';
-    const classification = (await resolvePatchPolicyReference(rowPartnerId, row.referencedTargetId)).classification;
+    const rowPartnerId = await resolvePartnerIdForOrg(row.orgId);
+    if (!rowPartnerId) {
+      console.warn(
+        `[configPolicyPatching] orphaned org has no partner — classifying as missing_target`,
+        { orgId: row.orgId, configPolicyId: row.configPolicyId }
+      );
+    }
+    const classification = rowPartnerId
+      ? (await resolvePatchPolicyReference(rowPartnerId, row.referencedTargetId)).classification
+      : 'missing_target';
     const inlineSettingsValid = patchInlineSettingsSchema.safeParse(row.storedInlineSettings ?? {}).success;
     const normalizedSettingsPresent = Boolean(row.patchSettingsId);
     const effectiveStatus: PatchEffectiveStatus =

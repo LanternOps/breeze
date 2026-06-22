@@ -52,6 +52,7 @@ vi.mock('../db/schema', () => ({
 
 import {
   loadPolicyLocalPatchConfig,
+  listAllPatchInventory,
   normalizePatchInlineSettings,
   tryNormalizePatchInlineSettings,
   summarizePatchInventory,
@@ -60,6 +61,7 @@ import {
 } from './configPolicyPatching';
 import { db } from '../db';
 import { captureException } from './sentry';
+import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
 function selectJoinLimitRows(rows: unknown[]) {
   const chain: any = {};
@@ -367,6 +369,32 @@ describe('loadPolicyLocalPatchConfig', () => {
     warnSpy.mockRestore();
   });
 
+  it('returns null (fail-closed) when resolvePartnerIdForOrg returns null — orphaned org', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(resolvePartnerIdForOrg).mockResolvedValueOnce(null);
+
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
+      configPolicyId: 'policy-orphan',
+      configPolicyName: 'Orphan Policy',
+      orgId: 'orphan-org',
+      featureLinkId: 'link-orphan',
+      featurePolicyId: 'some-ring-id',
+      storedInlineSettings: { sources: ['os'] },
+      patchSettings: null,
+    }]) as any);
+
+    const result = await loadPolicyLocalPatchConfig('policy-orphan');
+
+    // Must return null — not throw a 22P02 uuid error
+    expect(result).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('orphaned org has no partner'),
+      expect.objectContaining({ orgId: 'orphan-org', configPolicyId: 'policy-orphan' })
+    );
+
+    warnSpy.mockRestore();
+  });
+
   it('does not warn or capture when stored inline settings are valid', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -448,6 +476,46 @@ describe('summarizePatchInventory', () => {
     expect(summary.ok).toBe(3);
     expect(summary.needsRepair).toBe(0);
     expect(summary.invalidReference).toBe(0);
+  });
+});
+
+describe('listAllPatchInventory — null partner fail-closed', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('classifies an orphaned-org row as missing_target without throwing a uuid error', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(resolvePartnerIdForOrg).mockResolvedValueOnce(null);
+
+    // Simulate a single row returned from the DB scan
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.innerJoin = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve([{
+      configPolicyId: 'policy-inv-orphan',
+      configPolicyName: 'Inventory Orphan',
+      orgId: 'orphan-org',
+      featureLinkId: 'link-inv-orphan',
+      referencedTargetId: 'some-ring-uuid',
+      storedInlineSettings: null,
+      patchSettingsId: null,
+    }]));
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+
+    const rows = await listAllPatchInventory();
+
+    // Must not throw; orphaned org yields missing_target → invalid_reference
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.classification).toBe('missing_target');
+    expect(rows[0]!.effectiveStatus).toBe('invalid_reference');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('orphaned org has no partner'),
+      expect.objectContaining({ orgId: 'orphan-org' })
+    );
+
+    warnSpy.mockRestore();
   });
 });
 

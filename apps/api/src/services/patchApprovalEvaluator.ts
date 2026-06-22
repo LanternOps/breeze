@@ -3,7 +3,7 @@
  *
  * Single approval/filtering gate for patch job execution. For each device it
  * resolves the set of pending patches a job is allowed to install, covering:
- *  - manual approvals (org-wide or ring-scoped)
+ *  - manual approvals (partner-wide or ring-scoped)
  *  - ring category rules (including the virtual 'third_party_app' category)
  *  - ring-level auto-approve (enabled + severities + deferral window) — #1317
  *  - ring-less policy-level auto-approve (severity list + deferral window)
@@ -343,7 +343,7 @@ export async function resolveApprovedPatchesForDevice(
   // Index manual approvals by patchId for fast lookup
   const manualApprovalSet = new Set<string>();
   for (const approval of manualApprovals) {
-    // Ring-scoped approval: match if ringId matches or approval is org-wide (null ringId)
+    // Ring-scoped approval: match if ringId matches, or approval is partner-wide (null ringId)
     if (approval.ringId === ringConfig.ringId || approval.ringId === null) {
       manualApprovalSet.add(approval.patchId);
     }
