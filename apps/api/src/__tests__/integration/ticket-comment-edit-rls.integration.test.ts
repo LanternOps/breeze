@@ -130,8 +130,9 @@ describe('ticket_comments UPDATE/DELETE RLS (2026-06-21-ticket-comment-edit.sql)
 
     // Org-A caller MUST be able to update its own comment.
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe(comment.id);
-    expect(result[0].deletedAt).not.toBeNull();
+    const [resultRow] = result;
+    expect(resultRow!.id).toBe(comment.id);
+    expect(resultRow!.deletedAt).not.toBeNull();
 
     // Admin read confirms the row was actually mutated.
     const adminDb = getTestDb() as any;

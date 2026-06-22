@@ -1,7 +1,7 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum, ticketParts, timeEntries } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -22,7 +22,7 @@ export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStat
   closed: ['open']
 };
 
-export type TicketServiceErrorStatus = 400 | 404 | 409 | 500;
+export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 500;
 
 /**
  * Machine-readable error codes for callers that aggregate outcomes (e.g. the
