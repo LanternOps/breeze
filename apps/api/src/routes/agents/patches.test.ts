@@ -589,29 +589,34 @@ describe('split patch ingest endpoints', () => {
   });
 });
 
-describe('PUT /agents/:id/patches - requireAgentRole gate (F3)', () => {
+const patchIngestEndpoints = [
+  {
+    label: 'legacy combined patch ingest',
+    path: `/agents/${AGENT_ID}/patches`,
+    body: { patches: [] },
+  },
+  {
+    label: 'pending patch ingest',
+    path: `/agents/${AGENT_ID}/patches/pending`,
+    body: { patches: [] },
+  },
+  {
+    label: 'installed patch ingest',
+    path: `/agents/${AGENT_ID}/patches/installed`,
+    body: { installed: [] },
+  },
+] as const;
+
+describe('agent patch ingest - requireAgentRole gate (F3)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('rejects a watchdog-role token with 403 and does not touch the DB', async () => {
-    const app = new Hono();
-    app.use('*', async (c, next) => {
-      c.set('agent', {
-        deviceId: DEVICE_ID,
-        agentId: AGENT_ID,
-        orgId: ORG_ID,
-        siteId: 'site-1',
-        role: 'watchdog',
-      } as never);
-      return next();
-    });
-    app.route('/agents', patchesRoutes);
-
-    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+  it.each(patchIngestEndpoints)('rejects a watchdog-role token on $label with 403 and does not touch the DB', async ({ path, body }) => {
+    const res = await mountAgentPatchRoutes('watchdog').request(path, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ patches: [] }),
+      body: JSON.stringify(body),
     });
 
     expect(res.status).toBe(403);
@@ -619,14 +624,14 @@ describe('PUT /agents/:id/patches - requireAgentRole gate (F3)', () => {
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
-  it('rejects when no agent credential is present (missing context)', async () => {
+  it.each(patchIngestEndpoints)('rejects $label when no agent credential is present', async ({ path, body }) => {
     const app = new Hono();
     app.route('/agents', patchesRoutes);
 
-    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+    const res = await app.request(path, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ patches: [] }),
+      body: JSON.stringify(body),
     });
 
     expect(res.status).toBe(403);
