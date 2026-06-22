@@ -449,18 +449,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }).then(() => afterMutation(patch as Partial<TicketDetail>)).catch((err) => { if (!(err instanceof ActionError)) throw err; });
   }, [ticketId, afterMutation]);
 
-  const handleEditComment = useCallback((commentId: string, current: string) => {
-    const next = window.prompt('Edit comment', current);
-    if (next == null || next.trim() === '' || next === current) return;
+  const handleEditComment = useCallback((commentId: string, content: string) => {
     void runAction({
-      request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ content: next }) }),
+      request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
       errorFallback: 'Comment edit failed. Retry.',
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
   }, [ticketId, load]);
 
   const handleDeleteComment = useCallback((commentId: string) => {
-    if (!window.confirm('Delete this comment?')) return;
     void runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'DELETE' }),
       errorFallback: 'Comment delete failed. Retry.',

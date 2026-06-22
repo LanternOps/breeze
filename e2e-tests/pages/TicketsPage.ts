@@ -33,43 +33,43 @@ export class TicketsPage {
   }
 
   /**
-   * Edit the first comment in the feed. The web UI uses window.prompt() for
-   * the edit dialog, so we register the dialog handler BEFORE clicking the
-   * edit button. The handler is one-shot (once: true) and calls d.accept(text)
-   * to confirm the prompt with the new content.
+   * Edit the first comment in the feed using the inline textarea editor.
+   * Clicks the edit button to open the editor, fills in the new text, then
+   * clicks Save to submit.
    */
   async editFirstComment(text: string): Promise<void> {
     // Find the first edit button by matching the testid prefix.
     const editBtn = this.page.locator('[data-testid^="ticket-comment-edit-"]').first();
     await editBtn.waitFor();
-
-    // Register the prompt handler before clicking (native dialogs fire
-    // synchronously in some browsers; registering first prevents a race).
-    const dialogHandler = (dialog: import('@playwright/test').Dialog) => {
-      void dialog.accept(text);
-    };
-    this.page.once('dialog', dialogHandler);
+    const testId = await editBtn.getAttribute('data-testid');
+    const commentId = testId?.replace('ticket-comment-edit-', '') ?? '';
 
     await editBtn.click();
+
+    // The inline textarea should now be visible; fill it with the new text.
+    const textarea = this.page.getByTestId(`ticket-comment-edit-textarea-${commentId}`);
+    await textarea.waitFor();
+    await textarea.fill(text);
+
+    // Click the Save button.
+    await this.page.getByTestId(`ticket-comment-edit-save-${commentId}`).click();
   }
 
   /**
-   * Delete the first comment in the feed. The web UI uses window.confirm() for
-   * the delete confirmation, so we register the dialog handler BEFORE clicking
-   * the delete button. The handler calls d.accept() to confirm the deletion.
+   * Delete the first comment in the feed using the ConfirmDialog.
+   * Clicks the delete button, then clicks the confirm button in the dialog.
    */
   async deleteFirstComment(): Promise<void> {
     // Find the first delete button by matching the testid prefix.
     const deleteBtn = this.page.locator('[data-testid^="ticket-comment-delete-"]').first();
     await deleteBtn.waitFor();
 
-    // Register the confirm handler before clicking.
-    const dialogHandler = (dialog: import('@playwright/test').Dialog) => {
-      void dialog.accept();
-    };
-    this.page.once('dialog', dialogHandler);
-
     await deleteBtn.click();
+
+    // The ConfirmDialog should appear; click the confirm button.
+    const confirmBtn = this.page.getByTestId('ticket-comment-delete-confirm');
+    await confirmBtn.waitFor();
+    await confirmBtn.click();
   }
 
   /**

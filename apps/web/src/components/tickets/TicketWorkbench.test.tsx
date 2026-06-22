@@ -1253,14 +1253,23 @@ describe('TicketWorkbench comment edit/delete', () => {
     }
   });
 
-  it('calls PATCH /tickets/:id/comments/:cid when a comment edit control is used', async () => {
-    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('Updated comment text');
+  it('calls PATCH /tickets/:id/comments/:cid via inline editor: open → type → save', async () => {
     const comment = makeComment({ id: 'c-42', content: 'Original text', portalUserId: null });
     mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
+    // Click the edit button to open the inline editor
     await screen.findByTestId('ticket-comment-edit-c-42');
     fireEvent.click(screen.getByTestId('ticket-comment-edit-c-42'));
+
+    // Textarea should appear pre-filled
+    const textarea = screen.getByTestId('ticket-comment-edit-textarea-c-42');
+    expect(textarea).toBeInTheDocument();
+    expect(textarea).toHaveValue('Original text');
+
+    // Type new content and save
+    fireEvent.change(textarea, { target: { value: 'Updated comment text' } });
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-save-c-42'));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -1268,11 +1277,9 @@ describe('TicketWorkbench comment edit/delete', () => {
         expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ content: 'Updated comment text' }) })
       );
     });
-    promptSpy.mockRestore();
   });
 
-  it('does NOT PATCH when prompt returns null (user cancels)', async () => {
-    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue(null);
+  it('does NOT PATCH when cancel is clicked in the inline editor', async () => {
     const comment = makeComment({ id: 'c-42', content: 'Original text', portalUserId: null });
     mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
@@ -1280,21 +1287,28 @@ describe('TicketWorkbench comment edit/delete', () => {
     await screen.findByTestId('ticket-comment-edit-c-42');
     fireEvent.click(screen.getByTestId('ticket-comment-edit-c-42'));
 
+    const textarea = screen.getByTestId('ticket-comment-edit-textarea-c-42');
+    fireEvent.change(textarea, { target: { value: 'Changed but cancelled' } });
+    fireEvent.click(screen.getByTestId('ticket-comment-edit-cancel-c-42'));
+
     await new Promise((r) => setTimeout(r, 50));
     expect(
       fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url).includes('/comments/'))
     ).toHaveLength(0);
-    promptSpy.mockRestore();
   });
 
-  it('calls DELETE /tickets/:id/comments/:cid when a comment delete control is used', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('calls DELETE /tickets/:id/comments/:cid via ConfirmDialog: open → confirm', async () => {
     const comment = makeComment({ id: 'c-99', content: 'Delete me', portalUserId: null });
     mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-comment-delete-c-99');
     fireEvent.click(screen.getByTestId('ticket-comment-delete-c-99'));
+
+    // ConfirmDialog should be open; confirm it
+    const confirmBtn = screen.getByTestId('ticket-comment-delete-confirm');
+    expect(confirmBtn).toBeInTheDocument();
+    fireEvent.click(confirmBtn);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -1302,11 +1316,9 @@ describe('TicketWorkbench comment edit/delete', () => {
         expect.objectContaining({ method: 'DELETE' })
       );
     });
-    confirmSpy.mockRestore();
   });
 
-  it('does NOT DELETE when confirm returns false (user cancels)', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('does NOT DELETE when cancel is clicked in the ConfirmDialog', async () => {
     const comment = makeComment({ id: 'c-99', content: 'Delete me', portalUserId: null });
     mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
@@ -1314,11 +1326,15 @@ describe('TicketWorkbench comment edit/delete', () => {
     await screen.findByTestId('ticket-comment-delete-c-99');
     fireEvent.click(screen.getByTestId('ticket-comment-delete-c-99'));
 
-    await new Promise((r) => setTimeout(r, 50));
+    // Cancel the dialog
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-comment-delete-confirm')).toBeNull();
+    });
     expect(
       fetchMock.mock.calls.filter(([url, init]) => init?.method === 'DELETE' && String(url).includes('/comments/'))
     ).toHaveLength(0);
-    confirmSpy.mockRestore();
   });
 
   it('portal-authored comments do NOT show edit/delete controls (canManageComment gate)', async () => {
