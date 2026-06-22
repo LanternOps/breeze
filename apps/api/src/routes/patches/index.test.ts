@@ -537,6 +537,10 @@ describe('patch routes', () => {
       .mockReturnValueOnce(selectWhereLimitResult([{ partnerId: PARTNER_ID }]) as any)
       // org device IDs
       .mockReturnValueOnce(selectWhereResult([{ id: DEVICE_A }, { id: DEVICE_C }]) as any)
+      // candidatePatchRows (pre-fetch for preApprovedPatchIds)
+      .mockReturnValueOnce(selectWhereResult([]) as any)
+      // approvedRows (withSystemDbAccessContext pre-fetch — empty, no candidates)
+      // (skipped: candidatePatchIds.length === 0, so approvedRows fetch doesn't happen)
       // status counts
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

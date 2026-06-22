@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { and, eq, sql, asc, desc, type SQL, type Column } from 'drizzle-orm';
 import { requireScope } from '../../middleware/auth';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { patches, patchApprovals, devices, devicePatches } from '../../db/schema';
 import { listPatchesSchema, listSourcesSchema, patchIdParamSchema } from './schemas';
 import { getPagination, inferPatchOs, resolvePartnerIdForOrg } from './helpers';
@@ -161,13 +161,20 @@ listRoutes.get(
           approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
         }
 
-        const approvals = await db
-          .select({
-            patchId: patchApprovals.patchId,
-            status: patchApprovals.status
-          })
-          .from(patchApprovals)
-          .where(and(...approvalConditions));
+        // patch_approvals is partner-axis RLS; org-scoped callers cannot read it
+        // in request context (accessiblePartnerIds=[]). The partner is SERVER-DERIVED
+        // from the org (already access-checked above), so system context is safe.
+        const approvals = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({
+                patchId: patchApprovals.patchId,
+                status: patchApprovals.status
+              })
+              .from(patchApprovals)
+              .where(and(...approvalConditions))
+          )
+        );
 
         approvalStatuses = Object.fromEntries(
           approvals.map(a => [a.patchId, a.status])

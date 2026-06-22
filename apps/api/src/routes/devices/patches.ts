@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { eq, desc, inArray, and, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { patches, devicePatches, patchApprovals, deviceCommands, users } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -118,16 +118,25 @@ function safeParsePatchResult(result: unknown): unknown {
 async function getApprovedPatchIdsForPartner(partnerId: string, patchIds: string[]): Promise<Set<string>> {
   if (patchIds.length === 0) return new Set();
 
-  const approvals = await db
-    .select({ patchId: patchApprovals.patchId })
-    .from(patchApprovals)
-    .where(
-      and(
-        eq(patchApprovals.partnerId, partnerId),
-        inArray(patchApprovals.patchId, patchIds),
-        eq(patchApprovals.status, 'approved')
-      )
-    );
+  // patch_approvals is partner-axis RLS. An org-scoped caller's DB context has
+  // accessiblePartnerIds=[] → the table returns 0 rows in request context.
+  // Escape to system context: the partnerId is SERVER-DERIVED from the device's
+  // org (already access-checked), so reading their approvals does not leak
+  // cross-partner data (#rls_silent_zero_row_read_sdk_poll).
+  const approvals = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ patchId: patchApprovals.patchId })
+        .from(patchApprovals)
+        .where(
+          and(
+            eq(patchApprovals.partnerId, partnerId),
+            inArray(patchApprovals.patchId, patchIds),
+            eq(patchApprovals.status, 'approved')
+          )
+        )
+    )
+  );
 
   return new Set(approvals.map((approval) => approval.patchId));
 }

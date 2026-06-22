@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import { readFile } from 'node:fs/promises';
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import { requirePermission, requireScope } from '../../middleware/auth';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -121,17 +121,62 @@ complianceRoutes.get(
     // Approvals are partner-scoped; use effectivePartnerId resolved above.
     let ringPatchScope: string[] | null = null;
     if (query.ringId && effectivePartnerId) {
-      const ringApprovedPatches = await db
-        .select({ patchId: patchApprovals.patchId })
-        .from(patchApprovals)
-        .where(
-          and(
-            eq(patchApprovals.partnerId, effectivePartnerId),
-            eq(patchApprovals.ringId, query.ringId),
-            eq(patchApprovals.status, 'approved')
+      // patch_approvals is partner-axis RLS; org-scoped callers get 0 rows in
+      // request context (accessiblePartnerIds=[]). Partner is SERVER-DERIVED
+      // from the ring's partnerId (already access-checked above).
+      const ringApprovedPatches = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({ patchId: patchApprovals.patchId })
+            .from(patchApprovals)
+            .where(
+              and(
+                eq(patchApprovals.partnerId, effectivePartnerId!),
+                eq(patchApprovals.ringId, query.ringId!),
+                eq(patchApprovals.status, 'approved')
+              )
+            )
+        )
+      );
+      ringPatchScope = ringApprovedPatches.map(a => a.patchId);
+    }
+
+    // Pre-fetch approved patch IDs in system context when we have a known partner.
+    // patch_approvals is partner-axis RLS; org-scoped callers cannot read it in
+    // request context (accessiblePartnerIds=[]). The partner is SERVER-DERIVED
+    // from the org/ring (already access-checked), so reading their approvals in
+    // system context does not leak cross-partner data.
+    // For the system-wide case (effectivePartnerId=null, no ringId, no orgId),
+    // we fall back to the correlated SQL subquery which resolves per-device partner.
+    let preApprovedPatchIds: Set<string> | null = null;
+    if (effectivePartnerId !== null) {
+      const candidatePatchRows = await db
+        .select({ patchId: devicePatches.patchId })
+        .from(devicePatches)
+        .where(inArray(devicePatches.deviceId, deviceIds));
+      const candidatePatchIds = [...new Set(candidatePatchRows.map(r => r.patchId))];
+
+      if (candidatePatchIds.length > 0) {
+        const approvalConditions: Parameters<typeof and>[0][] = [
+          eq(patchApprovals.partnerId, effectivePartnerId),
+          inArray(patchApprovals.patchId, candidatePatchIds),
+          eq(patchApprovals.status, 'approved')
+        ];
+        if (query.ringId) {
+          approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
+        }
+        const approvedRows = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({ patchId: patchApprovals.patchId })
+              .from(patchApprovals)
+              .where(and(...approvalConditions))
           )
         );
-      ringPatchScope = ringApprovedPatches.map(a => a.patchId);
+        preApprovedPatchIds = new Set(approvedRows.map(r => r.patchId));
+      } else {
+        preApprovedPatchIds = new Set();
+      }
     }
 
     // Get patch status counts
@@ -225,8 +270,20 @@ complianceRoutes.get(
         osType: devices.osType,
         lastSeenAt: devices.lastSeenAt,
         missingCount: sql<number>`count(*) filter (where ${isOutstanding})`,
-        approvedMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${isApprovedForInstall})`,
-        unapprovedMissing: sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
+        approvedMissing: preApprovedPatchIds !== null
+          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+              preApprovedPatchIds.size > 0
+                ? inArray(devicePatches.patchId, [...preApprovedPatchIds])
+                : sql`false`
+            })`
+          : sql<number>`count(*) filter (where ${isOutstanding} and ${isApprovedForInstall})`,
+        unapprovedMissing: preApprovedPatchIds !== null
+          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+              preApprovedPatchIds.size > 0
+                ? sql`not ${inArray(devicePatches.patchId, [...preApprovedPatchIds])}`
+                : sql`true`
+            })`
+          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
         criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'critical')`,
         importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.severity} = 'important')`,
         osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
