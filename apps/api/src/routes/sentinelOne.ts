@@ -298,7 +298,7 @@ sentinelOneRoutes.get(
           eq(s1OrgMappings.orgId, orgResult.orgId)
         ))
         .limit(1);
-      if (!mapping) return c.json({ data: null, mapped: false });
+      if (!mapping) return c.json({ data: null, mapped: false, connected: true });
     }
 
     return c.json({ data: integration });
@@ -508,7 +508,9 @@ sentinelOneRoutes.get(
           mappedDevices: 0,
           infectedAgents: 0,
           activeThreats: 0,
-          pendingActions: 0
+          highOrCriticalThreats: 0,
+          pendingActions: 0,
+          reportedThreatCount: 0
         }
       });
     }

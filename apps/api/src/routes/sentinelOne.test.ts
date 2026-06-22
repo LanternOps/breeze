@@ -536,6 +536,9 @@ describe('sentinel one routes', () => {
       const body = await res.json();
       expect(body.data).toBeNull();
       expect(body.mapped).toBe(false);
+      // `connected: true` lets the web distinguish "your org isn't mapped"
+      // (partner IS connected) from "no integration at all" (`{ data: null }`).
+      expect(body.connected).toBe(true);
       // Verify the mapping check did run (not skipped)
       expect(db.select).toHaveBeenCalledTimes(2);
     });
@@ -805,6 +808,9 @@ describe('sentinel one routes', () => {
       const body = await res.json();
       expect(body.integration).toBeNull();
       expect(body.summary.totalAgents).toBe(0);
+      // Shape must match the success branch so the web tiles never render blank.
+      expect(body.summary.highOrCriticalThreats).toBe(0);
+      expect(body.summary.reportedThreatCount).toBe(0);
     });
 
     it('org scope returns empty summary when org is not mapped', async () => {

@@ -106,6 +106,11 @@ export default function SecurityIntegration() {
 
   const [integration, setIntegration] = useState<Integration | null>(null);
   const [mappedForOrg, setMappedForOrg] = useState(true);
+  // Whether the PARTNER has a SentinelOne integration connected at all. In org
+  // scope an unmapped org receives `{ data: null, mapped: false, connected: true }`
+  // — `data` is null (no managementUrl/token leak) but the partner IS connected,
+  // which is what distinguishes "your org isn't mapped" from "not connected yet".
+  const [partnerConnected, setPartnerConnected] = useState(false);
   const [summary, setSummary] = useState<StatusSummary | null>(null);
   const [sites, setSites] = useState<SiteRow[]>([]);
   const [integrationId, setIntegrationId] = useState<string | null>(null);
@@ -137,7 +142,12 @@ export default function SecurityIntegration() {
     const json = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(readError(json, `Failed to load integration (${res.status})`));
     const data = (json as { data?: Integration | null }).data ?? null;
-    setMappedForOrg((json as { mapped?: boolean }).mapped !== false);
+    const mapped = (json as { mapped?: boolean }).mapped !== false;
+    // Partner is connected if we got the full integration object back, or the
+    // org-unmapped branch flagged `connected: true`.
+    const connected = data !== null || (json as { connected?: boolean }).connected === true;
+    setMappedForOrg(mapped);
+    setPartnerConnected(connected);
     setIntegration(data);
     if (data) {
       setName(data.name);
@@ -304,8 +314,8 @@ export default function SecurityIntegration() {
         </div>
       )}
 
-      {/* Org scope, not connected: SentinelOne is partner-level. */}
-      {!isPartnerView && !integration && (
+      {/* Org scope, partner not connected: SentinelOne is partner-level. */}
+      {!isPartnerView && !partnerConnected && (
         <div className="rounded-xl border bg-card p-8 text-center shadow-sm" data-testid="s1-org-not-connected">
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <Unplug className="h-5 w-5" />
@@ -318,8 +328,8 @@ export default function SecurityIntegration() {
         </div>
       )}
 
-      {/* Org scope, connected but this org isn't mapped to a site. */}
-      {!isPartnerView && integration && !mappedForOrg && (
+      {/* Org scope, partner connected but this org isn't mapped to a site. */}
+      {!isPartnerView && partnerConnected && !mappedForOrg && (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800" data-testid="s1-org-unmapped">
           This organization isn&apos;t mapped to a SentinelOne site yet. Switch to All orgs as a partner admin to map it.
         </div>
@@ -447,12 +457,12 @@ export default function SecurityIntegration() {
             <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-coverage">
               <h2 className="text-lg font-semibold">Coverage</h2>
               <div className="mt-4 grid grid-cols-2 gap-4">
-                <Metric label="S1 Agents" value={summary.totalAgents} />
-                <Metric label="Mapped Devices" value={summary.mappedDevices} />
-                <Metric label="Infected" value={summary.infectedAgents} warn={summary.infectedAgents > 0} danger />
-                <Metric label="Active Threats" value={summary.activeThreats} warn={summary.activeThreats > 0} danger />
-                <Metric label="Pending Actions" value={summary.pendingActions} />
-                <Metric label="High/Critical" value={summary.highOrCriticalThreats} warn={summary.highOrCriticalThreats > 0} />
+                <Metric label="S1 Agents" value={summary.totalAgents ?? 0} />
+                <Metric label="Mapped Devices" value={summary.mappedDevices ?? 0} />
+                <Metric label="Infected" value={summary.infectedAgents ?? 0} warn={(summary.infectedAgents ?? 0) > 0} danger />
+                <Metric label="Active Threats" value={summary.activeThreats ?? 0} warn={(summary.activeThreats ?? 0) > 0} danger />
+                <Metric label="Pending Actions" value={summary.pendingActions ?? 0} />
+                <Metric label="High/Critical" value={summary.highOrCriticalThreats ?? 0} warn={(summary.highOrCriticalThreats ?? 0) > 0} />
               </div>
             </div>
           )}

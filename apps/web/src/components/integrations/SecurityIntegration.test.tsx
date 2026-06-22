@@ -147,7 +147,8 @@ describe('SecurityIntegration', () => {
   it('renders read-only status in org view when the org is mapped', async () => {
     // org scope (currentOrgId set in beforeEach)
     fetchWithAuth.mockImplementation(async (url: string) => {
-      if (url === '/s1/integration') return jsonResponse({ data: existingIntegration, mapped: true });
+      // Real route: mapped org → full integration object, no `mapped`/`connected` flags.
+      if (url === '/s1/integration') return jsonResponse({ data: existingIntegration });
       if (url === '/s1/status') return jsonResponse({ summary, mapped: true });
       return jsonResponse({}, 404);
     });
@@ -167,8 +168,12 @@ describe('SecurityIntegration', () => {
   });
 
   it('renders the amber "not mapped" notice in org view when unmapped (not a switch-scope prompt)', async () => {
+    // Real route: org connected to a partner integration but THIS org isn't
+    // mapped → `{ data: null, mapped: false, connected: true }`. `data` is null
+    // (no managementUrl/token leak) but `connected` distinguishes it from
+    // "partner not connected" (`{ data: null }`).
     fetchWithAuth.mockImplementation(async (url: string) => {
-      if (url === '/s1/integration') return jsonResponse({ data: existingIntegration, mapped: false });
+      if (url === '/s1/integration') return jsonResponse({ data: null, mapped: false, connected: true });
       if (url === '/s1/status') return jsonResponse({ summary: null, mapped: false });
       return jsonResponse({}, 404);
     });
@@ -177,8 +182,30 @@ describe('SecurityIntegration', () => {
 
     await waitFor(() => expect(screen.getByTestId('s1-org-unmapped')).toBeInTheDocument());
     expect(screen.getByText(/isn't mapped to a SentinelOne site yet/i)).toBeInTheDocument();
+    // Not the "switch scope to connect" prompt — the partner IS connected.
+    expect(screen.queryByTestId('s1-org-not-connected')).not.toBeInTheDocument();
     expect(screen.queryByText('Partner connection')).not.toBeInTheDocument();
     expect(screen.queryByTestId('s1-name')).not.toBeInTheDocument();
+  });
+
+  it('renders the "not connected yet" prompt in org view when the partner has no integration', async () => {
+    // Real route "no integration": `{ data: null }` with no `connected` flag.
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === '/s1/integration') return jsonResponse({ data: null });
+      if (url === '/s1/status') {
+        return jsonResponse({
+          summary: { totalAgents: 0, mappedDevices: 0, infectedAgents: 0, activeThreats: 0, highOrCriticalThreats: 0, pendingActions: 0, reportedThreatCount: 0 }
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<SecurityIntegration />);
+
+    await waitFor(() => expect(screen.getByTestId('s1-org-not-connected')).toBeInTheDocument());
+    // Not the amber "unmapped" notice — the partner has no integration at all.
+    expect(screen.queryByTestId('s1-org-unmapped')).not.toBeInTheDocument();
+    expect(screen.queryByText('Partner connection')).not.toBeInTheDocument();
   });
 
   it('saves credentials via runAction with the right body', async () => {
