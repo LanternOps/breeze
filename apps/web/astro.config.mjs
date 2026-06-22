@@ -23,8 +23,8 @@ const sentryIntegration = sentryDsn
 
 // HelpPanel.tsx embeds the docs site in an <iframe>; without an explicit
 // frame-src the browser falls back to `default-src 'self'` and blocks it.
-// `blob:` lets the quote/invoice PDF preview frame an auth-fetched, in-memory
-// blob URL (see resolveFrameSrcDirective in ./src/lib/csp.ts for the rationale).
+// `blob:` lets the quote PDF preview frame an auth-fetched, in-memory blob URL
+// (see resolveFrameSrcDirective in ./src/lib/csp.ts for the full rationale).
 // This config is plain ESM evaluated before the TS pipeline, so we can't reuse
 // resolveFrameSrcDirective from ./src/lib/csp.ts — keep the semantics in sync.
 const frameSrcDirective = (() => {

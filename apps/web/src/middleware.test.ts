@@ -25,8 +25,8 @@ describe('CSP directives drop the jsdelivr CDN (#1023)', () => {
       expect(csp).toContain("style-src-elem 'self' 'unsafe-inline'");
       expect(csp).toContain("worker-src 'self' blob:");
       expect(csp).toMatch(/script-src 'self'/);
-      // #1750: the auth-fetched quote/invoice PDF preview frames a blob: URL,
-      // so frame-src must allow blob: (browsers don't fall back to img-src/
+      // #1750: the auth-fetched quote PDF preview frames a blob: URL, so
+      // frame-src must allow blob: (browsers don't fall back to img-src/
       // worker-src for an iframe source).
       expect(csp).toMatch(/frame-src[^;]*\bblob:/);
     }
@@ -55,5 +55,20 @@ describe('CSP directives drop the jsdelivr CDN (#1023)', () => {
     const source = readFileSync(join(process.cwd(), 'astro.config.mjs'), 'utf8');
 
     expect(source).not.toContain('jsdelivr');
+  });
+
+  // #1750: astro.config.mjs's frame-src is the prod-authoritative directive for
+  // HTML responses (middleware.ts never rewrites frame-src), and it's a
+  // hand-maintained duplicate of resolveFrameSrcDirective in csp.ts. Guard the
+  // file directly so dropping blob: from the frame-src Set here — which silently
+  // re-breaks the quote PDF preview in prod while every other test stays green —
+  // fails loudly. The match is scoped to the frame-src source Set (identified by
+  // the docs origin) so it can't be satisfied by the blob: in worker-src/img-src.
+  it('astro.config.mjs frameSrcDirective keeps blob: for the quote preview', () => {
+    const source = readFileSync(join(process.cwd(), 'astro.config.mjs'), 'utf8');
+
+    const frameSrcSet = source.match(/new Set\(\[[^\]]*docs\.breezermm\.com[^\]]*\]\)/);
+    expect(frameSrcSet, 'frame-src source Set not found in astro.config.mjs').not.toBeNull();
+    expect(frameSrcSet![0]).toContain("'blob:'");
   });
 });
