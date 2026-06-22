@@ -137,7 +137,7 @@ type DeviceListProps = {
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
-  // Controlled inline filter state — now just the hostname search box, owned by
+  // Controlled inline filter state — now just the device search box, owned by
   // DevicesPage and shared with DeviceFilterToolbar. Every other structured
   // filter lives in the server-resolved group (serverFilterIds). Defaults keep
   // DeviceList usable on its own (tests render it standalone).
@@ -311,7 +311,7 @@ export default function DeviceList({
   // Use provided timezone or browser default
   const effectiveTimezone = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  // The only inline (instant, client-side) filter is the hostname search box,
+  // The only inline (instant, client-side) filter is device search,
   // owned by DevicesPage and shared with DeviceFilterToolbar. Every other
   // structured filter (status/os/role/org/site/group/…) now lives in the
   // server-resolved group and arrives pre-resolved as `serverFilterIds`. When
@@ -430,7 +430,7 @@ export default function DeviceList({
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
 
-  // Reset to page 1 whenever the active filters change (the hostname search, the
+  // Reset to page 1 whenever the active filters change (device search, the
   // class facet, and the server-resolved id set are the only things that narrow
   // the list now). This replaces the per-control setCurrentPage(1) calls that
   // lived on each filter input before the toolbar was extracted.
@@ -647,12 +647,23 @@ export default function DeviceList({
     (device.deviceClass ?? 'agent') === 'network' ? dash : node;
   const columnDefs: Record<ColumnId, { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }> = {
     hostname: {
-      header: () => sortHeader('hostname', 'Hostname', 'Sort by hostname'),
-      cell: (device) => (
-        <td key="hostname" className="max-w-[200px] px-3 py-3 text-sm font-medium">
-          <span className="block truncate" title={device.displayName || device.hostname}>{device.displayName || device.hostname}</span>
-        </td>
-      ),
+      header: () => sortHeader('hostname', 'Device', 'Sort by device'),
+      cell: (device) => {
+        const hasDisplayName = !!device.displayName && device.displayName !== device.hostname;
+        const primaryName = device.displayName || device.hostname;
+        return (
+          <td key="hostname" className="max-w-[220px] px-3 py-3 text-sm">
+            <div className="min-w-0">
+              <span className="block truncate font-medium" title={primaryName}>{primaryName}</span>
+              {hasDisplayName && (
+                <span className="block truncate text-xs text-muted-foreground" title={device.hostname}>
+                  {device.hostname}
+                </span>
+              )}
+            </div>
+          </td>
+        );
+      },
     },
     class: {
       header: () => sortHeader('class', 'Class', 'Sort by class'),

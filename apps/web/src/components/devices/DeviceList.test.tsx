@@ -67,6 +67,60 @@ describe('DeviceList — OS version display', () => {
   });
 });
 
+describe('DeviceList — Device column display names', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  it('shows display name as the primary device label and hostname as secondary text', () => {
+    render(<DeviceList devices={[{ ...baseDevice, displayName: 'Reception Laptop' }]} />);
+
+    expect(screen.getByText('Device')).toBeInTheDocument();
+    expect(screen.getByText('Reception Laptop')).toBeInTheDocument();
+    expect(screen.getByText('host-a')).toBeInTheDocument();
+  });
+
+  it('falls back to hostname when display name is not set', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+
+    expect(screen.getByText('host-a')).toBeInTheDocument();
+  });
+
+  it('matches the quick search against display name as well as hostname', () => {
+    const displayNamedDevice: Device = {
+      ...baseDevice,
+      id: '12121212-1212-1212-1212-121212121212',
+      hostname: 'host-alpha',
+      displayName: 'Reception Laptop',
+    };
+    const hostnameOnlyDevice: Device = {
+      ...baseDevice,
+      id: '34343434-3434-3434-3434-343434343434',
+      hostname: 'host-beta',
+    };
+
+    const { rerender } = render(
+      <DeviceList
+        devices={[displayNamedDevice, hostnameOnlyDevice]}
+        listFilters={{ search: 'reception' }}
+      />
+    );
+
+    expect(screen.getByText('Reception Laptop')).toBeInTheDocument();
+    expect(screen.queryByText('host-beta')).toBeNull();
+
+    rerender(
+      <DeviceList
+        devices={[displayNamedDevice, hostnameOnlyDevice]}
+        listFilters={{ search: 'host-beta' }}
+      />
+    );
+
+    expect(screen.getByText('host-beta')).toBeInTheDocument();
+    expect(screen.queryByText('Reception Laptop')).toBeNull();
+  });
+});
+
 describe('DeviceList — agent-silent (watchdog OK) badge (#800 web-UI gap)', () => {
   it('renders the amber badge when mainAgentSilentSince is set AND watchdog is reporting', () => {
     const device: Device = {
@@ -264,7 +318,7 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     expect(rowOrder(container)).toEqual(['host-zeta', 'host-mid', 'host-acme']);
   });
 
-  it('sorts hostnames with numeric collation (host-2 before host-10)', () => {
+  it('sorts devices with numeric collation (host-2 before host-10)', () => {
     const devices: Device[] = [
       { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000001', hostname: 'host-10' },
       { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000002', hostname: 'host-2' },
@@ -272,7 +326,7 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
 
     const { container } = render(<DeviceList devices={devices} />);
 
-    clickHeader('Sort by hostname');
+    clickHeader('Sort by device');
     expect(rowOrder(container)).toEqual(['host-2', 'host-10']);
   });
 
@@ -364,7 +418,7 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     ];
     render(<DeviceList devices={devices} />);
 
-    const hostHeader = screen.getByTitle('Sort by hostname');
+    const hostHeader = screen.getByTitle('Sort by device');
     const osHeader = screen.getByTitle('Sort by operating system');
     // Unsorted: every header advertises aria-sort="none".
     expect(hostHeader.getAttribute('aria-sort')).toBe('none');

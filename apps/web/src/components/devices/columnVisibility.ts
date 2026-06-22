@@ -40,7 +40,7 @@ export const COLUMN_IDS = [
 export type ColumnId = (typeof COLUMN_IDS)[number];
 
 export const COLUMN_LABELS: Record<ColumnId, string> = {
-  hostname: 'Hostname',
+  hostname: 'Device',
   class: 'Class',
   type: 'Type',
   organization: 'Organization',

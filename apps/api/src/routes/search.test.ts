@@ -90,7 +90,7 @@ describe('search routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([
-              { id: 'dev-1', title: 'Workstation 01', hostname: 'ws-01', status: 'online' }
+              { id: 'dev-1', title: 'Workstation 01', hostname: 'ws-01', status: 'online', lastUser: null }
             ])
           })
         })
@@ -122,6 +122,88 @@ describe('search routes', () => {
     expect(body.results.some((row: { type?: string }) => row.type === 'devices')).toBe(true);
     expect(body.results.some((row: { type?: string }) => row.type === 'scripts')).toBe(true);
     expect(body.results.some((row: { type?: string }) => row.type === 'alerts')).toBe(true);
+  });
+
+  it('includes hostname in device result descriptions when display name is the title', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: 'dev-1',
+                title: 'Alek 2019 MBP',
+                hostname: 'Aleksey-16-MacBook-Pro.decom-09cb5eb9',
+                status: 'online',
+                lastUser: 'admitriev'
+              }
+            ])
+          })
+        })
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as never);
+
+    const res = await app.request('/search?q=16');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.results).toContainEqual({
+      id: 'dev-1',
+      type: 'devices',
+      title: 'Alek 2019 MBP',
+      description: 'Aleksey-16-MacBook-Pro.decom-09cb5eb9 · online · admitriev'
+    });
+  });
+
+  it('does not duplicate hostname in device result descriptions when hostname is the title', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { id: 'dev-1', title: null, hostname: 'host-16', status: 'online', lastUser: null }
+            ])
+          })
+        })
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as never);
+
+    const res = await app.request('/search?q=16');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.results).toContainEqual({
+      id: 'dev-1',
+      type: 'devices',
+      title: 'host-16',
+      description: 'online'
+    });
   });
 
   it('validates required query parameter', async () => {

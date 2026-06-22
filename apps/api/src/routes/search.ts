@@ -19,6 +19,32 @@ const SETTINGS_ENTRIES = [
   { id: 'settings-users', type: 'settings', title: 'User management', description: 'Manage users and roles', href: '/settings/users' }
 ] as const;
 
+type DeviceSearchRow = {
+  id: string;
+  title: string | null;
+  hostname: string | null;
+  status: string | null;
+  lastUser: string | null;
+};
+
+function deviceSearchResult(row: DeviceSearchRow): Record<string, unknown> {
+  const displayName = row.title?.trim() || null;
+  const hostname = row.hostname?.trim() || null;
+  const title = displayName || hostname || 'Unknown device';
+  const descriptionParts = [
+    displayName && hostname && displayName !== hostname ? hostname : null,
+    row.status,
+    row.lastUser
+  ];
+
+  return {
+    id: row.id,
+    type: 'devices',
+    title,
+    description: descriptionParts.filter(Boolean).join(' · ') || undefined
+  };
+}
+
 export const searchRoutes = new Hono();
 
 searchRoutes.use('*', authMiddleware);
@@ -110,12 +136,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
   ]);
 
   const results: Array<Record<string, unknown>> = [
-    ...deviceRows.map((row) => ({
-      id: row.id,
-      type: 'devices',
-      title: row.title || row.hostname,
-      description: [row.status, row.lastUser].filter(Boolean).join(' · ') || undefined
-    })),
+    ...deviceRows.map((row) => deviceSearchResult(row)),
     ...scriptRows.map((row) => ({
       id: row.id,
       type: 'scripts',
