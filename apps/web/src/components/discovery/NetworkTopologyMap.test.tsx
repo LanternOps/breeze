@@ -8,6 +8,12 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args)
 }));
 
+// Edit-mode gating (#1728 phase 4) calls usePermissions(); these tests exercise
+// the read-only view, so stub it to deny topology:write (toggle stays hidden).
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => false })
+}));
+
 const runAction = vi.fn(async (opts: { request: () => Promise<Response> }) => {
   const res = await opts.request();
   return res.json();

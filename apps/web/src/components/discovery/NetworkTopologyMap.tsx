@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import { fetchWithAuth } from '../../stores/auth';
+import { usePermissions } from '../../lib/permissions';
 import { runAction } from '@/lib/runAction';
 import { cn, heightPxClass } from '@/lib/utils';
 import {
@@ -247,6 +248,11 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
   const [profileSubnets, setProfileSubnets] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+
+  // Manual-mapping edit mode (issue #1728 Phase 4) — gated by topology:write.
+  const { can } = usePermissions();
+  const canEdit = can('topology', 'write');
+  const [editMode, setEditMode] = useState(false);
 
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -501,6 +507,16 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
           >
             Auto-arrange
           </button>
+          {canEdit && (
+            <button
+              type="button"
+              data-testid="topology-edit-toggle"
+              onClick={() => setEditMode((v) => !v)}
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              {editMode ? 'Done editing' : 'Edit map'}
+            </button>
+          )}
         </div>
       </div>
 
