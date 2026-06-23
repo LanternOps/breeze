@@ -204,8 +204,27 @@ func collectDeviceAdjacencyForHost(ip string, communities []string, timeout time
 		adj := collectDeviceAdjacency(client, ip)
 		client.Close()
 		if len(adj.Lldp) > 0 || len(adj.Cdp) > 0 {
+			adj.Fdb = collectFdbEntries(ip, communities, timeout)
 			return adj
 		}
 	}
 	return empty
+}
+
+// collectFdbEntries walks the bridge-FDB tables for a responding device and
+// converts the snmppoll assembler output into the discovery FdbEntry contract.
+// Returns an empty (non-nil) slice on any SNMP error so the adjacency block
+// always carries a `fdb` array.
+func collectFdbEntries(ip string, communities []string, timeout time.Duration) []FdbEntry {
+	raw := collectFdbForDevice(ip, communities, timeout)
+	out := make([]FdbEntry, 0, len(raw))
+	for _, e := range raw {
+		out = append(out, FdbEntry{
+			MAC:        e.MAC,
+			BridgePort: e.BridgePort,
+			IfName:     e.IfName,
+			VLAN:       e.VLAN,
+		})
+	}
+	return out
 }
