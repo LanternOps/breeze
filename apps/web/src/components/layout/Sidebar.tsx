@@ -48,6 +48,7 @@ import {
   Clock,
   Ban,
   Boxes,
+  Bug,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -167,6 +168,7 @@ const topLevelNav: NavItem[] = [
   { name: 'Remote Access', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
   { name: 'Patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
+  { name: 'Vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
 
 // ---------------------------------------------------------------------------

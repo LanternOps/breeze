@@ -117,6 +117,7 @@ type CatalogRow = {
   cvssVector: string | null;
   severity: string | null;
   knownExploited: boolean | null;
+  epssScore: string | null;
 };
 
 function numericOrNull(value: string | null): number | null {
@@ -153,6 +154,7 @@ function mergeRows(deviceRows: DeviceVulnerabilityRow[], catalogRows: CatalogRow
         cvssVector: catalog.cvssVector,
         severity: catalog.severity,
         knownExploited: catalog.knownExploited ?? false,
+        epssScore: numericOrNull(catalog.epssScore),
       };
     })
     .filter((row): row is NonNullable<typeof row> => row !== null)
@@ -187,6 +189,7 @@ async function readCatalogRows(
           cvssVector: vulnerabilities.cvssVector,
           severity: vulnerabilities.severity,
           knownExploited: vulnerabilities.knownExploited,
+          epssScore: vulnerabilities.epssScore,
         })
         .from(vulnerabilities)
         .where(and(...conditions))

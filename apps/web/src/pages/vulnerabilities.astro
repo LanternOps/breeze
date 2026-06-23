@@ -1,0 +1,16 @@
+---
+import DashboardLayout from '../layouts/DashboardLayout.astro';
+import VulnerabilityTable from '../components/vulnerabilities/VulnerabilityTable';
+---
+
+<DashboardLayout title="Vulnerabilities">
+  <div class="space-y-6">
+    <div>
+      <h1 class="text-2xl font-semibold">Vulnerabilities</h1>
+      <p class="text-sm text-muted-foreground">
+        CVEs detected across your fleet, prioritized by risk (CVSS, with KEV/EPSS modifiers).
+      </p>
+    </div>
+    <VulnerabilityTable client:load />
+  </div>
+</DashboardLayout>
