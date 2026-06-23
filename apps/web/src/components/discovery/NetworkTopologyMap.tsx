@@ -589,6 +589,9 @@ export default function NetworkTopologyMap({
   // Full-screen "Expand" mode (#1728): the card fills the viewport so the map
   // gets the whole content area; Esc (or the toggle) exits.
   const [expanded, setExpanded] = useState(false);
+  // The armed connect source (edit mode): set on the first tap, drives the
+  // "tap another node to connect" hint, cleared on the second tap or Esc (#1728).
+  const [connectSource, setConnectSource] = useState<string | null>(null);
 
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -840,6 +843,7 @@ export default function NetworkTopologyMap({
   // Reset the pending connect source + selection whenever edit mode is toggled.
   useEffect(() => {
     connectSourceRef.current = null;
+    setConnectSource(null);
     setSelected(null);
   }, [editMode]);
 
@@ -1070,11 +1074,15 @@ export default function NetworkTopologyMap({
         const source = connectSourceRef.current;
         if (!source) {
           connectSourceRef.current = id;
+          setConnectSource(id);
           setSelected(nodeSelection(node));
           return;
         }
         connectSourceRef.current = null;
+        setConnectSource(null);
         if (source !== id) void connectNodesRef.current?.(source, id);
+        // Clear the source's amber ring once the gesture resolves.
+        setSelected(null);
         return;
       }
       // A tap only *selects* the node (opens the inspector). Opening the full
@@ -1165,15 +1173,22 @@ export default function NetworkTopologyMap({
     cy.autoungrabify(!editMode);
   }, [editMode]);
 
-  // Esc exits full-screen expand.
+  // Esc cancels a pending connection first; otherwise it exits full-screen expand.
   useEffect(() => {
-    if (!expanded) return;
+    if (!connectSource && !expanded) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setExpanded(false);
+      if (e.key !== 'Escape') return;
+      if (connectSource) {
+        connectSourceRef.current = null;
+        setConnectSource(null);
+        setSelected(null);
+      } else if (expanded) {
+        setExpanded(false);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [expanded]);
+  }, [connectSource, expanded]);
 
   // Rebuild the canvas stylesheet from the resolved design tokens whenever the
   // theme flips (the `dark` class toggles on <html>), so the graph tracks
@@ -1359,6 +1374,16 @@ export default function NetworkTopologyMap({
           OVER the canvas (absolute) so selecting a node never reflows the page —
           the map keeps its size and nothing jumps (#1728 feedback). */}
       <div className="relative mt-4" data-testid="topology-canvas-wrap">
+      {editMode && connectSource && (
+        <div
+          data-testid="topology-connect-hint"
+          className="animate-in pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-400/60 bg-card px-3.5 py-1.5 text-xs font-medium text-foreground shadow-md"
+        >
+          <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500 motion-safe:animate-pulse" />
+          Tap another node to connect
+          <span className="text-muted-foreground">· Esc to cancel</span>
+        </div>
+      )}
       {editMode && canEdit && (
         <div
           className="animate-in absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-card px-3 py-2 shadow-md"
