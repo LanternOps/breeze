@@ -75,7 +75,12 @@ const { cyInstance, cytoscapeFactory, cyHandlers } = vi.hoisted(() => {
       not: vi.fn(() => ({ addClass: vi.fn() }))
     })),
     fit: vi.fn(),
-    resize: vi.fn()
+    resize: vi.fn(),
+    // Edit-only interactivity toggles (#1728): the component flips these when
+    // edit mode changes; chainable no-ops are enough for jsdom.
+    userPanningEnabled: vi.fn(),
+    userZoomingEnabled: vi.fn(),
+    autoungrabify: vi.fn()
   };
   const factory = vi.fn(() => instance) as ReturnType<typeof vi.fn> & {
     use: ReturnType<typeof vi.fn>;
@@ -380,13 +385,21 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     return { target: { id: () => id, data: (key: string) => (key === 'kind' ? kind : undefined) } };
   }
 
-  it('onNodeClick fires for a real discovered asset (read-only mode)', async () => {
+  it('opens asset detail in two steps: tap selects, View-details fires onNodeClick', async () => {
     canMock.mockReturnValue(false);
+    const user = userEvent.setup();
     const onNodeClick = vi.fn();
     render(<NetworkTopologyMap onNodeClick={onNodeClick} />);
     await waitFor(() => expect(cyHandlers['tap:node']).toBeDefined());
 
+    // Step 1: a tap only selects the node (opens the inspector) — it must NOT
+    // navigate to asset detail on its own (#1728).
     cyHandlers['tap:node'](tapEvent('asset-1', 'discovered'));
+    await screen.findByTestId('topology-inspector');
+    expect(onNodeClick).not.toHaveBeenCalled();
+
+    // Step 2: the inspector's "View details" button opens the asset detail.
+    await user.click(await screen.findByTestId('topology-inspector-view-details'));
     expect(onNodeClick).toHaveBeenCalledWith('asset-1');
   });
 

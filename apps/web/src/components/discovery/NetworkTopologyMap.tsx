@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import { LayoutGrid, Pencil, Check, ArrowRight, X, Network } from 'lucide-react';
@@ -481,16 +481,18 @@ export default function NetworkTopologyMap({
   // The element selected in the canvas, shown in the inspector (manual edge →
   // delete; measured edge → read-only provenance; manual node → delete).
   const [selected, setSelected] = useState<SelectedElement | null>(null);
+  // Canvas pixel height, recomputed to fit the viewport so the map's header and
+  // the legends below it stay visible without scrolling the card (#1728).
+  const [canvasHeight, setCanvasHeight] = useState(height);
 
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
   // siteId per node, so a drag can persist the dragged node's own site.
   const siteByNodeRef = useRef<Map<string, string | undefined>>(new Map());
   // node ids that already have a saved (placed) position — Auto-arrange must not
   // disturb these.
   const placedRef = useRef<Set<string>>(new Set());
-  const onNodeClickRef = useRef(onNodeClick);
-  onNodeClickRef.current = onNodeClick;
   // Edit-mode two-tap connect state, read from inside the stable cy tap handler.
   const editModeRef = useRef(false);
   const connectSourceRef = useRef<string | null>(null);
@@ -813,7 +815,13 @@ export default function NetworkTopologyMap({
       style: buildStylesheet(),
       // preset: consume saved positions; never auto-layout on every render.
       layout: { name: 'preset' },
-      wheelSensitivity: 0.2
+      wheelSensitivity: 0.2,
+      // Static in view mode; pan/zoom/drag unlock only in edit mode (#1728). The
+      // editMode effect keeps these in sync on toggle.
+      userPanningEnabled: editModeRef.current,
+      userZoomingEnabled: editModeRef.current,
+      autoungrabify: !editModeRef.current,
+      boxSelectionEnabled: false
     });
     cyRef.current = cy;
 
@@ -872,13 +880,10 @@ export default function NetworkTopologyMap({
         if (source !== id) void connectNodesRef.current?.(source, id);
         return;
       }
-      // Always reveal the node in the inspector (immediate, never fails).
+      // A tap only *selects* the node (opens the inspector). Opening the full
+      // asset detail is a deliberate second step via the inspector's "View
+      // details" button (#1728) — a single tap must never navigate away.
       setSelected(nodeSelection(node));
-      // Only real discovered assets have an /discovery/assets/:id detail record.
-      // Manual placeholder nodes carry no asset record, so don't fetch one.
-      if (node.data('kind') === 'manual') return;
-      const cb = onNodeClickRef.current;
-      if (cb) cb(id);
     });
 
     // Tapping an edge opens the inspector: a manual edge can be deleted, a
@@ -941,6 +946,47 @@ export default function NetworkTopologyMap({
     });
   }, [selected, editMode, nodes, links]);
 
+  // Edit-only interactivity (#1728): in view mode the map is a static diagram —
+  // no pan, no scroll-zoom, no node dragging. Edit mode unlocks all three. The
+  // same flags are set at cy-creation from editModeRef so a data-driven rebuild
+  // preserves the current mode.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.userPanningEnabled(editMode);
+    cy.userZoomingEnabled(editMode);
+    cy.autoungrabify(!editMode);
+  }, [editMode]);
+
+  // Fit the canvas height to the viewport so the legends below the map stay
+  // visible without scrolling the card off-screen. The chrome above the canvas
+  // (mountTop) and the intrinsic height of the content below it are both
+  // independent of the canvas height, so this converges in a single pass.
+  // Re-runs when surrounding chrome changes (inspector/palette) or on resize.
+  useLayoutEffect(() => {
+    const recompute = () => {
+      const mount = mountRef.current;
+      const card = cardRef.current;
+      if (!mount || !card) return;
+      const mountRect = mount.getBoundingClientRect();
+      const below = card.getBoundingClientRect().bottom - mountRect.bottom;
+      const available = window.innerHeight - mountRect.top - below - 24;
+      setCanvasHeight(Math.max(320, Math.min(height, Math.round(available))));
+    };
+    recompute();
+    window.addEventListener('resize', recompute);
+    return () => window.removeEventListener('resize', recompute);
+  }, [height, editMode, selected, subnetGroups, presentTypes, links.length, nodes.length, loading]);
+
+  // Cytoscape must be told when its container resizes; re-fit in view mode (in
+  // edit mode the user may have panned/zoomed, so preserve their viewport).
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.resize();
+    if (!editModeRef.current && cy.elements().nonempty()) cy.fit(undefined, 30);
+  }, [canvasHeight]);
+
   // Auto-arrange: lay out ONLY never-placed nodes; pinned/positioned nodes are
   // locked first so their saved positions are preserved.
   const autoArrange = useCallback(() => {
@@ -983,24 +1029,28 @@ export default function NetworkTopologyMap({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div ref={cardRef} className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Network Topology</h2>
           <p className="text-sm text-muted-foreground">
-            Discovered assets grouped by subnet. Scroll to zoom, drag to pan or reposition nodes.
+            {editMode
+              ? 'Drag nodes to arrange, scroll to zoom. Tap two nodes to link them.'
+              : 'Discovered assets grouped by subnet. Tap a node or link to inspect it.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            data-testid="topology-auto-arrange"
-            onClick={autoArrange}
-            className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
-          >
-            <LayoutGrid className="h-4 w-4 text-muted-foreground" aria-hidden />
-            Auto-arrange
-          </button>
+          {editMode && (
+            <button
+              type="button"
+              data-testid="topology-auto-arrange"
+              onClick={autoArrange}
+              className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
+            >
+              <LayoutGrid className="h-4 w-4 text-muted-foreground" aria-hidden />
+              Auto-arrange
+            </button>
+          )}
           {canEdit && (
             <button
               type="button"
@@ -1196,6 +1246,14 @@ export default function NetworkTopologyMap({
                   Delete connection
                 </button>
               )}
+              {selected.method !== 'manual' && editMode && (
+                <span
+                  data-testid="topology-edge-locked-note"
+                  className="text-xs italic text-muted-foreground"
+                >
+                  Measured by scan — not editable
+                </span>
+              )}
             </>
           )}
 
@@ -1236,8 +1294,9 @@ export default function NetworkTopologyMap({
         // Cytoscape requires a real pixel height on its container. An inline style
         // is used deliberately: the `u-h-px-*` utility classes are runtime-built
         // (`u-h-px-${n}`) and get purged from the production CSS, so a class-based
-        // height collapses the canvas to 0 in prod (issue #1728).
-        style={{ height: `${height}px` }}
+        // height collapses the canvas to 0 in prod (issue #1728). The value is
+        // viewport-fitted (see the recompute effect) so the legends stay visible.
+        style={{ height: `${canvasHeight}px` }}
       >
         {nodes.length === 0 && !loading && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
@@ -1284,7 +1343,7 @@ export default function NetworkTopologyMap({
             </span>
           ))}
           {onNodeClick && (
-            <span className="ml-auto text-muted-foreground/60">Click a node for details</span>
+            <span className="ml-auto text-muted-foreground/60">Click a node to inspect</span>
           )}
         </div>
       )}

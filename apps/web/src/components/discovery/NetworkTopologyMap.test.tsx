@@ -8,10 +8,12 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args)
 }));
 
-// Edit-mode gating (#1728 phase 4) calls usePermissions(); these tests exercise
-// the read-only view, so stub it to deny topology:write (toggle stays hidden).
+// Edit-mode gating (#1728 phase 4) calls usePermissions(). Most tests exercise
+// the read-only view (deny topology:write); the edit-only controls (Auto-arrange)
+// flip the mock to grant it per-test. Hoisted so the vi.mock factory can see it.
+const { canMock } = vi.hoisted(() => ({ canMock: vi.fn(() => false) }));
 vi.mock('../../lib/permissions', () => ({
-  usePermissions: () => ({ permissions: [], can: () => false })
+  usePermissions: () => ({ permissions: [], can: (...a: unknown[]) => canMock(...a) })
 }));
 
 const runAction = vi.fn(async (opts: { request: () => Promise<Response> }) => {
@@ -62,7 +64,11 @@ const { cyDragHandlers, cyInstance, cytoscapeFactory } = vi.hoisted(() => {
       not: vi.fn(() => ({ addClass: vi.fn() }))
     })),
     fit: vi.fn(),
-    resize: vi.fn()
+    resize: vi.fn(),
+    // Edit-only interactivity toggles (#1728): set on mode change; no-ops here.
+    userPanningEnabled: vi.fn(),
+    userZoomingEnabled: vi.fn(),
+    autoungrabify: vi.fn()
   };
   const factory = vi.fn(() => instance) as ReturnType<typeof vi.fn> & {
     use: ReturnType<typeof vi.fn>;
@@ -94,6 +100,7 @@ describe('NetworkTopologyMap', () => {
     cyInstance.on.mockClear();
     cyInstance.layout.mockClear();
     cyInstance.destroy.mockClear();
+    canMock.mockReturnValue(false);
     cyDragHandlers.length = 0;
     if (!window.ResizeObserver) {
       window.ResizeObserver = class {
@@ -109,7 +116,8 @@ describe('NetworkTopologyMap', () => {
     return (cfg?.elements as Array<{ data: Record<string, unknown>; position?: { x: number; y: number } }>) ?? [];
   }
 
-  it('mounts a Cytoscape canvas and exposes an Auto-arrange control', async () => {
+  it('mounts a Cytoscape canvas and exposes Auto-arrange only in edit mode', async () => {
+    canMock.mockReturnValue(true);
     mockTopologyResponse({
       subnets: ['10.0.2.0/24'],
       edges: [],
@@ -124,7 +132,10 @@ describe('NetworkTopologyMap', () => {
 
     // The canvas mount container is present.
     expect(await screen.findByTestId('topology-cytoscape')).toBeInTheDocument();
-    // The Auto-arrange button is present.
+    // Auto-arrange is an editing action — hidden in the read-only view (#1728).
+    expect(screen.queryByTestId('topology-auto-arrange')).not.toBeInTheDocument();
+    // It appears once edit mode is entered.
+    fireEvent.click(screen.getByTestId('topology-edit-toggle'));
     expect(screen.getByTestId('topology-auto-arrange')).toBeInTheDocument();
 
     // Cytoscape was constructed once with the discovered nodes as elements.
@@ -343,8 +354,11 @@ describe('NetworkTopologyMap', () => {
       ]
     });
 
+    canMock.mockReturnValue(true);
     render(<NetworkTopologyMap />);
 
+    // Auto-arrange lives in edit mode (#1728) — enter it first.
+    fireEvent.click(await screen.findByTestId('topology-edit-toggle'));
     const btn = await screen.findByTestId('topology-auto-arrange');
     fireEvent.click(btn);
 
