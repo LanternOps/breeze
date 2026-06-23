@@ -27,6 +27,9 @@ export default defineConfig({
       // Co-located real-DB integration test for the MSRC vuln-source-sync job
       // (BE-16): exercises syncMsrcMonth upserts into the global vuln tables.
       'src/jobs/vulnerabilityJobs.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 correlation: materializes
+      // device_vulnerabilities from software_inventory and global match facts.
+      'src/services/vulnerabilityCorrelation.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's
