@@ -1283,6 +1283,10 @@ discoveryRoutes.get(
         bandwidth: e.bandwidth,
         latency: e.latency,
         observedAt: e.lastVerifiedAt?.toISOString() ?? null,
+        method: e.method ?? null,
+        confidence: e.confidence ?? null,
+        interfaceName: e.interfaceName ?? null,
+        vlan: e.vlan ?? null,
         inferred:
           e.sourceType === 'discovered_asset' &&
           e.targetType === 'discovered_asset' &&

@@ -5,6 +5,7 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
+import { networkTopology } from '../db/schema';
 
 vi.mock('../services', () => ({}));
 
@@ -161,6 +162,60 @@ describe('discovery routes', () => {
       // Subnet definitions are surfaced so the client can group by the correct
       // mask instead of fabricating edges (issue #1325).
       expect(body.subnets).toEqual([]);
+    });
+
+    it('surfaces measured-edge provenance (method/confidence/interfaceName/vlan) on edges (#1728)', async () => {
+      // The /topology handler issues several db.select() calls (assets, edges,
+      // profiles). Branch on the table passed to .from() so only the
+      // networkTopology query returns a measured row; everything else stays empty.
+      const topologyRow = {
+        id: 'edge-1',
+        sourceId: 'asset-a',
+        targetId: 'asset-b',
+        connectionType: 'infra',
+        sourceType: 'discovered_asset',
+        targetType: 'discovered_asset',
+        bandwidth: null,
+        latency: null,
+        lastVerifiedAt: new Date('2026-06-22T00:00:00.000Z'),
+        method: 'lldp',
+        confidence: 'high',
+        interfaceName: 'Gi0/1',
+        vlan: 10,
+      };
+
+      vi.mocked(db.select).mockImplementation(((...args: any[]) => {
+        // db.select({ subnets: ... }) for the profile CIDRs — return empty.
+        if (args.length > 0) {
+          return {
+            from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+          } as any;
+        }
+        // db.select().from(table).where(...) — branch on the table identity.
+        return {
+          from: vi.fn((table: any) => ({
+            where: vi.fn(() =>
+              Promise.resolve(table === networkTopology ? [topologyRow] : [])
+            ),
+          })),
+        } as any;
+      }) as any);
+
+      const res = await app.request('/discovery/topology', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.edges).toHaveLength(1);
+      expect(body.edges[0]).toMatchObject({
+        id: 'edge-1',
+        method: 'lldp',
+        confidence: 'high',
+        interfaceName: 'Gi0/1',
+        vlan: 10,
+      });
     });
   });
 
