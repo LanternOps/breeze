@@ -264,6 +264,7 @@ export async function cleanupDatabase() {
     // are listed explicitly for clarity. (try/catch ignores them on branches
     // without the migration.)
     'device_vulnerabilities',
+    'os_vulnerabilities',
     'software_vulnerabilities',
     'software_products',
     'vulnerabilities',

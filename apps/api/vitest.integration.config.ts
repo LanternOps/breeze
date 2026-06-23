@@ -30,6 +30,9 @@ export default defineConfig({
       // Co-located real-DB integration test for the NVD vuln-source-sync job
       // (BE-16): exercises curated-CPE match fact generation.
       'src/jobs/vulnerabilityJobsNvd.integration.test.ts',
+      // Co-located real-DB integration test for the Apple SOFA vuln-source-sync job
+      // (BE-16): exercises macOS OS vulnerability fact generation.
+      'src/jobs/vulnerabilityJobsSofa.integration.test.ts',
       // Co-located real-DB integration test for BE-16 correlation: materializes
       // device_vulnerabilities from software_inventory and global match facts.
       'src/services/vulnerabilityCorrelation.integration.test.ts',
