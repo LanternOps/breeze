@@ -289,6 +289,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'time_entries',
   'time_series_metrics',
   'topology_layout',
+  'topology_manual_nodes',
   'tunnel_allowlists',
   'tunnel_sessions',
   'user_notifications',
