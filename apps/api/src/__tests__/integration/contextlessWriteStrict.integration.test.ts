@@ -22,8 +22,10 @@ const CONTEXTLESS_MSG = 'ran with no RLS access context';
 
 describe('#1379 A1 — DB_CONTEXTLESS_WRITE_STRICT', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  let originalStrict: string | undefined;
 
   beforeEach(() => {
+    originalStrict = process.env.DB_CONTEXTLESS_WRITE_STRICT;
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Reset dedup set so captureMessage path is eligible each test (console.warn
     // fires regardless, but clearing ensures consistent state).
@@ -32,11 +34,16 @@ describe('#1379 A1 — DB_CONTEXTLESS_WRITE_STRICT', () => {
 
   afterEach(() => {
     warnSpy.mockRestore();
-    delete process.env.DB_CONTEXTLESS_WRITE_STRICT;
+    if (originalStrict === undefined) {
+      delete process.env.DB_CONTEXTLESS_WRITE_STRICT;
+    } else {
+      process.env.DB_CONTEXTLESS_WRITE_STRICT = originalStrict;
+    }
   });
 
   it('warn-only by default: contextless write warns, does not throw', async () => {
-    // No strict env set — prod-safe default.
+    // Explicitly clear so this test is hermetic regardless of ambient CI env.
+    delete process.env.DB_CONTEXTLESS_WRITE_STRICT;
     await db.update(users).set({ updatedAt: new Date() }).where(eq(users.id, PHANTOM_ID));
 
     const hit = warnSpy.mock.calls.find((c: unknown[]) => String(c[0]).includes(CONTEXTLESS_MSG));
