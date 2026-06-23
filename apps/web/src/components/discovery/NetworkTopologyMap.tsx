@@ -499,11 +499,6 @@ function buildStylesheet(theme: TopologyTheme): cytoscape.StylesheetStyle[] {
       } as cytoscape.Css.Node
     },
     {
-      // Dimmed: everything not adjacent to the selection recedes.
-      selector: '.tp-dim',
-      style: { opacity: 0.25 } as cytoscape.Css.Node
-    },
-    {
       selector: 'edge.tp-hover, edge.tp-selected',
       style: { width: 4.5, 'z-index': 25 } as cytoscape.Css.Edge
     }
@@ -1108,10 +1103,19 @@ export default function NetworkTopologyMap({
     });
 
     // Hover affordance: lift the element and switch the cursor to a pointer.
+    // `mouseout` is unreliable — it's missed on fast moves, when the element
+    // slides out from under the cursor on pan/zoom, or when the pointer leaves
+    // the canvas — which leaves a hover ring stuck. So we keep at most one element
+    // hovered, and also clear on container-leave and viewport changes (#1728).
     const container = cy.container();
+    const clearHover = () => {
+      cy.elements('.tp-hover').removeClass('tp-hover');
+      if (container) container.style.cursor = 'default';
+    };
     cy.on('mouseover', 'node, edge', (evt: cytoscape.EventObject) => {
       const ele = evt.target as cytoscape.SingularElementArgument;
       if (ele.isNode() && ele.id().startsWith('group:')) return;
+      cy.elements('.tp-hover').not(ele).removeClass('tp-hover');
       ele.addClass('tp-hover');
       if (container) container.style.cursor = 'pointer';
     });
@@ -1119,35 +1123,31 @@ export default function NetworkTopologyMap({
       (evt.target as cytoscape.SingularElementArgument).removeClass('tp-hover');
       if (container) container.style.cursor = 'default';
     });
+    cy.on('pan zoom', clearHover);
+    container?.addEventListener('mouseleave', clearHover);
 
     return () => {
       cancelAnimationFrame(refitRaf);
       resizeObserver?.disconnect();
       if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
+      container?.removeEventListener('mouseleave', clearHover);
       cy.destroy();
       cyRef.current = null;
     };
   }, [nodes, links, layout, subnetGroups, subnetByNodeId, persistDrag]);
 
-  // Selection highlight: ring the selected element and fade everything outside
-  // its neighbourhood so the focus reads instantly. In edit mode a selected node
-  // is the pending connect source (amber) rather than a plain selection.
+  // Selection highlight: ring the selected element only — no dimming of the rest
+  // of the graph. In edit mode a selected node is the pending connect source
+  // (amber) rather than a plain selection.
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
     cy.batch(() => {
-      cy.elements().removeClass('tp-selected tp-dim tp-connect-source');
+      cy.elements().removeClass('tp-selected tp-connect-source');
       if (!selected) return;
       const el = cy.getElementById(selected.id);
       if (el.empty()) return;
-      if (selected.group === 'nodes') {
-        cy.elements().not(el.closedNeighborhood()).addClass('tp-dim');
-        el.addClass(editMode ? 'tp-connect-source' : 'tp-selected');
-      } else {
-        const focus = el.union(el.connectedNodes());
-        cy.elements().not(focus).addClass('tp-dim');
-        el.addClass('tp-selected');
-      }
+      el.addClass(selected.group === 'nodes' && editMode ? 'tp-connect-source' : 'tp-selected');
     });
   }, [selected, editMode, nodes, links]);
 
