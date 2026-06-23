@@ -236,17 +236,19 @@ export function __resetContextlessWriteGuardForTests(): void {
   reportedContextlessSites.clear();
 }
 
-// Warn-only (no throw) on purpose: it's a conservative, prod-safe rollout.
-// There ARE intentional contextless writers we must not break — the agent-WS
-// `device_commands` path is system-scoped, and the separate audit-admin pool
-// (auditAdminPool.ts) bypasses this proxy entirely — so a hard throw would
-// cause false-positive crashes. The throw-in-CI escalation is deferred to a
-// follow-up PR in #1379.
 function reportContextlessWrite(label: string): void {
   const stack = new Error().stack;
   const message =
     `DB write ${label} ran with no RLS access context — `
     + `wrap in withDbAccessContext/withSystemDbAccessContext (#1375)`;
+  // #1379 A1 — escalate to a hard failure under an env gate so a contextless
+  // write reds CI instead of only warning. OFF by default (prod stays warn-only
+  // and never throws). The intentional contextless paths don't reach here:
+  // auditAdminPool bypasses this proxy, and device_commands writes under an
+  // explicit system context. Mirrors assertOutsideHeldDbContext's strict gate.
+  if (STRICT_TRIPWIRE_VALUES.has((process.env.DB_CONTEXTLESS_WRITE_STRICT ?? '').trim().toLowerCase())) {
+    throw new Error(message);
+  }
   console.warn(message);
   const key = stack ?? label;
   if (reportedContextlessSites.has(key)) return;
