@@ -1,4 +1,7 @@
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction } from '../runAction';
+
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 /** A per-(device, CVE) finding row as returned by GET /api/v1/vulnerabilities. */
 export interface DeviceVulnerabilityItem {
@@ -113,4 +116,57 @@ export async function fetchDeviceVulnerabilities(
   }
   const body = (await res.json()) as { items?: DeviceVulnerabilityItem[] };
   return { items: body.items ?? [] };
+}
+
+// ---- Mutations (all wrapped in runAction so every outcome surfaces a toast) ----
+
+export interface RemediateResult {
+  scheduled: number;
+  skipped: Array<{ id: string; reason: string }>;
+}
+
+export async function remediateVuln(deviceVulnerabilityIds: string[]): Promise<RemediateResult> {
+  return runAction<RemediateResult>({
+    request: () =>
+      fetchWithAuth('/vulnerabilities/remediate', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ deviceVulnerabilityIds }),
+      }),
+    errorFallback: 'Failed to schedule remediation',
+    successMessage: (d) => `Scheduled ${d.scheduled} remediation${d.scheduled === 1 ? '' : 's'}`,
+    parseSuccess: (data) => {
+      const d = data as { scheduled?: number; skipped?: Array<{ id: string; reason: string }> };
+      return { scheduled: d.scheduled ?? 0, skipped: d.skipped ?? [] };
+    },
+  });
+}
+
+export async function acceptVulnRisk(
+  id: string,
+  body: { reason: string; acceptedUntil: string },
+): Promise<void> {
+  await runAction({
+    request: () =>
+      fetchWithAuth(`/vulnerabilities/${id}/accept-risk`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(body),
+      }),
+    errorFallback: 'Failed to accept risk',
+    successMessage: 'Risk accepted',
+  });
+}
+
+export async function mitigateVuln(id: string, body: { note: string }): Promise<void> {
+  await runAction({
+    request: () =>
+      fetchWithAuth(`/vulnerabilities/${id}/mitigate`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(body),
+      }),
+    errorFallback: 'Failed to mitigate vulnerability',
+    successMessage: 'Marked as mitigated',
+  });
 }

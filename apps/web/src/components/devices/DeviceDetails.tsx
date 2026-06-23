@@ -14,6 +14,7 @@ import {
   ScrollText,
   Network,
   CheckCircle,
+  Bug,
   Info,
   Server,
   Shield,
@@ -32,6 +33,7 @@ import DeviceInfoTab from './DeviceInfoTab';
 import DeviceHardwareInventory from './DeviceHardwareInventory';
 import DeviceSoftwareInventory from './DeviceSoftwareInventory';
 import DevicePatchStatusTab from './DevicePatchStatusTab';
+import DeviceVulnerabilitiesTab from './DeviceVulnerabilitiesTab';
 import DeviceSecurityTab from './DeviceSecurityTab';
 import DeviceAlertHistory from './DeviceAlertHistory';
 import DeviceActivityFeed from './DeviceActivityFeed';
@@ -63,6 +65,7 @@ type Tab =
   | 'hardware'
   | 'software'
   | 'patches'
+  | 'vulnerabilities'
   | 'security'
   | 'management'
   | 'effective-config'
@@ -126,7 +129,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
 }
 
 const VALID_TABS: Tab[] = [
-  'overview', 'details', 'hardware', 'software', 'patches', 'security',
+  'overview', 'details', 'hardware', 'software', 'patches', 'vulnerabilities', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
   'anomalies', 'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
   'boot-performance', 'playbooks', 'peripherals', 'backup', 'tickets',
@@ -181,6 +184,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'hardware', label: 'Hardware', icon: <Cpu className="h-4 w-4" />, separator: true },
     { id: 'software', label: 'Software', icon: <Package className="h-4 w-4" /> },
     { id: 'patches', label: 'Patches', icon: <CheckCircle className="h-4 w-4" />, title: 'OS update and patch status' },
+    { id: 'vulnerabilities', label: 'Vulnerabilities', icon: <Bug className="h-4 w-4" />, title: 'CVEs detected on this device' },
     { id: 'peripherals', label: 'Peripherals', icon: <Usb className="h-4 w-4" />, title: 'USB, Bluetooth, and connected devices' },
     // --- Management ---
     { id: 'scripts', label: 'Scripts', icon: <Terminal className="h-4 w-4" />, separator: true, title: 'Script execution history' },
@@ -317,6 +321,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'patches' && (
         <DevicePatchStatusTab deviceId={device.id} timezone={effectiveTimezone} osType={device.os} />
+      )}
+
+      {activeTab === 'vulnerabilities' && (
+        <DeviceVulnerabilitiesTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'filesystem' && (
