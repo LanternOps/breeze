@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { discoveryRoutes } from './discovery';
 import { db } from '../db';
-import { sites, topologyManualNodes } from '../db/schema';
+import { sites, topologyManualNodes, networkTopology, topologyLayout } from '../db/schema';
 
 vi.mock('../services', () => ({}));
 
@@ -261,5 +261,95 @@ describe('POST /discovery/topology/manual-node (#1728 phase 4)', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /discovery/topology/manual-node/:id (#1728 phase 4)', () => {
+  let app: Hono;
+
+  const NODE_ID = '00000000-0000-0000-0000-0000000000aa';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/discovery', discoveryRoutes);
+  });
+
+  it('cascades manual edges + layout row and deletes the node in one transaction (200)', async () => {
+    // Node lookup yields a visible manual node.
+    vi.mocked(db.select).mockImplementation(((..._args: any[]) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() =>
+          Object.assign(
+            Promise.resolve([
+              {
+                id: NODE_ID,
+                orgId: '00000000-0000-0000-0000-000000000000',
+                label: 'Core Switch',
+              },
+            ]),
+            {
+              limit: vi.fn(() =>
+                Promise.resolve([
+                  {
+                    id: NODE_ID,
+                    orgId: '00000000-0000-0000-0000-000000000000',
+                    label: 'Core Switch',
+                  },
+                ]),
+              ),
+            },
+          ),
+        ),
+      })),
+    })) as any);
+
+    const deletedTables: any[] = [];
+    let transactionRan = false;
+    vi.mocked(db.transaction).mockImplementation((async (fn: any) => {
+      transactionRan = true;
+      return fn({
+        delete: vi.fn((table: any) => {
+          deletedTables.push(table);
+          return { where: vi.fn(() => Promise.resolve()) };
+        }),
+      });
+    }) as any);
+
+    const res = await app.request(`/discovery/topology/manual-node/${NODE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true });
+
+    expect(transactionRan).toBe(true);
+    // Three networkTopology/topologyLayout deletes (source edges, target edges, layout)
+    // plus the node delete — four deletes, all inside the single transaction.
+    expect(deletedTables).toHaveLength(4);
+    expect(deletedTables).toContain(networkTopology);
+    expect(deletedTables).toContain(topologyLayout);
+    expect(deletedTables).toContain(topologyManualNodes);
+    // networkTopology is deleted twice (source-side and target-side manual edges).
+    expect(deletedTables.filter((t) => t === networkTopology)).toHaveLength(2);
+  });
+
+  it('returns 404 for an unknown node id', async () => {
+    vi.mocked(db.select).mockImplementation(((..._args: any[]) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() =>
+          Object.assign(Promise.resolve([]), { limit: vi.fn(() => Promise.resolve([])) }),
+        ),
+      })),
+    })) as any);
+
+    const res = await app.request(`/discovery/topology/manual-node/${NODE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });

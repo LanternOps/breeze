@@ -1597,3 +1597,73 @@ discoveryRoutes.delete(
     return c.json({ success: true });
   }
 );
+
+// DELETE /discovery/topology/manual-node/:id — remove a hand-mapped placeholder
+// node and everything it owns (#1728 phase 4). In ONE transaction: delete its
+// method='manual' edges in network_topology where it is the source OR the target,
+// delete its topology_layout row, then delete the node. Measured edges never
+// reference a manual_node, so they are untouched. Runs on the request `db`
+// (RLS-scoped); 404 when the node is not visible to the caller.
+discoveryRoutes.delete(
+  '/topology/manual-node/:id',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id')!;
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conds = [eq(topologyManualNodes.id, id)];
+    if (orgResult.orgId) conds.push(eq(topologyManualNodes.orgId, orgResult.orgId));
+
+    const [node] = await db
+      .select({
+        id: topologyManualNodes.id,
+        orgId: topologyManualNodes.orgId,
+        label: topologyManualNodes.label,
+      })
+      .from(topologyManualNodes)
+      .where(and(...conds))
+      .limit(1);
+    if (!node) return c.json({ error: 'Manual node not found' }, 404);
+
+    await db.transaction(async (tx) => {
+      // Manual edges that reference this placeholder as source. Only method='manual'
+      // rows are removed — measured edges never carry a manual_node endpoint.
+      await tx.delete(networkTopology).where(
+        and(
+          eq(networkTopology.method, 'manual'),
+          eq(networkTopology.sourceType, 'manual_node'),
+          eq(networkTopology.sourceId, node.id),
+        ),
+      );
+      // ...and as target.
+      await tx.delete(networkTopology).where(
+        and(
+          eq(networkTopology.method, 'manual'),
+          eq(networkTopology.targetType, 'manual_node'),
+          eq(networkTopology.targetId, node.id),
+        ),
+      );
+      // Its saved Cytoscape position.
+      await tx.delete(topologyLayout).where(
+        and(
+          eq(topologyLayout.nodeType, 'manual_node'),
+          eq(topologyLayout.nodeId, node.id),
+        ),
+      );
+      await tx.delete(topologyManualNodes).where(eq(topologyManualNodes.id, node.id));
+    });
+
+    writeRouteAudit(c, {
+      orgId: node.orgId ?? undefined,
+      action: 'discovery.topology.manual_node.delete',
+      resourceType: 'topology_manual_node',
+      resourceId: node.id,
+      resourceName: node.label,
+    });
+
+    return c.json({ success: true });
+  }
+);
