@@ -7,6 +7,7 @@ import {
   apiPreviewInvite,
   apiResetPassword,
   apiVerifyMFA,
+  AuthSessionExpiredError,
   fetchWithAuth,
   resolveApiOrigin,
   restoreAccessTokenFromCookie,
@@ -258,6 +259,70 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().tokens).toBeNull();
     expect(useAuthStore.getState().user).toBeNull();
+  });
+
+  // Regression (0.83.1 forced-MFA enrollment hotfix): when the store is
+  // authenticated but holds no in-memory access token (always true on the
+  // forced-MFA page after a full-page nav) and the cookie-backed refresh
+  // FAILS, fetchWithAuth must NOT fire the request with no Authorization
+  // header (the old behavior produced a confusing API 401 "Missing or invalid
+  // authorization header" that stranded the user). It must instead clear the
+  // dead session, redirect to /login, and throw AuthSessionExpiredError.
+  it('does not send a headerless request when authenticated but refresh fails; bounces to login', async () => {
+    useAuthStore.setState({
+      user: baseUser,
+      tokens: null,
+      isAuthenticated: true,
+      isLoading: false,
+      mfaPending: false,
+      mfaTempToken: null
+    });
+
+    // Only the /auth/refresh recovery attempt should ever be fetched; it 401s.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResponse({ error: 'unauthorized' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const hrefSetter = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        pathname: '/auth/mfa/setup',
+        search: '?forced=1',
+        get href() {
+          return '';
+        },
+        set href(value: string) {
+          hrefSetter(value);
+        }
+      }
+    });
+
+    try {
+      await expect(fetchWithAuth('/auth/mfa/setup', { method: 'POST' })).rejects.toBeInstanceOf(
+        AuthSessionExpiredError
+      );
+    } finally {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: originalLocation
+      });
+    }
+
+    // The real endpoint (/auth/mfa/setup) was NEVER fetched — only the refresh
+    // recovery attempt fired, then we bailed.
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/mfa/setup'))
+    ).toHaveLength(0);
+    // Session cleared and a /login redirect (with returnTo) was issued.
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().tokens).toBeNull();
+    expect(hrefSetter).toHaveBeenCalledWith(
+      `/login?returnTo=${encodeURIComponent('/auth/mfa/setup?forced=1')}`
+    );
   });
 
   it('deduplicates concurrent refresh requests', async () => {
