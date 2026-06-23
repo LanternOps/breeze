@@ -1387,6 +1387,20 @@ function installSignalHandlers(): void {
     console.error('[FATAL] Unhandled rejection:', reason);
     captureException(reason instanceof Error ? reason : new Error(String(reason)));
   });
+
+  // #1379 B4 — a synchronous uncaughtException otherwise tears the process
+  // down with no telemetry. Capture + flush before exit; reuse the benign
+  // suppression list so SDK races don't crash us.
+  process.on('uncaughtException', (err) => {
+    if (isBenignRejection(err)) {
+      console.warn('[SDK] Suppressed benign uncaught exception:', err.message);
+      return;
+    }
+    console.error('[FATAL] Uncaught exception:', err);
+    captureException(err);
+    // Best-effort drain, then exit non-zero so the supervisor restarts us.
+    void flushSentry().finally(() => process.exit(1));
+  });
 }
 
 async function bootstrap(): Promise<void> {
