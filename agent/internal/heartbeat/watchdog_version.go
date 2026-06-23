@@ -54,11 +54,25 @@ func (h *Heartbeat) installedWatchdogVersion() string {
 	}
 	v, stable := read()
 
+	// Cache only STABLE results; a transient failure retries next tick. The
+	// ship-to-server WARN for an unreadable watchdog is throttled to once per
+	// failure streak (re-armed on the next stable read) so a wedged/old watchdog
+	// doesn't emit ~1 warn/heartbeat — per-tick detail stays at Debug in the
+	// reader. Compute under the lock, emit after releasing it.
+	h.watchdogUpgradeMu.Lock()
+	var warnUnreadable bool
 	if stable {
-		h.watchdogUpgradeMu.Lock()
 		h.watchdogVersionDisk = v
 		h.watchdogVersionRead = true
-		h.watchdogUpgradeMu.Unlock()
+		h.watchdogVersionReadWarned = false
+	} else if !h.watchdogVersionReadWarned {
+		h.watchdogVersionReadWarned = true
+		warnUnreadable = true
+	}
+	h.watchdogUpgradeMu.Unlock()
+
+	if warnUnreadable {
+		log.Warn("installed watchdog version unreadable; heartbeat will omit it and retry (suppressing repeat logs until it recovers) — #1802")
 	}
 	return v
 }
@@ -69,9 +83,10 @@ func (h *Heartbeat) installedWatchdogVersion() string {
 //     state worth caching; a bootstrap install + swap will set the in-memory
 //     version (which takes priority) once one happens.
 //   - ("", false) — the binary exists but couldn't be read (exec error, timeout,
-//     or an old watchdog without `status`). TRANSIENT: logged and not cached so
-//     it retries. Telemetry is best-effort and never fails or stalls the
-//     heartbeat regardless.
+//     or an old watchdog without `status`). TRANSIENT: not cached so it retries.
+//     The detail is logged at Debug here (per tick, local-only); the caller
+//     emits a throttled, ship-to-server WARN once per failure streak. Telemetry
+//     is best-effort and never fails or stalls the heartbeat regardless.
 //   - (version, true) — read succeeded.
 func readInstalledWatchdogVersion() (string, bool) {
 	path, err := watchdogBinaryPath()
@@ -87,10 +102,10 @@ func readInstalledWatchdogVersion() (string, bool) {
 
 	out, err := exec.CommandContext(ctx, path, "status").Output()
 	if err != nil {
-		// Installed but unreadable. Leave a trail so a device silently never
-		// reporting watchdog_version is debuggable (#1802), but don't fail or
-		// stall the heartbeat — and don't cache, so a transient failure retries.
-		log.Warn("could not read installed watchdog version; heartbeat will omit it this tick",
+		// Installed but unreadable. Per-tick detail at Debug (local-only); the
+		// caller emits the throttled WARN that actually ships. Don't cache so a
+		// transient failure retries.
+		log.Debug("could not read installed watchdog version",
 			"path", path, "error", err.Error())
 		return "", false
 	}

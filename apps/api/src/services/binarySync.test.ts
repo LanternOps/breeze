@@ -338,14 +338,29 @@ describe("binarySync", () => {
 
       await syncBinaries();
 
-      // The only eq(..., 'agent'|'watchdog') calls come from the demote's
-      // component filter (the upsert target uses bare column refs, not eq).
-      const componentFilterValues = drizzleSpies.eq.mock.calls
-        .map(([, value]) => value)
-        .filter((value) => value === "agent" || value === "watchdog");
+      // Bind the assertion to the DEMOTE specifically: each demote is
+      // `UPDATE ... SET isLatest=false WHERE and(eq(platform), eq(arch),
+      // eq(component), eq(isLatest=true))`. Each and() call captures one demote
+      // WHERE's eq clauses. Keep only the wheres scoped by isLatest=true (the
+      // demotes) and read their component eq — so a stray eq(component, ...)
+      // elsewhere can't mask a dropped filter, and removing the component eq
+      // from the demote fails this test.
+      type EqClause = { __op: string; column: unknown; value: unknown };
+      const scopedComponents = (
+        drizzleSpies.and.mock.calls as unknown as EqClause[][]
+      )
+        .filter((clauses) =>
+          clauses.some((c) => c?.__op === "eq" && c.value === true),
+        )
+        .map(
+          (clauses) =>
+            clauses.find((c) => c?.value === "agent" || c?.value === "watchdog")
+              ?.value,
+        )
+        .filter(Boolean);
 
-      expect(componentFilterValues).toContain("agent");
-      expect(componentFilterValues).toContain("watchdog");
+      expect(scopedComponents).toContain("agent");
+      expect(scopedComponents).toContain("watchdog");
     });
 
     it("warns and skips watchdog registration when no watchdog binary is present", async () => {

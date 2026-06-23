@@ -336,8 +336,12 @@ type Heartbeat struct {
 	// records that a STABLE read happened (not installed, or a successful read).
 	// A transient read failure is not cached, so it retries next tick. A
 	// successful swap sets watchdogInstalledVersion, which takes priority here.
-	watchdogVersionDisk string
-	watchdogVersionRead bool
+	// watchdogVersionReadWarned throttles the ship-to-server WARN for a
+	// present-but-unreadable watchdog to once per failure streak (re-armed on the
+	// next stable read) so a wedged/old watchdog doesn't emit ~1 warn/heartbeat.
+	watchdogVersionDisk       string
+	watchdogVersionRead       bool
+	watchdogVersionReadWarned bool
 }
 
 func New(cfg *config.Config) *Heartbeat {
