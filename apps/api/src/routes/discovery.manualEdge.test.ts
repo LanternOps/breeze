@@ -314,6 +314,45 @@ describe('POST /discovery/topology/manual-edge (#1728 phase 4)', () => {
 
     expect(res.status).toBe(400);
   });
+
+  it('returns 409 when a manual edge already connects the two nodes (pre-check dupe)', async () => {
+    // Endpoint lookups resolve; the networkTopology dupe pre-check also resolves
+    // an existing manual edge, so the route returns 409 before inserting.
+    vi.mocked(db.select).mockImplementation(((..._args: any[]) => ({
+      from: vi.fn((table: any) => ({
+        where: vi.fn(() =>
+          Object.assign(Promise.resolve([]), {
+            limit: vi.fn(() =>
+              Promise.resolve(
+                table === topologyManualNodes
+                  ? [{ id: NODE_ID }]
+                  : table === discoveredAssets
+                    ? [{ id: ASSET_ID }]
+                    : table === networkTopology
+                      ? [{ id: 'existing-edge' }]
+                      : [],
+              ),
+            ),
+          }),
+        ),
+      })),
+    })) as any);
+
+    const insertSpy = vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }));
+    vi.mocked(db.insert).mockImplementation(insertSpy as any);
+
+    const res = await app.request('/discovery/topology/manual-edge', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/already/i);
+    // No insert when a duplicate is detected.
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('DELETE /discovery/topology/manual-edge/:id (#1728 phase 4)', () => {
@@ -361,6 +400,45 @@ describe('DELETE /discovery/topology/manual-edge/:id (#1728 phase 4)', () => {
     // The actual delete fired against networkTopology.
     expect(db.delete).toHaveBeenCalledWith(networkTopology);
     expect(deleteWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 404 for a site-restricted caller deleting an edge in an out-of-scope site (cross-site IDOR)', async () => {
+    // The visibility lookup resolves a manual edge whose siteId is NOT in the
+    // caller's allowedSiteIds — RLS scopes by org, not site, so the app-layer
+    // gate is the only defense.
+    vi.mocked(db.select).mockImplementation(((..._args: any[]) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() =>
+          Object.assign(Promise.resolve([]), {
+            limit: vi.fn(() =>
+              Promise.resolve([
+                {
+                  id: EDGE_ID,
+                  orgId: '00000000-0000-0000-0000-000000000000',
+                  siteId: '00000000-0000-0000-0000-000000000001',
+                },
+              ]),
+            ),
+          }),
+        ),
+      })),
+    })) as any);
+
+    const deleteWhere = vi.fn(() => Promise.resolve());
+    vi.mocked(db.delete).mockImplementation((() => ({ where: deleteWhere })) as any);
+
+    const res = await app.request(`/discovery/topology/manual-edge/${EDGE_ID}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: 'Bearer token',
+        // Caller restricted to a DIFFERENT site than the edge's.
+        'x-restrict-site': '00000000-0000-0000-0000-000000000099',
+      },
+    });
+
+    expect(res.status).toBe(404);
+    // No delete fires for an out-of-scope edge.
+    expect(deleteWhere).not.toHaveBeenCalled();
   });
 
   it('returns 404 for a measured (method=fdb) edge id — the manual filter yields no row', async () => {

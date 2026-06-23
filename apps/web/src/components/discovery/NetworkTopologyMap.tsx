@@ -44,6 +44,10 @@ export type TopologyNode = {
   ipAddress?: string;
   siteId?: string;
   subnet?: string;
+  // 'manual' = hand-mapped placeholder (editable/deletable), 'discovered' = scan
+  // asset. Preserved from the GET payload so a manual node reloaded from the
+  // server stays connect/delete-able (#1728).
+  kind?: 'manual' | 'discovered';
 };
 
 export type TopologyEdgeMethod = 'lldp' | 'cdp' | 'fdb' | 'manual';
@@ -74,6 +78,7 @@ type ApiTopologyNode = {
   status?: string | null;
   ipAddress?: string | null;
   siteId?: string | null;
+  kind?: 'manual' | 'discovered' | null;
 };
 
 type ApiTopologyLink = {
@@ -192,7 +197,8 @@ function mapNode(node: ApiTopologyNode): TopologyNode {
     status:
       normalizedStatus === 'offline' || normalizedStatus === 'warning' ? normalizedStatus : 'online',
     ipAddress: node.ipAddress ?? undefined,
-    siteId: node.siteId ?? undefined
+    siteId: node.siteId ?? undefined,
+    kind: node.kind ?? undefined
   };
 }
 
@@ -518,7 +524,13 @@ export default function NetworkTopologyMap({
     setSelected(null);
   }, [editMode]);
 
-  const persistDrag = useCallback(async (nodeId: string, x: number, y: number) => {
+  const persistDrag = useCallback(
+    async (
+      nodeId: string,
+      x: number,
+      y: number,
+      nodeType: 'discovered_asset' | 'manual_node'
+    ) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const siteId = siteByNodeRef.current.get(nodeId);
     if (!siteId) return; // can't scope the upsert without a site
@@ -529,7 +541,7 @@ export default function NetworkTopologyMap({
             method: 'PATCH',
             body: JSON.stringify({
               siteId,
-              positions: [{ nodeType: 'discovered_asset', nodeId, x, y }]
+              positions: [{ nodeType, nodeId, x, y }]
             })
           }),
         errorFallback: 'Failed to save node position',
@@ -542,7 +554,9 @@ export default function NetworkTopologyMap({
     } catch {
       // runAction already surfaced the error toast; nothing else to do here.
     }
-  }, []);
+    },
+    []
+  );
 
   // (Re)build the Cytoscape graph whenever the data changes.
   useEffect(() => {
@@ -578,7 +592,10 @@ export default function NetworkTopologyMap({
         label: node.label,
         type: node.type,
         status: node.status,
-        infra: INFRA_TYPES.has(node.type) ? 1 : 0
+        infra: INFRA_TYPES.has(node.type) ? 1 : 0,
+        // Preserve provenance so a server-reloaded manual node is still
+        // connect/delete-able (endpointFor + the tap handler key off data.kind).
+        kind: node.kind ?? 'discovered'
       };
       if (parent && parentIds.has(parent)) data.parent = parent;
       const def: cytoscape.ElementDefinition = { data };
@@ -620,8 +637,14 @@ export default function NetworkTopologyMap({
     cy.on('dragfree', 'node', (evt: cytoscape.EventObject) => {
       const target = evt.target as cytoscape.NodeSingular;
       const id = target.id();
+      // Synthetic subnet-group compound parents (id 'group:<subnet>') are not
+      // persistable nodes — skip them so the layout PATCH never 400s on a
+      // non-asset/manual id with no site (#1728).
+      if (id.startsWith('group:')) return;
       const pos = target.position();
-      void persistDrag(id, pos.x, pos.y);
+      const nodeType: 'discovered_asset' | 'manual_node' =
+        target.data('kind') === 'manual' ? 'manual_node' : 'discovered_asset';
+      void persistDrag(id, pos.x, pos.y, nodeType);
     });
 
     cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
@@ -645,6 +668,10 @@ export default function NetworkTopologyMap({
         if (source !== id) void connectNodesRef.current?.(source, id);
         return;
       }
+      // Only real discovered assets have an /discovery/assets/:id detail record.
+      // Synthetic subnet-group parents (id 'group:...') and manual placeholder
+      // nodes do not — firing the detail fetch for them 404s (#1728).
+      if (id.startsWith('group:') || node.data('kind') === 'manual') return;
       const cb = onNodeClickRef.current;
       if (cb) cb(id);
     });

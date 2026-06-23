@@ -352,4 +352,41 @@ describe('DELETE /discovery/topology/manual-node/:id (#1728 phase 4)', () => {
     expect(res.status).toBe(404);
     expect(db.transaction).not.toHaveBeenCalled();
   });
+
+  it('returns 404 for a site-restricted caller deleting a node in an out-of-scope site (cross-site IDOR)', async () => {
+    // The node lookup resolves a manual node whose siteId is NOT in the caller's
+    // allowedSiteIds. RLS scopes by org, not site — the app-layer gate is the
+    // only thing blocking the cross-site delete.
+    vi.mocked(db.select).mockImplementation(((..._args: any[]) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() =>
+          Object.assign(Promise.resolve([]), {
+            limit: vi.fn(() =>
+              Promise.resolve([
+                {
+                  id: NODE_ID,
+                  orgId: '00000000-0000-0000-0000-000000000000',
+                  siteId: '00000000-0000-0000-0000-000000000001',
+                  label: 'Core Switch',
+                },
+              ]),
+            ),
+          }),
+        ),
+      })),
+    })) as any);
+
+    const res = await app.request(`/discovery/topology/manual-node/${NODE_ID}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: 'Bearer token',
+        // Caller restricted to a DIFFERENT site than the node's.
+        'x-restrict-site': '00000000-0000-0000-0000-000000000099',
+      },
+    });
+
+    expect(res.status).toBe(404);
+    // The cascade transaction must NOT run for an out-of-scope node.
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
 });

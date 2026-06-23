@@ -31,12 +31,18 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { getTestDb } from './setup';
-import { setupTestEnvironment } from './db-utils';
+import { setupTestEnvironment, createSite, type TestEnvironment } from './db-utils';
 import { authMiddleware } from '../../middleware/auth';
 import { discoveryRoutes } from '../../routes/discovery';
-import { discoveredAssets } from '../../db/schema';
+import {
+  discoveredAssets,
+  networkTopology,
+  organizationUsers,
+  topologyManualNodes,
+} from '../../db/schema';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -49,15 +55,61 @@ function buildApp(): Hono {
   return app;
 }
 
+/** Restrict the env's org user to a specific set of sites by writing
+ *  organization_users.site_ids (the source getUserPermissions reads for
+ *  allowedSiteIds → canAccessSite). A site-restricted caller can only touch
+ *  topology in `siteIds`. */
+async function restrictUserToSites(env: TestEnvironment, siteIds: string[]): Promise<void> {
+  await getTestDb()
+    .update(organizationUsers)
+    .set({ siteIds })
+    .where(eq(organizationUsers.userId, env.user.id));
+}
+
+/** Seed a manual node (superuser pool) in the given (org, site). */
+async function seedManualNode(orgId: string, siteId: string): Promise<string> {
+  const [row] = await getTestDb()
+    .insert(topologyManualNodes)
+    .values({ orgId, siteId, label: 'seed-node', role: 'switch' })
+    .returning({ id: topologyManualNodes.id });
+  if (!row) throw new Error('seedManualNode: no row returned');
+  return row.id;
+}
+
+/** Seed a measured (method='fdb') edge between two assets in (org, site). */
+async function seedMeasuredEdge(
+  orgId: string,
+  siteId: string,
+  sourceId: string,
+  targetId: string,
+): Promise<string> {
+  const [row] = await getTestDb()
+    .insert(networkTopology)
+    .values({
+      orgId,
+      siteId,
+      sourceType: 'discovered_asset',
+      sourceId,
+      targetType: 'discovered_asset',
+      targetId,
+      connectionType: 'ethernet',
+      method: 'fdb',
+      confidence: 'medium',
+    })
+    .returning({ id: networkTopology.id });
+  if (!row) throw new Error('seedMeasuredEdge: no row returned');
+  return row.id;
+}
+
 /** Seed a discovered asset (real row, superuser pool) to act as a manual-edge
  *  endpoint. discovered_assets is tenant-scoped (org_id/site_id NOT NULL). */
-async function seedAsset(orgId: string, siteId: string): Promise<string> {
+async function seedAsset(orgId: string, siteId: string, ip = '10.10.0.5'): Promise<string> {
   const [row] = await getTestDb()
     .insert(discoveredAssets)
     .values({
       orgId,
       siteId,
-      ipAddress: '10.10.0.5',
+      ipAddress: ip,
       hostname: 'seed-asset',
       assetType: 'unknown',
     })
@@ -211,5 +263,171 @@ describe('topology manual-mapping routes — RBAC + round-trip + isolation (#172
     expect(getB.status).toBe(200);
     const topoB = await getB.json();
     expect(topoB.nodes.find((n: { id: string }) => n.id === node.id)).toBeUndefined();
+  });
+});
+
+/**
+ * Site-axis IDOR + provenance + duplicate guards on the DELETE/POST endpoints
+ * (#1728 review fixes). RLS scopes topology by ORG, not SITE, so a same-org but
+ * site-restricted caller is the threat model these cases pin down. The forge is
+ * self-verifying: the node/edge live in siteA, the caller is restricted to siteB,
+ * and a 404 (not a vacuous 200) is the only acceptable result. If the app-layer
+ * canAccessSite gate were missing, RLS would happily let the same-org delete
+ * through (200) and the test would fail.
+ */
+describe('topology manual DELETE — site-axis IDOR + provenance + duplicate (#1728 review)', () => {
+  // A same-org, site-restricted caller must NOT delete a manual node in a site
+  // they cannot access (cross-site IDOR; RLS does not defend the site axis).
+  runDb('site-restricted caller → 404 on DELETE manual-node in an out-of-scope site', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [
+        { resource: 'topology', action: 'read' },
+        { resource: 'topology', action: 'write' },
+      ],
+    });
+    const app = buildApp();
+
+    // siteA = env.site (where the node lives); siteB = the only site the caller
+    // may touch.
+    const siteB = await createSite({ orgId: env.organization.id });
+    await restrictUserToSites(env, [siteB.id]);
+
+    const nodeId = await seedManualNode(env.organization.id, env.site.id);
+
+    const res = await app.request(`/discovery/topology/manual-node/${nodeId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${env.token}` },
+    });
+    expect(res.status).toBe(404);
+
+    // The node still exists (the cascade transaction never ran).
+    const [still] = await getTestDb()
+      .select({ id: topologyManualNodes.id })
+      .from(topologyManualNodes)
+      .where(eq(topologyManualNodes.id, nodeId));
+    expect(still).toBeDefined();
+  });
+
+  // Same for a manual edge.
+  runDb('site-restricted caller → 404 on DELETE manual-edge in an out-of-scope site', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [
+        { resource: 'topology', action: 'read' },
+        { resource: 'topology', action: 'write' },
+      ],
+    });
+    const app = buildApp();
+
+    const siteB = await createSite({ orgId: env.organization.id });
+
+    // Build a manual edge in siteA while UNRESTRICTED, then restrict to siteB.
+    const a1 = await seedAsset(env.organization.id, env.site.id, '10.20.0.1');
+    const nodeId = await seedManualNode(env.organization.id, env.site.id);
+    const [edge] = await getTestDb()
+      .insert(networkTopology)
+      .values({
+        orgId: env.organization.id,
+        siteId: env.site.id,
+        sourceType: 'manual_node',
+        sourceId: nodeId,
+        targetType: 'discovered_asset',
+        targetId: a1,
+        connectionType: 'manual',
+        method: 'manual',
+        confidence: 'asserted',
+      })
+      .returning({ id: networkTopology.id });
+    if (!edge) throw new Error('seed manual edge failed');
+
+    await restrictUserToSites(env, [siteB.id]);
+
+    const res = await app.request(`/discovery/topology/manual-edge/${edge.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${env.token}` },
+    });
+    expect(res.status).toBe(404);
+
+    const [still] = await getTestDb()
+      .select({ id: networkTopology.id })
+      .from(networkTopology)
+      .where(eq(networkTopology.id, edge.id));
+    expect(still).toBeDefined();
+  });
+
+  // A measured (method='fdb') edge is scan-owned and read-only: DELETE
+  // manual-edge filters to method='manual', so a measured edge id 404s and the
+  // row survives.
+  runDb('DELETE manual-edge refuses a measured (fdb) edge → 404, row survives', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [
+        { resource: 'topology', action: 'read' },
+        { resource: 'topology', action: 'write' },
+      ],
+    });
+    const app = buildApp();
+
+    const a1 = await seedAsset(env.organization.id, env.site.id, '10.30.0.1');
+    const a2 = await seedAsset(env.organization.id, env.site.id, '10.30.0.2');
+    const measuredId = await seedMeasuredEdge(env.organization.id, env.site.id, a1, a2);
+
+    const res = await app.request(`/discovery/topology/manual-edge/${measuredId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${env.token}` },
+    });
+    expect(res.status).toBe(404);
+
+    const [still] = await getTestDb()
+      .select({ id: networkTopology.id })
+      .from(networkTopology)
+      .where(eq(networkTopology.id, measuredId));
+    expect(still).toBeDefined();
+  });
+
+  // Re-drawing the same manual edge trips the provenance unique index — the
+  // route maps the 23505 to a clean 409 (not a raw 500).
+  runDb('duplicate manual edge → 409', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [
+        { resource: 'topology', action: 'read' },
+        { resource: 'topology', action: 'write' },
+      ],
+    });
+    const app = buildApp();
+    const authHeader = { Authorization: `Bearer ${env.token}` };
+
+    const assetId = await seedAsset(env.organization.id, env.site.id, '10.40.0.1');
+    const nodeRes = await app.request('/discovery/topology/manual-node', {
+      method: 'POST',
+      headers: { ...authHeader, ...JSON_HEADERS },
+      body: JSON.stringify({ siteId: env.site.id, label: 'sw', role: 'switch' }),
+    });
+    expect(nodeRes.status).toBe(201);
+    const node = await nodeRes.json();
+
+    const edgeBody = JSON.stringify({
+      siteId: env.site.id,
+      source: { type: 'manual_node', id: node.id },
+      target: { type: 'discovered_asset', id: assetId },
+    });
+
+    const first = await app.request('/discovery/topology/manual-edge', {
+      method: 'POST',
+      headers: { ...authHeader, ...JSON_HEADERS },
+      body: edgeBody,
+    });
+    expect(first.status).toBe(201);
+
+    const dup = await app.request('/discovery/topology/manual-edge', {
+      method: 'POST',
+      headers: { ...authHeader, ...JSON_HEADERS },
+      body: edgeBody,
+    });
+    expect(dup.status).toBe(409);
+    const dupBody = await dup.json();
+    expect(dupBody.error).toMatch(/already/i);
   });
 });

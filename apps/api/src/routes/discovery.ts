@@ -1577,6 +1577,30 @@ discoveryRoutes.post(
       return c.json({ error: 'Edge endpoint not found in this site' }, 404);
     }
 
+    // Pre-check the provenance unique key (org, site, src, tgt, method='manual').
+    // A raw duplicate insert would trip the unique index 23505 — but the whole
+    // request runs inside a single withDbAccessContext transaction, so an
+    // in-statement error poisons that transaction and the COMMIT then 500s.
+    // Checking first keeps the transaction clean and lets us return a 409.
+    const [dupe] = await db
+      .select({ id: networkTopology.id })
+      .from(networkTopology)
+      .where(
+        and(
+          eq(networkTopology.orgId, orgResult.orgId!),
+          eq(networkTopology.siteId, body.siteId),
+          eq(networkTopology.sourceType, body.source.type),
+          eq(networkTopology.sourceId, body.source.id),
+          eq(networkTopology.targetType, body.target.type),
+          eq(networkTopology.targetId, body.target.id),
+          eq(networkTopology.method, 'manual'),
+        ),
+      )
+      .limit(1);
+    if (dupe) {
+      return c.json({ error: 'A manual edge already connects these two nodes' }, 409);
+    }
+
     const [edge] = await db
       .insert(networkTopology)
       .values({
@@ -1632,6 +1656,15 @@ discoveryRoutes.delete(
       .limit(1);
     if (!existing) return c.json({ error: 'Manual edge not found' }, 404);
 
+    // Site axis is app-layer only (RLS scopes by org, not site). Without this a
+    // site-restricted caller could delete a manual edge in a site they cannot
+    // access — a cross-site IDOR. Mirror the create-route site gate. 404 (not
+    // 403) so an out-of-scope id is indistinguishable from a non-existent one.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, existing.siteId)) {
+      return c.json({ error: 'Manual edge not found' }, 404);
+    }
+
     await db.delete(networkTopology).where(eq(networkTopology.id, existing.id));
 
     writeRouteAudit(c, {
@@ -1668,12 +1701,22 @@ discoveryRoutes.delete(
       .select({
         id: topologyManualNodes.id,
         orgId: topologyManualNodes.orgId,
+        siteId: topologyManualNodes.siteId,
         label: topologyManualNodes.label,
       })
       .from(topologyManualNodes)
       .where(and(...conds))
       .limit(1);
     if (!node) return c.json({ error: 'Manual node not found' }, 404);
+
+    // Site axis is app-layer only (RLS scopes by org, not site). Without this a
+    // site-restricted caller could delete a manual node (and cascade its edges)
+    // in a site they cannot access — a cross-site IDOR. Mirror the create-route
+    // site gate. 404 (not 403) so an out-of-scope id reads as non-existent.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, node.siteId)) {
+      return c.json({ error: 'Manual node not found' }, 404);
+    }
 
     await db.transaction(async (tx) => {
       // Manual edges that reference this placeholder as source. Only method='manual'

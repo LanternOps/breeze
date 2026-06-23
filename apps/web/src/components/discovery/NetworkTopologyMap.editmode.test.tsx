@@ -36,9 +36,14 @@ vi.mock('../../lib/permissions', () => ({
 
 // Cytoscape needs a real factory; provide a no-op chainable so the component can
 // mount in jsdom (mirrors the Phase 3 NetworkTopologyMap.test.tsx convention).
-const { cyInstance, cytoscapeFactory } = vi.hoisted(() => {
+const { cyInstance, cytoscapeFactory, cyHandlers } = vi.hoisted(() => {
+  // Capture registered cy event handlers by "<event>:<selector>" so tests can
+  // fire a synthetic tap/dragfree on a chosen node element.
+  const handlers: Record<string, (evt: unknown) => void> = {};
   const instance = {
-    on: vi.fn(),
+    on: vi.fn((event: string, sel: string, handler: (evt: unknown) => void) => {
+      handlers[`${event}:${sel}`] = handler;
+    }),
     nodes: vi.fn(() => ({
       length: 0,
       positions: vi.fn(),
@@ -64,7 +69,7 @@ const { cyInstance, cytoscapeFactory } = vi.hoisted(() => {
     use: ReturnType<typeof vi.fn>;
   };
   factory.use = vi.fn();
-  return { cyInstance: instance, cytoscapeFactory: factory };
+  return { cyInstance: instance, cytoscapeFactory: factory, cyHandlers: handlers };
 });
 vi.mock('cytoscape', () => ({ default: cytoscapeFactory }));
 vi.mock('cytoscape-fcose', () => ({ default: vi.fn() }));
@@ -85,6 +90,7 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     cytoscapeFactory.mockClear();
     cyInstance.on.mockClear();
     cyInstance.add.mockClear();
+    for (const k of Object.keys(cyHandlers)) delete cyHandlers[k];
     mockTopologyResponse({
       subnets: ['10.0.2.0/24'],
       edges: [],
@@ -345,5 +351,140 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     expect(connectedRemoveSpy).toHaveBeenCalled();
     expect(removeSpy).toHaveBeenCalled();
     expect(handleActionError).not.toHaveBeenCalled();
+  });
+
+  // Helper: a fake tap event whose target.id()/data('kind') drive the handler.
+  function tapEvent(id: string, kind?: string) {
+    return { target: { id: () => id, data: (key: string) => (key === 'kind' ? kind : undefined) } };
+  }
+
+  it('onNodeClick fires for a real discovered asset (read-only mode)', async () => {
+    canMock.mockReturnValue(false);
+    const onNodeClick = vi.fn();
+    render(<NetworkTopologyMap onNodeClick={onNodeClick} />);
+    await waitFor(() => expect(cyHandlers['tap:node']).toBeDefined());
+
+    cyHandlers['tap:node'](tapEvent('asset-1', 'discovered'));
+    expect(onNodeClick).toHaveBeenCalledWith('asset-1');
+  });
+
+  it('onNodeClick is SKIPPED for a synthetic subnet-group compound node', async () => {
+    canMock.mockReturnValue(false);
+    const onNodeClick = vi.fn();
+    render(<NetworkTopologyMap onNodeClick={onNodeClick} />);
+    await waitFor(() => expect(cyHandlers['tap:node']).toBeDefined());
+
+    // A 'group:...' parent has no /discovery/assets/:id record — clicking it must
+    // not fire the asset-detail fetch (avoids the live-console 404).
+    cyHandlers['tap:node'](tapEvent('group:10.0.2.0/24'));
+    expect(onNodeClick).not.toHaveBeenCalled();
+  });
+
+  it('onNodeClick is SKIPPED for a manual placeholder node', async () => {
+    canMock.mockReturnValue(false);
+    const onNodeClick = vi.fn();
+    render(<NetworkTopologyMap onNodeClick={onNodeClick} />);
+    await waitFor(() => expect(cyHandlers['tap:node']).toBeDefined());
+
+    // A manual node has no discovered-asset detail record either.
+    cyHandlers['tap:node'](tapEvent('manual-1', 'manual'));
+    expect(onNodeClick).not.toHaveBeenCalled();
+  });
+
+  it('a manual node loaded from the server keeps kind:manual on its cy element', async () => {
+    canMock.mockReturnValue(true);
+    // GET payload includes a server-side manual node (kind:'manual').
+    mockTopologyResponse({
+      subnets: ['10.0.2.0/24'],
+      edges: [],
+      layout: [],
+      nodes: [
+        { id: 'm1', label: 'Core SW', type: 'switch', status: 'online', siteId: 'site-1', kind: 'manual' },
+        { id: 'a1', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5', siteId: 'site-1', kind: 'discovered' }
+      ]
+    });
+
+    render(<NetworkTopologyMap />);
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+
+    const cfg = cytoscapeFactory.mock.calls[cytoscapeFactory.mock.calls.length - 1][0] as {
+      elements: Array<{ data: Record<string, unknown> }>;
+    };
+    const m1 = cfg.elements.find((el) => el.data.id === 'm1');
+    const a1 = cfg.elements.find((el) => el.data.id === 'a1');
+    // The manual node survived the reload with kind:'manual' so it is still
+    // connect/delete-able; the discovered node carries kind:'discovered'.
+    expect(m1?.data.kind).toBe('manual');
+    expect(a1?.data.kind).toBe('discovered');
+  });
+
+  it('persistDrag sends the dragged node ACTUAL nodeType (manual_node vs discovered_asset)', async () => {
+    canMock.mockReturnValue(true);
+    mockTopologyResponse({
+      subnets: ['10.0.2.0/24'],
+      edges: [],
+      layout: [],
+      nodes: [
+        { id: 'm1', label: 'Core SW', type: 'switch', status: 'online', siteId: 'site-1', kind: 'manual' },
+        { id: 'a1', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5', siteId: 'site-1', kind: 'discovered' }
+      ]
+    });
+
+    render(<NetworkTopologyMap />);
+    await waitFor(() => expect(cyHandlers['dragfree:node']).toBeDefined());
+
+    const dragEnd = (id: string, kind: string) =>
+      cyHandlers['dragfree:node']({
+        target: {
+          id: () => id,
+          data: (key: string) => (key === 'kind' ? kind : undefined),
+          position: () => ({ x: 10, y: 20 })
+        }
+      });
+
+    // Drag the manual node → PATCH must say manual_node.
+    fetchWithAuth.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ upserted: 1 }) } as unknown as Response);
+    await dragEnd('m1', 'manual');
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(([url]) => url === '/discovery/topology/layout');
+      expect(call).toBeTruthy();
+    });
+    let patch = fetchWithAuth.mock.calls.find(([url]) => url === '/discovery/topology/layout')!;
+    let body = JSON.parse((patch[1] as RequestInit).body as string);
+    expect(body.positions[0].nodeType).toBe('manual_node');
+    expect(body.positions[0].nodeId).toBe('m1');
+    expect(body.siteId).toBe('site-1');
+
+    fetchWithAuth.mock.calls.length = 0;
+    // Drag the discovered asset → PATCH must say discovered_asset.
+    fetchWithAuth.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ upserted: 1 }) } as unknown as Response);
+    await dragEnd('a1', 'discovered');
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(([url]) => url === '/discovery/topology/layout');
+      expect(call).toBeTruthy();
+    });
+    patch = fetchWithAuth.mock.calls.find(([url]) => url === '/discovery/topology/layout')!;
+    body = JSON.parse((patch[1] as RequestInit).body as string);
+    expect(body.positions[0].nodeType).toBe('discovered_asset');
+    expect(body.positions[0].nodeId).toBe('a1');
+  });
+
+  it('does NOT persist a drag of a synthetic subnet-group node (no layout PATCH)', async () => {
+    canMock.mockReturnValue(true);
+    render(<NetworkTopologyMap />);
+    await waitFor(() => expect(cyHandlers['dragfree:node']).toBeDefined());
+
+    fetchWithAuth.mock.calls.length = 0;
+    // A 'group:' parent has no site and is not a persistable node.
+    await cyHandlers['dragfree:node']({
+      target: {
+        id: () => 'group:10.0.2.0/24',
+        data: () => undefined,
+        position: () => ({ x: 5, y: 5 })
+      }
+    });
+
+    const patch = fetchWithAuth.mock.calls.find(([url]) => url === '/discovery/topology/layout');
+    expect(patch).toBeUndefined();
   });
 });

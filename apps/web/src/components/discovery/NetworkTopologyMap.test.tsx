@@ -281,10 +281,12 @@ describe('NetworkTopologyMap', () => {
     await waitFor(() => expect(cyInstance.on).toHaveBeenCalledWith('dragfree', 'node', expect.any(Function)));
     expect(cyDragHandlers.length).toBeGreaterThan(0);
 
-    // Simulate a drag-end on node "a".
+    // Simulate a drag-end on node "a" (a discovered asset → nodeType derives
+    // from data('kind')).
     await cyDragHandlers[0]({
       target: {
         id: () => 'a',
+        data: (key: string) => (key === 'kind' ? 'discovered' : undefined),
         position: () => ({ x: 88, y: 99 })
       }
     });
