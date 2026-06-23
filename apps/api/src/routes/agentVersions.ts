@@ -697,6 +697,7 @@ agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
 agentVersionRoutes.post(
   "/promote",
   platformAdminMiddleware,
+  requireMfa(),
   zValidator("json", promoteSchema),
   async (c) => {
     const { version, component } = c.req.valid("json");
