@@ -1,11 +1,15 @@
 import * as dbModule from '../db';
 import { networkTopology, discoveredAssets } from '../db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import type { DiscoveredHostResult, DeviceAdjacency } from './discoveryWorker';
+import type { DiscoveredHostResult, DeviceAdjacency, FdbEntry } from './discoveryWorker';
 
 const { db } = dbModule;
 
 export const MEASURED_EDGE_AGEOUT_MS = 3 * 60 * 1000; // 3 scans × 60s scheduler (configurable later)
+
+// Ports carrying more than this many MACs are treated as latent (undetected)
+// uplinks and excluded from FDB host attachment. Logged, not silent (spec §8.3).
+export const MAX_MACS_PER_ACCESS_PORT = 16;
 
 export type AssetMatchIndex = {
   byMac: Map<string, string>;
@@ -75,6 +79,97 @@ export function buildInfraEdges(
     }
   }
   return out;
+}
+
+// ── Phase 2: FDB host attachment ────────────────────────────────────────────
+
+export interface FdbAttachment {
+  switchAssetId: string; // discovered_assets.id of the switch (source)
+  hostAssetId: string; // discovered_assets.id matched by MAC (target)
+  interfaceName: string | null;
+  vlan: number | null;
+}
+
+export interface FdbReconcileResult {
+  attachments: FdbAttachment[];
+  skippedUnknownMac: number; // MAC not in discovered_assets
+  skippedUplinkPort: number; // port is an LLDP/CDP neighbor
+  skippedOverThreshold: number; // port MAC count > maxMacsPerPort
+}
+
+/**
+ * Pure: no DB. Given one device's adjacency, the resolved switch asset id, and
+ * a site-scoped MAC→asset id map, decide which hosts attach to which access
+ * (non-uplink) switch ports. Uplink ports (those appearing as an LLDP/CDP
+ * neighbor) and over-threshold ports (likely undetected uplinks) are excluded.
+ */
+export function computeFdbAttachments(
+  deviceAdj: DeviceAdjacency,
+  switchAssetId: string | null,
+  macToAssetId: Map<string, string>,
+  maxMacsPerPort: number = MAX_MACS_PER_ACCESS_PORT,
+): FdbReconcileResult {
+  const result: FdbReconcileResult = {
+    attachments: [],
+    skippedUnknownMac: 0,
+    skippedUplinkPort: 0,
+    skippedOverThreshold: 0,
+  };
+  if (!switchAssetId || !deviceAdj.fdb || deviceAdj.fdb.length === 0) return result;
+
+  // A switch port is an uplink iff it appears as the localPort/localIfName of
+  // any LLDP neighbor, or the localPort of any CDP neighbor, on this device.
+  const uplinkPorts = new Set<string>();
+  for (const n of deviceAdj.lldp ?? []) {
+    if (n.localPort) uplinkPorts.add(n.localPort);
+    if (n.localIfName) uplinkPorts.add(n.localIfName);
+  }
+  for (const n of deviceAdj.cdp ?? []) {
+    if (n.localPort) uplinkPorts.add(n.localPort);
+  }
+
+  const portKey = (e: FdbEntry): string => e.ifName ?? String(e.bridgePort);
+  const isUplink = (e: FdbEntry): boolean =>
+    (e.ifName !== undefined && uplinkPorts.has(e.ifName)) || uplinkPorts.has(String(e.bridgePort));
+
+  // Group surviving (non-uplink) FDB rows by port.
+  const accessByPort = new Map<string, FdbEntry[]>();
+  for (const e of deviceAdj.fdb) {
+    if (isUplink(e)) {
+      result.skippedUplinkPort++;
+      continue;
+    }
+    const key = portKey(e);
+    const group = accessByPort.get(key);
+    if (group) {
+      group.push(e);
+    } else {
+      accessByPort.set(key, [e]);
+    }
+  }
+
+  for (const entries of accessByPort.values()) {
+    if (entries.length > maxMacsPerPort) {
+      result.skippedOverThreshold++;
+      continue;
+    }
+    for (const e of entries) {
+      const mac = normMac(e.mac);
+      const hostAssetId = mac ? macToAssetId.get(mac) : undefined;
+      if (!hostAssetId) {
+        result.skippedUnknownMac++;
+        continue;
+      }
+      if (hostAssetId === switchAssetId) continue; // self-edge guard
+      result.attachments.push({
+        switchAssetId,
+        hostAssetId,
+        interfaceName: e.ifName ?? null,
+        vlan: e.vlan ?? null,
+      });
+    }
+  }
+  return result;
 }
 
 async function buildAssetIndex(orgId: string, siteId: string): Promise<AssetMatchIndex> {
