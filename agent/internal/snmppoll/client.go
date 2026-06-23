@@ -134,6 +134,21 @@ func (c *SNMPClient) Walk(rootOID string) ([]gosnmp.SnmpPDU, error) {
 	return pdus, nil
 }
 
+// BulkWalk performs a GETBULK walk of an SNMP subtree and returns all PDUs.
+func (c *SNMPClient) BulkWalk(rootOID string) ([]gosnmp.SnmpPDU, error) {
+	if rootOID == "" {
+		return nil, errors.New("oid is required")
+	}
+	if c == nil || c.client == nil {
+		return nil, errors.New("SNMP client is not connected")
+	}
+	pdus, err := c.client.BulkWalkAll(rootOID)
+	if err != nil {
+		return nil, err
+	}
+	return pdus, nil
+}
+
 func normalizeClientConfig(config SNMPClientConfig) SNMPClientConfig {
 	if config.Port == 0 {
 		config.Port = 161
