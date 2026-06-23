@@ -18,6 +18,28 @@ const RLS_DENY_SQLSTATE = '42501';
 
 let initialized = false;
 
+const SENSITIVE_KEYS = new Set(['password', 'passwordhash', 'mfasecret', 'token', 'authorization', 'cookie']);
+
+/** Redact secrets before an event leaves the process (#1379 B3). Exported for test. */
+export function scrubEvent<T extends Record<string, any>>(event: T): T {
+  const headers = event?.request?.headers;
+  if (headers) {
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization' || k.toLowerCase() === 'cookie') headers[k] = '[redacted]';
+    }
+  }
+  const extra = event?.extra;
+  if (extra) {
+    for (const k of Object.keys(extra)) {
+      const v = extra[k];
+      if (SENSITIVE_KEYS.has(k.toLowerCase()) || (typeof v === 'string' && v.startsWith('brz_'))) {
+        extra[k] = '[redacted]';
+      }
+    }
+  }
+  return event;
+}
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -45,7 +67,9 @@ export function initSentry(): void {
     // hand-maintained and went stale on the droplets (pinned at 0.64.1 while the
     // fleet ran 0.69.0), mistagging every event — so we no longer read it.
     release: API_VERSION,
-    tracesSampleRate
+    tracesSampleRate,
+    profilesSampleRate: parseSampleRate(process.env.SENTRY_PROFILES_SAMPLE_RATE),
+    beforeSend: (event) => scrubEvent(event)
   });
 
   initialized = true;

@@ -179,6 +179,40 @@ describe('setSentryRequestContext', () => {
   });
 });
 
+describe('scrubEvent', () => {
+  it('redacts authorization and cookie headers', async () => {
+    const { scrubEvent } = await import('./sentry');
+    const out = scrubEvent({
+      request: { headers: { authorization: 'Bearer brz_secret', cookie: 'session=abc', 'user-agent': 'x' } },
+    } as any);
+    expect(out.request.headers.authorization).toBe('[redacted]');
+    expect(out.request.headers.cookie).toBe('[redacted]');
+    expect(out.request.headers['user-agent']).toBe('x');
+  });
+
+  it('redacts password and mfaSecret in extra', async () => {
+    const { scrubEvent } = await import('./sentry');
+    const out = scrubEvent({ extra: { password: 'p', mfaSecret: 's', orgId: 'o-1' } } as any);
+    expect(out.extra.password).toBe('[redacted]');
+    expect(out.extra.mfaSecret).toBe('[redacted]');
+    expect(out.extra.orgId).toBe('o-1');
+  });
+
+  it('redacts extra values starting with brz_', async () => {
+    const { scrubEvent } = await import('./sentry');
+    const out = scrubEvent({ extra: { apiKey: 'brz_abc123', orgId: 'o-1' } } as any);
+    expect(out.extra.apiKey).toBe('[redacted]');
+    expect(out.extra.orgId).toBe('o-1');
+  });
+
+  it('does not throw on events missing request/headers/extra', async () => {
+    const { scrubEvent } = await import('./sentry');
+    expect(() => scrubEvent({} as any)).not.toThrow();
+    expect(() => scrubEvent({ request: {} } as any)).not.toThrow();
+    expect(() => scrubEvent({ request: { headers: {} } } as any)).not.toThrow();
+  });
+});
+
 describe('sentry bootstrap wiring (index.ts)', () => {
   const indexSource = readFileSync(
     fileURLToPath(new URL('../index.ts', import.meta.url)),
