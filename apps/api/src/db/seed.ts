@@ -213,6 +213,7 @@ export const SYSTEM_ROLES = [
       'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
+      'topology:read',
       'organizations:read'
     ]
   },
@@ -281,6 +282,7 @@ export const SYSTEM_ROLES = [
       'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
+      'topology:read', 'topology:write',
       'remote:access'
     ]
   },
@@ -294,7 +296,8 @@ export const SYSTEM_ROLES = [
       'alerts:read',
       'tickets:read',
       'reports:read',
-      'sites:read'
+      'sites:read',
+      'topology:read'
     ]
   }
 ];

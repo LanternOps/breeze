@@ -47,6 +47,10 @@ const requireDiscoveryExecute = requirePermission(
   PERMISSIONS.DEVICES_EXECUTE.resource,
   PERMISSIONS.DEVICES_EXECUTE.action,
 );
+const requireTopologyRead = requirePermission(
+  PERMISSIONS.TOPOLOGY_READ.resource,
+  PERMISSIONS.TOPOLOGY_READ.action,
+);
 const requireTopologyWrite = requirePermission(
   PERMISSIONS.TOPOLOGY_WRITE.resource,
   PERMISSIONS.TOPOLOGY_WRITE.action,
@@ -1283,7 +1287,7 @@ discoveryRoutes.delete(
 discoveryRoutes.get(
   '/topology',
   requireScope('organization', 'partner', 'system'),
-  requireDiscoveryRead,
+  requireTopologyRead,
   zValidator('query', topologyQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1399,6 +1403,18 @@ discoveryRoutes.patch(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const orgResult = resolveOrgId(auth, body.orgId, true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    // The site axis is app-layer only (RLS scopes by org, not site), so without
+    // this check a partner caller could persist layout rows against another org's
+    // site — a silent cross-tenant 0-row "success" under the wrong key. Confirm
+    // the site belongs to the resolved org before touching topology_layout.
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.id, body.siteId), eq(sites.orgId, orgResult.orgId!)))
+      .limit(1);
+    if (!site) return c.json({ error: 'Site not found' }, 404);
+
     if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
@@ -1406,6 +1422,9 @@ discoveryRoutes.patch(
     let upserted = 0;
     await db.transaction(async (tx) => {
       for (const p of body.positions) {
+        // Upsert keyed on (site_id, node_type, node_id) — onConflictDoUpdate
+        // resolves the unique-key collision in-statement so a re-save is a clean
+        // update, never a duplicate-key 500.
         await tx
           .insert(topologyLayout)
           .values({
@@ -1424,6 +1443,14 @@ discoveryRoutes.patch(
           });
         upserted += 1;
       }
+    });
+
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId ?? undefined,
+      action: 'discovery.topology.layout.upsert',
+      resourceType: 'topology_layout',
+      resourceId: body.siteId,
+      details: { siteId: body.siteId, count: upserted },
     });
 
     return c.json({ upserted });

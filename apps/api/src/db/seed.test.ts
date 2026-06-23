@@ -125,8 +125,39 @@ describe('topology:write permission (issue #1728)', () => {
     expect(keys).toContain('topology:write');
   });
 
-  it('Org Admin carries the topology:write grant', () => {
-    const orgAdmin = SYSTEM_ROLES.find((r) => r.name === 'Org Admin');
-    expect(orgAdmin?.permissions).toContain('topology:write');
+  it('topology:read is a seeded permission', () => {
+    const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
+    expect(keys).toContain('topology:read');
+  });
+
+  // SYSTEM_ROLES must grant the SAME topology permissions as the role-grant
+  // migration 2026-06-29-b-topology-write-permission.sql so fresh-seeded and
+  // migrated DBs converge. Reconciled set: read+write to Org Admin / Org
+  // Technician / Partner Admin; read to Org Viewer / Partner Technician.
+  it('Org Admin carries topology read+write', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Org Admin');
+    expect(role?.permissions).toEqual(expect.arrayContaining(['topology:read', 'topology:write']));
+  });
+
+  it('Org Technician carries topology read+write (matches the migration)', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Org Technician');
+    expect(role?.permissions).toEqual(expect.arrayContaining(['topology:read', 'topology:write']));
+  });
+
+  it('Org Viewer carries topology:read only (matches the migration)', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Org Viewer');
+    expect(role?.permissions).toContain('topology:read');
+    expect(role?.permissions).not.toContain('topology:write');
+  });
+
+  it('Partner Technician carries topology:read only (matches the migration)', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Partner Technician');
+    expect(role?.permissions).toContain('topology:read');
+    expect(role?.permissions).not.toContain('topology:write');
+  });
+
+  it('Partner Admin covers topology via the wildcard grant', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Partner Admin');
+    expect(role?.permissions).toContain('*:*');
   });
 });

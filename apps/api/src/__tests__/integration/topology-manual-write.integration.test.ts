@@ -23,10 +23,11 @@
  * tenant tables on beforeEach, so every test re-seeds fresh (no module-scope
  * fixtures — see memory: rls-forge-test-memoized-fixture-vacuous).
  *
- * GET /discovery/topology is gated on `devices:read`; both the permitted and the
- * cross-org users carry it. The no-permission user carries `devices:read` too,
- * so the 403 it receives is unambiguously from the `topology:write` gate (not a
- * missing read grant or a scope failure).
+ * GET /discovery/topology is gated on `topology:read`; the round-trip and
+ * cross-org reader carry it (alongside `devices:read`). The no-permission user in
+ * case 1 carries `devices:read` only and never reaches GET, so the 403 it
+ * receives on POST manual-node is unambiguously from the `topology:write` gate
+ * (not a missing read grant or a scope failure).
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
@@ -99,6 +100,7 @@ describe('topology manual-mapping routes — RBAC + round-trip + isolation (#172
         scope: 'organization',
         rolePermissions: [
           { resource: 'devices', action: 'read' },
+          { resource: 'topology', action: 'read' },
           { resource: 'topology', action: 'write' },
         ],
       });
@@ -172,12 +174,16 @@ describe('topology manual-mapping routes — RBAC + round-trip + isolation (#172
       scope: 'organization',
       rolePermissions: [
         { resource: 'devices', action: 'read' },
+        { resource: 'topology', action: 'read' },
         { resource: 'topology', action: 'write' },
       ],
     });
     const envB = await setupTestEnvironment({
       scope: 'organization',
-      rolePermissions: [{ resource: 'devices', action: 'read' }],
+      rolePermissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'topology', action: 'read' },
+      ],
     });
     const app = buildApp();
 

@@ -5,7 +5,7 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
-import { networkTopology, topologyLayout, discoveredAssets } from '../db/schema';
+import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 
 vi.mock('../services', () => ({}));
 
@@ -104,6 +104,10 @@ vi.mock('../db/schema', () => ({
     label: 'topologyManualNodes.label',
     role: 'topologyManualNodes.role',
   },
+  sites: {
+    id: 'sites.id',
+    orgId: 'sites.orgId',
+  },
   networkMonitors: {},
   snmpDevices: {},
   snmpAlertThresholds: {},
@@ -178,6 +182,12 @@ describe('discovery routes', () => {
   });
 
   describe('GET /discovery/topology', () => {
+    it('is gated by requirePermission(topology, read) at the route module', () => {
+      // topology:read is its own grant (no longer piggy-backed on devices:read).
+      // The gate const is created at import time; assert the wiring was recorded.
+      expect(requirePermissionWiring).toContainEqual(['topology', 'read']);
+    });
+
     it('should return topology nodes and edges for the org', async () => {
       const res = await app.request('/discovery/topology', {
         method: 'GET',
@@ -362,7 +372,25 @@ describe('discovery routes', () => {
       expect(requirePermissionWiring).toContainEqual(['topology', 'write']);
     });
 
+    // The layout handler looks up the target site (sites.id = siteId AND
+    // sites.org_id = resolvedOrg) before writing — RLS scopes by org, not site,
+    // so this app-layer check is what blocks a cross-org siteId. Make that lookup
+    // resolve to a row so the happy-path upsert proceeds.
+    function mockSiteLookupFound() {
+      vi.mocked(db.select).mockImplementation(((...args: any[]) => ({
+        from: vi.fn((table: any) => ({
+          where: vi.fn(() => {
+            const rows = table === sites ? [{ id: '00000000-0000-0000-0000-000000000001' }] : [];
+            return Object.assign(Promise.resolve(rows), {
+              limit: vi.fn(() => Promise.resolve(rows)),
+            });
+          }),
+        })),
+      })) as any);
+    }
+
     it('upserts positions keyed on (site_id, node_type, node_id) with pinned=true and updated_by=auth.user.id', async () => {
+      mockSiteLookupFound();
       const insertValues: any[] = [];
       const conflictArgs: any[] = [];
       (db.transaction as any).mockImplementationOnce(async (fn: any) =>
@@ -418,6 +446,9 @@ describe('discovery routes', () => {
     });
 
     it('returns 403 when a site-restricted caller targets an out-of-scope site', async () => {
+      // Site exists in the org (passes the belongs-to-org 404 gate) but the
+      // caller's allowlist excludes it → 403 from canAccessSite.
+      mockSiteLookupFound();
       const res = await app.request('/discovery/topology/layout', {
         method: 'PATCH',
         headers: {
@@ -429,6 +460,30 @@ describe('discovery routes', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    it('returns 404 when the target site does not belong to the resolved org', async () => {
+      // Site lookup returns no row (cross-org / nonexistent siteId). Without this
+      // gate a partner caller could persist layout against another org's site as a
+      // silent 0-row "success" — RLS scopes by org, not site.
+      vi.mocked(db.select).mockImplementation(((...args: any[]) => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() =>
+            Object.assign(Promise.resolve([]), { limit: vi.fn(() => Promise.resolve([])) }),
+          ),
+        })),
+      })) as any);
+
+      const transactionSpy = db.transaction as any;
+      const res = await app.request('/discovery/topology/layout', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(validBody),
+      });
+
+      expect(res.status).toBe(404);
+      // Never reached the write — no transaction opened.
+      expect(transactionSpy).not.toHaveBeenCalled();
     });
 
     it('rejects an empty positions array (min 1)', async () => {
