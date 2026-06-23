@@ -116,4 +116,40 @@ describe('NetworkTopologyMap', () => {
       /reflect measured adjacency/i
     );
   });
+
+  it('renders the provenance legend and colors LLDP edges by method', async () => {
+    mockTopologyResponse({
+      nodes: [
+        { id: 'a', label: 'edge', type: 'switch', status: 'online', ipAddress: '10.0.0.1' },
+        { id: 'b', label: 'core', type: 'switch', status: 'online', ipAddress: '10.0.0.254' }
+      ],
+      subnets: ['10.0.0.0/24'],
+      edges: [
+        {
+          id: 'e1',
+          source: 'a',
+          target: 'b',
+          type: 'infra',
+          sourceType: 'discovered_asset',
+          targetType: 'discovered_asset',
+          method: 'lldp',
+          confidence: 'high',
+          interfaceName: 'Gi0/1',
+          vlan: null
+        }
+      ]
+    });
+
+    const { container } = render(<NetworkTopologyMap />);
+
+    // The provenance legend row appears.
+    await waitFor(() => expect(screen.getByText(/LLDP\/CDP/i)).toBeInTheDocument());
+
+    // The measured LLDP edge is drawn in the high-confidence blue.
+    await waitFor(() => {
+      const line = container.querySelector('.links line');
+      expect(line).not.toBeNull();
+      expect(line?.getAttribute('stroke')).toBe('#3b82f6');
+    });
+  });
 });

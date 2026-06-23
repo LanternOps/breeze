@@ -34,11 +34,17 @@ export type TopologyNode = {
   fy?: number | null;
 };
 
+export type TopologyEdgeMethod = 'lldp' | 'cdp' | 'fdb' | 'manual';
+
 export type TopologyLink = {
   source: string | TopologyNode;
   target: string | TopologyNode;
   type: 'wired' | 'wireless';
   subnet?: string;
+  method?: TopologyEdgeMethod;
+  confidence?: string | null;
+  interfaceName?: string | null;
+  vlan?: number | null;
 };
 
 type ApiTopologyNode = {
@@ -53,6 +59,10 @@ type ApiTopologyLink = {
   source: string;
   target: string;
   type?: string | null;
+  method?: TopologyEdgeMethod | null;
+  confidence?: string | null;
+  interfaceName?: string | null;
+  vlan?: number | null;
 };
 
 type NetworkTopologyMapProps = {
@@ -76,6 +86,17 @@ const typeColors: Record<TopologyNodeType, string> = {
   device: '#1e293b',
   unknown: '#6b7280'
 };
+
+// Measured-edge provenance coloring (issue #1728): LLDP/CDP are high-confidence
+// measured adjacency (blue), FDB is medium (green, Phase 2), manual is asserted
+// (orange dashed, Phase 4); anything else falls back to grey.
+const EDGE_COLOR_BY_METHOD: Record<string, string> = {
+  lldp: '#3b82f6', // blue (high)
+  cdp: '#3b82f6', // blue (high)
+  fdb: '#22c55e', // green (medium) — Phase 2
+  manual: '#f97316' // orange (asserted) — Phase 4
+};
+const EDGE_COLOR_DEFAULT = '#94a3b8';
 
 const statusStroke: Record<TopologyNodeStatus, string> = {
   online: '#22c55e',
@@ -159,7 +180,11 @@ function mapLink(link: ApiTopologyLink): TopologyLink {
   return {
     source: link.source,
     target: link.target,
-    type: linkType === 'wireless' ? 'wireless' : 'wired'
+    type: linkType === 'wireless' ? 'wireless' : 'wired',
+    method: link.method ?? undefined,
+    confidence: link.confidence,
+    interfaceName: link.interfaceName,
+    vlan: link.vlan
   };
 }
 
@@ -357,10 +382,10 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
       .data(linksMemo)
       .enter()
       .append('line')
-      .attr('stroke', '#94a3b8')
-      .attr('stroke-opacity', 0.6)
-      .attr('stroke-width', (d) => (d.type === 'wireless' ? 1.5 : 2))
-      .attr('stroke-dasharray', (d) => (d.type === 'wireless' ? '6 4' : '0'));
+      .attr('stroke', (d) => EDGE_COLOR_BY_METHOD[d.method ?? ''] ?? EDGE_COLOR_DEFAULT)
+      .attr('stroke-opacity', 0.85)
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', (d) => (d.method === 'manual' ? '6 4' : '0'));
 
     // ---- Nodes ----
     const nodeGroup = container
@@ -569,6 +594,12 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
             <span className={cn('h-2.5 w-2.5 rounded-full', statusDotClass.offline)} />
             Offline
           </span>
+          {links.length > 0 && (
+            <span data-testid="topology-provenance-legend" className="flex items-center gap-1.5">
+              <span className="inline-block h-0.5 w-4" style={{ backgroundColor: '#3b82f6' }} />
+              LLDP/CDP (measured)
+            </span>
+          )}
         </div>
       </div>
 
