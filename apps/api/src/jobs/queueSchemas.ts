@@ -236,7 +236,7 @@ export const recoveryBootMediaQueueJobDataSchema = z.object({
 }).strict();
 
 export const vulnSourceSyncSchema = z.object({
-  source: z.enum(['msrc']),
+  source: z.enum(['msrc', 'nvd', 'sofa', 'kev_epss']),
   month: z.string().optional(),
 }).strict();
 
