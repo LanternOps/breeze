@@ -9,8 +9,7 @@ import { cn } from '@/lib/utils';
 import {
   groupNodesBySubnet,
   parseProfileSubnets,
-  UNGROUPED_LABEL,
-  type SubnetGroup
+  UNGROUPED_LABEL
 } from './topologySubnets';
 
 // Register the fcose layout once at module scope (guarded — re-registering on a
@@ -1144,14 +1143,12 @@ export default function NetworkTopologyMap({
 
   return (
     <div ref={cardRef} className="rounded-lg border bg-card p-6 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold">Network Topology</h2>
-          <p className="text-sm text-muted-foreground">
-            {editMode
-              ? 'Drag nodes to arrange, scroll to zoom. Tap two nodes to link them.'
-              : 'Discovered assets grouped by subnet. Tap a node or link to inspect it.'}
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h2 className="text-base font-semibold">Network Topology</h2>
+          {editMode && (
+            <span className="text-xs text-muted-foreground">Drag to arrange · tap two nodes to link</span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {editMode && (
@@ -1183,36 +1180,6 @@ export default function NetworkTopologyMap({
             </button>
           )}
         </div>
-      </div>
-
-      {/* Compact legend bar: device status + measured-vs-manual link provenance. */}
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
-        {(['online', 'warning', 'offline'] as TopologyNodeStatus[]).map((s) => (
-          <span key={s} className="flex items-center gap-1.5">
-            <span className={cn('h-2 w-2 rounded-full ring-2 ring-background', statusDotClass[s])} />
-            {statusLabel[s]}
-          </span>
-        ))}
-        {links.length > 0 && (
-          <span data-testid="topology-provenance-legend" className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <span className="hidden text-muted-foreground/50 sm:inline">·</span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#2563eb' }} />
-              LLDP/CDP
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#16a34a' }} />
-              Bridge FDB
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span
-                className="inline-block h-[3px] w-5 rounded-full"
-                style={{ backgroundImage: 'repeating-linear-gradient(to right, #f97316 0 4px, transparent 4px 7px)' }}
-              />
-              Manual
-            </span>
-          </span>
-        )}
       </div>
 
       {/* Map + floating overlays. The inspector and edit palette are positioned
@@ -1398,6 +1365,64 @@ export default function NetworkTopologyMap({
         </div>
       )}
 
+      {/* Floating legend (#1728): status + link provenance + device-type key,
+          consolidated into one collapsible corner panel so the legends no longer
+          eat vertical space below the map. */}
+      {nodes.length > 0 && (
+        <details
+          open
+          data-testid="topology-legend"
+          className="absolute right-3 top-3 z-10 max-w-[240px] overflow-hidden rounded-lg border bg-card text-[11px] shadow-md"
+        >
+          <summary className="flex cursor-pointer select-none items-center gap-1.5 px-2.5 py-1.5 font-semibold text-muted-foreground transition hover:text-foreground">
+            <Network className="h-3.5 w-3.5" aria-hidden />
+            Legend
+          </summary>
+          <div className="space-y-2 border-t px-2.5 py-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+              {(['online', 'warning', 'offline'] as TopologyNodeStatus[]).map((s) => (
+                <span key={s} className="flex items-center gap-1.5">
+                  <span className={cn('h-2 w-2 rounded-full ring-2 ring-background', statusDotClass[s])} />
+                  {statusLabel[s]}
+                </span>
+              ))}
+            </div>
+            {links.length > 0 && (
+              <div
+                data-testid="topology-provenance-legend"
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-2 text-muted-foreground"
+              >
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#2563eb' }} />
+                  LLDP/CDP
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#16a34a' }} />
+                  Bridge FDB
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-[3px] w-5 rounded-full"
+                    style={{ backgroundImage: 'repeating-linear-gradient(to right, #f97316 0 4px, transparent 4px 7px)' }}
+                  />
+                  Manual
+                </span>
+              </div>
+            )}
+            {presentTypes.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t pt-2 text-muted-foreground">
+                {presentTypes.map((type) => (
+                  <span key={type} className="flex items-center gap-1">
+                    <NodeBadge type={type} size={14} />
+                    {typeLabels[type] ?? type}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+
       {error && nodes.length > 0 && (
         <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -1487,40 +1512,6 @@ export default function NetworkTopologyMap({
         </details>
       )}
 
-      {/* Subnet legend with host counts. */}
-      {subnetGroups.length > 0 && (
-        <div className="mt-4" data-testid="topology-subnet-legend">
-          <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Subnets</p>
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            {subnetGroups.map((group: SubnetGroup<TopologyNode>) => (
-              <span
-                key={group.label}
-                className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 shadow-sm"
-              >
-                <span className="font-medium text-foreground">{group.label}</span>
-                <span className="rounded-full bg-muted px-1.5 text-[11px] font-semibold text-foreground">
-                  {group.nodes.length}
-                </span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Device-type legend — only the types actually on the map, with their glyphs. */}
-      {presentTypes.length > 0 && (
-        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t pt-4 text-xs text-muted-foreground">
-          {presentTypes.map((type) => (
-            <span key={type} className="flex items-center gap-1.5">
-              <NodeBadge type={type} size={18} />
-              {typeLabels[type] ?? type}
-            </span>
-          ))}
-          {onNodeClick && (
-            <span className="ml-auto text-muted-foreground">Click a node to inspect</span>
-          )}
-        </div>
-      )}
     </div>
   );
 }

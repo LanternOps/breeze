@@ -174,7 +174,7 @@ describe('NetworkTopologyMap', () => {
     );
   });
 
-  it('renders a subnet legend with host counts', async () => {
+  it('groups nodes into subnet compound parents on the canvas', async () => {
     mockTopologyResponse({
       subnets: ['10.0.2.0/24', '192.168.0.0/16'],
       edges: [],
@@ -188,9 +188,12 @@ describe('NetworkTopologyMap', () => {
 
     render(<NetworkTopologyMap />);
 
-    const legend = await screen.findByTestId('topology-subnet-legend');
-    expect(legend.textContent).toContain('10.0.2.0/24');
-    expect(legend.textContent).toContain('192.168.0.0/16');
+    // The standalone subnet legend was folded into the floating legend; subnet
+    // grouping now shows as compound parents on the canvas (#1728).
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+    const ids = cytoscapeElements().map((el) => el.data.id);
+    expect(ids).toContain('group:10.0.2.0/24');
+    expect(ids).toContain('group:192.168.0.0/16');
   });
 
   it('uses a /16 mask correctly instead of slicing 3 octets', async () => {
@@ -207,12 +210,14 @@ describe('NetworkTopologyMap', () => {
 
     render(<NetworkTopologyMap />);
 
-    const legend = await screen.findByTestId('topology-subnet-legend');
-    // The label span carries font-medium text-foreground; the count badge is
-    // muted, so this selector targets the subnet labels only.
-    const chips = legend.querySelectorAll('span.font-medium.text-foreground');
-    const labels = Array.from(chips).map((c) => c.textContent);
-    expect(labels).toEqual(['172.16.0.0/16']);
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+    // .4.x and .9.x are different /24s but the SAME /16 — one compound parent.
+    const groupIds = cytoscapeElements()
+      .map((el) => el.data.id)
+      .filter((id) => typeof id === 'string' && (id as string).startsWith('group:'));
+    expect(groupIds).toEqual(['group:172.16.0.0/16']);
+    const aParent = cytoscapeElements().find((el) => el.data.id === 'a')?.data.parent;
+    expect(aParent).toBe('group:172.16.0.0/16');
   });
 
   it('adds measured edge elements when the API provides them', async () => {
