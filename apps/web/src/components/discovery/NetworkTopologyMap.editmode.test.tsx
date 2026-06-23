@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-import NetworkTopologyMap from './NetworkTopologyMap';
+import NetworkTopologyMap, { type TopologyEditApi } from './NetworkTopologyMap';
 
 // jsdom lacks ResizeObserver; Cytoscape (and the layout plugins) reference it.
 class ResizeObserverStub {
@@ -240,5 +240,109 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       fetchWithAuth.mock.calls.find(([url]) => url === '/discovery/topology/manual-edge')
     ).toBeUndefined();
     expect(cyInstance.add).not.toHaveBeenCalled();
+  });
+
+  it('selecting a manual edge in edit mode deletes it via runAction', async () => {
+    canMock.mockReturnValue(true);
+    const removeSpy = vi.fn();
+    cyInstance.getElementById.mockImplementation((_id: string) => ({
+      empty: () => false,
+      data: (_key: string) => undefined,
+      remove: removeSpy
+    }));
+
+    let api: TopologyEditApi | undefined;
+    render(<NetworkTopologyMap onEditApiReady={(a) => (api = a)} />);
+    await waitFor(() => expect(api).toBeDefined());
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('topology-edit-toggle'));
+
+    // Select a manual edge through the exposed selection API.
+    api!.selectElement({ id: 'e1', group: 'edges', method: 'manual', confidence: 'asserted' });
+
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ success: true })
+    } as unknown as Response);
+
+    await user.click(await screen.findByTestId('topology-delete-edge'));
+
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        ([url]) => url === '/discovery/topology/manual-edge/e1'
+      );
+      expect(call).toBeTruthy();
+      const opts = call![1] as { method?: string };
+      expect(opts.method).toBe('DELETE');
+    });
+    expect(runAction).toHaveBeenCalled();
+    expect(removeSpy).toHaveBeenCalled();
+    expect(handleActionError).not.toHaveBeenCalled();
+  });
+
+  it('selecting a measured edge shows read-only provenance and no delete button', async () => {
+    canMock.mockReturnValue(true);
+
+    let api: TopologyEditApi | undefined;
+    render(<NetworkTopologyMap onEditApiReady={(a) => (api = a)} />);
+    await waitFor(() => expect(api).toBeDefined());
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('topology-edit-toggle'));
+
+    api!.selectElement({
+      id: 'm1',
+      group: 'edges',
+      method: 'fdb',
+      confidence: 'medium',
+      interfaceName: 'Gi0/1',
+      vlan: 10
+    });
+
+    const provenance = await screen.findByTestId('topology-edge-provenance');
+    expect(provenance).toHaveTextContent('FDB');
+    expect(screen.queryByTestId('topology-delete-edge')).toBeNull();
+  });
+
+  it('selecting a manual node in edit mode deletes it via runAction', async () => {
+    canMock.mockReturnValue(true);
+    const removeSpy = vi.fn();
+    const connectedRemoveSpy = vi.fn();
+    cyInstance.getElementById.mockImplementation((_id: string) => ({
+      empty: () => false,
+      data: (_key: string) => undefined,
+      remove: removeSpy,
+      connectedEdges: () => ({ remove: connectedRemoveSpy })
+    }));
+
+    let api: TopologyEditApi | undefined;
+    render(<NetworkTopologyMap onEditApiReady={(a) => (api = a)} />);
+    await waitFor(() => expect(api).toBeDefined());
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('topology-edit-toggle'));
+
+    api!.selectElement({ id: 'n1', group: 'nodes', kind: 'manual' });
+
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ success: true })
+    } as unknown as Response);
+
+    await user.click(await screen.findByTestId('topology-delete-node'));
+
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        ([url]) => url === '/discovery/topology/manual-node/n1'
+      );
+      expect(call).toBeTruthy();
+      const opts = call![1] as { method?: string };
+      expect(opts.method).toBe('DELETE');
+    });
+    expect(runAction).toHaveBeenCalled();
+    expect(connectedRemoveSpy).toHaveBeenCalled();
+    expect(removeSpy).toHaveBeenCalled();
+    expect(handleActionError).not.toHaveBeenCalled();
   });
 });

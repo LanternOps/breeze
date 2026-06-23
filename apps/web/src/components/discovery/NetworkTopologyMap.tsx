@@ -87,11 +87,24 @@ type ApiTopologyLink = {
   vlan?: number | null;
 };
 
+// The currently-selected canvas element, surfaced in the inspector panel. An
+// edge carries `method`/`confidence`/provenance; a node carries `kind`.
+export type SelectedElement = {
+  id: string;
+  group: 'nodes' | 'edges';
+  method?: TopologyEdgeMethod | null;
+  confidence?: string | null;
+  interfaceName?: string | null;
+  vlan?: number | null;
+  kind?: 'manual' | 'discovered' | null;
+};
+
 // Imperative edit-mode API published once the Cytoscape instance is ready. Used
 // by the connect gesture (edge-handles / two-tap select) and by tests to drive
-// `connectNodes` directly (the gesture isn't simulable in jsdom).
+// `connectNodes`/`selectElement` directly (the gestures aren't simulable in jsdom).
 export type TopologyEditApi = {
   connectNodes: (sourceId: string, targetId: string) => Promise<void>;
+  selectElement: (selected: SelectedElement | null) => void;
 };
 
 type NetworkTopologyMapProps = {
@@ -283,6 +296,9 @@ export default function NetworkTopologyMap({
   const { can } = usePermissions();
   const canEdit = can('topology', 'write');
   const [editMode, setEditMode] = useState(false);
+  // The element selected in the canvas, shown in the inspector (manual edge →
+  // delete; measured edge → read-only provenance; manual node → delete).
+  const [selected, setSelected] = useState<SelectedElement | null>(null);
 
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -443,6 +459,49 @@ export default function NetworkTopologyMap({
     [activeSiteId, endpointFor]
   );
 
+  // Delete a manual edge (#1728 phase 4). The API only removes `method='manual'`
+  // rows; measured edges are scan-owned and have no delete path here.
+  const deleteManualEdge = useCallback(async (id: string) => {
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/discovery/topology/manual-edge/${id}`, { method: 'DELETE' }),
+        errorFallback: 'Failed to delete connection',
+        successMessage: 'Connection removed',
+        onUnauthorized: () => {
+          /* let the auth redirect handle it */
+        }
+      });
+      cyRef.current?.getElementById(id)?.remove();
+      setSelected((cur) => (cur?.id === id ? null : cur));
+    } catch (err) {
+      handleActionError(err, 'Failed to delete connection.');
+    }
+  }, []);
+
+  // Delete a manual placeholder node (#1728 phase 4). The API cascade-cleans its
+  // manual edges + layout row server-side; locally we drop the node and its now
+  // orphaned edges from the canvas.
+  const deleteManualNode = useCallback(async (id: string) => {
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/discovery/topology/manual-node/${id}`, { method: 'DELETE' }),
+        errorFallback: 'Failed to delete node',
+        successMessage: 'Node removed',
+        onUnauthorized: () => {
+          /* let the auth redirect handle it */
+        }
+      });
+      const el = cyRef.current?.getElementById(id);
+      el?.connectedEdges().remove();
+      el?.remove();
+      setSelected((cur) => (cur?.id === id ? null : cur));
+    } catch (err) {
+      handleActionError(err, 'Failed to delete node.');
+    }
+  }, []);
+
   // Publish the imperative edit API once it (or its dependencies) change, and
   // keep a ref for the stable cy tap handler's two-tap connect gesture.
   const onEditApiReadyRef = useRef(onEditApiReady);
@@ -450,12 +509,13 @@ export default function NetworkTopologyMap({
   connectNodesRef.current = connectNodes;
   editModeRef.current = editMode;
   useEffect(() => {
-    onEditApiReadyRef.current?.({ connectNodes });
+    onEditApiReadyRef.current?.({ connectNodes, selectElement: setSelected });
   }, [connectNodes]);
 
-  // Reset the pending connect source whenever edit mode is toggled.
+  // Reset the pending connect source + selection whenever edit mode is toggled.
   useEffect(() => {
     connectSourceRef.current = null;
+    setSelected(null);
   }, [editMode]);
 
   const persistDrag = useCallback(async (nodeId: string, x: number, y: number) => {
@@ -534,7 +594,9 @@ export default function NetworkTopologyMap({
           source: link.source,
           target: link.target,
           method: link.method ?? null,
-          confidence: link.confidence ?? null
+          confidence: link.confidence ?? null,
+          interfaceName: link.interfaceName ?? null,
+          vlan: link.vlan ?? null
         }
       });
     }
@@ -557,13 +619,20 @@ export default function NetworkTopologyMap({
     });
 
     cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
-      const id = (evt.target as cytoscape.NodeSingular).id();
+      const node = evt.target as cytoscape.NodeSingular;
+      const id = node.id();
       // In edit mode, taps drive a two-tap connect gesture: first tap selects the
-      // source, second tap on a different node draws the manual edge.
+      // source, second tap on a different node draws the manual edge. The first
+      // tap also opens the inspector so a manual node can be deleted.
       if (editModeRef.current) {
         const source = connectSourceRef.current;
         if (!source) {
           connectSourceRef.current = id;
+          setSelected({
+            id,
+            group: 'nodes',
+            kind: node.data('kind') === 'manual' ? 'manual' : 'discovered'
+          });
           return;
         }
         connectSourceRef.current = null;
@@ -572,6 +641,20 @@ export default function NetworkTopologyMap({
       }
       const cb = onNodeClickRef.current;
       if (cb) cb(id);
+    });
+
+    // Tapping an edge opens the inspector: a manual edge can be deleted, a
+    // measured edge shows read-only provenance.
+    cy.on('tap', 'edge', (evt: cytoscape.EventObject) => {
+      const edge = evt.target as cytoscape.EdgeSingular;
+      setSelected({
+        id: edge.id(),
+        group: 'edges',
+        method: (edge.data('method') as TopologyEdgeMethod | null) ?? null,
+        confidence: (edge.data('confidence') as string | null) ?? null,
+        interfaceName: (edge.data('interfaceName') as string | null) ?? null,
+        vlan: (edge.data('vlan') as number | null) ?? null
+      });
     });
 
     return () => {
@@ -695,6 +778,42 @@ export default function NetworkTopologyMap({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {selected && (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/40 px-3 py-2"
+          data-testid="topology-inspector"
+        >
+          {selected.group === 'edges' && selected.method === 'manual' && editMode && (
+            <button
+              type="button"
+              data-testid="topology-delete-edge"
+              onClick={() => void deleteManualEdge(selected.id)}
+              className="rounded border border-destructive/50 px-2 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/10"
+            >
+              Delete connection
+            </button>
+          )}
+          {selected.group === 'edges' && selected.method !== 'manual' && (
+            <p data-testid="topology-edge-provenance" className="text-xs text-muted-foreground">
+              {(selected.method ?? 'unknown').toUpperCase()}
+              {selected.confidence ? ` · ${selected.confidence}` : ''}
+              {selected.interfaceName ? ` · ${selected.interfaceName}` : ''}
+              {selected.vlan != null ? ` · VLAN ${selected.vlan}` : ''}
+            </p>
+          )}
+          {selected.group === 'nodes' && selected.kind === 'manual' && editMode && (
+            <button
+              type="button"
+              data-testid="topology-delete-node"
+              onClick={() => void deleteManualNode(selected.id)}
+              className="rounded border border-destructive/50 px-2 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/10"
+            >
+              Delete node
+            </button>
+          )}
         </div>
       )}
 
