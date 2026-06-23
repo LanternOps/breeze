@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import { LayoutGrid, Pencil, Check, ArrowRight, X, Network, Maximize2 } from 'lucide-react';
+import { LayoutGrid, Pencil, Check, ArrowRight, X, Network, Maximize2, Minimize2, Frame } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 import { runAction, handleActionError } from '@/lib/runAction';
@@ -144,7 +144,9 @@ const EDGE_METHOD_META: Record<TopologyEdgeMethod, { label: string; color: strin
   lldp: { label: 'LLDP', color: '#2563eb' },
   cdp: { label: 'CDP', color: '#2563eb' },
   fdb: { label: 'Bridge FDB', color: '#16a34a' },
-  manual: { label: 'Manual', color: '#f97316' }
+  // Manual renders with the theme ink (bg-foreground) in the inspector, not this
+  // hex; kept as a sane fallback only.
+  manual: { label: 'Manual', color: '#0f172a' }
 };
 
 const typeLabels: Record<TopologyNodeType, string> = {
@@ -345,7 +347,7 @@ function readTopologyTheme(): TopologyTheme {
  * edges color by measured provenance (`data(method)`):
  *   lldp/cdp (high)   → solid blue   (#2563eb)
  *   fdb (medium)      → solid green  (#16a34a)
- *   manual (asserted) → dashed orange(#f97316)  (ships now, used in Phase 4)
+ *   manual (asserted) → solid black  (theme ink, adapts to dark mode)
  * Theme-dependent neutrals (node border, labels, subnet box) come from `theme`
  * so the canvas tracks light/dark; semantic hues (type fills, provenance edge
  * colours, status pips, amber connect-source) are fixed and read on both.
@@ -453,8 +455,10 @@ function buildStylesheet(theme: TopologyTheme): cytoscape.StylesheetStyle[] {
       style: { 'line-color': '#16a34a', 'line-style': 'solid' } as cytoscape.Css.Edge
     },
     {
+      // Manual (hand-mapped) links: solid black in light, near-white in dark —
+      // uses the theme ink so it stays visible on both canvases (#1728).
       selector: 'edge[method = "manual"]',
-      style: { 'line-color': '#f97316', 'line-style': 'dashed' } as cytoscape.Css.Edge
+      style: { 'line-color': theme.ink, 'line-style': 'solid' } as cytoscape.Css.Edge
     },
     // ── Interaction states ────────────────────────────────────────────────
     {
@@ -587,6 +591,9 @@ export default function NetworkTopologyMap({
   // action. Auto-disarms after 3s so a stray first click can't linger.
   const [confirmDelete, setConfirmDelete] = useState(false);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Full-screen "Expand" mode (#1728): the card fills the viewport so the map
+  // gets the whole content area; Esc (or the toggle) exits.
+  const [expanded, setExpanded] = useState(false);
 
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -1158,6 +1165,16 @@ export default function NetworkTopologyMap({
     cy.autoungrabify(!editMode);
   }, [editMode]);
 
+  // Esc exits full-screen expand.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpanded(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
+
   // Rebuild the canvas stylesheet from the resolved design tokens whenever the
   // theme flips (the `dark` class toggles on <html>), so the graph tracks
   // light/dark instead of staying a light island in a dark shell (#1728).
@@ -1180,19 +1197,32 @@ export default function NetworkTopologyMap({
       const card = cardRef.current;
       if (!mount || !card) return;
       const mountRect = mount.getBoundingClientRect();
-      const below = card.getBoundingClientRect().bottom - mountRect.bottom;
-      const available = window.innerHeight - mountRect.top - below - 24;
-      // The inspector + edit palette now float OVER the canvas (absolute), so they
+      // Measure the below-canvas content (device list + its margin + the card's
+      // bottom padding) DIRECTLY by summing the canvas wrapper's following
+      // siblings. We can't derive it from the card's rendered/scroll height: in
+      // expand mode the card is `fixed inset-0`, so both are pinned to the
+      // viewport and would feed the canvas height back into itself.
+      const wrap = mount.closest('[data-testid="topology-canvas-wrap"]') ?? mount.parentElement;
+      let below = parseFloat(getComputedStyle(card).paddingBottom) || 0;
+      let sib = wrap?.nextElementSibling ?? null;
+      while (sib) {
+        below += sib.getBoundingClientRect().height + (parseFloat(getComputedStyle(sib).marginTop) || 0);
+        sib = sib.nextElementSibling;
+      }
+      const available = window.innerHeight - mountRect.top - below - 16;
+      // The inspector + edit palette float OVER the canvas (absolute), so they
       // no longer steal flow height and selecting a node never reflows the page.
-      // That lets the map be generously tall — clamp to a comfortable band.
-      setCanvasHeight(Math.max(420, Math.min(760, Math.round(available))));
+      // Normal mode caps the height to a comfortable band; expand mode lets the
+      // map take the whole viewport.
+      const cap = expanded ? 4000 : 760;
+      setCanvasHeight(Math.max(420, Math.min(cap, Math.round(available))));
     };
     recompute();
     window.addEventListener('resize', recompute);
     return () => window.removeEventListener('resize', recompute);
     // Intentionally NOT keyed on `selected`/`editMode`: the overlays don't change
     // the canvas height, so re-measuring on selection would just cause churn.
-  }, [subnetGroups, presentTypes, links.length, nodes.length, loading]);
+  }, [subnetGroups, presentTypes, links.length, nodes.length, loading, expanded]);
 
 
   // Auto-arrange: lay out ONLY never-placed nodes; pinned/positioned nodes are
@@ -1252,7 +1282,13 @@ export default function NetworkTopologyMap({
   }
 
   return (
-    <div ref={cardRef} className="rounded-lg border bg-card p-6 shadow-sm">
+    <div
+      ref={cardRef}
+      className={cn(
+        'rounded-lg border bg-card p-6 shadow-sm',
+        expanded && 'fixed inset-0 z-40 m-0 overflow-auto rounded-none p-4'
+      )}
+    >
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h2 className="text-base font-semibold">Network Topology</h2>
@@ -1269,10 +1305,25 @@ export default function NetworkTopologyMap({
               title="Fit the whole map to view"
               className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
             >
-              <Maximize2 className="h-4 w-4 text-muted-foreground" aria-hidden />
+              <Frame className="h-4 w-4 text-muted-foreground" aria-hidden />
               Fit
             </button>
           )}
+          <button
+            type="button"
+            data-testid="topology-expand-toggle"
+            aria-pressed={expanded}
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? 'Exit full screen (Esc)' : 'Expand map to full screen'}
+            className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
+          >
+            {expanded ? (
+              <Minimize2 className="h-4 w-4 text-muted-foreground" aria-hidden />
+            ) : (
+              <Maximize2 className="h-4 w-4 text-muted-foreground" aria-hidden />
+            )}
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
           {editMode && (
             <button
               type="button"
@@ -1338,7 +1389,12 @@ export default function NetworkTopologyMap({
 
       {selected && (
         <div
-          className="animate-in absolute inset-x-3 bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card px-3 py-2.5 shadow-lg sm:inset-x-auto sm:left-3 sm:right-3 md:right-auto md:max-w-[480px]"
+          className={cn(
+            'animate-in absolute inset-x-3 bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card px-3 py-2.5 shadow-lg sm:inset-x-auto sm:left-3 sm:right-3 md:right-auto md:max-w-[480px]',
+            // In edit mode the card must not block the two-tap connect gesture —
+            // taps pass through to the canvas; only its buttons stay clickable.
+            editMode && 'pointer-events-none'
+          )}
           data-testid="topology-inspector"
         >
           {selected.group === 'nodes' && (
@@ -1382,7 +1438,7 @@ export default function NetworkTopologyMap({
                   type="button"
                   data-testid="topology-inspector-view-details"
                   onClick={() => onNodeClick(selected.id)}
-                  className="inline-flex items-center gap-1 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-muted active:scale-[0.98]"
+                  className="pointer-events-auto inline-flex items-center gap-1 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-muted active:scale-[0.98]"
                 >
                   View details
                   <ArrowRight className="h-3.5 w-3.5" aria-hidden />
@@ -1395,7 +1451,7 @@ export default function NetworkTopologyMap({
                   aria-label={confirmDelete ? 'Confirm delete node' : 'Delete node'}
                   onClick={() => (confirmDelete ? void deleteManualNode(selected.id) : armDelete())}
                   className={cn(
-                    'rounded-md px-2.5 py-1.5 text-xs font-medium transition',
+                    'pointer-events-auto rounded-md px-2.5 py-1.5 text-xs font-medium transition',
                     confirmDelete
                       ? 'bg-destructive text-destructive-foreground hover:opacity-90'
                       : 'border border-destructive/50 text-destructive hover:bg-destructive/10'
@@ -1410,8 +1466,15 @@ export default function NetworkTopologyMap({
           {selected.group === 'edges' && (
             <>
               <span
-                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md text-white shadow-sm"
-                style={{ backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }}
+                className={cn(
+                  'flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md shadow-sm',
+                  selected.method === 'manual' ? 'bg-foreground text-background' : 'text-white'
+                )}
+                style={
+                  selected.method === 'manual'
+                    ? undefined
+                    : { backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }
+                }
               >
                 <Network className="h-4 w-4" aria-hidden />
               </span>
@@ -1419,8 +1482,15 @@ export default function NetworkTopologyMap({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-semibold text-foreground">Connection</span>
                   <span
-                    className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
-                    style={{ backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }}
+                    className={cn(
+                      'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                      selected.method === 'manual' ? 'bg-foreground text-background' : 'text-white'
+                    )}
+                    style={
+                      selected.method === 'manual'
+                        ? undefined
+                        : { backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }
+                    }
                   >
                     {EDGE_METHOD_META[selected.method ?? 'manual']?.label ?? 'Unknown'}
                   </span>
@@ -1456,7 +1526,7 @@ export default function NetworkTopologyMap({
                   aria-label={confirmDelete ? 'Confirm delete connection' : 'Delete connection'}
                   onClick={() => (confirmDelete ? void deleteManualEdge(selected.id) : armDelete())}
                   className={cn(
-                    'rounded-md px-2.5 py-1.5 text-xs font-medium transition',
+                    'pointer-events-auto rounded-md px-2.5 py-1.5 text-xs font-medium transition',
                     confirmDelete
                       ? 'bg-destructive text-destructive-foreground hover:opacity-90'
                       : 'border border-destructive/50 text-destructive hover:bg-destructive/10'
@@ -1480,7 +1550,7 @@ export default function NetworkTopologyMap({
             type="button"
             aria-label="Clear selection"
             onClick={() => setSelected(null)}
-            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground sm:ml-0"
+            className="pointer-events-auto ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground sm:ml-0"
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
@@ -1525,7 +1595,7 @@ export default function NetworkTopologyMap({
                 <span className="flex items-center gap-1.5">
                   <span
                     className="inline-block h-[3px] w-5 rounded-full"
-                    style={{ backgroundImage: 'repeating-linear-gradient(to right, #f97316 0 4px, transparent 4px 7px)' }}
+                    style={{ backgroundColor: 'hsl(var(--foreground))' }}
                   />
                   Manual
                 </span>
