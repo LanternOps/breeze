@@ -28,7 +28,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   quotes: 'Quotes',
   invoices: 'Invoices',
   contracts: 'Contracts',
-  sso: 'Single Sign-On'
+  sso: 'Single Sign-On',
+  topology: 'Network Topology'
 };
 
 const ACTION_LABELS: Record<string, string> = {
