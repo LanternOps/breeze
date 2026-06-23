@@ -1,0 +1,10 @@
+[
+  { "name": "Google Chrome", "vendor": "Google LLC", "cpe": "cpe:2.3:a:google:chrome" },
+  { "name": "Mozilla Firefox", "vendor": "Mozilla", "cpe": "cpe:2.3:a:mozilla:firefox" },
+  { "name": "Adobe Acrobat Reader", "vendor": "Adobe Inc.", "cpe": "cpe:2.3:a:adobe:acrobat_reader" },
+  { "name": "Adobe Acrobat Reader DC", "vendor": "Adobe Inc.", "cpe": "cpe:2.3:a:adobe:acrobat_reader" },
+  { "name": "7-Zip", "vendor": "Igor Pavlov", "cpe": "cpe:2.3:a:7-zip:7-zip" },
+  { "name": "Notepad++", "vendor": "Notepad++ Team", "cpe": "cpe:2.3:a:notepad-plus-plus:notepad-plus-plus" },
+  { "name": "Zoom", "vendor": "Zoom Video Communications, Inc.", "cpe": "cpe:2.3:a:zoom:zoom" },
+  { "name": "VLC media player", "vendor": "VideoLAN", "cpe": "cpe:2.3:a:videolan:vlc_media_player" }
+]
