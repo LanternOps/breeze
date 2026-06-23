@@ -95,7 +95,7 @@ import { monitoringRoutes } from './routes/monitoring';
 import { auditBaselineRoutes } from './routes/auditBaselines';
 import { softwareRoutes } from './routes/software';
 import { softwarePoliciesRoutes } from './routes/softwarePolicies';
-import { vulnerabilityRoutes } from './routes/vulnerabilities';
+import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './routes/vulnerabilities';
 import { systemRoutes } from './routes/system';
 import { systemToolsRoutes } from './routes/systemTools';
 import { notificationRoutes } from './routes/notifications';
@@ -847,6 +847,9 @@ api.route('/monitoring', monitoringRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
+// Deeper mount first: isolates the platform-admin sync router from the main
+// router's org-scoped `.use('*')` middleware (same-prefix double-mount leaks).
+api.route('/vulnerabilities/sync', vulnerabilitySyncRoutes);
 api.route('/vulnerabilities', vulnerabilityRoutes);
 api.route('/system', systemRoutes);
 api.route('/system-tools', systemToolsRoutes);

@@ -9,6 +9,9 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { PERMISSIONS } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 import { writeRouteAudit } from '../services/auditEvents';
+import { platformAdminMiddleware } from '../middleware/platformAdmin';
+import { userRateLimit } from '../middleware/userRateLimit';
+import { enqueueVulnSourceSync } from '../jobs/vulnerabilityJobs';
 
 export const vulnerabilityRoutes = new Hono();
 
@@ -320,5 +323,36 @@ vulnerabilityRoutes.post(
     });
 
     return c.json({ success: true });
+  },
+);
+
+// Admin manual sync trigger. A SEPARATE router so the org-scoped `*` middleware
+// above (auth + scope + DEVICES_READ) does NOT gate it — it is platform-admin
+// only. Mounted at `/api/v1/vulnerabilities/sync` (deeper than the main router's
+// `/vulnerabilities` mount, which isolates the two routers' `.use('*')` chains).
+export const vulnerabilitySyncRoutes = new Hono();
+
+const syncSchema = z.object({
+  source: z.enum(['msrc', 'nvd', 'sofa', 'kev_epss']),
+});
+
+vulnerabilitySyncRoutes.use('*', platformAdminMiddleware);
+vulnerabilitySyncRoutes.use('*', requireMfa());
+
+vulnerabilitySyncRoutes.post(
+  '/',
+  userRateLimit('vuln-manual-sync', 10, 3600), // 10/hour/user
+  zValidator('json', syncSchema),
+  async (c) => {
+    const { source } = c.req.valid('json');
+    const jobId = await enqueueVulnSourceSync(source);
+    // resourceId is a uuid column — the source string lives in details, not there.
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'vulnerability.manual_sync',
+      resourceType: 'vulnerability_source',
+      details: { source, jobId },
+    });
+    return c.json({ enqueued: true, jobId });
   },
 );
