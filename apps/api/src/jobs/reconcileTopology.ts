@@ -127,20 +127,47 @@ export function computeFdbAttachments(
   };
   if (!switchAssetId || !deviceAdj.fdb || deviceAdj.fdb.length === 0) return result;
 
-  // A switch port is an uplink iff it appears as the localPort/localIfName of
-  // any LLDP neighbor, or the localPort of any CDP neighbor, on this device.
-  const uplinkPorts = new Set<string>();
+  // Uplink suppression must compare LLDP/CDP local-port identifiers against the
+  // FDB row in matching identifier spaces. There are two distinct spaces:
+  //   • ifName space  — interface names like "Gi0/5" (LLDP localIfName, and the
+  //     FDB row's resolved ifName).
+  //   • raw localPort space — whatever the agent reported as the LLDP/CDP local
+  //     port (often an ifName, but on some agents an ifIndex or a bridge-port
+  //     number). The FDB row's dot1d bridgePort lives in the bridge-port number
+  //     space, which only coincides with localPort when the agent reported the
+  //     bridge port as the local port.
+  // The previous flat set lumped localIfName and localPort together and then
+  // tested String(bridgePort) against it — so a bare bridge-port number could
+  // be matched against an ifName-space entry (false positive), or an FDB row
+  // whose ifName matched would be missed if only its bridgePort overlapped a
+  // localPort. Keep the two spaces separate and compare each consistently.
+  const uplinkIfNames = new Set<string>(); // ifName space
+  const uplinkLocalPorts = new Set<string>(); // raw localPort space (ambiguous)
   for (const n of deviceAdj.lldp ?? []) {
-    if (n.localPort) uplinkPorts.add(n.localPort);
-    if (n.localIfName) uplinkPorts.add(n.localIfName);
+    if (n.localIfName) uplinkIfNames.add(n.localIfName);
+    if (n.localPort) uplinkLocalPorts.add(n.localPort);
   }
   for (const n of deviceAdj.cdp ?? []) {
-    if (n.localPort) uplinkPorts.add(n.localPort);
+    if (n.localPort) uplinkLocalPorts.add(n.localPort);
   }
 
   const portKey = (e: FdbEntry): string => e.ifName ?? String(e.bridgePort);
-  const isUplink = (e: FdbEntry): boolean =>
-    (e.ifName !== undefined && uplinkPorts.has(e.ifName)) || uplinkPorts.has(String(e.bridgePort));
+  const isUplink = (e: FdbEntry): boolean => {
+    const ifName = e.ifName;
+    const bridge = String(e.bridgePort);
+    // ifName-space match: the FDB row's resolved ifName against either an LLDP
+    // localIfName or a raw localPort that the agent reported as an ifName.
+    if (ifName !== undefined && (uplinkIfNames.has(ifName) || uplinkLocalPorts.has(ifName))) {
+      return true;
+    }
+    // localPort-space match: the FDB bridge-port number against a raw localPort
+    // the agent reported in the SAME (bridge-port / ifIndex) space. Never test
+    // the bare bridge-port number against uplinkIfNames — that crosses spaces
+    // (an ifName like "Gi0/5" can never equal a bridge-port number anyway, but
+    // a numeric ifName would false-match). Only the raw localPort space is safe.
+    if (uplinkLocalPorts.has(bridge)) return true;
+    return false;
+  };
 
   // Group surviving (non-uplink) FDB rows by port.
   const accessByPort = new Map<string, FdbEntry[]>();
@@ -291,6 +318,7 @@ export async function reconcileTopology(
   let totUplink = 0;
   let totOverThreshold = 0;
   let totAttached = 0;
+  let anyFdbUpserted = false;
   for (const deviceAdj of adjacency) {
     const switchAssetId =
       assetIndex.byIp.get(deviceAdj.sourceDeviceIp) ??
@@ -336,6 +364,7 @@ export async function reconcileTopology(
           },
         });
       totAttached++;
+      anyFdbUpserted = true;
     }
   }
   if (totUnknownMac || totUplink || totOverThreshold) {
@@ -346,6 +375,7 @@ export async function reconcileTopology(
   }
 
   await ageOutMeasuredEdges(orgId, siteId, edges, walkedSourceIds);
+  await ageOutFdbEdges(orgId, siteId, anyFdbUpserted, walkedSourceIds);
 }
 
 /**
@@ -394,6 +424,71 @@ async function ageOutMeasuredEdges(
       eq(networkTopology.orgId, orgId),
       eq(networkTopology.siteId, siteId),
       inArray(networkTopology.method, ['lldp', 'cdp']),
+      inArray(networkTopology.sourceId, Array.from(walkedSourceIds)),
+    ));
+
+  const toDelete = candidates
+    .filter((r) => !keep.has(r.id))
+    .map((r) => r.id);
+  if (toDelete.length > 0) {
+    await db.delete(networkTopology).where(inArray(networkTopology.id, toDelete));
+  }
+}
+
+/**
+ * Source-scoped age-out for FDB (method='fdb') host-attachment edges, mirroring
+ * the measured-edge policy so stale host attachments don't accumulate forever.
+ *
+ * A method='fdb' edge is deleted ONLY when:
+ *   - its source_id ∈ walkedSourceIds (the switch was actually walked this scan), AND
+ *   - it was NOT re-observed this scan (id ∉ the freshly-verified keep set).
+ *
+ * Consequences (by design, symmetric with ageOutMeasuredEdges):
+ *   - A host that moved off / disappeared from a *walked* switch's bridge FDB is
+ *     dropped (its edge isn't re-verified and the source is in scope).
+ *   - A switch that was NOT walked this scan keeps every fdb edge — so an un-walked
+ *     switch's host attachments persist, and an empty/missing adjacency (no walked
+ *     source) deletes nothing.
+ *   - method='manual' edges are never in scope (filtered to method='fdb').
+ *
+ * The lastVerifiedAt floor is the same secondary grace window: an fdb edge
+ * re-verified within the floor survives even if its source was re-walked without
+ * re-reporting it (defends a single transient miss); it is never the sole trigger.
+ */
+async function ageOutFdbEdges(
+  orgId: string,
+  siteId: string,
+  anyFdbUpserted: boolean,
+  walkedSourceIds: Set<string>,
+): Promise<void> {
+  // Nothing walked → nothing in scope → never delete.
+  if (walkedSourceIds.size === 0) return;
+
+  const floor = new Date(Date.now() - MEASURED_EDGE_AGEOUT_FLOOR_MS);
+
+  // Re-observed-this-scan keep set: fdb edges verified at/after the floor.
+  const keepIds = anyFdbUpserted
+    ? await db
+        .select({ id: networkTopology.id })
+        .from(networkTopology)
+        .where(and(
+          eq(networkTopology.orgId, orgId),
+          eq(networkTopology.siteId, siteId),
+          eq(networkTopology.method, 'fdb'),
+          sql`${networkTopology.lastVerifiedAt} >= ${floor.toISOString()}::timestamptz`,
+        ))
+    : [];
+  const keep = new Set(keepIds.map((r) => r.id));
+
+  // Candidates: fdb edges whose SOURCE switch was walked this scan. Only these
+  // are eligible — fdb edges of un-walked switches are left untouched.
+  const candidates = await db
+    .select({ id: networkTopology.id })
+    .from(networkTopology)
+    .where(and(
+      eq(networkTopology.orgId, orgId),
+      eq(networkTopology.siteId, siteId),
+      eq(networkTopology.method, 'fdb'),
       inArray(networkTopology.sourceId, Array.from(walkedSourceIds)),
     ));
 
