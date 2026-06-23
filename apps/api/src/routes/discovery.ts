@@ -1556,3 +1556,44 @@ discoveryRoutes.post(
     return c.json(edge, 201);
   }
 );
+
+// DELETE /discovery/topology/manual-edge/:id — remove a hand-asserted edge
+// (#1728 phase 4). Only deletes rows with method='manual'; measured edges are
+// scan-owned and read-only. Runs on the request `db` (RLS-scoped); 404 when no
+// manual edge with that id is visible.
+discoveryRoutes.delete(
+  '/topology/manual-edge/:id',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id')!;
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conds = [eq(networkTopology.id, id), eq(networkTopology.method, 'manual')];
+    if (orgResult.orgId) conds.push(eq(networkTopology.orgId, orgResult.orgId));
+
+    const [existing] = await db
+      .select({
+        id: networkTopology.id,
+        orgId: networkTopology.orgId,
+        siteId: networkTopology.siteId,
+      })
+      .from(networkTopology)
+      .where(and(...conds))
+      .limit(1);
+    if (!existing) return c.json({ error: 'Manual edge not found' }, 404);
+
+    await db.delete(networkTopology).where(eq(networkTopology.id, existing.id));
+
+    writeRouteAudit(c, {
+      orgId: existing.orgId ?? undefined,
+      action: 'discovery.topology.manual_edge.delete',
+      resourceType: 'topology_manual_edge',
+      resourceId: existing.id,
+    });
+
+    return c.json({ success: true });
+  }
+);

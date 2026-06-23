@@ -315,3 +315,76 @@ describe('POST /discovery/topology/manual-edge (#1728 phase 4)', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('DELETE /discovery/topology/manual-edge/:id (#1728 phase 4)', () => {
+  let app: Hono;
+
+  const EDGE_ID = '00000000-0000-0000-0000-0000000000e1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/discovery', discoveryRoutes);
+  });
+
+  it('deletes a method=manual edge and returns 200 { success: true }', async () => {
+    // The visibility lookup (filtered to method='manual') resolves the edge.
+    vi.mocked(db.select).mockImplementation(((..._args: any[]) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() =>
+          Object.assign(Promise.resolve([]), {
+            limit: vi.fn(() =>
+              Promise.resolve([
+                {
+                  id: EDGE_ID,
+                  orgId: '00000000-0000-0000-0000-000000000000',
+                  siteId: '00000000-0000-0000-0000-000000000001',
+                },
+              ]),
+            ),
+          }),
+        ),
+      })),
+    })) as any);
+
+    const deleteWhere = vi.fn(() => Promise.resolve());
+    vi.mocked(db.delete).mockImplementation((() => ({ where: deleteWhere })) as any);
+
+    const res = await app.request(`/discovery/topology/manual-edge/${EDGE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ success: true });
+    // The actual delete fired against networkTopology.
+    expect(db.delete).toHaveBeenCalledWith(networkTopology);
+    expect(deleteWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 404 for a measured (method=fdb) edge id — the manual filter yields no row', async () => {
+    // Visibility lookup is filtered to method='manual'; a measured edge id resolves to nothing.
+    vi.mocked(db.select).mockImplementation(((..._args: any[]) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() =>
+          Object.assign(Promise.resolve([]), {
+            limit: vi.fn(() => Promise.resolve([])),
+          }),
+        ),
+      })),
+    })) as any);
+
+    const deleteWhere = vi.fn(() => Promise.resolve());
+    vi.mocked(db.delete).mockImplementation((() => ({ where: deleteWhere })) as any);
+
+    const res = await app.request(`/discovery/topology/manual-edge/${EDGE_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    // No delete should fire when nothing is visible.
+    expect(deleteWhere).not.toHaveBeenCalled();
+  });
+});
