@@ -1,0 +1,107 @@
+{
+  "resultsPerPage": 2,
+  "startIndex": 0,
+  "totalResults": 2,
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2024-0519",
+        "sourceIdentifier": "chrome-cve-admin@google.com",
+        "published": "2024-01-16T20:15:00.000",
+        "lastModified": "2024-09-13T15:21:00.000",
+        "vulnStatus": "Analyzed",
+        "descriptions": [
+          { "lang": "en", "value": "Out of bounds memory access in V8 in Google Chrome prior to 120.0.6099.224 allowed a remote attacker to potentially exploit heap corruption via a crafted HTML page." }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 8.8,
+                "baseSeverity": "HIGH"
+              },
+              "exploitabilityScore": 2.8,
+              "impactScore": 5.9
+            }
+          ]
+        },
+        "weaknesses": [
+          { "source": "nvd@nist.gov", "type": "Primary", "description": [ { "lang": "en", "value": "CWE-787" } ] }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "120.0.6099.224",
+                    "matchCriteriaId": "AAAA1111-2222-3333-4444-555566667777"
+                  },
+                  {
+                    "vulnerable": false,
+                    "criteria": "cpe:2.3:o:fedoraproject:fedora:39:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "BBBB1111-2222-3333-4444-555566667777"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-99999",
+        "sourceIdentifier": "nvd@nist.gov",
+        "published": "2099-01-01T00:00:00.000",
+        "lastModified": "2099-01-02T00:00:00.000",
+        "vulnStatus": "Analyzed",
+        "descriptions": [
+          { "lang": "en", "value": "Synthetic fixture CVE for an obscure product NOT present in the curated CPE map — used to assert that NVD sync only generates match facts for curated CPEs." }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N",
+                "baseScore": 5.0,
+                "baseSeverity": "MEDIUM"
+              }
+            }
+          ]
+        },
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:obscurevendor:obscureproduct:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "2.0.0",
+                    "matchCriteriaId": "CCCC1111-2222-3333-4444-555566667777"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
