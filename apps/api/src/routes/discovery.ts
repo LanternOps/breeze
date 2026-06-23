@@ -308,6 +308,19 @@ const createManualNodeSchema = z.object({
   notes: z.string().trim().max(2000).optional(),
 });
 
+// Manual topology edge (#1728 phase 4). Each endpoint is an asset/manual-node in
+// the resolved (org, site); `orgId` is server-derived via resolveOrgId.
+const manualEdgeEndpointSchema = z.object({
+  type: z.enum(['discovered_asset', 'manual_node']),
+  id: z.string().guid(),
+});
+const createManualEdgeSchema = z.object({
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid(),
+  source: manualEdgeEndpointSchema,
+  target: manualEdgeEndpointSchema,
+});
+
 const bulkApproveSchema = z.object({
   assetIds: z.array(z.string().guid()).min(1).max(200)
 });
@@ -1445,5 +1458,101 @@ discoveryRoutes.post(
     });
 
     return c.json(node, 201);
+  }
+);
+
+// Resolve a manual-edge endpoint to confirm it is an asset/manual-node in (org, site).
+// The site axis is app-layer only (RLS does not defend it), so each endpoint is
+// pinned to both the resolved org and the request site.
+async function manualEdgeEndpointExists(
+  endpoint: { type: 'discovered_asset' | 'manual_node'; id: string },
+  orgId: string,
+  siteId: string,
+): Promise<boolean> {
+  if (endpoint.type === 'discovered_asset') {
+    const [r] = await db
+      .select({ id: discoveredAssets.id })
+      .from(discoveredAssets)
+      .where(
+        and(
+          eq(discoveredAssets.id, endpoint.id),
+          eq(discoveredAssets.orgId, orgId),
+          eq(discoveredAssets.siteId, siteId),
+        ),
+      )
+      .limit(1);
+    return !!r;
+  }
+  const [r] = await db
+    .select({ id: topologyManualNodes.id })
+    .from(topologyManualNodes)
+    .where(
+      and(
+        eq(topologyManualNodes.id, endpoint.id),
+        eq(topologyManualNodes.orgId, orgId),
+        eq(topologyManualNodes.siteId, siteId),
+      ),
+    )
+    .limit(1);
+  return !!r;
+}
+
+// POST /discovery/topology/manual-edge — draw a hand-asserted edge between two
+// endpoints (#1728 phase 4). Manual edges live in network_topology with
+// method='manual'/confidence='asserted'; they are scan-immune (reconcile filters
+// the measured method set) and the provenance unique index keeps a manual + a
+// measured edge distinct on the same pair. Runs on the request `db` (RLS-scoped).
+discoveryRoutes.post(
+  '/topology/manual-edge',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  zValidator('json', createManualEdgeSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgId(auth, body.orgId, true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    if (body.source.type === body.target.type && body.source.id === body.target.id) {
+      return c.json({ error: 'An edge cannot connect a node to itself' }, 400);
+    }
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const [srcOk, tgtOk] = await Promise.all([
+      manualEdgeEndpointExists(body.source, orgResult.orgId!, body.siteId),
+      manualEdgeEndpointExists(body.target, orgResult.orgId!, body.siteId),
+    ]);
+    if (!srcOk || !tgtOk) {
+      return c.json({ error: 'Edge endpoint not found in this site' }, 404);
+    }
+
+    const [edge] = await db
+      .insert(networkTopology)
+      .values({
+        orgId: orgResult.orgId!,
+        siteId: body.siteId,
+        sourceType: body.source.type,
+        sourceId: body.source.id,
+        targetType: body.target.type,
+        targetId: body.target.id,
+        connectionType: 'manual',
+        method: 'manual',
+        confidence: 'asserted',
+        createdBy: auth.user?.id ?? null,
+      })
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId ?? undefined,
+      action: 'discovery.topology.manual_edge.create',
+      resourceType: 'topology_manual_edge',
+      resourceId: edge?.id,
+    });
+
+    return c.json(edge, 201);
   }
 );
