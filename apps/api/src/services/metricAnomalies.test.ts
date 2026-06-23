@@ -102,6 +102,11 @@ describe('metric anomalies service', () => {
     expect(v1StatementSql).toContain(METRIC_ANOMALY_V1_SHADOW_VERSION);
     expect(v1StatementSql).toContain('percentile_cont');
     expect(v1StatementSql).toContain('mad_value');
+    expect(v1StatementSql).toContain('baseline_active_days');
+    expect(v1StatementSql).toContain('baseline_first_bucket');
+    expect(v1StatementSql).toContain('readinessState');
+    expect(v1StatementSql).toContain('minBaselineSpanDays');
+    expect(v1StatementSql).toContain('minBaselineActiveDays');
     expect(v1StatementSql).toContain('ON CONFLICT');
     expect(v1StatementSql).not.toContain('INSERT INTO metric_anomalies');
   });

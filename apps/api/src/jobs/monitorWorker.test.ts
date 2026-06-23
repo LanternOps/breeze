@@ -1,16 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockDb } = vi.hoisted(() => ({
+const { mockDb, ctxState, queueMock } = vi.hoisted(() => ({
   mockDb: {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn()
-  }
+  },
+  // Tracks DB-access-context depth + an ordered event log so a test can prove
+  // the monitor scheduler READS inside a context but ENQUEUES outside one (#1105).
+  ctxState: { depth: 0, events: [] as string[] },
+  queueMock: {
+    getJob: vi.fn(async () => null),
+    add: vi.fn(async () => ({ id: 'job-1' })),
+    getRepeatableJobs: vi.fn(async () => []),
+    removeRepeatableByKey: vi.fn(async () => undefined),
+  },
 }));
 
 vi.mock('bullmq', () => ({
-  Queue: class {},
+  Queue: class {
+    getJob = queueMock.getJob;
+    add = queueMock.add;
+    getRepeatableJobs = queueMock.getRepeatableJobs;
+    removeRepeatableByKey = queueMock.removeRepeatableByKey;
+  },
   Worker: class {},
   Job: class {},
   UnrecoverableError: class extends Error {},
@@ -18,10 +32,23 @@ vi.mock('bullmq', () => ({
 
 vi.mock('../db', () => ({
   db: mockDb,
-  withSystemDbAccessContext: undefined,
-  // #1105 tripwire used by createInstrumentedQueue (getMonitorQueue now
-  // constructs through it). No-op here — no held context under test.
-  assertOutsideHeldDbContext: vi.fn()
+  // Real-ish context wrapper: tracks depth around fn so the scheduler test can
+  // assert which work runs inside the context vs after it closes.
+  withSystemDbAccessContext: async (fn: () => unknown) => {
+    ctxState.depth++;
+    ctxState.events.push('ctx:enter');
+    try {
+      return await fn();
+    } finally {
+      ctxState.depth--;
+      ctxState.events.push('ctx:exit');
+    }
+  },
+  // #1105 tripwire wired into createInstrumentedQueue's add(). Mirror prod
+  // semantics: record a violation if an enqueue runs while a context is held.
+  assertOutsideHeldDbContext: (op: string) => {
+    if (ctxState.depth > 0) ctxState.events.push(`tripwire-violation:${op}`);
+  }
 }));
 
 vi.mock('../db/schema', () => ({
@@ -119,7 +146,63 @@ function selectWhereOrderLimitResolved(rows: unknown[]) {
   };
 }
 
-const { recordMonitorCheckResult } = await import('./monitorWorker');
+const { recordMonitorCheckResult, processScheduler } = await import('./monitorWorker');
+
+describe('processScheduler (#1105 connection-hold)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ctxState.depth = 0;
+    ctxState.events = [];
+    queueMock.getJob.mockResolvedValue(null);
+    queueMock.add.mockImplementation(async () => {
+      ctxState.events.push(`enqueue@depth${ctxState.depth}`);
+      return { id: 'job-1' };
+    });
+  });
+
+  function mockDueMonitors(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockImplementation(async () => {
+          ctxState.events.push(`select@depth${ctxState.depth}`);
+          return rows;
+        })
+      })
+    } as any);
+  }
+
+  it('reads due monitors inside a DB context but enqueues OUTSIDE it', async () => {
+    mockDueMonitors([
+      { id: 'm1', orgId: 'o1', pollingInterval: 60, lastChecked: null },
+      { id: 'm2', orgId: 'o2', pollingInterval: 60, lastChecked: null },
+    ]);
+
+    const result = await processScheduler();
+
+    expect(result).toEqual({ enqueued: 2 });
+    // SELECT runs in-context (depth 1); the context CLOSES; then both enqueues
+    // run with no transaction held (depth 0). This is the #1105 fix.
+    expect(ctxState.events).toEqual([
+      'ctx:enter',
+      'select@depth1',
+      'ctx:exit',
+      'enqueue@depth0',
+      'enqueue@depth0',
+    ]);
+    // The prod held-context tripwire never fires for the enqueue path.
+    expect(ctxState.events.some((e) => e.startsWith('tripwire-violation'))).toBe(false);
+  });
+
+  it('returns early without enqueuing when no monitors are due', async () => {
+    mockDueMonitors([]);
+
+    const result = await processScheduler();
+
+    expect(result).toEqual({ enqueued: 0 });
+    expect(queueMock.add).not.toHaveBeenCalled();
+    expect(ctxState.events).toEqual(['ctx:enter', 'select@depth1', 'ctx:exit']);
+  });
+});
 
 describe('recordMonitorCheckResult', () => {
   beforeEach(() => {

@@ -76,13 +76,32 @@ All MCP endpoints require an API key with `ai:*` scopes. Authentication is perfo
 
 API keys follow the format `brz_<random>`. The server stores only a SHA-256 hash of the key; the plaintext is never persisted.
 
-### OAuth 2.1 (preview)
+### OAuth 2.1
 
-For AI clients that implement OAuth 2.1 with Dynamic Client Registration (DCR) and PKCE — including **Claude.ai** and **ChatGPT** — Breeze can authorize MCP connections through a real OAuth handshake instead of pasted API keys. Users sign in to Breeze, grant the AI client a scoped session, and the assistant receives a refreshable access token bound to that user and organization.
+For AI clients that implement OAuth 2.1 with Dynamic Client Registration (DCR) and PKCE — including **Claude.ai** and **ChatGPT** — Breeze can authorize MCP connections through a real OAuth handshake instead of pasted API keys. The user pastes the tenant's `/mcp/sse` URL into the client, signs in to Breeze, grants the AI client a scoped session, and the assistant receives a refreshable access token bound to that user and organization. No API key is created or copied.
 
-OAuth is available behind the `MCP_OAUTH_ENABLED` feature flag. When enabled, the OIDC provider exposes the standard discovery endpoint at `/.well-known/oauth-authorization-server` and DCR clients can register at `/oauth/reg`. Grant revocation invalidates all sibling access tokens immediately, and refresh tokens rotate on every use.
+OAuth is enabled with the `MCP_OAUTH_ENABLED=true` server setting. Once enabled, Breeze acts as a standards-compliant authorization server and advertises the following endpoints (all discoverable automatically by the client — there is nothing to configure by hand):
 
-API key authentication via the `X-API-Key` header continues to work for self-hosted MCP clients that don't support OAuth.
+| Endpoint | Purpose |
+|---|---|
+| `/.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414) — issuer, endpoints, supported scopes and grant types |
+| `/.well-known/oauth-protected-resource` | Protected-resource metadata (RFC 9728) — tells the client which authorization server protects the MCP endpoint |
+| `/.well-known/jwks.json` | Public signing keys for validating access tokens |
+| `/oauth/auth` | Authorization endpoint — user sign-in and consent (PKCE `S256` required) |
+| `/oauth/token` | Token endpoint — `authorization_code` and `refresh_token` grants |
+| `/oauth/reg` | Dynamic Client Registration (RFC 7591) — clients self-register |
+| `/oauth/token/revocation` | Token revocation (RFC 7009) |
+| `/oauth/token/introspection` | Token introspection (RFC 7662) |
+
+OAuth sessions use the `mcp:read`, `mcp:write`, and `mcp:execute` scopes (plus `openid` and `offline_access`), which map to the same Tier 1 / 2 / 3 model as the `ai:*` API-key scopes. Access tokens are short-lived (10 minutes) and signed with EdDSA; refresh tokens last 14 days and **rotate on every use**. Revoking a grant invalidates all of its sibling access and refresh tokens immediately.
+
+When OAuth is enabled, the MCP endpoints accept an `Authorization: Bearer <access_token>` header and return a `WWW-Authenticate` challenge pointing OAuth-capable clients at the protected-resource metadata.
+
+<Aside>
+  OAuth is opt-in. It is off by default, and the `/oauth/*` and `/.well-known/oauth-*` routes only mount when `MCP_OAUTH_ENABLED=true`. In production, enabling it also requires `OAUTH_JWKS_PRIVATE_JWK` (token-signing key) and `OAUTH_COOKIE_SECRET` (session cookie secret) — the API refuses to boot without them. See [Environment variables](#environment-variables).
+</Aside>
+
+API key authentication via the `X-API-Key` header continues to work for every client, and remains the only option for self-hosted MCP clients (Claude Desktop, Cursor) that don't implement OAuth.
 
 ---
 
@@ -163,14 +182,6 @@ The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config
   }
 }
 ```
-
----
-
-## MCP Bootstrap (preview)
-
-Beyond the standard MCP tool surface, Breeze includes an **MCP Bootstrap** module that lets a connected AI assistant provision a new tenant end-to-end — create the tenant, run KYC via Stripe, attach a payment method, and send installer invites — through a small set of well-scoped tools (`create_tenant`, `verify_tenant`, `attach_payment_method`, `send_deployment_invites`).
-
-MCP Bootstrap is gated behind a server feature flag and is only available on SaaS deployments. Each step is fully audit-logged with `actorType: 'agent'`. Contact your account team if you'd like access for an early-customer onboarding flow.
 
 ---
 
@@ -442,13 +453,33 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 
 ## Environment variables
 
+### MCP server
+
 | Variable | Default | Description |
 |---|---|---|
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | (empty) | Comma-separated list of Tier 3+ tool names allowed in production. Set to `*` to allow all. |
-| `MCP_REQUIRE_EXECUTE_ADMIN` | `false` | When `true` in production, Tier 3+ tools require the `ai:execute_admin` scope. |
+| `MCP_REQUIRE_EXECUTE_ADMIN` | `true` | In production, Tier 3+ tools require the `ai:execute_admin` scope. Set to `false` to fall back to `ai:execute`. (No effect outside production.) |
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Maximum concurrent SSE sessions per API key. |
 | `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | Maximum SSE connections per API key per minute. |
 | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Maximum JSON-RPC messages per API key per minute. |
+| `MCP_MESSAGE_MAX_BODY_BYTES` | `65536` | Maximum accepted JSON-RPC request body size, in bytes (64 KB). Larger requests are rejected. |
+| `MCP_SESSION_TTL_SECONDS` | `660` | Idle lifetime, in seconds, of a minted streamable-HTTP session principal in Redis (11 minutes). |
+
+### OAuth 2.1
+
+These apply only when OAuth is enabled. When `MCP_OAUTH_ENABLED=true` in production, `OAUTH_JWKS_PRIVATE_JWK` and `OAUTH_COOKIE_SECRET` are required — the API refuses to boot without them.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_OAUTH_ENABLED` | `false` | Master switch for OAuth 2.1. When `true`, the `/oauth/*` and `/.well-known/oauth-*` routes mount and MCP endpoints accept `Authorization: Bearer` tokens. |
+| `OAUTH_ISSUER` | (empty) | Public issuer base URL (e.g. `https://api.example.com`). Used to build every advertised OAuth endpoint URL. |
+| `OAUTH_RESOURCE_URL` | (empty) | Protected-resource identifier advertised in `/.well-known/oauth-protected-resource` (RFC 9728). |
+| `OAUTH_JWKS_PRIVATE_JWK` | (empty) | EdDSA private signing key (JWK JSON) for access tokens. Required in production when OAuth is enabled. |
+| `OAUTH_JWKS_PUBLIC_JWK` | (empty) | Matching public key, advertised at `/.well-known/jwks.json`. Derived from the private key if unset. |
+| `OAUTH_COOKIE_SECRET` | (empty) | Secret used to sign sign-in / consent session cookies. Required in production when OAuth is enabled. |
+| `OAUTH_DCR_ENABLED` | `false` | Allow Dynamic Client Registration at `POST /oauth/reg`. Off by default. |
+| `OAUTH_DCR_REQUIRE_IAT` | `false` | Require an initial access token for DCR. In production, this **must** be `true` whenever `OAUTH_DCR_ENABLED=true`, or the API refuses to boot (prevents anonymous client registration). |
+| `OAUTH_CONSENT_URL_BASE` | (empty) | Optional origin for the consent UI redirect (e.g. `http://localhost:4321` for split API/web dev). Defaults to a relative path, which works when the API and web app share an origin behind a reverse proxy. |
 
 ---
 

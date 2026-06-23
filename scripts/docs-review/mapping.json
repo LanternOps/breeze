@@ -254,12 +254,6 @@
       ]
     },
     {
-      "pattern": "apps/api/src/routes/mcpBootstrap*.ts",
-      "docs": [
-        "features/mcp-server.mdx"
-      ]
-    },
-    {
       "pattern": "apps/api/src/routes/publicShortLinks.ts",
       "docs": [
         "agents/enrollment-keys.mdx",

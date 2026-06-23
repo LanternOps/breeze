@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../services/s3Storage', () => ({
   isS3Configured: vi.fn(() => false),
   getPresignedUrl: vi.fn(),
+  isS3NotFound: (err: unknown) => {
+    const name = (err as { name?: string }).name;
+    return name === 'NotFound' || name === 'NoSuchKey';
+  },
 }));
 
 vi.mock('../../services/binarySource', () => ({
