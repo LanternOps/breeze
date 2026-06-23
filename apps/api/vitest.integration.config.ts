@@ -35,6 +35,8 @@ export default defineConfig({
       'src/services/vulnerabilityCorrelation.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
+      // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
+      'src/services/exploitFeeds.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's
