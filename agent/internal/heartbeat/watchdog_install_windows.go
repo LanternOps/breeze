@@ -16,6 +16,13 @@ import (
 
 const windowsWatchdogServiceName = "BreezeWatchdog"
 
+// watchdogBinaryPath returns the on-disk path of the installed watchdog binary
+// (the protected Program Files location) so the agent can read its version for
+// heartbeat telemetry.
+func watchdogBinaryPath() (string, error) {
+	return serviceinstall.ProtectedBinaryPath("breeze-watchdog.exe")
+}
+
 // installAndRestartWatchdog downloads the verified watchdog binary and swaps it
 // into the protected Program Files location. Windows holds an exclusive lock on
 // a running .exe, so unlike the Unix path this must STOP the service before

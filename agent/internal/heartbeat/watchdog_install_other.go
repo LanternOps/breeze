@@ -9,3 +9,9 @@ import "fmt"
 func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 	return fmt.Errorf("watchdog auto-update is not supported on this platform")
 }
+
+// watchdogBinaryPath is unsupported on platforms without a breeze-watchdog
+// binary, so there is no installed version to read for telemetry.
+func watchdogBinaryPath() (string, error) {
+	return "", fmt.Errorf("watchdog is not supported on this platform")
+}

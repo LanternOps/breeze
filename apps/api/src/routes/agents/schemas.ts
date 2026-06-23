@@ -148,6 +148,11 @@ export const heartbeatSchema = z.object({
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
+  // Installed watchdog version, reported by the MAIN agent in its normal
+  // heartbeat (#1802) so devices.watchdog_version stays fresh after a watchdog
+  // recovers to monitoring — previously only watchdog FAILOVER heartbeats wrote
+  // it, leaving the dashboard stale and the server re-sending watchdogUpgradeTo.
+  watchdogVersion: z.string().max(20).optional().catch(undefined),
   ipHistoryUpdate: z.object({
     deviceId: z.string().optional().catch(undefined),
     currentIPs: z.array(ipEntrySchema).max(100).nullish().catch(undefined),

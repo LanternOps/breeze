@@ -343,6 +343,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.deviceRole = data.deviceRole;
   }
 
+  // Keep devices.watchdog_version fresh from the main agent's heartbeat (#1802).
+  // Previously only watchdog FAILOVER heartbeats wrote it, so a recovered,
+  // healthy watchdog (back to monitoring, no longer failover-heartbeating) left
+  // the dashboard showing the OLD version. Old agents omit the field (undefined)
+  // — leave the stored value untouched in that case.
+  if (data.watchdogVersion) {
+    deviceUpdates.watchdogVersion = data.watchdogVersion;
+  }
+
   // Orthogonal virtualization attribute (issue #1387). Old agents omit
   // isVirtual entirely (undefined) — leave the stored value untouched in that
   // case. A present value (true/false) is authoritative; the platform is
@@ -624,15 +633,21 @@ if (latestHelper) {
         .orderBy(desc(agentVersions.createdAt))
         .limit(1);
 
-      if (latestWatchdog && device.watchdogVersion) {
+      // Prefer the version the agent just reported over the stored column so a
+      // successful swap stops the re-send on the VERY NEXT heartbeat (#1802),
+      // not only after the column is later observed. Old agents omit the field,
+      // so fall back to the stored value to preserve existing behavior.
+      const installedWatchdogVersion = data.watchdogVersion ?? device.watchdogVersion;
+
+      if (latestWatchdog && installedWatchdogVersion) {
         // Version-to-version upgrade is subject to the org update policy.
-        if (updateGateAllows && !device.watchdogVersion.startsWith('dev-')) {
-          const cmp = compareAgentVersions(latestWatchdog.version, device.watchdogVersion);
+        if (updateGateAllows && !installedWatchdogVersion.startsWith('dev-')) {
+          const cmp = compareAgentVersions(latestWatchdog.version, installedWatchdogVersion);
           if (cmp > 0) {
             watchdogUpgradeTo = latestWatchdog.version;
           }
         }
-      } else if (latestWatchdog && !device.watchdogVersion) {
+      } else if (latestWatchdog && !installedWatchdogVersion) {
         // Watchdog not yet installed — signal to agent to install it. Bootstrap
         // installs are NOT gated by the org update policy.
         watchdogUpgradeTo = latestWatchdog.version;

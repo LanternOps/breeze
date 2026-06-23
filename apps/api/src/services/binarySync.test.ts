@@ -261,6 +261,77 @@ describe("binarySync", () => {
     }
   });
 
+  // #1802: the local-binary path historically registered ONLY the agent
+  // component, so self-hosters on BINARY_SOURCE=local never got watchdog
+  // auto-update. It now also scans + registers breeze-watchdog-* siblings.
+  describe("local-binary watchdog registration (#1802)", () => {
+    function setLocalEnv() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+    }
+
+    it("registers a component=watchdog row alongside the agent when the binary is present", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-linux-amd64",
+        "breeze-watchdog-linux-amd64",
+      ] as any);
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      // Agent still registered (regression guard for the refactor).
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+
+      const watchdogInsert = insertCalls.find((v) => v.component === "watchdog");
+      expect(watchdogInsert).toBeDefined();
+      expect(watchdogInsert).toMatchObject({
+        version: "0.65.9",
+        platform: "linux",
+        architecture: "amd64",
+        component: "watchdog",
+        isLatest: true,
+      });
+      // Must resolve to the dedicated watchdog download route, not the agent one.
+      expect(watchdogInsert!.downloadUrl).toContain(
+        "/agents/download/watchdog/linux/amd64",
+      );
+      const manifest = JSON.parse(watchdogInsert!.releaseManifest as string);
+      expect(manifest).toMatchObject({
+        version: "0.65.9",
+        component: "watchdog",
+        platform: "linux",
+        arch: "amd64",
+      });
+    });
+
+    it("warns and skips watchdog registration when no watchdog binary is present", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+      expect(insertCalls.some((v) => v.component === "watchdog")).toBe(false);
+      expect(
+        warnSpy.mock.calls.some((a) =>
+          String(a[0] ?? "").includes("No local watchdog binaries found"),
+        ),
+      ).toBe(true);
+      warnSpy.mockRestore();
+    });
+  });
+
   it("logs at console.error (not warn) when stale-volume detection + GitHub fallback both fail (#644)", async () => {
     // Stale-volume path: BREEZE_VERSION != VERSION-file value.
     // We force the GitHub fallback to throw by making fetch reject. The

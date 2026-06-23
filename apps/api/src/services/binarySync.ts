@@ -90,10 +90,13 @@ const PLATFORM_MAP: Record<string, string> = {
 
 function parseBinaryFilename(
   filename: string,
+  component = "agent",
 ): { platform: string; architecture: string } | null {
-  // Expected format: breeze-agent-{os}-{arch}[.exe]
+  // Expected format: breeze-{component}-{os}-{arch}[.exe]
   const match = filename.match(
-    /^breeze-agent-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$/,
+    new RegExp(
+      `^breeze-${component}-(linux|darwin|windows)-(amd64|arm64)(\\.exe)?$`,
+    ),
   );
   if (!match) return null;
   const os = match[1]!;
@@ -238,7 +241,10 @@ async function getReleaseAssetMetadata(args: {
   };
 }
 
-async function scanBinaryDir(dir: string): Promise<BinaryInfo[]> {
+async function scanBinaryDir(
+  dir: string,
+  component = "agent",
+): Promise<BinaryInfo[]> {
   const results: BinaryInfo[] = [];
 
   let entries: string[];
@@ -247,13 +253,13 @@ async function scanBinaryDir(dir: string): Promise<BinaryInfo[]> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[binarySync] Agent binary directory not found: ${dir} (${msg})`,
+      `[binarySync] ${component} binary directory not found: ${dir} (${msg})`,
     );
     return results;
   }
 
   for (const filename of entries) {
-    const parsed = parseBinaryFilename(filename);
+    const parsed = parseBinaryFilename(filename, component);
     if (!parsed) continue;
 
     const filePath = join(dir, filename);
@@ -275,6 +281,92 @@ async function scanBinaryDir(dir: string): Promise<BinaryInfo[]> {
   }
 
   return results;
+}
+
+// Registers a set of locally-scanned binaries for one component (agent,
+// watchdog, …) in agent_versions, signing each manifest so
+// /agent-versions/:v/download returns 200 (the strict-signing check from #568
+// rejects null manifest fields). The demote is scoped to `component` so
+// registering a second component (e.g. watchdog, #1802) does NOT clear the
+// agent's isLatest for the same platform/arch — the GitHub path's upsertVersion
+// already scopes this way; the local path historically did not because agent was
+// the only locally-registered component.
+async function registerLocalBinaries(args: {
+  binaries: BinaryInfo[];
+  component: string;
+  version: string;
+  keyId: string;
+  downloadUrlFor: (osParam: string, arch: string) => string;
+}): Promise<void> {
+  const { binaries, component, version, keyId, downloadUrlFor } = args;
+
+  await db.transaction(async (tx) => {
+    for (const bin of binaries) {
+      const osParam = bin.platform === "macos" ? "darwin" : bin.platform;
+      const downloadUrl = downloadUrlFor(osParam, bin.architecture);
+
+      const manifestObj = {
+        version,
+        component,
+        platform: bin.platform,
+        arch: bin.architecture,
+        url: downloadUrl,
+        checksum: bin.checksum,
+        size: Number(bin.fileSize),
+      };
+      const releaseManifest = JSON.stringify(manifestObj);
+      const manifestSignature = await signManifest(releaseManifest);
+
+      // Demote existing "isLatest" entries for this platform/arch/component.
+      await tx
+        .update(agentVersions)
+        .set({ isLatest: false })
+        .where(
+          and(
+            eq(agentVersions.platform, bin.platform),
+            eq(agentVersions.architecture, bin.architecture),
+            eq(agentVersions.component, component),
+            eq(agentVersions.isLatest, true),
+          ),
+        );
+
+      // Upsert the new version
+      await tx
+        .insert(agentVersions)
+        .values({
+          version,
+          component,
+          platform: bin.platform,
+          architecture: bin.architecture,
+          downloadUrl,
+          checksum: bin.checksum,
+          fileSize: bin.fileSize,
+          isLatest: true,
+          releaseManifest,
+          manifestSignature,
+          signingKeyId: keyId,
+        })
+        .onConflictDoUpdate({
+          // Match the actual unique constraint
+          // (version, platform, architecture, component).
+          target: [
+            agentVersions.version,
+            agentVersions.platform,
+            agentVersions.architecture,
+            agentVersions.component,
+          ],
+          set: {
+            downloadUrl,
+            checksum: bin.checksum,
+            fileSize: bin.fileSize,
+            isLatest: true,
+            releaseManifest,
+            manifestSignature,
+            signingKeyId: keyId,
+          },
+        });
+    }
+  });
 }
 
 export async function syncBinaries(): Promise<void> {
@@ -342,8 +434,12 @@ export async function syncBinaries(): Promise<void> {
     }
   }
 
-  // Scan and register agent binaries in DB
+  // Scan and register agent binaries in DB. The watchdog ships in the same
+  // directory as its per-arch sibling (breeze-watchdog-{os}-{arch}[.exe]) and is
+  // served by the same /download/watchdog route.
   const binaries = await scanBinaryDir(agentBinaryDir);
+  const watchdogBinaries = await scanBinaryDir(agentBinaryDir, "watchdog");
+
   if (binaries.length > 0) {
     const serverUrl =
       process.env.PUBLIC_APP_URL ||
@@ -356,76 +452,40 @@ export async function syncBinaries(): Promise<void> {
     // across the loop. See docs/deploy/agent-update-trust-bootstrap.md.
     const { keyId } = await ensureActiveSigningKey();
 
-    await db.transaction(async (tx) => {
-      for (const bin of binaries) {
-        const osParam = bin.platform === "macos" ? "darwin" : bin.platform;
-        const downloadUrl = `${serverUrl}/api/v1/agents/download/${osParam}/${bin.architecture}`;
-
-        const manifestObj = {
-          version,
-          component: "agent",
-          platform: bin.platform,
-          arch: bin.architecture,
-          url: downloadUrl,
-          checksum: bin.checksum,
-          size: Number(bin.fileSize),
-        };
-        const releaseManifest = JSON.stringify(manifestObj);
-        const manifestSignature = await signManifest(releaseManifest);
-
-        // Demote existing "isLatest" entries for this platform/arch
-        await tx
-          .update(agentVersions)
-          .set({ isLatest: false })
-          .where(
-            and(
-              eq(agentVersions.platform, bin.platform),
-              eq(agentVersions.architecture, bin.architecture),
-              eq(agentVersions.isLatest, true),
-            ),
-          );
-
-        // Upsert the new version
-        await tx
-          .insert(agentVersions)
-          .values({
-            version,
-            platform: bin.platform,
-            architecture: bin.architecture,
-            downloadUrl,
-            checksum: bin.checksum,
-            fileSize: bin.fileSize,
-            isLatest: true,
-            releaseManifest,
-            manifestSignature,
-            signingKeyId: keyId,
-          })
-          .onConflictDoUpdate({
-            // Match the actual unique constraint
-            // (version, platform, architecture, component). `component`
-            // defaults to 'agent' in the schema for the local-binary path.
-            target: [
-              agentVersions.version,
-              agentVersions.platform,
-              agentVersions.architecture,
-              agentVersions.component,
-            ],
-            set: {
-              downloadUrl,
-              checksum: bin.checksum,
-              fileSize: bin.fileSize,
-              isLatest: true,
-              releaseManifest,
-              manifestSignature,
-              signingKeyId: keyId,
-            },
-          });
-      }
+    await registerLocalBinaries({
+      binaries,
+      component: "agent",
+      version,
+      keyId,
+      downloadUrlFor: (osParam, arch) =>
+        `${serverUrl}/api/v1/agents/download/${osParam}/${arch}`,
     });
 
     console.log(
       `[binarySync] Registered ${binaries.length} agent binaries (version: ${version})`,
     );
+
+    // #1802: register the watchdog component too, so self-hosters on
+    // BINARY_SOURCE=local get watchdog auto-update (heartbeat.ts watchdogUpgradeTo
+    // + the agent's handleWatchdogUpgrade). Previously only syncFromGitHub did
+    // this, leaving local watchdogs frozen at install-time version.
+    if (watchdogBinaries.length > 0) {
+      await registerLocalBinaries({
+        binaries: watchdogBinaries,
+        component: "watchdog",
+        version,
+        keyId,
+        downloadUrlFor: (osParam, arch) =>
+          `${serverUrl}/api/v1/agents/download/watchdog/${osParam}/${arch}`,
+      });
+      console.log(
+        `[binarySync] Registered ${watchdogBinaries.length} watchdog binaries (version: ${version})`,
+      );
+    } else {
+      console.warn(
+        "[binarySync] No local watchdog binaries found — watchdog auto-update unavailable on this self-hosted deploy",
+      );
+    }
   } else {
     console.log(
       "[binarySync] No local agent binaries found, falling back to GitHub sync",

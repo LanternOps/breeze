@@ -78,6 +78,7 @@ type HeartbeatPayload struct {
 	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
 	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
 	HelperVersion    string                    `json:"helperVersion,omitempty"`
+	WatchdogVersion  string                    `json:"watchdogVersion,omitempty"`
 	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
 	DesktopAccess    *DesktopAccessState       `json:"desktopAccess,omitempty"`
 	Hostname         string                    `json:"hostname,omitempty"`
@@ -312,6 +313,12 @@ type Heartbeat struct {
 	// the on-disk binary, and restarts the watchdog service). nil in production.
 	watchdogInstaller func(targetVersion string) error
 
+	// watchdogVersionReader is an optional test seam: when non-nil,
+	// installedWatchdogVersion calls this instead of the real on-disk read
+	// (readInstalledWatchdogVersion, which execs `breeze-watchdog status`). nil
+	// in production.
+	watchdogVersionReader func() string
+
 	// watchdog upgrade bookkeeping, guarded by watchdogUpgradeMu. The server
 	// keeps sending watchdogUpgradeTo until a watchdog FAILOVER heartbeat
 	// reports the new version — but a healthy (monitoring) watchdog doesn't
@@ -323,6 +330,12 @@ type Heartbeat struct {
 	watchdogInstalledVersion string
 	watchdogLastAttemptVer   string
 	watchdogLastAttemptAt    time.Time
+	// watchdogVersionDisk caches the version parsed from the on-disk watchdog
+	// binary so we exec it at most once per process run; watchdogVersionRead
+	// records that the (possibly-empty) read happened. A successful swap sets
+	// watchdogInstalledVersion, which takes priority over this cache.
+	watchdogVersionDisk string
+	watchdogVersionRead bool
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -2248,12 +2261,13 @@ func (h *Heartbeat) sendHeartbeat() {
 	h.mu.Unlock()
 
 	payload := HeartbeatPayload{
-		Status:        status,
-		AgentVersion:  h.agentVersion,
-		HelperVersion: h.helperMgr.InstalledVersion(),
-		HealthStatus:  h.healthMon.Summary(),
-		DeviceRole:    deviceRole,
-		IsHeadless:    h.isHeadless,
+		Status:          status,
+		AgentVersion:    h.agentVersion,
+		HelperVersion:   h.helperMgr.InstalledVersion(),
+		WatchdogVersion: h.installedWatchdogVersion(),
+		HealthStatus:    h.healthMon.Summary(),
+		DeviceRole:      deviceRole,
+		IsHeadless:      h.isHeadless,
 	}
 
 	// Only report virtualization once background hardware collection has

@@ -1173,6 +1173,95 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
 });
 
 // ---------------------------------------------------------------------
+// #1802 — main agent reports the installed watchdog version in its normal
+// heartbeat so devices.watchdog_version stays fresh after the watchdog
+// recovers (it was previously written only from FAILOVER heartbeats).
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () => {
+  // device.watchdogVersion is intentionally STALE here ('0.65.0') to model a
+  // watchdog that was swapped to 0.66.0 and recovered to monitoring, so the old
+  // failover-only telemetry never updated the column.
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    watchdogVersion: '0.65.0', deviceRoleSource: 'auto',
+    lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  const realishCompare = (a: string, b: string) => (a === b ? 0 : a > b ? 1 : -1);
+
+  function arrange(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('persists the watchdogVersion the main agent reports to the device row', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0', watchdogVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.watchdogVersion).toBe('0.66.0');
+  });
+
+  it('leaves the stored watchdogVersion untouched when an old agent omits it', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('watchdogVersion');
+  });
+
+  it('uses the reported version (not the stale column) to suppress redundant re-sends', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    arrange(setSpy);
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(compareAgentVersions).mockImplementation(realishCompare);
+
+    // Stale column is '0.65.0' (would trigger an upgrade); the agent now reports
+    // the current '0.66.0', which must NOT.
+    const resp = await post({ agentVersion: '0.66.0', watchdogVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { watchdogUpgradeTo?: string | null };
+    expect(body.watchdogUpgradeTo).toBeFalsy();
+  });
+
+  it('still upgrades when the reported watchdogVersion is genuinely behind latest', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    arrange(setSpy);
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(compareAgentVersions).mockImplementation(realishCompare);
+
+    const resp = await post({ agentVersion: '0.66.0', watchdogVersion: '0.65.0' });
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { watchdogUpgradeTo?: string | null };
+    expect(body.watchdogUpgradeTo).toBe('0.66.0');
+  });
+});
+
+// ---------------------------------------------------------------------
 // #1387 — orthogonal virtualization attribute persistence
 // ---------------------------------------------------------------------
 

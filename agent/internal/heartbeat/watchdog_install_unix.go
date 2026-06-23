@@ -13,6 +13,12 @@ import (
 // Linux/macOS (matches breeze-watchdog's own service install paths).
 const watchdogBinaryPathUnix = "/usr/local/bin/breeze-watchdog"
 
+// watchdogBinaryPath returns the on-disk path of the installed watchdog binary
+// so the agent can read its version for heartbeat telemetry.
+func watchdogBinaryPath() (string, error) {
+	return watchdogBinaryPathUnix, nil
+}
+
 // replaceWatchdogBinaryUnix atomically swaps the watchdog binary at dest with
 // the verified bytes at srcTemp. It copies into a sibling temp in dest's
 // directory (so the final rename is same-filesystem and atomic) then renames
