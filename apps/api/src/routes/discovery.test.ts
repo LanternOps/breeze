@@ -581,6 +581,85 @@ describe('discovery routes', () => {
     });
   });
 
+  describe('GET /discovery/assets/:id', () => {
+    const ASSET_ID = '11111111-0000-0000-0000-000000000110';
+    const buildRow = () => {
+      const now = new Date();
+      return {
+        asset: {
+          id: ASSET_ID,
+          orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          assetType: 'server',
+          approvalStatus: 'approved',
+          isOnline: true,
+          hostname: 'srv-files',
+          label: null,
+          ipAddress: '10.0.20.10',
+          macAddress: 'aa:bb:cc:00:02:10',
+          manufacturer: null,
+          model: null,
+          openPorts: [],
+          osFingerprint: null,
+          snmpData: { sysName: 'srv-files' },
+          responseTimeMs: 1,
+          linkedDeviceId: null,
+          discoveryMethods: ['ping'],
+          notes: null,
+          tags: [],
+          firstSeenAt: now,
+          lastSeenAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+        linkedDeviceHostname: null,
+        linkedDeviceDisplayName: null,
+        profileId: null,
+        profileName: null,
+        profileSubnets: null,
+      };
+    };
+    const mockSingleAsset = (rows: unknown[]) => {
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            leftJoin: () => ({
+              leftJoin: () => ({
+                where: () => ({ limit: () => Promise.resolve(rows) }),
+              }),
+            }),
+          }),
+        }),
+      });
+    };
+
+    it('returns the single asset detail (topology node click / deep link)', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.id).toBe(ASSET_ID);
+      expect(body.data.ipAddress).toBe('10.0.20.10');
+      expect(body.data.snmpData).toEqual({ sysName: 'srv-files' });
+    });
+
+    it('returns 404 when the asset does not exist in the caller org', async () => {
+      mockSingleAsset([]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('POST /discovery/scan', () => {
     it('should queue a discovery scan for a profile', async () => {
       const profileId = '00000000-0000-0000-0000-000000000099';

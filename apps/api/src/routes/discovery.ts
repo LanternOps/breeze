@@ -966,6 +966,104 @@ discoveryRoutes.get(
   }
 );
 
+// GET /assets/:id — single discovered asset detail (topology node click + the
+// `?asset=` deep link both fetch by id). Mirrors the list serialization for one
+// row, scoped by resolveOrgIdForAsset so partner/system callers resolve the org
+// from the asset when no orgId is supplied. The sibling bulk routes are POST, so
+// this GET never shadows them. (#1728)
+discoveryRoutes.get(
+  '/assets/:id',
+  requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
+  zValidator('query', z.object({ orgId: z.string().guid().optional() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const assetId = c.req.param('id')!;
+    const { orgId: requestedOrgId } = c.req.valid('query');
+
+    const orgResult = await resolveOrgIdForAsset(auth, assetId, requestedOrgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [row] = await db
+      .select({
+        asset: discoveredAssets,
+        snmpMonitoringEnabled: sql<boolean>`exists (
+          select 1
+          from ${snmpDevices}
+          where ${snmpDevices.assetId} = ${discoveredAssets.id}
+            and ${snmpDevices.orgId} = ${discoveredAssets.orgId}
+            and ${snmpDevices.isActive} = true
+        )`,
+        networkMonitoringEnabled: sql<boolean>`exists (
+          select 1
+          from ${networkMonitors}
+          where ${networkMonitors.assetId} = ${discoveredAssets.id}
+            and ${networkMonitors.orgId} = ${discoveredAssets.orgId}
+            and ${networkMonitors.isActive} = true
+        )`,
+        linkedDeviceHostname: devices.hostname,
+        linkedDeviceDisplayName: devices.displayName,
+        profileId: discoveryProfiles.id,
+        profileName: discoveryProfiles.name,
+        profileSubnets: discoveryProfiles.subnets
+      })
+      .from(discoveredAssets)
+      .leftJoin(devices, eq(discoveredAssets.linkedDeviceId, devices.id))
+      .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
+      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!row) return c.json({ error: 'Asset not found' }, 404);
+
+    // Site-scope is an app-layer-only authz axis; RLS does not defend it.
+    if (perms?.allowedSiteIds && typeof row.asset.siteId === 'string' && !canAccessSite(perms, row.asset.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const a = row.asset;
+    return c.json({
+      data: {
+        id: a.id,
+        orgId: a.orgId,
+        siteId: a.siteId,
+        assetType: a.assetType,
+        approvalStatus: a.approvalStatus,
+        isOnline: a.isOnline,
+        hostname: a.hostname,
+        label: a.label,
+        ipAddress: a.ipAddress,
+        macAddress: a.macAddress,
+        manufacturer: a.manufacturer,
+        model: a.model,
+        openPorts: a.openPorts,
+        osFingerprint: a.osFingerprint,
+        snmpData: a.snmpData,
+        responseTimeMs: a.responseTimeMs,
+        linkedDeviceId: a.linkedDeviceId,
+        linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
+        snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
+        networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
+        monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
+        discoveryMethods: a.discoveryMethods,
+        profileId: row.profileId ?? null,
+        profileName: row.profileName ?? null,
+        profileSubnets: row.profileSubnets ?? null,
+        notes: a.notes,
+        tags: a.tags,
+        firstSeenAt: a.firstSeenAt.toISOString(),
+        lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
+        createdAt: a.createdAt.toISOString(),
+        updatedAt: a.updatedAt.toISOString()
+      }
+    });
+  }
+);
+
 // POST /assets/bulk-approve — MUST be before /assets/:id routes
 discoveryRoutes.post(
   '/assets/bulk-approve',

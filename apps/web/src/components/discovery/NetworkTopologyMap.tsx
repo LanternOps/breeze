@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
+import { LayoutGrid, Pencil, Check, ArrowRight, X, Network } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 import { runAction, handleActionError } from '@/lib/runAction';
@@ -8,6 +9,7 @@ import { cn } from '@/lib/utils';
 import {
   groupNodesBySubnet,
   parseProfileSubnets,
+  UNGROUPED_LABEL,
   type SubnetGroup
 } from './topologySubnets';
 
@@ -102,6 +104,13 @@ export type SelectedElement = {
   interfaceName?: string | null;
   vlan?: number | null;
   kind?: 'manual' | 'discovered' | null;
+  // Node-only descriptors, surfaced in the inspector so a tap always reveals
+  // something about the device even when the full asset record can't be loaded.
+  label?: string | null;
+  nodeType?: TopologyNodeType | null;
+  status?: TopologyNodeStatus | null;
+  ipAddress?: string | null;
+  subnet?: string | null;
 };
 
 // Imperative edit-mode API published once the Cytoscape instance is ready. Used
@@ -122,6 +131,21 @@ const statusDotClass: Record<TopologyNodeStatus, string> = {
   online: 'bg-green-500',
   offline: 'bg-red-500',
   warning: 'bg-yellow-500'
+};
+
+const statusLabel: Record<TopologyNodeStatus, string> = {
+  online: 'Online',
+  offline: 'Offline',
+  warning: 'Warning'
+};
+
+// Edge provenance presentation: matches the canvas line colors so the inspector
+// and the legend speak the same visual language.
+const EDGE_METHOD_META: Record<TopologyEdgeMethod, { label: string; color: string }> = {
+  lldp: { label: 'LLDP', color: '#2563eb' },
+  cdp: { label: 'CDP', color: '#2563eb' },
+  fdb: { label: 'Bridge FDB', color: '#16a34a' },
+  manual: { label: 'Manual', color: '#f97316' }
 };
 
 const typeLabels: Record<TopologyNodeType, string> = {
@@ -148,23 +172,82 @@ const typeMap: Record<string, TopologyNodeType> = {
   unknown: 'unknown'
 };
 
+// Node fill palette. Harmonised around the app's slate-blue primary: each type
+// gets a distinct, evenly-saturated hue so the canvas reads as one family rather
+// than a bag of random colors. Workstation is a readable slate (a near-black
+// blob reads as a hole on the map); printer warms to amber; switch carries the
+// brand blue since switches are the most common infra node.
 const typeColors: Record<TopologyNodeType, string> = {
-  router: '#0f766e',
-  switch: '#2563eb',
-  server: '#7c3aed',
-  workstation: '#0f172a',
-  printer: '#f97316',
-  firewall: '#dc2626',
-  access_point: '#0891b2',
-  device: '#1e293b',
-  unknown: '#6b7280'
+  router: '#0d9488', // teal — gateway/edge
+  switch: '#3b56c4', // brand slate-blue
+  server: '#7c3aed', // violet
+  workstation: '#475569', // slate
+  printer: '#d97706', // amber
+  firewall: '#dc2626', // red
+  access_point: '#0891b2', // cyan
+  device: '#64748b', // muted slate
+  unknown: '#94a3b8' // light slate
 };
 
 const statusStroke: Record<TopologyNodeStatus, string> = {
   online: '#22c55e',
   offline: '#ef4444',
-  warning: '#eab308'
+  warning: '#f59e0b'
 };
+
+// Stroke-based device glyphs (lucide geometry, 24×24 viewBox) rendered as the
+// white icon centred inside each node tile. Keyed by node type.
+const ICON_PATHS: Record<TopologyNodeType, string> = {
+  router:
+    '<rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6.01 18H6"/><path d="M10.01 18H10"/><path d="M15 10v4"/><path d="M17.84 7.17a4 4 0 0 0-5.66 0"/><path d="M20.66 4.34a8 8 0 0 0-11.31 0"/>',
+  switch:
+    '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>',
+  server:
+    '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+  workstation:
+    '<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
+  printer:
+    '<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/>',
+  firewall:
+    '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  access_point:
+    '<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.86a10 10 0 0 1 14 0"/><path d="M8.5 16.43a5 5 0 0 1 7 0"/>',
+  device:
+    '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  unknown:
+    '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>'
+};
+
+// A device glyph as a data-URI SVG, stroked in `color` (white on the tile fill).
+function nodeIconUri(type: TopologyNodeType, color = '#ffffff'): string {
+  const body = ICON_PATHS[type] ?? ICON_PATHS.unknown;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
+    `stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+// A small status pip (filled disc + white ring) badged on the node's lower-right.
+function statusDotUri(status: TopologyNodeStatus): string {
+  const fill = statusStroke[status] ?? statusStroke.online;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12">` +
+    `<circle cx="6" cy="6" r="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+// The device tile reused outside the canvas (inspector / legend): the glyph on a
+// type-coloured square, mirroring how the node renders on the map.
+function NodeBadge({ type, size = 30 }: { type: TopologyNodeType; size?: number }) {
+  return (
+    <span
+      className="flex shrink-0 items-center justify-center rounded-md shadow-sm"
+      style={{ width: size, height: size, backgroundColor: typeColors[type] ?? typeColors.unknown }}
+    >
+      <img src={nodeIconUri(type)} alt="" width={Math.round(size * 0.6)} height={Math.round(size * 0.6)} />
+    </span>
+  );
+}
 
 // Infrastructure nodes anchor a subnet and get visual emphasis (larger / hub shape).
 const INFRA_TYPES = new Set<TopologyNodeType>(['router', 'switch', 'firewall', 'access_point']);
@@ -224,52 +307,98 @@ function mapLink(link: ApiTopologyLink, idx: number): TopologyLink {
  *   manual (asserted) → dashed orange(#f97316)  (ships now, used in Phase 4)
  */
 function buildStylesheet(): cytoscape.StylesheetStyle[] {
+  const nodeType = (ele: cytoscape.NodeSingular) =>
+    (ele.data('type') as TopologyNodeType) ?? 'unknown';
+  const nodeStatus = (ele: cytoscape.NodeSingular) =>
+    (ele.data('status') as TopologyNodeStatus) ?? 'online';
+
   return [
     {
+      // Device tile: type-colour fill, white glyph centred, status pip badged on
+      // the lower-right, hairline white border so it reads as a sticker on the
+      // canvas. Width/height/border animate for hover & selection feedback.
       selector: 'node',
       style: {
+        shape: 'round-rectangle',
         'background-color': (ele: cytoscape.NodeSingular) =>
-          typeColors[(ele.data('type') as TopologyNodeType) ?? 'unknown'] ?? typeColors.unknown,
-        'border-color': (ele: cytoscape.NodeSingular) =>
-          statusStroke[(ele.data('status') as TopologyNodeStatus) ?? 'online'] ?? statusStroke.online,
-        'border-width': 3,
+          typeColors[nodeType(ele)] ?? typeColors.unknown,
+        'background-image': (ele: cytoscape.NodeSingular) => [
+          nodeIconUri(nodeType(ele)),
+          statusDotUri(nodeStatus(ele))
+        ],
+        'background-width': ['62%', '38%'],
+        'background-height': ['62%', '38%'],
+        'background-position-x': ['50%', '92%'],
+        'background-position-y': ['50%', '92%'],
+        'background-clip': ['none', 'none'],
+        'background-image-containment': 'over',
+        'bounds-expansion': 6,
+        'border-color': '#ffffff',
+        'border-width': 2,
+        'border-opacity': 0.95,
         label: 'data(label)',
-        color: '#334155',
+        color: '#1e293b',
         'font-size': 11,
+        'font-weight': 600,
         'text-valign': 'bottom',
-        'text-margin-y': 4,
-        width: 30,
-        height: 30
-      } as cytoscape.Css.Node
+        'text-margin-y': 6,
+        'text-background-color': '#f8fafc',
+        'text-background-opacity': 0.82,
+        'text-background-padding': 3,
+        'text-background-shape': 'round-rectangle',
+        'min-zoomed-font-size': 7,
+        width: 34,
+        height: 34,
+        'transition-property': 'width height border-width border-color opacity',
+        'transition-duration': '140ms',
+        'transition-timing-function': 'ease-out'
+      } as unknown as cytoscape.Css.Node
     },
     {
+      // Infrastructure (router/switch/firewall/AP): larger, anchors the subnet.
       selector: 'node[?infra]',
       style: {
-        width: 48,
-        height: 48,
-        shape: 'round-rectangle',
-        'border-width': 4
+        width: 50,
+        height: 50,
+        'border-width': 2.5
       } as cytoscape.Css.Node
     },
     {
+      // Subnet compound group: soft tinted card with a top-left label chip.
       selector: '$node > node',
       style: {
-        'background-opacity': 0.06,
+        shape: 'round-rectangle',
+        'background-color': '#64748b',
+        'background-opacity': 0.05,
+        'background-image': 'none',
         'border-width': 1,
         'border-color': '#cbd5e1',
+        'border-opacity': 0.9,
         label: 'data(label)',
         'text-valign': 'top',
-        'font-size': 12,
-        color: '#475569'
-      } as cytoscape.Css.Node
+        'text-halign': 'center',
+        'text-margin-y': -6,
+        'font-size': 11,
+        'font-weight': 600,
+        color: '#64748b',
+        'text-background-color': '#ffffff',
+        'text-background-opacity': 0.9,
+        'text-background-padding': 4,
+        'text-background-shape': 'round-rectangle',
+        padding: 22
+      } as unknown as cytoscape.Css.Node
     },
     {
       selector: 'edge',
       style: {
-        width: 2,
+        width: 2.5,
         'line-color': '#94a3b8',
-        'curve-style': 'bezier'
-      } as cytoscape.Css.Edge
+        'curve-style': 'bezier',
+        'line-cap': 'round',
+        'transition-property': 'width line-color opacity',
+        'transition-duration': '140ms',
+        'transition-timing-function': 'ease-out'
+      } as unknown as cytoscape.Css.Edge
     },
     {
       selector: 'edge[method = "lldp"], edge[method = "cdp"]',
@@ -282,6 +411,53 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
     {
       selector: 'edge[method = "manual"]',
       style: { 'line-color': '#f97316', 'line-style': 'dashed' } as cytoscape.Css.Edge
+    },
+    // ── Interaction states ────────────────────────────────────────────────
+    {
+      // Hover: lift the tile and thicken its ring; cursor handled in JS.
+      selector: 'node.tp-hover',
+      style: {
+        'border-color': '#cbd5e1',
+        'border-width': 4,
+        'border-opacity': 1,
+        'z-index': 20
+      } as cytoscape.Css.Node
+    },
+    {
+      // Selection: brand-blue ring + halo, raised above neighbours.
+      selector: 'node.tp-selected',
+      style: {
+        'border-color': '#3b56c4',
+        'border-width': 4,
+        'border-opacity': 1,
+        'overlay-color': '#3b56c4',
+        'overlay-opacity': 0.14,
+        'overlay-padding': 7,
+        'z-index': 30
+      } as cytoscape.Css.Node
+    },
+    {
+      // Connect-gesture source (edit mode): dashed amber ring while awaiting the
+      // second tap.
+      selector: 'node.tp-connect-source',
+      style: {
+        'border-color': '#f59e0b',
+        'border-width': 4,
+        'border-opacity': 1,
+        'overlay-color': '#f59e0b',
+        'overlay-opacity': 0.16,
+        'overlay-padding': 7,
+        'z-index': 30
+      } as cytoscape.Css.Node
+    },
+    {
+      // Dimmed: everything not adjacent to the selection recedes.
+      selector: '.tp-dim',
+      style: { opacity: 0.25 } as cytoscape.Css.Node
+    },
+    {
+      selector: 'edge.tp-hover, edge.tp-selected',
+      style: { width: 4.5, 'z-index': 25 } as cytoscape.Css.Edge
     }
   ];
 }
@@ -372,6 +548,10 @@ export default function NetworkTopologyMap({
   const subnetByNodeId = useMemo(() => {
     const map = new Map<string, string>();
     for (const group of subnetGroups) {
+      // The "Ungrouped" bucket is not a real subnet — don't box those nodes in a
+      // compound parent (it produced a large overlapping container) and don't
+      // claim a subnet for them in the inspector.
+      if (group.label === UNGROUPED_LABEL) continue;
       for (const node of group.nodes) map.set(node.id, group.label);
     }
     return map;
@@ -386,6 +566,12 @@ export default function NetworkTopologyMap({
     for (const n of nodes) if (n.siteId) siteIds.add(n.siteId);
     return siteIds.size === 1 ? [...siteIds][0] : undefined;
   }, [nodes]);
+
+  // Device-type legend only lists the types actually present on the map.
+  const presentTypes = useMemo(
+    () => (Object.keys(typeColors) as TopologyNodeType[]).filter((t) => nodes.some((n) => n.type === t)),
+    [nodes]
+  );
 
   const addManualNode = useCallback(
     async (role: ManualRole) => {
@@ -579,6 +765,7 @@ export default function NetworkTopologyMap({
     const elements: cytoscape.ElementDefinition[] = [];
     for (const group of subnetGroups) {
       if (group.nodes.length === 0) continue;
+      if (group.label === UNGROUPED_LABEL) continue; // no compound box for the catch-all bucket
       const parentId = `group:${group.label}`;
       parentIds.add(parentId);
       elements.push({ data: { id: parentId, label: group.label } });
@@ -592,6 +779,8 @@ export default function NetworkTopologyMap({
         label: node.label,
         type: node.type,
         status: node.status,
+        ipAddress: node.ipAddress ?? null,
+        subnet: subnet ?? null,
         infra: INFRA_TYPES.has(node.type) ? 1 : 0,
         // Preserve provenance so a server-reloaded manual node is still
         // connect/delete-able (endpointFor + the tap handler key off data.kind).
@@ -647,9 +836,28 @@ export default function NetworkTopologyMap({
       void persistDrag(id, pos.x, pos.y, nodeType);
     });
 
+    // Build the inspector descriptor for a node tap (label/type/status/ip), so a
+    // tap always surfaces the device's basics even before/without the full asset
+    // record.
+    const nodeSelection = (node: cytoscape.NodeSingular): SelectedElement => ({
+      id: node.id(),
+      group: 'nodes',
+      kind: node.data('kind') === 'manual' ? 'manual' : 'discovered',
+      label: (node.data('label') as string | null) ?? null,
+      nodeType: (node.data('type') as TopologyNodeType | null) ?? null,
+      status: (node.data('status') as TopologyNodeStatus | null) ?? null,
+      ipAddress: (node.data('ipAddress') as string | null) ?? null,
+      subnet: (node.data('subnet') as string | null) ?? null
+    });
+
     cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
       const node = evt.target as cytoscape.NodeSingular;
       const id = node.id();
+      // Subnet-group compound parents are not selectable devices.
+      if (id.startsWith('group:')) {
+        setSelected(null);
+        return;
+      }
       // In edit mode, taps drive a two-tap connect gesture: first tap selects the
       // source, second tap on a different node draws the manual edge. The first
       // tap also opens the inspector so a manual node can be deleted.
@@ -657,21 +865,18 @@ export default function NetworkTopologyMap({
         const source = connectSourceRef.current;
         if (!source) {
           connectSourceRef.current = id;
-          setSelected({
-            id,
-            group: 'nodes',
-            kind: node.data('kind') === 'manual' ? 'manual' : 'discovered'
-          });
+          setSelected(nodeSelection(node));
           return;
         }
         connectSourceRef.current = null;
         if (source !== id) void connectNodesRef.current?.(source, id);
         return;
       }
+      // Always reveal the node in the inspector (immediate, never fails).
+      setSelected(nodeSelection(node));
       // Only real discovered assets have an /discovery/assets/:id detail record.
-      // Synthetic subnet-group parents (id 'group:...') and manual placeholder
-      // nodes do not — firing the detail fetch for them 404s (#1728).
-      if (id.startsWith('group:') || node.data('kind') === 'manual') return;
+      // Manual placeholder nodes carry no asset record, so don't fetch one.
+      if (node.data('kind') === 'manual') return;
       const cb = onNodeClickRef.current;
       if (cb) cb(id);
     });
@@ -690,11 +895,51 @@ export default function NetworkTopologyMap({
       });
     });
 
+    // Tapping empty canvas clears the selection.
+    cy.on('tap', (evt: cytoscape.EventObject) => {
+      if (evt.target === cy) setSelected(null);
+    });
+
+    // Hover affordance: lift the element and switch the cursor to a pointer.
+    const container = cy.container();
+    cy.on('mouseover', 'node, edge', (evt: cytoscape.EventObject) => {
+      const ele = evt.target as cytoscape.SingularElementArgument;
+      if (ele.isNode() && ele.id().startsWith('group:')) return;
+      ele.addClass('tp-hover');
+      if (container) container.style.cursor = 'pointer';
+    });
+    cy.on('mouseout', 'node, edge', (evt: cytoscape.EventObject) => {
+      (evt.target as cytoscape.SingularElementArgument).removeClass('tp-hover');
+      if (container) container.style.cursor = 'default';
+    });
+
     return () => {
       cy.destroy();
       cyRef.current = null;
     };
   }, [nodes, links, layout, subnetGroups, subnetByNodeId, persistDrag]);
+
+  // Selection highlight: ring the selected element and fade everything outside
+  // its neighbourhood so the focus reads instantly. In edit mode a selected node
+  // is the pending connect source (amber) rather than a plain selection.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.batch(() => {
+      cy.elements().removeClass('tp-selected tp-dim tp-connect-source');
+      if (!selected) return;
+      const el = cy.getElementById(selected.id);
+      if (el.empty()) return;
+      if (selected.group === 'nodes') {
+        cy.elements().not(el.closedNeighborhood()).addClass('tp-dim');
+        el.addClass(editMode ? 'tp-connect-source' : 'tp-selected');
+      } else {
+        const focus = el.union(el.connectedNodes());
+        cy.elements().not(focus).addClass('tp-dim');
+        el.addClass('tp-selected');
+      }
+    });
+  }, [selected, editMode, nodes, links]);
 
   // Auto-arrange: lay out ONLY never-placed nodes; pinned/positioned nodes are
   // locked first so their saved positions are preserved.
@@ -739,59 +984,79 @@ export default function NetworkTopologyMap({
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Network Topology</h2>
           <p className="text-sm text-muted-foreground">
             Discovered assets grouped by subnet. Scroll to zoom, drag to pan or reposition nodes.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-          <span className="flex items-center gap-2">
-            <span className={cn('h-2.5 w-2.5 rounded-full', statusDotClass.online)} />
-            Online
-          </span>
-          <span className="flex items-center gap-2">
-            <span className={cn('h-2.5 w-2.5 rounded-full', statusDotClass.warning)} />
-            Warning
-          </span>
-          <span className="flex items-center gap-2">
-            <span className={cn('h-2.5 w-2.5 rounded-full', statusDotClass.offline)} />
-            Offline
-          </span>
-          {links.length > 0 && (
-            <span data-testid="topology-provenance-legend" className="flex items-center gap-1.5">
-              <span className="inline-block h-0.5 w-4" style={{ backgroundColor: '#2563eb' }} />
-              LLDP/CDP (measured)
-            </span>
-          )}
+        <div className="flex items-center gap-2">
           <button
             type="button"
             data-testid="topology-auto-arrange"
             onClick={autoArrange}
-            className="rounded-md border bg-muted/40 px-2.5 py-1 font-medium text-foreground hover:bg-muted"
+            className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
           >
+            <LayoutGrid className="h-4 w-4 text-muted-foreground" aria-hidden />
             Auto-arrange
           </button>
           {canEdit && (
             <button
               type="button"
               data-testid="topology-edit-toggle"
+              aria-pressed={editMode}
               onClick={() => setEditMode((v) => !v)}
-              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium shadow-sm transition active:scale-[0.98]',
+                editMode
+                  ? 'bg-foreground text-background hover:opacity-90'
+                  : 'bg-primary text-primary-foreground hover:opacity-90'
+              )}
             >
+              {editMode ? <Check className="h-4 w-4" aria-hidden /> : <Pencil className="h-4 w-4" aria-hidden />}
               {editMode ? 'Done editing' : 'Edit map'}
             </button>
           )}
         </div>
       </div>
 
+      {/* Compact legend bar: device status + measured-vs-manual link provenance. */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+        {(['online', 'warning', 'offline'] as TopologyNodeStatus[]).map((s) => (
+          <span key={s} className="flex items-center gap-1.5">
+            <span className={cn('h-2 w-2 rounded-full ring-2 ring-background', statusDotClass[s])} />
+            {statusLabel[s]}
+          </span>
+        ))}
+        {links.length > 0 && (
+          <span data-testid="topology-provenance-legend" className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <span className="hidden text-muted-foreground/50 sm:inline">·</span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#2563eb' }} />
+              LLDP/CDP
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#16a34a' }} />
+              Bridge FDB
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span
+                className="inline-block h-[3px] w-5 rounded-full"
+                style={{ backgroundImage: 'repeating-linear-gradient(to right, #f97316 0 4px, transparent 4px 7px)' }}
+              />
+              Manual
+            </span>
+          </span>
+        )}
+      </div>
+
       {editMode && canEdit && (
         <div
-          className="mt-4 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2"
+          className="animate-in mt-4 flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/[0.04] px-3 py-2"
           data-testid="topology-edit-palette"
         >
-          <span className="text-xs font-medium text-muted-foreground">Add node:</span>
+          <span className="text-xs font-semibold text-muted-foreground">Add node:</span>
           <div className="flex flex-wrap gap-1" role="group" aria-label="Add node">
             {MANUAL_ROLES.map((r) => (
               <button
@@ -816,37 +1081,132 @@ export default function NetworkTopologyMap({
 
       {selected && (
         <div
-          className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/40 px-3 py-2"
+          className="animate-in mt-4 flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5 shadow-sm"
           data-testid="topology-inspector"
         >
-          {selected.group === 'edges' && selected.method === 'manual' && editMode && (
-            <button
-              type="button"
-              data-testid="topology-delete-edge"
-              onClick={() => void deleteManualEdge(selected.id)}
-              className="rounded border border-destructive/50 px-2 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/10"
-            >
-              Delete connection
-            </button>
+          {selected.group === 'nodes' && (
+            <>
+              <NodeBadge type={selected.nodeType ?? 'unknown'} size={34} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="truncate text-sm font-semibold text-foreground">
+                    {selected.label || 'Device'}
+                  </span>
+                  {selected.status && (
+                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                      <span className={cn('h-1.5 w-1.5 rounded-full', statusDotClass[selected.status])} />
+                      {statusLabel[selected.status]}
+                    </span>
+                  )}
+                  {selected.kind === 'manual' && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Manual
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                  <span>{typeLabels[selected.nodeType ?? 'unknown']}</span>
+                  {selected.ipAddress && (
+                    <>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span className="font-mono">{selected.ipAddress}</span>
+                    </>
+                  )}
+                  {selected.subnet && (
+                    <>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span>{selected.subnet}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              {selected.kind !== 'manual' && onNodeClick && (
+                <button
+                  type="button"
+                  data-testid="topology-inspector-view-details"
+                  onClick={() => onNodeClick(selected.id)}
+                  className="inline-flex items-center gap-1 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-muted active:scale-[0.98]"
+                >
+                  View details
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                </button>
+              )}
+              {selected.kind === 'manual' && editMode && (
+                <button
+                  type="button"
+                  data-testid="topology-delete-node"
+                  onClick={() => void deleteManualNode(selected.id)}
+                  className="rounded-md border border-destructive/50 px-2.5 py-1.5 text-xs font-medium text-destructive transition hover:bg-destructive/10"
+                >
+                  Delete node
+                </button>
+              )}
+            </>
           )}
-          {selected.group === 'edges' && selected.method !== 'manual' && (
-            <p data-testid="topology-edge-provenance" className="text-xs text-muted-foreground">
-              {(selected.method ?? 'unknown').toUpperCase()}
-              {selected.confidence ? ` · ${selected.confidence}` : ''}
-              {selected.interfaceName ? ` · ${selected.interfaceName}` : ''}
-              {selected.vlan != null ? ` · VLAN ${selected.vlan}` : ''}
-            </p>
+
+          {selected.group === 'edges' && (
+            <>
+              <span
+                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md text-white shadow-sm"
+                style={{ backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }}
+              >
+                <Network className="h-4 w-4" aria-hidden />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-foreground">Connection</span>
+                  <span
+                    className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+                    style={{ backgroundColor: EDGE_METHOD_META[selected.method ?? 'manual']?.color ?? '#64748b' }}
+                  >
+                    {EDGE_METHOD_META[selected.method ?? 'manual']?.label ?? 'Unknown'}
+                  </span>
+                  {selected.method === 'manual' ? (
+                    <span className="text-xs text-muted-foreground">Hand-mapped</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Measured adjacency</span>
+                  )}
+                </div>
+                <div
+                  data-testid="topology-edge-provenance"
+                  className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground"
+                >
+                  {selected.confidence && <span className="capitalize">{selected.confidence} confidence</span>}
+                  {selected.interfaceName && (
+                    <>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span className="font-mono">{selected.interfaceName}</span>
+                    </>
+                  )}
+                  {selected.vlan != null && (
+                    <>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span>VLAN {selected.vlan}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              {selected.method === 'manual' && editMode && (
+                <button
+                  type="button"
+                  data-testid="topology-delete-edge"
+                  onClick={() => void deleteManualEdge(selected.id)}
+                  className="rounded-md border border-destructive/50 px-2.5 py-1.5 text-xs font-medium text-destructive transition hover:bg-destructive/10"
+                >
+                  Delete connection
+                </button>
+              )}
+            </>
           )}
-          {selected.group === 'nodes' && selected.kind === 'manual' && editMode && (
-            <button
-              type="button"
-              data-testid="topology-delete-node"
-              onClick={() => void deleteManualNode(selected.id)}
-              className="rounded border border-destructive/50 px-2 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/10"
-            >
-              Delete node
-            </button>
-          )}
+
+          <button
+            type="button"
+            aria-label="Clear selection"
+            onClick={() => setSelected(null)}
+            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground sm:ml-0"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </button>
         </div>
       )}
 
@@ -856,62 +1216,78 @@ export default function NetworkTopologyMap({
         </div>
       )}
 
-      {/* Honesty note: we only draw connections we actually observed. */}
-      <div
-        data-testid="topology-adjacency-note"
-        className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
-      >
-        {links.length === 0 ? (
-          <>
-            Connection lines are shown only when real adjacency is measured (LLDP/CDP/SNMP). None has
-            been collected yet, so assets are grouped by subnet without inferred links.
-          </>
-        ) : (
-          <>Connection lines reflect measured adjacency.</>
-        )}
-      </div>
+      {/* Honesty note: we only draw connections we actually observed. Shown only
+          when nothing has been measured yet — once links exist the legend carries
+          the provenance and the note is just noise. */}
+      {links.length === 0 && nodes.length > 0 && (
+        <div
+          data-testid="topology-adjacency-note"
+          className="mt-4 rounded-md border border-info/30 bg-info/[0.06] px-3 py-2 text-xs text-info"
+        >
+          Connection lines appear only where real adjacency is measured (LLDP/CDP/SNMP). None has
+          been collected yet, so assets are grouped by subnet without inferred links.
+        </div>
+      )}
 
       <div
         ref={mountRef}
         data-testid="topology-cytoscape"
-        className="relative mt-4 w-full overflow-hidden rounded-md border bg-muted/30"
+        className="relative mt-4 w-full overflow-hidden rounded-md border bg-muted/30 [background-image:radial-gradient(hsl(var(--border))_1px,transparent_0)] [background-size:22px_22px]"
         // Cytoscape requires a real pixel height on its container. An inline style
         // is used deliberately: the `u-h-px-*` utility classes are runtime-built
         // (`u-h-px-${n}`) and get purged from the production CSS, so a class-based
         // height collapses the canvas to 0 in prod (issue #1728).
         style={{ height: `${height}px` }}
-      />
+      >
+        {nodes.length === 0 && !loading && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-xl border bg-card text-muted-foreground/70 shadow-sm">
+              <Network className="h-6 w-6" aria-hidden />
+            </span>
+            <p className="text-sm font-medium text-foreground">No assets discovered yet</p>
+            <p className="max-w-xs text-xs text-muted-foreground">
+              Run a network discovery scan to populate the topology map.
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Subnet legend with host counts. */}
       {subnetGroups.length > 0 && (
         <div className="mt-4" data-testid="topology-subnet-legend">
-          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Subnets</p>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground/80">
+            Subnets
+          </p>
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
             {subnetGroups.map((group: SubnetGroup<TopologyNode>) => (
               <span
                 key={group.label}
-                className="flex items-center gap-1.5 rounded-full border bg-muted/40 px-2 py-0.5 text-muted-foreground"
+                className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 shadow-sm"
               >
                 <span className="font-medium text-foreground">{group.label}</span>
-                <span className="text-muted-foreground/70">{group.nodes.length}</span>
+                <span className="rounded-full bg-muted px-1.5 text-[11px] font-medium text-muted-foreground">
+                  {group.nodes.length}
+                </span>
               </span>
             ))}
           </div>
         </div>
       )}
 
-      {/* Device-type legend. */}
-      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-        {Object.entries(typeColors).map(([type, color]) => (
-          <span key={type} className="flex items-center gap-1.5">
-            <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: color }} />
-            {typeLabels[type as TopologyNodeType] ?? type}
-          </span>
-        ))}
-        {onNodeClick && (
-          <span className="ml-auto text-muted-foreground/60">Click a node to view details</span>
-        )}
-      </div>
+      {/* Device-type legend — only the types actually on the map, with their glyphs. */}
+      {presentTypes.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t pt-4 text-xs text-muted-foreground">
+          {presentTypes.map((type) => (
+            <span key={type} className="flex items-center gap-1.5">
+              <NodeBadge type={type} size={18} />
+              {typeLabels[type] ?? type}
+            </span>
+          ))}
+          {onNodeClick && (
+            <span className="ml-auto text-muted-foreground/60">Click a node for details</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

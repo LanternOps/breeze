@@ -59,9 +59,21 @@ const { cyInstance, cytoscapeFactory, cyHandlers } = vi.hoisted(() => {
     getElementById: vi.fn((_id: string) => ({
       empty: () => true as boolean,
       data: (_key: string) => undefined as unknown,
-      remove: vi.fn()
+      remove: vi.fn(),
+      addClass: vi.fn(),
+      closedNeighborhood: () => ({}),
+      connectedNodes: () => ({}),
+      union: () => ({})
     })),
-    elements: vi.fn(() => ({ remove: vi.fn(), nonempty: () => true })),
+    // Selection-highlight + hover effects use these; return chainable no-ops.
+    container: vi.fn(() => null),
+    batch: vi.fn((fn: () => void) => fn()),
+    elements: vi.fn(() => ({
+      remove: vi.fn(),
+      nonempty: () => true,
+      removeClass: vi.fn(),
+      not: vi.fn(() => ({ addClass: vi.fn() }))
+    })),
     fit: vi.fn(),
     resize: vi.fn()
   };
@@ -255,7 +267,10 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     cyInstance.getElementById.mockImplementation((_id: string) => ({
       empty: () => false,
       data: (_key: string) => undefined,
-      remove: removeSpy
+      remove: removeSpy,
+      addClass: vi.fn(),
+      connectedNodes: () => ({}),
+      union: () => ({})
     }));
 
     let api: TopologyEditApi | undefined;
@@ -307,8 +322,13 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       vlan: 10
     });
 
+    // The method is shown as a labelled chip in the inspector; the provenance row
+    // carries confidence / interface / VLAN.
+    const inspector = await screen.findByTestId('topology-inspector');
+    expect(inspector).toHaveTextContent(/bridge fdb/i);
     const provenance = await screen.findByTestId('topology-edge-provenance');
-    expect(provenance).toHaveTextContent('FDB');
+    expect(provenance).toHaveTextContent('Gi0/1');
+    expect(provenance).toHaveTextContent(/VLAN 10/i);
     expect(screen.queryByTestId('topology-delete-edge')).toBeNull();
   });
 
@@ -320,7 +340,9 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       empty: () => false,
       data: (_key: string) => undefined,
       remove: removeSpy,
-      connectedEdges: () => ({ remove: connectedRemoveSpy })
+      connectedEdges: () => ({ remove: connectedRemoveSpy }),
+      addClass: vi.fn(),
+      closedNeighborhood: () => ({})
     }));
 
     let api: TopologyEditApi | undefined;

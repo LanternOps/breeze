@@ -3,7 +3,7 @@ import { Plus, X, Building2 } from 'lucide-react';
 import DiscoveryProfileList, { type DiscoveryProfile, type DiscoveryProfileStatus } from './DiscoveryProfileList';
 import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings, type ProfileAlertSettings, defaultAlertSettings } from './DiscoveryProfileForm';
 import DiscoveryJobList from './DiscoveryJobList';
-import DiscoveredAssetList from './DiscoveredAssetList';
+import DiscoveredAssetList, { mapAsset, toDetail } from './DiscoveredAssetList';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import NetworkTopologyMap from './NetworkTopologyMap';
 import NetworkChangesPanel from './NetworkChangesPanel';
@@ -311,8 +311,11 @@ export default function DiscoveryPage() {
           return;
         }
         const data = await res.json();
-        const asset = data.data ?? data.asset ?? data;
-        if (!cancelled) setTopologyAsset(asset as AssetDetail);
+        const raw = data.data ?? data.asset ?? data;
+        // Run the same API→view mapping the asset list uses (ipAddress→ip,
+        // openPorts normalization, etc.) so the modal renders identically whether
+        // it was opened from the list or a topology node click (#1728).
+        if (!cancelled) setTopologyAsset(toDetail(mapAsset(raw)));
       })
       .catch(() => {
         if (!cancelled) setTopologyAsset(null);
@@ -689,6 +692,7 @@ export default function DiscoveryPage() {
             <AssetDetailModal
               open={!!topologyAssetId}
               asset={topologyAsset}
+              loading={topologyAssetLoading}
               onClose={() => setTopologyAssetId(null)}
               onDeleted={() => setTopologyAssetId(null)}
               onUpdated={() => {

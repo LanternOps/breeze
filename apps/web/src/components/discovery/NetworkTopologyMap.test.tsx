@@ -45,7 +45,22 @@ const { cyDragHandlers, cyInstance, cytoscapeFactory } = vi.hoisted(() => {
     layout: vi.fn(() => ({ run: vi.fn() })),
     destroy: vi.fn(),
     add: vi.fn(),
-    elements: vi.fn(() => ({ remove: vi.fn(), nonempty: () => true })),
+    // Selection-highlight + hover effects use these; return chainable no-ops.
+    container: vi.fn(() => null),
+    batch: vi.fn((fn: () => void) => fn()),
+    getElementById: vi.fn(() => ({
+      empty: () => true,
+      addClass: vi.fn(),
+      closedNeighborhood: () => ({}),
+      connectedNodes: () => ({}),
+      union: () => ({})
+    })),
+    elements: vi.fn(() => ({
+      remove: vi.fn(),
+      nonempty: () => true,
+      removeClass: vi.fn(),
+      not: vi.fn(() => ({ addClass: vi.fn() }))
+    })),
     fit: vi.fn(),
     resize: vi.fn()
   };
@@ -142,7 +157,7 @@ describe('NetworkTopologyMap', () => {
 
     // The honesty note explains why there are no links.
     expect(screen.getByTestId('topology-adjacency-note').textContent).toMatch(
-      /shown only when real adjacency is measured/i
+      /appear only where real adjacency is measured/i
     );
   });
 
@@ -180,7 +195,9 @@ describe('NetworkTopologyMap', () => {
     render(<NetworkTopologyMap />);
 
     const legend = await screen.findByTestId('topology-subnet-legend');
-    const chips = legend.querySelectorAll('span > span.font-medium');
+    // The label span carries font-medium text-foreground; the count badge is
+    // muted, so this selector targets the subnet labels only.
+    const chips = legend.querySelectorAll('span.font-medium.text-foreground');
     const labels = Array.from(chips).map((c) => c.textContent);
     expect(labels).toEqual(['172.16.0.0/16']);
   });
@@ -201,9 +218,10 @@ describe('NetworkTopologyMap', () => {
     await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
     const edgeEls = cytoscapeElements().filter((el) => el.data.source !== undefined);
     expect(edgeEls).toHaveLength(1);
-    expect(screen.getByTestId('topology-adjacency-note').textContent).toMatch(
-      /reflect measured adjacency/i
-    );
+    // Once real adjacency exists the provenance legend carries the meaning and
+    // the empty-state honesty note is dropped.
+    expect(screen.queryByTestId('topology-adjacency-note')).toBeNull();
+    expect(screen.getByTestId('topology-provenance-legend').textContent).toMatch(/lldp\/cdp/i);
   });
 
   it('initializes a preset layout and carries provenance onto edge elements', async () => {
