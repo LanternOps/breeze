@@ -291,6 +291,9 @@ describe('NetworkTopologyMap', () => {
     expect(init.method).toBe('PATCH');
     const body = JSON.parse(init.body as string);
     expect(body.positions[0]).toMatchObject({ nodeType: 'discovered_asset', nodeId: 'a', x: 88, y: 99 });
+    // The dragged node's own siteId (from the GET payload) scopes the upsert,
+    // since layout rows are unique per (site_id, node_type, node_id) (#1728).
+    expect(body.siteId).toBe('site-1');
   });
 
   it('runs Auto-arrange over never-placed nodes only (locks placed nodes)', async () => {

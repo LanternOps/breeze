@@ -5,7 +5,7 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
-import { networkTopology, topologyLayout } from '../db/schema';
+import { networkTopology, topologyLayout, discoveredAssets } from '../db/schema';
 
 vi.mock('../services', () => ({}));
 
@@ -286,6 +286,48 @@ describe('discovery routes', () => {
         y: 240.25,
         pinned: true,
       });
+    });
+
+    it('includes each node\'s siteId so the client can scope the layout PATCH (#1728)', async () => {
+      const assetRow = {
+        id: 'asset-a',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        assetType: 'switch',
+        label: 'Core Switch',
+        hostname: 'sw-core',
+        ipAddress: '10.0.0.1',
+        macAddress: 'aa:bb:cc:dd:ee:ff',
+        isOnline: true,
+        approvalStatus: 'approved',
+      };
+
+      vi.mocked(db.select).mockImplementation(((...args: any[]) => {
+        // db.select({ subnets: ... }) for the profile CIDRs — return empty.
+        if (args.length > 0) {
+          return {
+            from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+          } as any;
+        }
+        // db.select().from(table).where(...) — branch on the table identity.
+        return {
+          from: vi.fn((table: any) => ({
+            where: vi.fn(() =>
+              Promise.resolve(table === discoveredAssets ? [assetRow] : [])
+            ),
+          })),
+        } as any;
+      }) as any);
+
+      const res = await app.request('/discovery/topology', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.nodes).toHaveLength(1);
+      expect(body.nodes[0].siteId).toBe('site-1');
     });
   });
 

@@ -1300,7 +1300,10 @@ discoveryRoutes.get(
       status: a.isOnline ? 'online' : 'offline',
       approvalStatus: a.approvalStatus,
       ipAddress: a.ipAddress,
-      macAddress: a.macAddress
+      macAddress: a.macAddress,
+      // Each node carries its own siteId so the client can scope the
+      // layout PATCH per (site_id, node_type, node_id) (#1728).
+      siteId: a.siteId
     }));
 
     return c.json({
