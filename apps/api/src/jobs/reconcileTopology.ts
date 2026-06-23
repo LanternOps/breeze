@@ -5,7 +5,17 @@ import type { DiscoveredHostResult, DeviceAdjacency, FdbEntry } from './discover
 
 const { db } = dbModule;
 
-export const MEASURED_EDGE_AGEOUT_MS = 3 * 60 * 1000; // 3 scans × 60s scheduler (configurable later)
+// Secondary safety floor only. Age-out is primarily *source-scoped*: a measured
+// (lldp/cdp) edge is only ever deleted when the device it was sourced from was
+// actually walked this scan and did NOT re-report that neighbor. This floor adds
+// a generous grace window so a single transient miss on a walked source doesn't
+// immediately drop an edge that was verified moments ago; it is NOT the trigger.
+// Real scan cadence is intervalMinutes ?? 60, so a short fixed window must never
+// be the sole gate (that churned the backbone every scan).
+export const MEASURED_EDGE_AGEOUT_FLOOR_MS = 5 * 60 * 1000;
+
+/** @deprecated retained for test back-compat; use MEASURED_EDGE_AGEOUT_FLOOR_MS. */
+export const MEASURED_EDGE_AGEOUT_MS = MEASURED_EDGE_AGEOUT_FLOOR_MS;
 
 // Ports carrying more than this many MACs are treated as latent (undetected)
 // uplinks and excluded from FDB host attachment. Logged, not silent (spec §8.3).
@@ -197,6 +207,31 @@ async function buildAssetIndex(orgId: string, siteId: string): Promise<AssetMatc
   return { byMac, byIp, bySysName };
 }
 
+/**
+ * Pure: resolve the set of discovered_asset ids we actually got fresh adjacency
+ * from THIS scan — the *walked* sources. Every device that ran a topology walk
+ * appears as one DeviceAdjacency block, including devices that reported zero
+ * neighbors (empty lldp/cdp/fdb), so this set drives source-scoped age-out:
+ * only edges sourced from a walked device are eligible for deletion. A device
+ * we couldn't resolve to an asset id contributes nothing (we can't safely scope
+ * its edges), so its edges are never aged out.
+ */
+export function computeWalkedSourceIds(
+  adjacency: DeviceAdjacency[],
+  assetIndex: AssetMatchIndex,
+): Set<string> {
+  const walked = new Set<string>();
+  for (const block of adjacency) {
+    const sourceId =
+      assetIndex.byIp.get(block.sourceDeviceIp) ??
+      (block.sourceChassisId
+        ? assetIndex.byMac.get(normMac(block.sourceChassisId))
+        : undefined);
+    if (sourceId) walked.add(sourceId);
+  }
+  return walked;
+}
+
 export async function reconcileTopology(
   orgId: string,
   siteId: string,
@@ -204,13 +239,15 @@ export async function reconcileTopology(
   adjacency: DeviceAdjacency[],
 ): Promise<void> {
   if (!adjacency || adjacency.length === 0) {
-    // No measured evidence this scan — age out only, do not delete recent edges.
-    await ageOutMeasuredEdges(orgId, siteId, []);
+    // No device was walked this scan → no source is in scope → delete NOTHING.
+    // (An empty/missing adjacency must never wipe the site.)
+    await ageOutMeasuredEdges(orgId, siteId, [], new Set());
     return;
   }
 
   const assetIndex = await buildAssetIndex(orgId, siteId);
   const edges = buildInfraEdges(orgId, siteId, adjacency, assetIndex);
+  const walkedSourceIds = computeWalkedSourceIds(adjacency, assetIndex);
 
   for (const e of edges) {
     await db
@@ -308,11 +345,33 @@ export async function reconcileTopology(
     );
   }
 
-  await ageOutMeasuredEdges(orgId, siteId, edges);
+  await ageOutMeasuredEdges(orgId, siteId, edges, walkedSourceIds);
 }
 
-async function ageOutMeasuredEdges(orgId: string, siteId: string, upserted: InfraEdgeUpsert[]): Promise<void> {
-  const cutoff = new Date(Date.now() - MEASURED_EDGE_AGEOUT_MS);
+/**
+ * Source-scoped age-out. A measured (lldp/cdp) edge is deleted ONLY when:
+ *   - its source_id ∈ walkedSourceIds (the device was actually walked this scan), AND
+ *   - it was NOT re-observed this scan (id ∉ the freshly-verified keep set).
+ *
+ * Devices not walked this scan keep every edge — so an empty or missing
+ * adjacency deletes nothing, and a transient SNMP miss on an unrelated device
+ * can't drop valid backbone edges. The lastVerifiedAt floor is only a secondary
+ * grace window so an edge re-verified within the last few minutes survives even
+ * if its source happened to be re-walked without re-reporting it (defends a
+ * single transient miss); it is never the sole trigger.
+ */
+async function ageOutMeasuredEdges(
+  orgId: string,
+  siteId: string,
+  upserted: InfraEdgeUpsert[],
+  walkedSourceIds: Set<string>,
+): Promise<void> {
+  // Nothing walked → nothing in scope → never delete.
+  if (walkedSourceIds.size === 0) return;
+
+  const floor = new Date(Date.now() - MEASURED_EDGE_AGEOUT_FLOOR_MS);
+
+  // Re-observed-this-scan keep set: lldp/cdp edges verified at/after the floor.
   const keepIds = upserted.length > 0
     ? await db
         .select({ id: networkTopology.id })
@@ -321,22 +380,26 @@ async function ageOutMeasuredEdges(orgId: string, siteId: string, upserted: Infr
           eq(networkTopology.orgId, orgId),
           eq(networkTopology.siteId, siteId),
           inArray(networkTopology.method, ['lldp', 'cdp']),
-          sql`${networkTopology.lastVerifiedAt} >= ${cutoff.toISOString()}::timestamptz`,
+          sql`${networkTopology.lastVerifiedAt} >= ${floor.toISOString()}::timestamptz`,
         ))
     : [];
   const keep = new Set(keepIds.map((r) => r.id));
 
-  const stale = await db
-    .select({ id: networkTopology.id })
+  // Candidates: measured edges whose SOURCE was walked this scan. Only these are
+  // eligible — every other measured edge is left untouched.
+  const candidates = await db
+    .select({ id: networkTopology.id, sourceId: networkTopology.sourceId })
     .from(networkTopology)
     .where(and(
       eq(networkTopology.orgId, orgId),
       eq(networkTopology.siteId, siteId),
       inArray(networkTopology.method, ['lldp', 'cdp']),
-      sql`(${networkTopology.lastVerifiedAt} IS NULL OR ${networkTopology.lastVerifiedAt} < ${cutoff.toISOString()}::timestamptz)`,
+      inArray(networkTopology.sourceId, Array.from(walkedSourceIds)),
     ));
 
-  const toDelete = stale.map((r) => r.id).filter((id) => !keep.has(id));
+  const toDelete = candidates
+    .filter((r) => !keep.has(r.id))
+    .map((r) => r.id);
   if (toDelete.length > 0) {
     await db.delete(networkTopology).where(inArray(networkTopology.id, toDelete));
   }

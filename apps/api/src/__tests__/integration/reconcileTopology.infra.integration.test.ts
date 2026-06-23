@@ -91,10 +91,10 @@ describe('reconcileTopology (real DB)', () => {
     expect(secondEdge.lastVerifiedAt!.getTime()).toBeGreaterThanOrEqual(firstVerified!.getTime());
   });
 
-  it('ages out a measured edge that is not re-observed and is old enough', async () => {
+  it('(c) ages out a walked source whose specific neighbor disappeared', async () => {
     await withSystemDbAccessContext(() => reconcileTopology(orgId, siteId, [], adjacency));
-    // backdate the edge beyond the age-out window, then reconcile with empty-but-defined
-    // adjacency for that pair (no neighbors → the edge is not re-observed).
+    // backdate the edge beyond the floor, then re-walk the SAME source (10.0.0.1)
+    // but with no neighbors → that source's edge is in scope and not re-observed.
     await getTestDb().update(networkTopology)
       .set({ lastVerifiedAt: new Date(Date.now() - MEASURED_EDGE_AGEOUT_MS - 10_000) })
       .where(eq(networkTopology.orgId, orgId));
@@ -103,6 +103,48 @@ describe('reconcileTopology (real DB)', () => {
     }]));
     const rows = await getTestDb().select().from(networkTopology).where(eq(networkTopology.orgId, orgId));
     expect(rows.filter((r) => r.method === 'lldp')).toHaveLength(0);
+  });
+
+  it('(a) keeps an lldp edge whose source device is NOT walked this scan', async () => {
+    // seed the edge sourced from 10.0.0.1, backdate it well past the floor.
+    await withSystemDbAccessContext(() => reconcileTopology(orgId, siteId, [], adjacency));
+    await getTestDb().update(networkTopology)
+      .set({ lastVerifiedAt: new Date(Date.now() - MEASURED_EDGE_AGEOUT_MS - 10_000) })
+      .where(eq(networkTopology.orgId, orgId));
+    // re-scan walking a DIFFERENT source (the core, 10.0.0.254) with no neighbors.
+    // The edge's source (10.0.0.1) is not in this scan's walked set → it survives.
+    await withSystemDbAccessContext(() => reconcileTopology(orgId, siteId, [], [{
+      sourceDeviceIp: '10.0.0.254', lldp: [], cdp: [], fdb: [],
+    }]));
+    const rows = await getTestDb().select().from(networkTopology).where(eq(networkTopology.orgId, orgId));
+    expect(rows.filter((r) => r.method === 'lldp')).toHaveLength(1);
+  });
+
+  it('(b) empty adjacency deletes nothing', async () => {
+    await withSystemDbAccessContext(() => reconcileTopology(orgId, siteId, [], adjacency));
+    await getTestDb().update(networkTopology)
+      .set({ lastVerifiedAt: new Date(Date.now() - MEASURED_EDGE_AGEOUT_MS - 10_000) })
+      .where(eq(networkTopology.orgId, orgId));
+    // empty array → no device walked → wipe nothing, even though the edge is stale.
+    await withSystemDbAccessContext(() => reconcileTopology(orgId, siteId, [], []));
+    const rows = await getTestDb().select().from(networkTopology).where(eq(networkTopology.orgId, orgId));
+    expect(rows.filter((r) => r.method === 'lldp')).toHaveLength(1);
+  });
+
+  it('(d) a re-observed edge survives with a bumped last_verified_at', async () => {
+    await withSystemDbAccessContext(() => reconcileTopology(orgId, siteId, [], adjacency));
+    await getTestDb().update(networkTopology)
+      .set({ lastVerifiedAt: new Date(Date.now() - MEASURED_EDGE_AGEOUT_MS - 10_000) })
+      .where(eq(networkTopology.orgId, orgId));
+    const stale = await getTestDb().select().from(networkTopology).where(eq(networkTopology.orgId, orgId));
+    const staleVerified = stale[0]?.lastVerifiedAt;
+    if (!staleVerified) throw new Error('expected a backdated edge');
+    // re-walk the same source AND re-report the same neighbor → edge re-observed.
+    await withSystemDbAccessContext(() => reconcileTopology(orgId, siteId, [], adjacency));
+    const rows = await getTestDb().select().from(networkTopology).where(eq(networkTopology.orgId, orgId));
+    const live = rows.filter((r) => r.method === 'lldp');
+    expect(live).toHaveLength(1);
+    expect(live[0]!.lastVerifiedAt!.getTime()).toBeGreaterThan(staleVerified.getTime());
   });
 
   it('never deletes a manual edge during reconcile', async () => {
