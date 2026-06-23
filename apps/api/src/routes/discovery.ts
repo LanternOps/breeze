@@ -1401,7 +1401,10 @@ discoveryRoutes.patch(
     const auth = c.get('auth');
     const body = c.req.valid('json');
     const perms = c.get('permissions') as UserPermissions | undefined;
-    const orgResult = resolveOrgId(auth, body.orgId, true);
+    // fetchWithAuth auto-injects orgId as a query param; accept it as a fallback so
+    // partner users spanning multiple orgs don't hit "orgId is required" on
+    // drag-to-save (the body carries no orgId).
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     // The site axis is app-layer only (RLS scopes by org, not site), so without
@@ -1468,7 +1471,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth, body.orgId, true);
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     // Site must belong to the resolved org (RLS doesn't defend the site axis).
@@ -1557,7 +1560,7 @@ discoveryRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth, body.orgId, true);
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     if (body.source.type === body.target.type && body.source.id === body.target.id) {
