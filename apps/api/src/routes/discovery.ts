@@ -1269,6 +1269,11 @@ discoveryRoutes.get(
       )
     );
 
+    // Saved Cytoscape node positions (#1728). Org-scoped, mirroring the edges query.
+    const layoutRows = orgResult.orgId
+      ? await db.select().from(topologyLayout).where(eq(topologyLayout.orgId, orgResult.orgId))
+      : await db.select().from(topologyLayout);
+
     const nodes = assets.map((a) => ({
       id: a.id,
       type: a.assetType,
@@ -1282,6 +1287,13 @@ discoveryRoutes.get(
     return c.json({
       nodes,
       subnets,
+      layout: layoutRows.map((l) => ({
+        nodeType: l.nodeType as 'discovered_asset' | 'manual_node',
+        nodeId: l.nodeId,
+        x: l.x,
+        y: l.y,
+        pinned: l.pinned,
+      })),
       edges: edges.map((e) => ({
         id: e.id,
         source: e.sourceId,

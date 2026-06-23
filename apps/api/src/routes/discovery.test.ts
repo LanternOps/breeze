@@ -223,6 +223,54 @@ describe('discovery routes', () => {
         vlan: 10,
       });
     });
+
+    it('returns saved node positions in a `layout` array mapped from topology_layout (#1728)', async () => {
+      const layoutRow = {
+        id: 'layout-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        nodeType: 'discovered_asset',
+        nodeId: 'asset-a',
+        x: 120.5,
+        y: 240.25,
+        pinned: true,
+        updatedBy: 'user-1',
+        updatedAt: new Date('2026-06-22T00:00:00.000Z'),
+      };
+
+      vi.mocked(db.select).mockImplementation(((...args: any[]) => {
+        // db.select({ subnets: ... }) for the profile CIDRs — return empty.
+        if (args.length > 0) {
+          return {
+            from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+          } as any;
+        }
+        // db.select().from(table).where(...) — branch on the table identity.
+        return {
+          from: vi.fn((table: any) => ({
+            where: vi.fn(() =>
+              Promise.resolve(table === topologyLayout ? [layoutRow] : [])
+            ),
+          })),
+        } as any;
+      }) as any);
+
+      const res = await app.request('/discovery/topology', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.layout).toHaveLength(1);
+      expect(body.layout[0]).toEqual({
+        nodeType: 'discovered_asset',
+        nodeId: 'asset-a',
+        x: 120.5,
+        y: 240.25,
+        pinned: true,
+      });
+    });
   });
 
   describe('GET /discovery/assets site-scope', () => {
