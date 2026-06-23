@@ -10,7 +10,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
-import { setSentryRequestContext } from '../services/sentry';
+import { withSentryRequestScope } from '../services/sentry';
 import { mfaForcePartnerAdmin } from '../config/env';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
@@ -458,15 +458,6 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     canAccessSite
   });
 
-  // #1379 B2 — tag this request's Sentry isolation scope with the tenant so
-  // any event captured downstream is attributable. Non-secret ids only.
-  setSentryRequestContext({
-    userId: user.id,
-    scope: payload.scope,
-    orgId: payload.orgId,
-    partnerId: payload.partnerId
-  });
-
   // The return value matters: ipAllowlistGuard returns its deny/error
   // Response as a value (it does not throw). Dropping it leaves the Hono
   // context unfinalized — every gated request then 500s with "Context is
@@ -479,24 +470,33 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // class). They run with NO ambient context and manage their own short DB
   // access contexts; auth is still set above so requireScope/requirePermission
   // and the handler's actor still work.
-  if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
-    return runGuardedHandler();
-  }
+  const dispatch = () => {
+    if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
+      return runGuardedHandler();
+    }
+    return withDbAccessContext(
+      {
+        scope: payload.scope,
+        orgId: payload.orgId,
+        accessibleOrgIds,
+        accessiblePartnerIds,
+        userId: user.id,
+        // Own partner — enables read-only visibility of the partner's
+        // partner-wide catalog rows for org-scope (and partner-scope) users.
+        // NOT an access grant; partner-axis write access stays governed by
+        // accessiblePartnerIds.
+        currentPartnerId: payload.partnerId ?? null
+      },
+      runGuardedHandler
+    );
+  };
 
-  return withDbAccessContext(
-    {
-      scope: payload.scope,
-      orgId: payload.orgId,
-      accessibleOrgIds,
-      accessiblePartnerIds,
-      userId: user.id,
-      // Own partner — enables read-only visibility of the partner's
-      // partner-wide catalog rows for org-scope (and partner-scope) users.
-      // NOT an access grant; partner-axis write access stays governed by
-      // accessiblePartnerIds.
-      currentPartnerId: payload.partnerId ?? null
-    },
-    runGuardedHandler
+  // #1379 B2 — run the entire downstream dispatch inside an explicit Sentry
+  // isolation scope so tenant tags are confined to THIS request's
+  // AsyncLocalStorage context and cannot bleed into concurrent requests.
+  return withSentryRequestScope(
+    { userId: user.id, scope: payload.scope, orgId: payload.orgId, partnerId: payload.partnerId },
+    dispatch
   );
 }
 
