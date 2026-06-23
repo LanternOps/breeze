@@ -3,7 +3,7 @@ import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
-import { runAction } from '@/lib/runAction';
+import { runAction, handleActionError } from '@/lib/runAction';
 import { cn, heightPxClass } from '@/lib/utils';
 import {
   groupNodesBySubnet,
@@ -142,6 +142,24 @@ const statusStroke: Record<TopologyNodeStatus, string> = {
 
 // Infrastructure nodes anchor a subnet and get visual emphasis (larger / hub shape).
 const INFRA_TYPES = new Set<TopologyNodeType>(['router', 'switch', 'firewall', 'access_point']);
+
+// Manual placeholder-node roles offered by the edit-mode palette (#1728 phase 4).
+// Mirrors the API's `manualNodeRoleSchema` enum.
+const MANUAL_ROLES = ['switch', 'router', 'ap', 'firewall', 'patch_panel', 'other'] as const;
+type ManualRole = (typeof MANUAL_ROLES)[number];
+
+const MANUAL_ROLE_LABELS: Record<ManualRole, string> = {
+  switch: 'Switch',
+  router: 'Router',
+  ap: 'Access Point',
+  firewall: 'Firewall',
+  patch_panel: 'Patch Panel',
+  other: 'Other'
+};
+
+function roleLabel(role: ManualRole): string {
+  return MANUAL_ROLE_LABELS[role] ?? role;
+}
 
 function mapNode(node: ApiTopologyNode): TopologyNode {
   const normalizedType = (node.type ?? 'unknown').toLowerCase();
@@ -320,6 +338,44 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     }
     return map;
   }, [subnetGroups]);
+
+  // Manual nodes require a site to scope the insert (RLS doesn't defend the site
+  // axis). The topology view is org-wide; derive the active site as the single
+  // distinct site among loaded nodes. If assets span multiple sites (or none has
+  // a site yet) we can't pick one unambiguously, so the palette is disabled.
+  const activeSiteId = useMemo(() => {
+    const siteIds = new Set<string>();
+    for (const n of nodes) if (n.siteId) siteIds.add(n.siteId);
+    return siteIds.size === 1 ? [...siteIds][0] : undefined;
+  }, [nodes]);
+
+  const addManualNode = useCallback(
+    async (role: ManualRole) => {
+      if (!activeSiteId) return;
+      try {
+        const node = await runAction<{ id: string; label: string; role: string }>({
+          request: () =>
+            fetchWithAuth('/discovery/topology/manual-node', {
+              method: 'POST',
+              body: JSON.stringify({ siteId: activeSiteId, role, label: roleLabel(role) })
+            }),
+          errorFallback: 'Failed to add node',
+          successMessage: 'Node added',
+          onUnauthorized: () => {
+            /* let the auth redirect handle it */
+          }
+        });
+        // Drop the new node onto the canvas (Phase 3 cy ref). It re-renders from
+        // the server on the next topology fetch; this gives immediate feedback.
+        cyRef.current?.add({
+          data: { id: node.id, label: node.label, kind: 'manual', role: node.role }
+        });
+      } catch (err) {
+        handleActionError(err, 'Failed to add node.');
+      }
+    },
+    [activeSiteId]
+  );
 
   const persistDrag = useCallback(async (nodeId: string, x: number, y: number) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -519,6 +575,34 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
           )}
         </div>
       </div>
+
+      {editMode && canEdit && (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2"
+          data-testid="topology-edit-palette"
+        >
+          <span className="text-xs font-medium text-muted-foreground">Add node:</span>
+          <div className="flex flex-wrap gap-1" role="group" aria-label="Add node">
+            {MANUAL_ROLES.map((r) => (
+              <button
+                key={r}
+                type="button"
+                data-testid={`topology-add-node-${r}`}
+                disabled={!activeSiteId}
+                title={
+                  activeSiteId
+                    ? `Add a ${roleLabel(r)} placeholder`
+                    : 'Select a single site to add manual nodes'
+                }
+                onClick={() => void addManualNode(r)}
+                className="rounded border px-2 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {roleLabel(r)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error && nodes.length > 0 && (
         <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

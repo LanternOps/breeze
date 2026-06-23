@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import NetworkTopologyMap from './NetworkTopologyMap';
@@ -21,8 +22,11 @@ const runAction = vi.fn(async (opts: { request: () => Promise<Response> }) => {
   const res = await opts.request();
   return res.json();
 });
+const handleActionError = vi.fn();
 vi.mock('@/lib/runAction', () => ({
-  runAction: (...args: unknown[]) => (runAction as (...a: unknown[]) => unknown)(...args)
+  runAction: (...args: unknown[]) => (runAction as (...a: unknown[]) => unknown)(...args),
+  handleActionError: (...args: unknown[]) => handleActionError(...args),
+  ActionError: class ActionError extends Error {}
 }));
 
 const canMock = vi.fn();
@@ -71,15 +75,24 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
   beforeEach(() => {
     fetchWithAuth.mockReset();
     runAction.mockClear();
+    handleActionError.mockClear();
     canMock.mockReset();
     cytoscapeFactory.mockClear();
     cyInstance.on.mockClear();
+    cyInstance.add.mockClear();
     mockTopologyResponse({
       subnets: ['10.0.2.0/24'],
       edges: [],
       layout: [],
       nodes: [
-        { id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' }
+        {
+          id: 'a',
+          label: 'host-a',
+          type: 'workstation',
+          status: 'online',
+          ipAddress: '10.0.2.5',
+          siteId: 'site-1'
+        }
       ]
     });
   });
@@ -102,5 +115,46 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     expect(await screen.findByTestId('topology-cytoscape')).toBeInTheDocument();
     await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
     expect(screen.queryByTestId('topology-edit-toggle')).toBeNull();
+  });
+
+  it('add-node palette posts a manual node via runAction and adds it to the canvas', async () => {
+    canMock.mockReturnValue(true);
+    const user = userEvent.setup();
+
+    render(<NetworkTopologyMap />);
+
+    // Enter edit mode to reveal the palette.
+    await user.click(await screen.findByTestId('topology-edit-toggle'));
+
+    // The POST resolves with the created node.
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'n1', role: 'switch', label: 'Switch', kind: 'manual' })
+    } as unknown as Response);
+
+    await user.click(await screen.findByTestId('topology-add-node-switch'));
+
+    await waitFor(() => {
+      const postCall = fetchWithAuth.mock.calls.find(
+        ([url]) => url === '/discovery/topology/manual-node'
+      );
+      expect(postCall).toBeTruthy();
+      const opts = postCall![1] as { method?: string; body?: string };
+      expect(opts.method).toBe('POST');
+      const body = JSON.parse(opts.body ?? '{}');
+      expect(body.role).toBe('switch');
+      expect(body.siteId).toBe('site-1');
+    });
+
+    // runAction's success path ran, and the returned node was added to the graph.
+    expect(runAction).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(cyInstance.add).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ id: 'n1', kind: 'manual', role: 'switch' })
+        })
+      );
+    });
+    expect(handleActionError).not.toHaveBeenCalled();
   });
 });
