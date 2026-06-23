@@ -508,7 +508,7 @@ function buildStylesheet(theme: TopologyTheme): cytoscape.StylesheetStyle[] {
 }
 
 export default function NetworkTopologyMap({
-  height = 560,
+  height = 600,
   onNodeClick,
   onEditApiReady
 }: NetworkTopologyMapProps) {
@@ -915,7 +915,25 @@ export default function NetworkTopologyMap({
     // cytoscape measured it; re-measure and frame the saved positions so nodes
     // are visible on first paint rather than parked off-screen.
     cy.resize();
-    if (cy.elements().nonempty()) cy.fit(undefined, 30);
+    if (cy.elements().nonempty()) cy.fit(undefined, 24);
+
+    // Keep the graph framed and filling the canvas whenever the container
+    // resizes — height recompute, window width changes, sidebar collapse. Refit
+    // in view mode; in edit mode preserve the user's pan/zoom. rAF-debounced.
+    let refitRaf = 0;
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            cancelAnimationFrame(refitRaf);
+            refitRaf = requestAnimationFrame(() => {
+              const c = cyRef.current;
+              if (!c) return;
+              c.resize();
+              if (!editModeRef.current && c.elements().nonempty()) c.fit(undefined, 24);
+            });
+          })
+        : null;
+    if (resizeObserver && mountRef.current) resizeObserver.observe(mountRef.current);
 
     cy.on('dragfree', 'node', (evt: cytoscape.EventObject) => {
       const target = evt.target as cytoscape.NodeSingular;
@@ -1005,6 +1023,8 @@ export default function NetworkTopologyMap({
     });
 
     return () => {
+      cancelAnimationFrame(refitRaf);
+      resizeObserver?.disconnect();
       cy.destroy();
       cyRef.current = null;
     };
@@ -1068,21 +1088,18 @@ export default function NetworkTopologyMap({
       const mountRect = mount.getBoundingClientRect();
       const below = card.getBoundingClientRect().bottom - mountRect.bottom;
       const available = window.innerHeight - mountRect.top - below - 24;
-      setCanvasHeight(Math.max(320, Math.min(height, Math.round(available))));
+      // The inspector + edit palette now float OVER the canvas (absolute), so they
+      // no longer steal flow height and selecting a node never reflows the page.
+      // That lets the map be generously tall — clamp to a comfortable band.
+      setCanvasHeight(Math.max(420, Math.min(760, Math.round(available))));
     };
     recompute();
     window.addEventListener('resize', recompute);
     return () => window.removeEventListener('resize', recompute);
-  }, [height, editMode, selected, subnetGroups, presentTypes, links.length, nodes.length, loading]);
+    // Intentionally NOT keyed on `selected`/`editMode`: the overlays don't change
+    // the canvas height, so re-measuring on selection would just cause churn.
+  }, [subnetGroups, presentTypes, links.length, nodes.length, loading]);
 
-  // Cytoscape must be told when its container resizes; re-fit in view mode (in
-  // edit mode the user may have panned/zoomed, so preserve their viewport).
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy) return;
-    cy.resize();
-    if (!editModeRef.current && cy.elements().nonempty()) cy.fit(undefined, 30);
-  }, [canvasHeight]);
 
   // Auto-arrange: lay out ONLY never-placed nodes; pinned/positioned nodes are
   // locked first so their saved positions are preserved.
@@ -1198,9 +1215,13 @@ export default function NetworkTopologyMap({
         )}
       </div>
 
+      {/* Map + floating overlays. The inspector and edit palette are positioned
+          OVER the canvas (absolute) so selecting a node never reflows the page —
+          the map keeps its size and nothing jumps (#1728 feedback). */}
+      <div className="relative mt-4" data-testid="topology-canvas-wrap">
       {editMode && canEdit && (
         <div
-          className="animate-in mt-4 flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/[0.04] px-3 py-2"
+          className="animate-in absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-card px-3 py-2 shadow-md"
           data-testid="topology-edit-palette"
         >
           <span className="text-xs font-semibold text-muted-foreground">Add node:</span>
@@ -1228,7 +1249,7 @@ export default function NetworkTopologyMap({
 
       {selected && (
         <div
-          className="animate-in mt-4 flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5 shadow-sm"
+          className="animate-in absolute inset-x-3 bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card px-3 py-2.5 shadow-lg sm:inset-x-auto sm:left-3 sm:right-3 md:right-auto md:max-w-[480px]"
           data-testid="topology-inspector"
         >
           {selected.group === 'nodes' && (
@@ -1405,7 +1426,7 @@ export default function NetworkTopologyMap({
             ? `Network topology map: ${nodes.length} device${nodes.length === 1 ? '' : 's'}. Use the device list below to inspect each device with the keyboard.`
             : 'Network topology map: no devices discovered yet.'
         }
-        className="relative mt-4 w-full overflow-hidden rounded-md border bg-muted/30 [background-image:radial-gradient(hsl(var(--border))_1px,transparent_0)] [background-size:22px_22px]"
+        className="relative w-full overflow-hidden rounded-md border bg-muted/30 [background-image:radial-gradient(hsl(var(--border))_1px,transparent_0)] [background-size:22px_22px]"
         // Cytoscape requires a real pixel height on its container. An inline style
         // is used deliberately: the `u-h-px-*` utility classes are runtime-built
         // (`u-h-px-${n}`) and get purged from the production CSS, so a class-based
@@ -1424,6 +1445,7 @@ export default function NetworkTopologyMap({
             </p>
           </div>
         )}
+      </div>
       </div>
 
       {/* Accessible device list (#1728 P0): a keyboard-focusable, screen-reader
