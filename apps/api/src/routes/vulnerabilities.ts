@@ -69,11 +69,34 @@ type FindingAccess =
   | { ok: false; status: 404 | 403; error: string };
 
 /**
+ * Enforce the intra-org SITE axis for a per-device route: RLS isolates orgs but
+ * NOT sites, so a site-restricted caller must be checked here via
+ * `auth.canAccessSite`. The device is loaded under the request context + org
+ * condition (defense-in-depth) to read its siteId. 404 if invisible/unknown,
+ * 403 if outside the caller's site allowlist.
+ */
+async function assertDeviceSiteAccess(
+  deviceId: string,
+  auth: AuthContext,
+): Promise<{ ok: true } | { ok: false; status: 404 | 403; error: string }> {
+  const orgCond = auth.orgCondition(devices.orgId);
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(orgCond ? and(eq(devices.id, deviceId), orgCond) : eq(devices.id, deviceId))
+    .limit(1);
+  if (!device) return { ok: false, status: 404, error: 'Device not found' };
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { ok: false, status: 403, error: 'Access to this site denied' };
+  }
+  return { ok: true };
+}
+
+/**
  * Load a device-vulnerability finding for a write (accept-risk / mitigate) and
  * enforce BOTH axes: org via the request RLS context, and the intra-org SITE
- * axis via `auth.canAccessSite` (RLS does NOT isolate sites — same gate the
- * remediate path applies). A cross-org id is invisible under RLS (404); a
- * finding on a device outside the caller's site allowlist is denied (403).
+ * axis via {@link assertDeviceSiteAccess}. A cross-org id is invisible under RLS
+ * (404); a finding on a device outside the caller's site allowlist is denied.
  */
 async function loadFindingForWrite(id: string, auth: AuthContext): Promise<FindingAccess> {
   const [row] = await db
@@ -87,15 +110,14 @@ async function loadFindingForWrite(id: string, auth: AuthContext): Promise<Findi
     .limit(1);
   if (!row) return { ok: false, status: 404, error: 'Vulnerability finding not found' };
 
-  const orgCond = auth.orgCondition(devices.orgId);
-  const [device] = await db
-    .select({ siteId: devices.siteId })
-    .from(devices)
-    .where(orgCond ? and(eq(devices.id, row.deviceId), orgCond) : eq(devices.id, row.deviceId))
-    .limit(1);
-  if (!device) return { ok: false, status: 404, error: 'Vulnerability finding not found' };
-  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
-    return { ok: false, status: 403, error: 'Access to this site denied' };
+  const deviceAccess = await assertDeviceSiteAccess(row.deviceId, auth);
+  if (!deviceAccess.ok) {
+    // Hide cross-site existence as "not found" when keyed by a finding id.
+    return {
+      ok: false,
+      status: deviceAccess.status,
+      error: deviceAccess.status === 404 ? 'Vulnerability finding not found' : deviceAccess.error,
+    };
   }
   return { ok: true, row };
 }
@@ -246,8 +268,14 @@ vulnerabilityRoutes.get(
   zValidator('param', deviceParamSchema),
   zValidator('query', listQuerySchema),
   async (c) => {
+    const auth = c.get('auth');
     const { deviceId } = c.req.valid('param');
     const query = c.req.valid('query');
+    // Intra-org site gate (RLS isolates orgs, not sites).
+    const access = await assertDeviceSiteAccess(deviceId, auth);
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
     const items = await listVulnerabilities({ ...query, deviceId });
     return c.json({ items });
   },
