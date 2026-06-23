@@ -105,7 +105,7 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_metrics', 'device_network', 'device_patches',
   'device_process_samples', 'device_registry_state',
   'device_reliability', 'device_reliability_history', 'device_sessions',
-  'device_warranty',
+  'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
   'group_membership_log',
@@ -178,7 +178,7 @@ export const DEVICE_CASCADE_DELETE_TABLES = [
   'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
-  'device_sessions', 'device_change_log', 'device_warranty',
+  'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
   // Patches
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software

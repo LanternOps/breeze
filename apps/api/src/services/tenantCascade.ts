@@ -150,6 +150,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_reliability',
   'device_reliability_history',
   'device_sessions',
+  'device_vulnerabilities',
   'device_warranty',
   'devices',
   'discovered_assets',
