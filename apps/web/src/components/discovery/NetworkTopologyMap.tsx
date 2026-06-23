@@ -87,9 +87,17 @@ type ApiTopologyLink = {
   vlan?: number | null;
 };
 
+// Imperative edit-mode API published once the Cytoscape instance is ready. Used
+// by the connect gesture (edge-handles / two-tap select) and by tests to drive
+// `connectNodes` directly (the gesture isn't simulable in jsdom).
+export type TopologyEditApi = {
+  connectNodes: (sourceId: string, targetId: string) => Promise<void>;
+};
+
 type NetworkTopologyMapProps = {
   height?: number;
   onNodeClick?: (nodeId: string) => void;
+  onEditApiReady?: (api: TopologyEditApi) => void;
 };
 
 const statusDotClass: Record<TopologyNodeStatus, string> = {
@@ -259,7 +267,11 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
   ];
 }
 
-export default function NetworkTopologyMap({ height = 560, onNodeClick }: NetworkTopologyMapProps) {
+export default function NetworkTopologyMap({
+  height = 560,
+  onNodeClick,
+  onEditApiReady
+}: NetworkTopologyMapProps) {
   const [nodes, setNodes] = useState<TopologyNode[]>([]);
   const [links, setLinks] = useState<TopologyLink[]>([]);
   const [layout, setLayout] = useState<TopologyLayoutRow[]>([]);
@@ -281,6 +293,10 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
   const placedRef = useRef<Set<string>>(new Set());
   const onNodeClickRef = useRef(onNodeClick);
   onNodeClickRef.current = onNodeClick;
+  // Edit-mode two-tap connect state, read from inside the stable cy tap handler.
+  const editModeRef = useRef(false);
+  const connectSourceRef = useRef<string | null>(null);
+  const connectNodesRef = useRef<((s: string, t: string) => Promise<void>) | null>(null);
 
   const fetchTopology = useCallback(async () => {
     try {
@@ -376,6 +392,71 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     },
     [activeSiteId]
   );
+
+  // Resolve a node id to a manual-edge endpoint descriptor. Manual placeholders
+  // (kind 'manual') map to `manual_node`; everything else is a `discovered_asset`.
+  const endpointFor = useCallback(
+    (nodeId: string): { type: 'manual_node' | 'discovered_asset'; id: string } | null => {
+      const n = cyRef.current?.getElementById(nodeId);
+      if (!n || n.empty()) return null;
+      return { type: n.data('kind') === 'manual' ? 'manual_node' : 'discovered_asset', id: nodeId };
+    },
+    []
+  );
+
+  // Draw a manual edge between two nodes (#1728 phase 4). Self-connect is refused
+  // client-side; the created edge renders with the Phase 3 dashed-orange style
+  // keyed on `method:'manual'`.
+  const connectNodes = useCallback(
+    async (sourceId: string, targetId: string) => {
+      if (sourceId === targetId) return;
+      if (!activeSiteId) return;
+      const source = endpointFor(sourceId);
+      const target = endpointFor(targetId);
+      if (!source || !target) return;
+      try {
+        const edge = await runAction<{ id: string }>({
+          request: () =>
+            fetchWithAuth('/discovery/topology/manual-edge', {
+              method: 'POST',
+              body: JSON.stringify({ siteId: activeSiteId, source, target })
+            }),
+          errorFallback: 'Failed to connect nodes',
+          successMessage: 'Connection added',
+          onUnauthorized: () => {
+            /* let the auth redirect handle it */
+          }
+        });
+        cyRef.current?.add({
+          data: {
+            id: edge.id,
+            source: sourceId,
+            target: targetId,
+            method: 'manual',
+            confidence: 'asserted'
+          }
+        });
+      } catch (err) {
+        handleActionError(err, 'Failed to connect nodes.');
+      }
+    },
+    [activeSiteId, endpointFor]
+  );
+
+  // Publish the imperative edit API once it (or its dependencies) change, and
+  // keep a ref for the stable cy tap handler's two-tap connect gesture.
+  const onEditApiReadyRef = useRef(onEditApiReady);
+  onEditApiReadyRef.current = onEditApiReady;
+  connectNodesRef.current = connectNodes;
+  editModeRef.current = editMode;
+  useEffect(() => {
+    onEditApiReadyRef.current?.({ connectNodes });
+  }, [connectNodes]);
+
+  // Reset the pending connect source whenever edit mode is toggled.
+  useEffect(() => {
+    connectSourceRef.current = null;
+  }, [editMode]);
 
   const persistDrag = useCallback(async (nodeId: string, x: number, y: number) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -476,8 +557,21 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     });
 
     cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
+      const id = (evt.target as cytoscape.NodeSingular).id();
+      // In edit mode, taps drive a two-tap connect gesture: first tap selects the
+      // source, second tap on a different node draws the manual edge.
+      if (editModeRef.current) {
+        const source = connectSourceRef.current;
+        if (!source) {
+          connectSourceRef.current = id;
+          return;
+        }
+        connectSourceRef.current = null;
+        if (source !== id) void connectNodesRef.current?.(source, id);
+        return;
+      }
       const cb = onNodeClickRef.current;
-      if (cb) cb((evt.target as cytoscape.NodeSingular).id());
+      if (cb) cb(id);
     });
 
     return () => {

@@ -51,7 +51,11 @@ const { cyInstance, cytoscapeFactory } = vi.hoisted(() => {
     layout: vi.fn(() => ({ run: vi.fn() })),
     destroy: vi.fn(),
     add: vi.fn(),
-    getElementById: vi.fn(() => ({ empty: () => true, data: vi.fn(), remove: vi.fn() })),
+    getElementById: vi.fn((_id: string) => ({
+      empty: () => true as boolean,
+      data: (_key: string) => undefined as unknown,
+      remove: vi.fn()
+    })),
     elements: vi.fn(() => ({ remove: vi.fn() })),
     fit: vi.fn()
   };
@@ -156,5 +160,85 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       );
     });
     expect(handleActionError).not.toHaveBeenCalled();
+  });
+
+  it('connectNodes posts a manual edge via runAction and adds it to the canvas', async () => {
+    canMock.mockReturnValue(true);
+
+    // Make the two endpoints resolvable on the (mocked) cy instance:
+    // n1 is a manual placeholder, a1 is a discovered asset.
+    const kindById: Record<string, string> = { n1: 'manual', a1: 'discovered' };
+    cyInstance.getElementById.mockImplementation((id: string) => ({
+      empty: () => !(id in kindById),
+      data: (key: string) => (key === 'kind' ? kindById[id] : id),
+      remove: vi.fn()
+    }));
+
+    // Capture the edit API the component publishes (used by both the connect
+    // gesture and the test).
+    let connectNodes: ((sourceId: string, targetId: string) => Promise<void>) | undefined;
+
+    render(<NetworkTopologyMap onEditApiReady={(api) => (connectNodes = api.connectNodes)} />);
+
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+    await waitFor(() => expect(connectNodes).toBeDefined());
+
+    // The POST resolves with the created edge.
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'e1', method: 'manual', confidence: 'asserted' })
+    } as unknown as Response);
+
+    await connectNodes!('n1', 'a1');
+
+    const postCall = fetchWithAuth.mock.calls.find(
+      ([url]) => url === '/discovery/topology/manual-edge'
+    );
+    expect(postCall).toBeTruthy();
+    const opts = postCall![1] as { method?: string; body?: string };
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body ?? '{}');
+    expect(body.siteId).toBe('site-1');
+    expect(body.source).toEqual({ type: 'manual_node', id: 'n1' });
+    expect(body.target).toEqual({ type: 'discovered_asset', id: 'a1' });
+
+    // The returned manual edge is added to the graph (dashed-orange style keyed
+    // on method:'manual').
+    expect(runAction).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(cyInstance.add).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            id: 'e1',
+            source: 'n1',
+            target: 'a1',
+            method: 'manual',
+            confidence: 'asserted'
+          })
+        })
+      );
+    });
+    expect(handleActionError).not.toHaveBeenCalled();
+  });
+
+  it('connectNodes refuses a self-connect (no POST)', async () => {
+    canMock.mockReturnValue(true);
+    const kindById: Record<string, string> = { n1: 'manual' };
+    cyInstance.getElementById.mockImplementation((id: string) => ({
+      empty: () => !(id in kindById),
+      data: (key: string) => (key === 'kind' ? kindById[id] : id),
+      remove: vi.fn()
+    }));
+
+    let connectNodes: ((sourceId: string, targetId: string) => Promise<void>) | undefined;
+    render(<NetworkTopologyMap onEditApiReady={(api) => (connectNodes = api.connectNodes)} />);
+    await waitFor(() => expect(connectNodes).toBeDefined());
+
+    await connectNodes!('n1', 'n1');
+
+    expect(
+      fetchWithAuth.mock.calls.find(([url]) => url === '/discovery/topology/manual-edge')
+    ).toBeUndefined();
+    expect(cyInstance.add).not.toHaveBeenCalled();
   });
 });
