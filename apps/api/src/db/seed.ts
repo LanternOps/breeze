@@ -115,6 +115,10 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'devices', action: 'delete', description: 'Delete/decommission devices' },
   { resource: 'devices', action: 'execute', description: 'Execute commands on devices' },
 
+  // Network topology (discovery topology view + saved layout)
+  { resource: 'topology', action: 'read', description: 'View network topology and saved layout' },
+  { resource: 'topology', action: 'write', description: 'Persist topology node layout (drag-to-save)' },
+
   // Scripts
   { resource: 'scripts', action: 'read', description: 'View scripts' },
   { resource: 'scripts', action: 'write', description: 'Create and edit scripts' },
