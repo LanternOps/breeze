@@ -92,7 +92,7 @@ var allCommandTypes = []string{
 	tools.CmdSetLogLevel,
 
 	// handlers_autoupdate.go
-	tools.CmdSetAutoUpdate,
+	tools.CmdSetAutoUpdate, tools.CmdUpdateWatchdog,
 
 	// handlers_devupdate.go init()
 	tools.CmdDevUpdate,

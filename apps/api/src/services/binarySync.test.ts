@@ -218,10 +218,16 @@ describe("binarySync", () => {
     // upserted row with the per-deployment Ed25519 key.
     process.env.BINARY_SOURCE = "local";
     process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.WATCHDOG_BINARY_DIR = "/fake/watchdog/bin";
     process.env.BINARY_VERSION_FILE = "/fake/version";
     delete process.env.BREEZE_VERSION;
 
-    fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+    fsMocks.readdir.mockImplementation(async (dir: string) => {
+      if (dir === "/fake/agent/bin") return ["breeze-agent-linux-amd64"];
+      if (dir === "/fake/watchdog/bin")
+        return ["breeze-watchdog-linux-amd64"];
+      return [];
+    });
     fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
     fsMocks.readFile.mockResolvedValue("0.65.9" as any);
 
@@ -233,7 +239,11 @@ describe("binarySync", () => {
     const insertCalls = dbMocks.insertValues.mock.calls.map(
       (call: any[]) => call[0] as Record<string, unknown>,
     );
-    expect(insertCalls.length).toBeGreaterThan(0);
+    expect(insertCalls.length).toBe(2);
+    expect(insertCalls.map((values) => values.component).sort()).toEqual([
+      "agent",
+      "watchdog",
+    ]);
     for (const values of insertCalls) {
       expect(values.releaseManifest).toEqual(expect.any(String));
       expect(values.manifestSignature).toBe("test-signature-base64");
@@ -243,11 +253,15 @@ describe("binarySync", () => {
       const manifest = JSON.parse(values.releaseManifest as string);
       expect(manifest).toMatchObject({
         version: "0.65.9",
-        component: "agent",
+        component: values.component,
         platform: "linux",
         arch: "amd64",
       });
-      expect(manifest.url).toContain("/agents/download/linux/amd64");
+      if (values.component === "watchdog") {
+        expect(manifest.url).toContain("/agents/download/watchdog/linux/amd64");
+      } else {
+        expect(manifest.url).toContain("/agents/download/linux/amd64");
+      }
       expect(manifest.checksum).toEqual(expect.any(String));
     }
 
@@ -310,10 +324,9 @@ describe("binarySync", () => {
 
   // Issue #816 / PR #845: syncFromGitHub gained a USER_HELPER_TARGETS loop
   // that registers the windows/amd64 breeze-user-helper.exe asset as its own
-  // component=user-helper row. heartbeat.doUpgrade's prefetch then fetches
-  // it via GET /agent-versions/:v/download. The three tests below cover the
-  // load-bearing behaviors of that loop.
-  describe("syncFromGitHub user-helper loop (#816)", () => {
+  // component=user-helper row. The watchdog loop follows the same
+  // signed-release-asset registration pattern for component=watchdog rows.
+  describe("syncFromGitHub companion component loops", () => {
     function stubGitHubReleaseFetch(
       signed: ReturnType<typeof makeSignedReleaseManifestMulti>,
       assetBytes: Map<string, Buffer>,
@@ -404,6 +417,55 @@ describe("binarySync", () => {
         component: "user-helper",
         checksum: signed.checksums.get(userHelperAsset.name),
         downloadUrl: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${userHelperAsset.name}`,
+      });
+    });
+
+    it("registers component=watchdog when agent and watchdog assets are present", async () => {
+      const agentAsset = {
+        name: "breeze-agent-windows-amd64.exe",
+        buffer: Buffer.from("trusted windows agent bytes"),
+      };
+      const watchdogAsset = {
+        name: "breeze-watchdog-windows-amd64.exe",
+        buffer: Buffer.from("trusted watchdog bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([
+        agentAsset,
+        watchdogAsset,
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([
+          [agentAsset.name, agentAsset.buffer],
+          [watchdogAsset.name, watchdogAsset.buffer],
+        ]),
+      );
+
+      const result = await syncFromGitHub();
+
+      expect(result.version).toBe("1.2.3");
+      expect(result.synced).toEqual(
+        expect.arrayContaining([
+          "agent:windows/amd64",
+          "watchdog:windows/amd64",
+        ]),
+      );
+
+      const watchdogInsert = (
+        dbMocks.insertValues.mock.calls as any[][]
+      ).find(
+        (call) => (call[0] as { component: string }).component === "watchdog",
+      );
+      expect(watchdogInsert).toBeDefined();
+      expect(watchdogInsert![0]).toMatchObject({
+        version: "1.2.3",
+        platform: "windows",
+        architecture: "amd64",
+        component: "watchdog",
+        checksum: signed.checksums.get(watchdogAsset.name),
+        downloadUrl: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${watchdogAsset.name}`,
       });
     });
 
@@ -623,7 +685,7 @@ describe("binarySync", () => {
     });
   });
 
-  it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
+  it("upserts local agent/watchdog binaries with the full 4-column conflict target (regression: #617)", async () => {
     // The agent_versions table has a UNIQUE constraint on
     // (version, platform, architecture, component). The local-binary path used
     // to omit `component`, so Postgres rejected the upsert with
@@ -635,11 +697,19 @@ describe("binarySync", () => {
     process.env.BINARY_VERSION_FILE = "/fake/version";
     delete process.env.BREEZE_VERSION;
 
-    fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+    fsMocks.readdir.mockResolvedValue([
+      "breeze-agent-linux-amd64",
+      "breeze-watchdog-linux-amd64",
+    ] as any);
     fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
     fsMocks.readFile.mockResolvedValue("0.65.7" as any);
 
     await syncBinaries();
+
+    const components = dbMocks.insertValues.mock.calls
+      .map((call: any[]) => (call[0] as { component: string }).component)
+      .sort();
+    expect(components).toEqual(["agent", "watchdog"]);
 
     const targets = dbMocks.onConflictDoUpdate.mock.calls.map(
       (call: any[]) => (call[0] as { target: unknown[] }).target,

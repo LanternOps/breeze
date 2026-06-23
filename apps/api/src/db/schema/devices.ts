@@ -61,7 +61,7 @@ export const devices = pgTable('devices', {
   osVersion: varchar('os_version', { length: 100 }).notNull(),
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),
-  agentVersion: varchar('agent_version', { length: 50 }).notNull(),
+  agentVersion: varchar('agent_version', { length: 128 }).notNull(),
   status: deviceStatusEnum('status').notNull().default('offline'),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
@@ -81,7 +81,7 @@ export const devices = pgTable('devices', {
   pendingReboot: boolean('pending_reboot').notNull().default(false),
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
-  watchdogVersion: varchar('watchdog_version', { length: 50 }),
+  watchdogVersion: varchar('watchdog_version', { length: 128 }),
   // Asymmetry detector (#800): set when the watchdog is still reporting
   // in but the main agent has gone silent past the offline threshold.
   // Cleared when the main agent next heartbeats. Distinct from

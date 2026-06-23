@@ -557,6 +557,19 @@ export interface InheritableDefaultSettings {
   };
   agentUpdatePolicy?: string;
   maintenanceWindow?: string;
+  agentUpdateMode?: 'automatic' | 'manual';
+  agentUpdateTiming?: 'asap' | 'weekly';
+  agentUpdateSchedule?: {
+    windows: Array<{
+      dayOfWeek: 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
+      start: string;
+      end: string;
+    }>;
+  };
+  agentVersionPins?: {
+    agent?: string;
+    watchdog?: string;
+  };
 }
 
 export interface InheritableBrandingSettings {

@@ -14,7 +14,7 @@ export const agentLogs = pgTable('agent_logs', {
   component: varchar('component', { length: 100 }).notNull(),
   message: text('message').notNull(),
   fields: jsonb('fields'),
-  agentVersion: varchar('agent_version', { length: 50 }),
+  agentVersion: varchar('agent_version', { length: 128 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   deviceIdx: index('agent_logs_device_idx').on(table.deviceId),

@@ -6,7 +6,9 @@ import {
   executeScript,
   sendBulkCommand,
   sendBulkWakeCommand,
+  sendComponentUpdate,
   sendDeviceCommand,
+  sendLegacyAgentUpdate,
   sendWakeCommand,
   summarizeBulkWakeFailures,
   toggleMaintenanceMode,
@@ -62,6 +64,75 @@ describe('deviceActions service', () => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/commands', {
         method: 'POST',
         body: JSON.stringify({ type: 'reboot' })
+      });
+    });
+  });
+
+  describe('sendComponentUpdate', () => {
+    it('posts component update requests with an explicit target version', async () => {
+      const command = {
+        id: 'cmd-1',
+        deviceId: 'dev-1',
+        type: 'update_watchdog',
+        status: 'pending',
+        targetVersion: '0.66.0',
+        component: 'watchdog',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      };
+
+      fetchWithAuthMock.mockResolvedValue(makeResponse(command));
+
+      const result = await sendComponentUpdate('dev-1', 'watchdog', '0.66.0');
+
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/component-update', {
+        method: 'POST',
+        body: JSON.stringify({ component: 'watchdog', version: '0.66.0' }),
+      });
+      expect(result).toEqual(command);
+    });
+
+    it('throws the API error message when component update is rejected', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ error: 'Already pending' }, false, 409));
+
+      await expect(sendComponentUpdate('dev-1', 'agent')).rejects.toThrow('Already pending');
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/component-update', {
+        method: 'POST',
+        body: JSON.stringify({ component: 'agent' }),
+      });
+    });
+  });
+
+  describe('sendLegacyAgentUpdate', () => {
+    it('posts legacy agent update requests with an explicit target version', async () => {
+      const command = {
+        id: 'cmd-legacy',
+        deviceId: 'dev-1',
+        type: 'legacy_agent_update',
+        status: 'pending',
+        targetVersion: '0.83.0',
+        component: 'agent',
+        setAutoUpdateCommandId: 'cmd-auto',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      };
+
+      fetchWithAuthMock.mockResolvedValue(makeResponse(command));
+
+      const result = await sendLegacyAgentUpdate('dev-1', '0.83.0');
+
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/legacy-agent-update', {
+        method: 'POST',
+        body: JSON.stringify({ version: '0.83.0' }),
+      });
+      expect(result).toEqual(command);
+    });
+
+    it('throws the API error message when legacy agent update is rejected', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ error: 'Already pending' }, false, 409));
+
+      await expect(sendLegacyAgentUpdate('dev-1')).rejects.toThrow('Already pending');
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/legacy-agent-update', {
+        method: 'POST',
+        body: JSON.stringify({}),
       });
     });
   });

@@ -73,17 +73,17 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual              *bool          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
-	DroppedLogs      int64                     `json:"droppedLogs,omitempty"`
-	HelperVersion    string                    `json:"helperVersion,omitempty"`
-	TCCPermissions   *ipc.TCCStatus            `json:"tccPermissions,omitempty"`
-	DesktopAccess    *DesktopAccessState       `json:"desktopAccess,omitempty"`
-	Hostname         string                    `json:"hostname,omitempty"`
-	OSVersion        string                    `json:"osVersion,omitempty"`
-	OSBuild          string                    `json:"osBuild,omitempty"`
-	IsHeadless       bool                      `json:"isHeadless"`
+	IsVirtual              *bool               `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string              `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           map[string]any      `json:"healthStatus,omitempty"`
+	DroppedLogs            int64               `json:"droppedLogs,omitempty"`
+	HelperVersion          string              `json:"helperVersion,omitempty"`
+	TCCPermissions         *ipc.TCCStatus      `json:"tccPermissions,omitempty"`
+	DesktopAccess          *DesktopAccessState `json:"desktopAccess,omitempty"`
+	Hostname               string              `json:"hostname,omitempty"`
+	OSVersion              string              `json:"osVersion,omitempty"`
+	OSBuild                string              `json:"osBuild,omitempty"`
+	IsHeadless             bool                `json:"isHeadless"`
 }
 
 type DesktopAccessState struct {
@@ -181,9 +181,9 @@ type Heartbeat struct {
 	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
 	// concurrently (e.g. an await_remote technician approval firing
 	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
-	pamActuateMu sync.Mutex
-	wsDesktopStart   func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners    sync.Map // desktop session ID -> helper session ID
+	pamActuateMu   sync.Mutex
+	wsDesktopStart func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	desktopOwners  sync.Map // desktop session ID -> helper session ID
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -3407,6 +3407,11 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 
 	if !h.config.AutoUpdate {
 		log.Info("watchdog upgrade available but auto_update is disabled",
+			"targetVersion", targetVersion)
+		return
+	}
+	if h.manifestTrustRotationRejected.Load() {
+		log.Error("SECURITY: skipping watchdog update — manifest trust rotation rejection unresolved",
 			"targetVersion", targetVersion)
 		return
 	}

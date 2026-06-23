@@ -87,7 +87,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion' },
+  devices: { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', hostname: 'hostname', displayName: 'displayName', osType: 'osType', lastSeenAt: 'lastSeenAt', createdAt: 'createdAt', updatedAt: 'updatedAt', tags: 'tags', agentVersion: 'agentVersion', watchdogVersion: 'watchdogVersion' },
   deviceHardware: { deviceId: 'deviceId' },
   deviceReliability: { deviceId: 'deviceId', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
   deviceNetwork: { deviceId: 'deviceId' },
@@ -97,7 +97,16 @@ vi.mock('../db/schema', () => ({
   deviceGroupMemberships: { deviceId: 'deviceId', groupId: 'groupId' },
   deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', status: 'status', createdAt: 'createdAt' },
   sites: { id: 'id', orgId: 'orgId' },
-  organizations: { id: 'id' },
+  organizations: { id: 'id', settings: 'settings' },
+  agentVersions: {
+    id: 'id',
+    platform: 'platform',
+    architecture: 'architecture',
+    component: 'component',
+    version: 'version',
+    isLatest: 'isLatest',
+    createdAt: 'createdAt',
+  },
   enrollmentKeys: { id: 'id', key: 'key', orgId: 'orgId' },
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
   patchPolicies: {},
@@ -468,6 +477,7 @@ describe('device routes', () => {
           osBuild: 'build',
           architecture: 'x86_64',
           agentVersion: '2.0',
+          watchdogVersion: '2.0',
           status: 'online',
           lastSeenAt: new Date(),
           enrolledAt: new Date(),
@@ -491,6 +501,7 @@ describe('device routes', () => {
           osBuild: 'build2',
           architecture: 'arm64',
           agentVersion: '2.1',
+          watchdogVersion: '2.1',
           status: 'online',
           lastSeenAt: new Date(),
           enrolledAt: new Date(),
@@ -529,6 +540,57 @@ describe('device routes', () => {
               };
             })
           })
+        } as any)
+        // 3rd: org settings lookup for server-authoritative update metadata
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: 'org-123', settings: { defaults: { agentUpdateMode: 'manual' } } }])
+          })
+        } as any)
+        // 4th-7th: agent/watchdog latest version lookup for each returned device
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ version: '3.0' }])
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ version: '3.0' }])
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ version: '3.0' }])
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ version: '3.0' }])
+              })
+            })
+          })
+        } as any)
+        // 8th: pending component update command lookup
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([])
+            })
+          })
         } as any);
 
       // Latest-metrics LATERAL query goes through db.execute() with a
@@ -564,11 +626,10 @@ describe('device routes', () => {
         timestamp: metricsTimestamp.toISOString(),
       });
 
-      // Regression guard: the LATERAL replaces what used to be two
-      // db.select() chains (a GROUP BY MAX subquery + an innerJoin on
-      // the max timestamp). If a future refactor reverts to those, the
-      // db.select call count here will jump from 2 to 4.
-      expect(vi.mocked(db.select).mock.calls.length).toBe(2);
+      // Regression guard: the metrics path stays on one raw LATERAL query,
+      // while update metadata adds org-policy, target-version, and pending
+      // command lookups after the count/list queries.
+      expect(vi.mocked(db.select).mock.calls.length).toBe(8);
       expect(vi.mocked(db.execute).mock.calls.length).toBe(1);
     });
   });

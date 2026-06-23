@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import {
   devices,
+  deviceCommands,
   deviceMetrics,
   agentVersions,
   agentLogs,
@@ -26,7 +27,13 @@ import {
   getOrgAgentUpdatePolicy,
   type OnedriveConfigUpdate,
 } from './helpers';
-import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
+import { normalizeAgentUpdateSettings, shouldSendAgentUpgrade } from './agentUpdatePolicy';
+import {
+  compareAgentReleaseVersions,
+  isComparableReleaseVersion,
+  resolveComponentUpdateDecision,
+  type DeviceUpdateInput,
+} from '../../services/agentUpdateTargets';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
@@ -59,6 +66,284 @@ export function detectWatchdogStateCollapse(
 }
 
 export const heartbeatRoutes = new Hono();
+
+const COMMAND_LEGACY_AGENT_UPDATE = 'legacy_agent_update';
+const COMMAND_SET_AUTO_UPDATE = 'set_auto_update';
+const COMMAND_UPDATE_WATCHDOG = 'update_watchdog';
+const LEGACY_AGENT_UPDATE_TIMEOUT_MS = 30 * 60 * 1000;
+
+function payloadString(payload: unknown, key: string): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function agentVersionSatisfiesTarget(currentVersion: string | null | undefined, targetVersion: string): boolean {
+  if (!currentVersion) return false;
+  if (currentVersion === targetVersion) return true;
+  if (isComparableReleaseVersion(currentVersion) && isComparableReleaseVersion(targetVersion)) {
+    return compareAgentReleaseVersions(currentVersion, targetVersion) >= 0;
+  }
+  return false;
+}
+
+async function completeLegacyAgentUpdateMarker(args: {
+  commandId: string;
+  deviceId: string;
+  targetVersion: string;
+  orgAutoUpdateEnabled: boolean;
+}): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(deviceCommands)
+      .set({
+        status: 'completed',
+        completedAt: new Date(),
+        result: {
+          updated_to: args.targetVersion,
+          transport: 'legacy-heartbeat-upgrade',
+        },
+      })
+      .where(eq(deviceCommands.id, args.commandId));
+
+    await tx
+      .insert(deviceCommands)
+      .values({
+        deviceId: args.deviceId,
+        type: COMMAND_SET_AUTO_UPDATE,
+        payload: {
+          enabled: args.orgAutoUpdateEnabled,
+          reason: 'legacy_agent_update_complete',
+          sourceCommandId: args.commandId,
+          targetVersion: args.targetVersion,
+        },
+        status: 'pending',
+        targetRole: 'agent',
+        createdBy: null,
+      });
+  });
+}
+
+async function failLegacyAgentUpdateMarker(args: {
+  commandId: string;
+  reason: string;
+  deviceId?: string;
+  targetVersion?: string;
+  orgAutoUpdateEnabled?: boolean;
+}): Promise<void> {
+  const completedAt = new Date();
+  const restoreAutoUpdate = args.deviceId !== undefined
+    && args.targetVersion !== undefined
+    && args.orgAutoUpdateEnabled !== undefined
+    ? {
+        deviceId: args.deviceId,
+        targetVersion: args.targetVersion,
+        enabled: args.orgAutoUpdateEnabled,
+      }
+    : null;
+
+  const markFailed = async (tx: Pick<typeof db, 'update' | 'insert'>) => {
+    await tx
+      .update(deviceCommands)
+      .set({
+        status: 'failed',
+        completedAt,
+        result: { error: args.reason },
+      })
+      .where(eq(deviceCommands.id, args.commandId));
+
+    if (restoreAutoUpdate) {
+      await tx
+        .insert(deviceCommands)
+        .values({
+          deviceId: restoreAutoUpdate.deviceId,
+          type: COMMAND_SET_AUTO_UPDATE,
+          payload: {
+            enabled: restoreAutoUpdate.enabled,
+            reason: 'legacy_agent_update_failed',
+            sourceCommandId: args.commandId,
+            targetVersion: restoreAutoUpdate.targetVersion,
+            error: args.reason,
+          },
+          status: 'pending',
+          targetRole: 'agent',
+          createdBy: null,
+        });
+    }
+  };
+
+  if (restoreAutoUpdate) {
+    await db.transaction(markFailed);
+    return;
+  }
+
+  await markFailed(db);
+}
+
+function legacyAgentUpdateTimedOut(marker: {
+  status: string | null;
+  executedAt?: Date | null;
+}, now = new Date()): boolean {
+  if (marker.status !== 'sent' || !marker.executedAt) return false;
+  return now.getTime() - marker.executedAt.getTime() > LEGACY_AGENT_UPDATE_TIMEOUT_MS;
+}
+
+async function resolveLegacyAgentHeartbeatUpgrade(args: {
+  deviceId: string;
+  reportedAgentVersion: string | null | undefined;
+  orgAutoUpdateEnabled: boolean;
+}): Promise<string | null> {
+  const [marker] = await db
+    .select({
+      id: deviceCommands.id,
+      payload: deviceCommands.payload,
+      status: deviceCommands.status,
+      executedAt: deviceCommands.executedAt,
+    })
+    .from(deviceCommands)
+    .where(
+      and(
+        eq(deviceCommands.deviceId, args.deviceId),
+        eq(deviceCommands.type, COMMAND_LEGACY_AGENT_UPDATE),
+        eq(deviceCommands.targetRole, 'server'),
+        inArray(deviceCommands.status, ['pending', 'sent']),
+      ),
+    )
+    .orderBy(desc(deviceCommands.createdAt))
+    .limit(1);
+  if (!marker || typeof marker.id !== 'string') return null;
+
+  const targetVersion = payloadString(marker.payload, 'version');
+  const setAutoUpdateCommandId = payloadString(marker.payload, 'setAutoUpdateCommandId');
+  if (!targetVersion || !setAutoUpdateCommandId) {
+    await failLegacyAgentUpdateMarker({
+      commandId: marker.id,
+      reason: 'invalid legacy update marker payload',
+    });
+    return null;
+  }
+
+  if (agentVersionSatisfiesTarget(args.reportedAgentVersion, targetVersion)) {
+    await completeLegacyAgentUpdateMarker({
+      commandId: marker.id,
+      deviceId: args.deviceId,
+      targetVersion,
+      orgAutoUpdateEnabled: args.orgAutoUpdateEnabled,
+    });
+    return null;
+  }
+
+  if (legacyAgentUpdateTimedOut(marker)) {
+    await failLegacyAgentUpdateMarker({
+      commandId: marker.id,
+      reason: 'legacy agent update timed out',
+      deviceId: args.deviceId,
+      targetVersion,
+      orgAutoUpdateEnabled: args.orgAutoUpdateEnabled,
+    });
+    return null;
+  }
+
+  const [setAutoUpdateCommand] = await db
+    .select({
+      id: deviceCommands.id,
+      type: deviceCommands.type,
+      status: deviceCommands.status,
+      result: deviceCommands.result,
+    })
+    .from(deviceCommands)
+    .where(eq(deviceCommands.id, setAutoUpdateCommandId))
+    .limit(1);
+  if (!setAutoUpdateCommand || setAutoUpdateCommand.type !== COMMAND_SET_AUTO_UPDATE) {
+    await failLegacyAgentUpdateMarker({
+      commandId: marker.id,
+      reason: 'set_auto_update command missing',
+    });
+    return null;
+  }
+  if (setAutoUpdateCommand.status === 'failed') {
+    await failLegacyAgentUpdateMarker({
+      commandId: marker.id,
+      reason: 'set_auto_update command failed',
+      deviceId: args.deviceId,
+      targetVersion,
+      orgAutoUpdateEnabled: args.orgAutoUpdateEnabled,
+    });
+    return null;
+  }
+  if (setAutoUpdateCommand.status !== 'completed') {
+    return null;
+  }
+
+  if (marker.status === 'pending') {
+    await db
+      .update(deviceCommands)
+      .set({ status: 'sent', executedAt: new Date() })
+      .where(eq(deviceCommands.id, marker.id));
+  }
+
+  return targetVersion;
+}
+
+async function queuePolicyWatchdogUpdateCommand(args: {
+  c: Parameters<typeof writeAuditEvent>[0];
+  deviceId: string;
+  orgId: string;
+  agentId: string;
+  targetVersion: string;
+  reason: 'missing' | 'outdated';
+}): Promise<void> {
+  const existing = await db
+    .select({ id: deviceCommands.id })
+    .from(deviceCommands)
+    .where(
+      and(
+        eq(deviceCommands.deviceId, args.deviceId),
+        eq(deviceCommands.type, COMMAND_UPDATE_WATCHDOG),
+        eq(deviceCommands.targetRole, 'agent'),
+        inArray(deviceCommands.status, ['pending', 'sent']),
+      ),
+    )
+    .limit(1);
+
+  if (existing[0]) return;
+
+  await db
+    .insert(deviceCommands)
+    .values({
+      deviceId: args.deviceId,
+      type: COMMAND_UPDATE_WATCHDOG,
+      payload: {
+        component: 'watchdog',
+        version: args.targetVersion,
+        requestedVersion: null,
+        manual: false,
+        automatic: true,
+        source: 'policy-autoheal',
+        reason: args.reason,
+      },
+      status: 'pending',
+      targetRole: 'agent',
+      createdBy: null,
+    });
+
+  writeAuditEvent(args.c, {
+    orgId: args.orgId,
+    actorType: 'system',
+    initiatedBy: 'schedule',
+    action: 'device.component_update.autoheal_queued',
+    resourceType: 'device',
+    resourceId: args.deviceId,
+    details: {
+      deviceId: args.deviceId,
+      agentId: args.agentId,
+      component: 'watchdog',
+      targetVersion: args.targetVersion,
+      targetRole: 'agent',
+      reason: args.reason,
+    },
+  });
+}
 
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
   const agentId = c.req.param('id');
@@ -231,40 +516,39 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
-    // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery)
-    const watchdogCommands = await claimPendingCommandsForDevice(device.id, 10, 'watchdog');
-
-    // Check for watchdog upgrade
-    let watchdogUpgradeTo: string | undefined;
-    const normalizedArch = normalizeAgentArchitecture(device.architecture);
-    if (normalizedArch) {
-      try {
-        const [latestWatchdog] = await db
-          .select({ version: agentVersions.version })
-          .from(agentVersions)
-          .where(
-            and(
-              eq(agentVersions.platform, device.osType),
-              eq(agentVersions.architecture, normalizedArch),
-              eq(agentVersions.component, 'watchdog'),
-              eq(agentVersions.isLatest, true)
-            )
-          )
-          .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
-          .limit(1);
-
-        if (latestWatchdog) {
-          if (!data.agentVersion.startsWith('dev-')) {
-            const cmp = compareAgentVersions(latestWatchdog.version, data.agentVersion);
-            if (cmp > 0) {
-              watchdogUpgradeTo = latestWatchdog.version;
-            }
-          }
-        }
-      } catch (err) {
-        console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);
-      }
+    // Claim watchdog-targeted commands (marks as sent to prevent duplicate
+    // delivery). Command dispatch must not make the watchdog health heartbeat
+    // fail: the heartbeat is also how we mark watchdog presence/version.
+    let watchdogCommands: Awaited<ReturnType<typeof claimPendingCommandsForDevice>> = [];
+    try {
+      watchdogCommands = await claimPendingCommandsForDevice(device.id, 10, 'watchdog');
+    } catch (err) {
+      console.error(`[agents] failed to claim watchdog commands for ${agentId}:`, err);
+      captureException(err);
     }
+
+    const normalizedArch = normalizeAgentArchitecture(device.architecture);
+    // Fail closed on policy lookup errors. Treating an unreadable org policy as
+    // automatic would bypass Manual mode during transient DB/settings failures.
+    let updateSettings = normalizeAgentUpdateSettings({ agentUpdateMode: 'manual' });
+    try {
+      updateSettings = await getOrgAgentUpdatePolicy(device.orgId);
+    } catch (err) {
+      console.error(`[agents] failed to resolve watchdog-branch update policy for ${agentId}:`, err);
+    }
+
+    // Do not send watchdog self-update directives on the watchdog heartbeat
+    // branch. On Windows the shared updater restart helper is agent-service
+    // oriented; policy-driven watchdog repair/update is owned by the main
+    // agent through targetRole='agent' update_watchdog commands.
+    const watchdogBranchInput: DeviceUpdateInput = {
+      id: device.id,
+      orgId: device.orgId,
+      osType: device.osType,
+      architecture: device.architecture,
+      agentVersion: device.agentVersion,
+      watchdogVersion: data.agentVersion,
+    };
 
     // #1104 — agent recovery via the watchdog. A live watchdog whose main
     // agent is wedged (silent past the #800 threshold) and behind the latest
@@ -283,22 +567,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       !device.agentVersion.startsWith('dev-')
     ) {
       try {
-        const [latestAgent] = await db
-          .select({ version: agentVersions.version })
-          .from(agentVersions)
-          .where(
-            and(
-              eq(agentVersions.platform, device.osType),
-              eq(agentVersions.architecture, normalizedArch),
-              eq(agentVersions.component, 'agent'),
-              eq(agentVersions.isLatest, true)
-            )
-          )
-          .orderBy(desc(agentVersions.createdAt))
-          .limit(1);
-
-        if (latestAgent && compareAgentVersions(latestAgent.version, device.agentVersion) > 0) {
-          agentUpgradeTo = latestAgent.version;
+        const agentDecision = await resolveComponentUpdateDecision({
+          device: watchdogBranchInput,
+          component: 'agent',
+          settings: updateSettings,
+        });
+        if (agentDecision.available && agentDecision.autoInstall && agentDecision.targetVersion) {
+          agentUpgradeTo = agentDecision.targetVersion;
         }
       } catch (err) {
         console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);
@@ -311,7 +586,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         type: cmd.type,
         payload: cmd.payload,
       })),
-      watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
   }
@@ -508,8 +782,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  const commands = await claimPendingCommandsForDevice(device.id, 10);
-
   let configUpdate: PolicyProbeConfigUpdate | null = null;
   try {
     configUpdate = await buildPolicyProbeConfigUpdate(device.orgId);
@@ -517,59 +789,57 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
   }
 
-  // Org > General > Agent update policy. Governs whether we may hand the agent
-  // (or its helper/watchdog) an auto-upgrade target right now. `manual` blocks
-  // all auto-upgrades; `auto`/`staged` honour the maintenance window when set.
-  // Bootstrap installs (a component not yet present) are intentionally NOT
-  // gated below — a device must be able to finish installing regardless.
-  // Fails open: if the lookup throws we behave as before (upgrades allowed).
-  let updateGateAllows = true;
+  // Org > General > Agent update settings. Governs whether we may hand the
+  // agent/watchdog an auto-upgrade or auto-repair target right now. Manual
+  // blocks automatic upgrades and missing-watchdog autoheal; operators can
+  // still request an explicit manual component update from the UI/API.
+  // Helper is intentionally left on its existing path because the structured
+  // pin/manual controls only apply to agent + watchdog components.
+  // Fail closed on policy lookup errors. Manual mode is an update trust
+  // boundary, so an unreadable org policy must not silently become automatic.
+  let updateSettings = normalizeAgentUpdateSettings({ agentUpdateMode: 'manual' });
+  let updateGateAllows = false;
   try {
-    const updateSettings = await getOrgAgentUpdatePolicy(device.orgId);
+    updateSettings = await getOrgAgentUpdatePolicy(device.orgId);
     const gate = shouldSendAgentUpgrade(updateSettings, new Date());
     updateGateAllows = gate.allow;
-    if (!gate.allow) {
-      console.log(
-        `[agents] auto-upgrade withheld for ${agentId} by org update policy (${gate.reason})`,
-      );
-    }
   } catch (err) {
     console.error(`[agents] failed to resolve agent update policy for ${agentId}:`, err);
   }
 
+  const deviceUpdateInput: DeviceUpdateInput = {
+    id: device.id,
+    orgId: device.orgId,
+    osType: device.osType,
+    architecture: device.architecture,
+    agentVersion: data.agentVersion,
+    watchdogVersion: device.watchdogVersion,
+  };
+
   let upgradeTo: string | null = null;
   const normalizedArch = normalizeAgentArchitecture(device.architecture);
-  if (normalizedArch) {
-    try {
-      const [latestVersion] = await db
-        .select({ version: agentVersions.version })
-        .from(agentVersions)
-        .where(
-          and(
-            eq(agentVersions.platform, device.osType),
-            eq(agentVersions.architecture, normalizedArch),
-            eq(agentVersions.component, 'agent'),
-            eq(agentVersions.isLatest, true)
-          )
-        )
-        .orderBy(desc(agentVersions.createdAt))
-        .limit(1);
+  try {
+    const agentDecision = await resolveComponentUpdateDecision({
+      device: deviceUpdateInput,
+      component: 'agent',
+      settings: updateSettings,
+    });
+    if (agentDecision.available && agentDecision.autoInstall && agentDecision.targetVersion) {
+      upgradeTo = agentDecision.targetVersion;
+    }
+  } catch (err) {
+    console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
+  }
 
-      if (latestVersion) {
-        // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
-        // them back to a release version. The dev-push flow disables auto_update
-        // on the agent side; the server also refrains from sending upgradeTo.
-        if (data.agentVersion.startsWith('dev-')) {
-          // no-op: leave upgradeTo null so agent stays on the dev build
-        } else if (updateGateAllows) {
-          const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
-          if (cmp > 0) {
-            upgradeTo = latestVersion.version;
-          }
-        }
-      }
+  if (!upgradeTo) {
+    try {
+      upgradeTo = await resolveLegacyAgentHeartbeatUpgrade({
+        deviceId: device.id,
+        reportedAgentVersion: data.agentVersion,
+        orgAutoUpdateEnabled: updateSettings.mode === 'automatic',
+      });
     } catch (err) {
-      console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
+      console.error(`[agents] failed to evaluate legacy agent update marker for ${agentId}:`, err);
     }
   }
 
@@ -607,40 +877,27 @@ if (latestHelper) {
     }
   }
 
-  let watchdogUpgradeTo: string | null = null;
-  if (normalizedArch) {
-    try {
-      const [latestWatchdog] = await db
-        .select({ version: agentVersions.version })
-        .from(agentVersions)
-        .where(
-          and(
-            eq(agentVersions.platform, device.osType),
-            eq(agentVersions.architecture, normalizedArch),
-            eq(agentVersions.component, 'watchdog'),
-            eq(agentVersions.isLatest, true)
-          )
-        )
-        .orderBy(desc(agentVersions.createdAt))
-        .limit(1);
-
-      if (latestWatchdog && device.watchdogVersion) {
-        // Version-to-version upgrade is subject to the org update policy.
-        if (updateGateAllows && !device.watchdogVersion.startsWith('dev-')) {
-          const cmp = compareAgentVersions(latestWatchdog.version, device.watchdogVersion);
-          if (cmp > 0) {
-            watchdogUpgradeTo = latestWatchdog.version;
-          }
-        }
-      } else if (latestWatchdog && !device.watchdogVersion) {
-        // Watchdog not yet installed — signal to agent to install it. Bootstrap
-        // installs are NOT gated by the org update policy.
-        watchdogUpgradeTo = latestWatchdog.version;
-      }
-    } catch (err) {
-      console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);
+  try {
+    const watchdogDecision = await resolveComponentUpdateDecision({
+      device: deviceUpdateInput,
+      component: 'watchdog',
+      settings: updateSettings,
+    });
+    if (watchdogDecision.available && watchdogDecision.autoInstall && watchdogDecision.targetVersion) {
+      await queuePolicyWatchdogUpdateCommand({
+        c,
+        deviceId: device.id,
+        orgId: device.orgId,
+        agentId,
+        targetVersion: watchdogDecision.targetVersion,
+        reason: watchdogDecision.missing ? 'missing' : 'outdated',
+      });
     }
+  } catch (err) {
+    console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);
   }
+
+  const commands = await claimPendingCommandsForDevice(device.id, 10);
 
   let renewCert = false;
   if (device.mtlsCertExpiresAt && device.mtlsCertIssuedAt) {
@@ -729,7 +986,6 @@ if (latestHelper) {
       configUpdate: mergedConfigUpdate,
       upgradeTo,
       helperUpgradeTo: helperUpgradeTo ?? undefined,
-      watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
       renewCert: renewCert || undefined,
       rotateToken: rotateToken || undefined,
       helperEnabled: helperSettings?.enabled ?? false,

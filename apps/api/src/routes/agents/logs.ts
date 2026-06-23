@@ -29,7 +29,7 @@ const agentLogEntrySchema = z.object({
     (val) => !val || JSON.stringify(val).length <= 32000,
     { message: 'fields object too large (max 32KB)' }
   ),
-  agentVersion: z.string().max(50).optional(),
+  agentVersion: z.string().max(128).optional(),
 });
 
 const agentLogIngestSchema = z.object({

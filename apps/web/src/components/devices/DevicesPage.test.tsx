@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
@@ -13,6 +13,11 @@ const flagState = vi.hoisted(() => ({
   ENABLE_ENDPOINT_AV_FEATURES: false,
 }));
 vi.mock('@/lib/featureFlags', () => flagState);
+
+const eventStreamMock = vi.hoisted(() => ({
+  subscribe: vi.fn(),
+  onEvent: null as null | ((event: { type: string; payload: Record<string, unknown> }) => void),
+}));
 
 // ---------------------------------------------------------------------------
 // Mocks — keep DevicesPage's own logic (including the real useAdvancedFilterIds
@@ -29,7 +34,10 @@ vi.mock('../../lib/devicesFetch', () => ({
 }));
 
 vi.mock('../../hooks/useEventStream', () => ({
-  useEventStream: () => ({ subscribe: vi.fn() }),
+  useEventStream: (options: { onEvent: typeof eventStreamMock.onEvent }) => {
+    eventStreamMock.onEvent = options.onEvent;
+    return { subscribe: eventStreamMock.subscribe };
+  },
 }));
 
 vi.mock('../../services/deviceActions', () => ({
@@ -43,6 +51,8 @@ vi.mock('../../services/deviceActions', () => ({
   permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
   sendBulkWakeCommand: vi.fn(),
+  sendComponentUpdate: vi.fn(),
+  sendLegacyAgentUpdate: vi.fn(),
   summarizeBulkWakeFailures: vi.fn(() => ''),
   summarizeBulkCommandFailures: vi.fn(() => ''),
   watchWakeOutcome: vi.fn(),
@@ -123,15 +133,47 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null };
+type StubDevice = {
+  id: string;
+  deviceClass?: string;
+  hostname?: string;
+  displayName?: string;
+  status?: string;
+  componentUpdateStatusLabel?: string | null;
+  watchdogVersion?: string | null;
+  agentUpdate?: {
+    available: boolean;
+    targetVersion?: string | null;
+    reason?: string;
+    action?: string;
+  } | null;
+  watchdogUpdate?: {
+    available: boolean;
+    targetVersion?: string | null;
+    reason?: string;
+    action?: string;
+  } | null;
+};
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void }) => (
+  default: ({
+    devices,
+    serverFilterIds,
+    onBulkAction,
+    onComponentUpdate,
+  }: {
+    devices: StubDevice[];
+    serverFilterIds?: Set<string> | null;
+    onBulkAction?: (action: string, devices: StubDevice[]) => void;
+    onComponentUpdate?: (device: StubDevice, component: 'agent' | 'watchdog') => void;
+  }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
+      data-statuses={devices.map(d => d.status ?? '').join(',')}
+      data-status-labels={devices.map(d => d.componentUpdateStatusLabel ?? d.status ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
       {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script'].map(action => (
@@ -144,6 +186,24 @@ vi.mock('./DeviceList', () => ({
           {action}
         </button>
       ))}
+      <button
+        type="button"
+        data-testid="component-update-agent"
+        onClick={() => {
+          if (devices[0]) onComponentUpdate?.(devices[0], 'agent');
+        }}
+      >
+        agent component update
+      </button>
+      <button
+        type="button"
+        data-testid="component-update-watchdog"
+        onClick={() => {
+          if (devices[0]) onComponentUpdate?.(devices[0], 'watchdog');
+        }}
+      >
+        watchdog component update
+      </button>
     </div>
   ),
 }));
@@ -173,6 +233,7 @@ function jsonResponse(payload: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  eventStreamMock.onEvent = null;
   // Reset the network arm to ON; the flag-off case opts out explicitly.
   flagState.ENABLE_NETWORK_DEVICES_IN_LIST = true;
 
@@ -254,6 +315,292 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
 
     const list = await screen.findByTestId('device-list');
     expect(list.getAttribute('data-watchdog-versions')).toBe('0.70.1,');
+  });
+
+  it('uses reinstall wording when confirming replacement of a non-release agent build', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        {
+          ...rawDevice(DEV_1, 'host-alpha'),
+          agentVersion: 'integration-smoke-agent',
+          agentUpdate: {
+            available: true,
+            currentVersion: 'integration-smoke-agent',
+            targetVersion: '0.68.0',
+            mode: 'automatic',
+            autoInstall: false,
+            pinned: false,
+            reason: 'non-release-version',
+          },
+        },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('component-update-agent'));
+
+    expect(await screen.findByRole('dialog', { name: 'Reinstall agent' })).toBeTruthy();
+    expect(screen.getByText('Queue agent reinstall to 0.68.0 for host-alpha?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reinstall' })).toBeTruthy();
+    expect(screen.queryByText('Queue agent update to 0.68.0 for host-alpha?')).toBeNull();
+  });
+
+  it('keeps update wording when confirming a normal manual agent update', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        {
+          ...rawDevice(DEV_1, 'host-alpha'),
+          agentUpdate: {
+            available: true,
+            currentVersion: '0.67.0',
+            targetVersion: '0.68.0',
+            mode: 'manual',
+            autoInstall: false,
+            pinned: false,
+          },
+        },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('component-update-agent'));
+
+    expect(await screen.findByRole('dialog', { name: 'Update agent' })).toBeTruthy();
+    expect(screen.getByText('Queue agent update to 0.68.0 for host-alpha?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Update' })).toBeTruthy();
+  });
+
+  it('shows the device as updating after a component update is queued', async () => {
+    const { sendComponentUpdate } = await import('../../services/deviceActions');
+    vi.mocked(sendComponentUpdate).mockResolvedValueOnce({
+      id: 'cmd-update',
+      deviceId: DEV_1,
+      type: 'update_agent',
+      status: 'pending',
+      targetVersion: '0.69.0',
+      component: 'agent',
+      createdAt: '2026-06-22T00:00:00.000Z',
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        {
+          ...rawDevice(DEV_1, 'host-alpha'),
+          agentVersion: '0.68.0',
+          agentUpdate: {
+            available: true,
+            currentVersion: '0.68.0',
+            targetVersion: '0.69.0',
+            mode: 'manual',
+            autoInstall: false,
+            pinned: false,
+          },
+        },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-statuses')).toBe('online');
+
+    fireEvent.click(screen.getByTestId('component-update-agent'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+
+    await waitFor(() => {
+      expect(sendComponentUpdate).toHaveBeenCalledWith(DEV_1, 'agent', '0.69.0');
+      expect(screen.getByTestId('device-list').getAttribute('data-statuses')).toBe('updating');
+      expect(screen.getByTestId('device-list').getAttribute('data-status-labels')).toBe('Updating agent');
+    });
+  });
+
+  it('shows reinstalling after a non-release agent replacement is queued', async () => {
+    const { sendComponentUpdate } = await import('../../services/deviceActions');
+    vi.mocked(sendComponentUpdate).mockResolvedValueOnce({
+      id: 'cmd-reinstall',
+      deviceId: DEV_1,
+      type: 'update_agent',
+      status: 'pending',
+      targetVersion: '0.69.0',
+      component: 'agent',
+      createdAt: '2026-06-22T00:00:00.000Z',
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        {
+          ...rawDevice(DEV_1, 'host-alpha'),
+          agentVersion: 'integration-smoke-agent',
+          agentUpdate: {
+            available: true,
+            currentVersion: 'integration-smoke-agent',
+            targetVersion: '0.69.0',
+            mode: 'automatic',
+            autoInstall: false,
+            pinned: false,
+            reason: 'non-release-version',
+          },
+        },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('component-update-agent'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reinstall' }));
+
+    await waitFor(() => {
+      expect(sendComponentUpdate).toHaveBeenCalledWith(DEV_1, 'agent', '0.69.0');
+      expect(screen.getByTestId('device-list').getAttribute('data-status-labels')).toBe('Reinstalling agent,online,online');
+    });
+  });
+
+  it('shows installing after a missing watchdog repair is queued', async () => {
+    const { sendComponentUpdate } = await import('../../services/deviceActions');
+    vi.mocked(sendComponentUpdate).mockResolvedValueOnce({
+      id: 'cmd-install-watchdog',
+      deviceId: DEV_1,
+      type: 'update_watchdog',
+      status: 'pending',
+      targetVersion: '0.69.0',
+      component: 'watchdog',
+      createdAt: '2026-06-22T00:00:00.000Z',
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        {
+          ...rawDevice(DEV_1, 'host-alpha'),
+          watchdogVersion: null,
+          watchdogUpdate: {
+            available: true,
+            currentVersion: null,
+            targetVersion: '0.69.0',
+            mode: 'manual',
+            autoInstall: false,
+            pinned: false,
+            missing: true,
+          },
+        },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('component-update-watchdog'));
+
+    expect(await screen.findByRole('dialog', { name: 'Install watchdog' })).toBeTruthy();
+    expect(screen.getByText('Queue watchdog install to 0.69.0 for host-alpha?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+
+    await waitFor(() => {
+      expect(sendComponentUpdate).toHaveBeenCalledWith(DEV_1, 'watchdog', '0.69.0');
+      expect(screen.getByTestId('device-list').getAttribute('data-status-labels')).toBe('Installing watchdog,online,online');
+    });
+  });
+
+  it('uses the legacy agent update endpoint for legacy agent upgrades', async () => {
+    const { sendLegacyAgentUpdate, sendComponentUpdate } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(sendLegacyAgentUpdate).mockResolvedValueOnce({
+      id: 'cmd-legacy',
+      deviceId: DEV_1,
+      type: 'legacy_agent_update',
+      status: 'pending',
+      targetVersion: '0.83.0',
+      component: 'agent',
+      createdAt: '2026-06-22T00:00:00.000Z',
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        {
+          ...rawDevice(DEV_1, 'host-alpha'),
+          agentVersion: '0.82.1',
+          agentUpdate: {
+            available: true,
+            currentVersion: '0.82.1',
+            targetVersion: '0.83.0',
+            mode: 'manual',
+            autoInstall: false,
+            pinned: false,
+            action: 'legacy-agent-update',
+            reason: 'legacy-agent',
+          },
+        },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('component-update-agent'));
+
+    expect(await screen.findByRole('dialog', { name: 'Upgrade legacy agent' })).toBeTruthy();
+    expect(screen.getByText('Queue agent upgrade to 0.83.0 for host-alpha?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Upgrade' }));
+
+    await waitFor(() => {
+      expect(sendLegacyAgentUpdate).toHaveBeenCalledWith(DEV_1, '0.83.0');
+      expect(screen.getByTestId('device-list').getAttribute('data-status-labels')).toBe('Upgrading agent,online,online');
+    });
+    expect(sendComponentUpdate).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success',
+      message: 'Agent upgrade to 0.83.0 queued for host-alpha',
+    }));
+  });
+
+  it('uses reinstall wording when confirming replacement of a non-release watchdog build', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        {
+          ...rawDevice(DEV_1, 'host-alpha'),
+          watchdogVersion: 'agent-watchdog-update-bbce5c5dab306bf0df72989a134441f104173945',
+          watchdogUpdate: {
+            available: true,
+            currentVersion: 'agent-watchdog-update-bbce5c5dab306bf0df72989a134441f104173945',
+            targetVersion: '0.68.0',
+            mode: 'automatic',
+            autoInstall: false,
+            pinned: false,
+            reason: 'non-release-version',
+          },
+        },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('component-update-watchdog'));
+
+    expect(await screen.findByRole('dialog', { name: 'Reinstall watchdog' })).toBeTruthy();
+    expect(screen.getByText('Queue watchdog reinstall to 0.68.0 for host-alpha?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reinstall' })).toBeTruthy();
+    expect(screen.queryByText('Queue watchdog update to 0.68.0 for host-alpha?')).toBeNull();
+  });
+
+  it('applies realtime device.updated status events to the Devices list', async () => {
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-statuses')).toBe('online,online,online');
+
+    act(() => {
+      eventStreamMock.onEvent?.({
+        type: 'device.updated',
+        payload: {
+          deviceId: DEV_1,
+          fields: ['status'],
+          status: 'updating',
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('device-list').getAttribute('data-statuses')).toBe('updating,online,online');
+    });
   });
 
   it('grid view shows all devices when no advanced filter is active', async () => {

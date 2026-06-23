@@ -18,7 +18,7 @@ import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './f
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, sendComponentUpdate, sendLegacyAgentUpdate } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
 import AccessDenied from '../shared/AccessDenied';
@@ -57,6 +57,105 @@ function summarizeFailedDevices(names: string[]): string {
   return rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ');
 }
 
+function isComponentReinstallRequest(update: Device['agentUpdate'] | Device['watchdogUpdate'] | null | undefined): boolean {
+  return update?.reason === 'non-release-version';
+}
+
+function isLegacyAgentUpdateRequest(
+  component: 'agent' | 'watchdog',
+  update: Device['agentUpdate'] | Device['watchdogUpdate'] | null | undefined,
+): boolean {
+  return component === 'agent' && update?.action === 'legacy-agent-update';
+}
+
+function isWatchdogInstallRequest(
+  component: 'agent' | 'watchdog',
+  update: Device['agentUpdate'] | Device['watchdogUpdate'] | null | undefined,
+): boolean {
+  return component === 'watchdog' && update?.missing === true;
+}
+
+type ComponentUpdateOperation = 'update' | 'reinstall' | 'upgrade' | 'install';
+
+function componentUpdateOperation(
+  component: 'agent' | 'watchdog',
+  update: Device['agentUpdate'] | Device['watchdogUpdate'] | null | undefined,
+): ComponentUpdateOperation {
+  if (isLegacyAgentUpdateRequest(component, update)) return 'upgrade';
+  if (isComponentReinstallRequest(update)) return 'reinstall';
+  if (isWatchdogInstallRequest(component, update)) return 'install';
+  return 'update';
+}
+
+function componentUpdateCopy(
+  component: 'agent' | 'watchdog',
+  update: Device['agentUpdate'] | Device['watchdogUpdate'] | null | undefined,
+) {
+  const label = component === 'agent' ? 'agent' : 'watchdog';
+  const action = componentUpdateOperation(component, update);
+  const target = update?.targetVersion ?? 'latest';
+  const titleAction = action === 'reinstall'
+    ? 'Reinstall'
+    : action === 'upgrade'
+      ? 'Upgrade'
+      : action === 'install'
+        ? 'Install'
+        : 'Update';
+  return {
+    title: `${titleAction} ${action === 'upgrade' ? 'legacy agent' : label}`,
+    confirmLabel: titleAction,
+    messageAction: `${label} ${action}`,
+    toastLabel: `${label[0].toUpperCase()}${label.slice(1)} ${action}`,
+    target,
+  };
+}
+
+function componentUpdateStatusCopy(
+  component: 'agent' | 'watchdog',
+  update: Device['agentUpdate'] | Device['watchdogUpdate'] | null | undefined,
+): Pick<QueuedComponentUpdate, 'statusLabel' | 'statusFullLabel'> {
+  const componentLabel = component === 'agent' ? 'agent' : 'watchdog';
+  const action = componentUpdateOperation(component, update);
+  if (action === 'upgrade') {
+    return { statusLabel: 'Upgrading agent', statusFullLabel: 'Upgrading legacy agent' };
+  }
+  const verb = action === 'reinstall'
+    ? 'Reinstalling'
+    : action === 'install'
+      ? 'Installing'
+      : 'Updating';
+  const label = `${verb} ${componentLabel}`;
+  return { statusLabel: label, statusFullLabel: label };
+}
+
+type QueuedComponentUpdate = {
+  component: 'agent' | 'watchdog';
+  targetVersion: string | null;
+  queuedAt: number;
+  statusLabel: string;
+  statusFullLabel: string;
+};
+
+const COMPONENT_UPDATE_OPTIMISTIC_STATUS_TTL_MS = 30 * 60 * 1000;
+
+function componentReachedTarget(device: Device, update: QueuedComponentUpdate): boolean {
+  if (!update.targetVersion) return false;
+  return update.component === 'agent'
+    ? device.agentVersion === update.targetVersion
+    : device.watchdogVersion === update.targetVersion;
+}
+
+function shouldKeepOptimisticComponentUpdate(
+  device: Device,
+  update: QueuedComponentUpdate,
+  now = Date.now(),
+): boolean {
+  if (now - update.queuedAt > COMPONENT_UPDATE_OPTIMISTIC_STATUS_TTL_MS) return false;
+  if (device.status === 'offline' || device.status === 'decommissioned') return false;
+  if (componentReachedTarget(device, update)) return false;
+  return true;
+}
+
 export default function DevicesPage() {
   // Org scope is shown by the always-visible top-bar switcher (scope pill +
   // org picker); the page header no longer repeats it. orgStoreOrgs is still
@@ -81,6 +180,8 @@ export default function DevicesPage() {
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   type PendingScriptRun = { script: Script; runAs: ScriptRunAsSelection; parameters?: Record<string, unknown>; devices: Device[] };
   const [pendingScriptRun, setPendingScriptRun] = useState<PendingScriptRun | null>(null);
+  const [pendingComponentUpdate, setPendingComponentUpdate] = useState<{ device: Device; component: 'agent' | 'watchdog' } | null>(null);
+  const [optimisticComponentUpdates, setOptimisticComponentUpdates] = useState<Record<string, QueuedComponentUpdate>>({});
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -182,12 +283,43 @@ export default function DevicesPage() {
         : c.value === 'decommissioned';
     });
   }, [advancedFilter]);
-  const gridDevices = useMemo(
+  useEffect(() => {
+    setOptimisticComponentUpdates(prev => {
+      let changed = false;
+      const next = { ...prev };
+      const byId = new Map(devices.map(device => [device.id, device]));
+      for (const [deviceId, update] of Object.entries(prev)) {
+        const device = byId.get(deviceId);
+        if (!device || !shouldKeepOptimisticComponentUpdate(device, update)) {
+          delete next[deviceId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [devices]);
+
+  const devicesWithUpdateStatus = useMemo(() => (
+    devices.map(device => {
+      const update = optimisticComponentUpdates[device.id];
+      if (!update || !shouldKeepOptimisticComponentUpdate(device, update)) return device;
+      return {
+        ...device,
+        status: 'updating' as DeviceStatus,
+        componentUpdateStatusLabel: update.statusLabel,
+        componentUpdateStatusFullLabel: update.statusFullLabel,
+      };
+    })
+  ), [devices, optimisticComponentUpdates]);
+
+  const gridDevicesWithUpdateStatus = useMemo(
     () => {
-      const base = includeDecommissioned ? devices : devices.filter(d => d.status !== 'decommissioned');
+      const base = includeDecommissioned
+        ? devicesWithUpdateStatus
+        : devicesWithUpdateStatus.filter(d => d.status !== 'decommissioned');
       return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
     },
-    [devices, advancedFilterIds, includeDecommissioned]
+    [devicesWithUpdateStatus, advancedFilterIds, includeDecommissioned]
   );
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
@@ -276,6 +408,10 @@ export default function DevicesPage() {
           siteName: '', // Will be resolved from sites
           agentVersion: (d.agentVersion ?? '') as string,
           watchdogVersion: (d.watchdogVersion ?? null) as string | null,
+          componentUpdateStatusLabel: (d.componentUpdateStatusLabel ?? null) as string | null,
+          componentUpdateStatusFullLabel: (d.componentUpdateStatusFullLabel ?? null) as string | null,
+          agentUpdate: (d.agentUpdate ?? null) as Device['agentUpdate'],
+          watchdogUpdate: (d.watchdogUpdate ?? null) as Device['watchdogUpdate'],
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
           deviceRoleSource: d.deviceRoleSource as string | undefined,
@@ -436,11 +572,19 @@ export default function DevicesPage() {
       ));
     } else if (type === 'device.updated') {
       const fields = payload.fields as string[] | undefined;
-      if (fields?.includes('agentVersion')) {
+      if (fields?.includes('agentVersion') || fields?.includes('status')) {
         setDevices(prev => prev.map(d =>
-          d.id === deviceId
-            ? { ...d, agentVersion: (payload.agentVersion as string) ?? d.agentVersion }
-            : d
+          d.id !== deviceId
+            ? d
+            : {
+              ...d,
+              ...(fields.includes('agentVersion')
+                ? { agentVersion: (payload.agentVersion as string) ?? d.agentVersion }
+                : {}),
+              ...(fields.includes('status') && typeof payload.status === 'string'
+                ? { status: payload.status as DeviceStatus }
+                : {}),
+            }
         ));
       }
       // NOTE: no live watchdogVersion handler — the heartbeat path only
@@ -517,6 +661,48 @@ export default function DevicesPage() {
       closeScriptPicker();
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to queue script' });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  const handleComponentUpdateRequest = (device: Device, component: 'agent' | 'watchdog') => {
+    setPendingComponentUpdate({ device, component });
+  };
+
+  const doComponentUpdate = async (pending: { device: Device; component: 'agent' | 'watchdog' }) => {
+    if (actionInProgress) return;
+    try {
+      setActionInProgress(true);
+      const update = pending.component === 'agent' ? pending.device.agentUpdate : pending.device.watchdogUpdate;
+      const copy = componentUpdateCopy(pending.component, update);
+      const result = isLegacyAgentUpdateRequest(pending.component, update)
+        ? await sendLegacyAgentUpdate(pending.device.id, update?.targetVersion ?? undefined)
+        : await sendComponentUpdate(
+          pending.device.id,
+          pending.component,
+          update?.targetVersion ?? undefined,
+        );
+      setOptimisticComponentUpdates(prev => ({
+        ...prev,
+        [pending.device.id]: {
+          component: pending.component,
+          targetVersion: result.targetVersion ?? update?.targetVersion ?? null,
+          queuedAt: Date.now(),
+          ...componentUpdateStatusCopy(pending.component, update),
+        },
+      }));
+      showToast({
+        type: 'success',
+        message: `${copy.toastLabel} to ${result.targetVersion ?? copy.target} queued for ${pending.device.hostname}`,
+      });
+      setPendingComponentUpdate(null);
+      await fetchDevices();
+    } catch (err) {
+      showToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : `Failed to queue ${pending.component} update`,
+      });
     } finally {
       setActionInProgress(false);
     }
@@ -991,13 +1177,14 @@ export default function DevicesPage() {
         </div>
       ) : viewMode === 'list' ? (
         <DeviceList
-          devices={devices}
+          devices={devicesWithUpdateStatus}
           orgs={orgs}
           sites={sites}
           groups={deviceGroups}
           groupMembershipMap={groupMembershipMap}
           onSelect={handleSelectDevice}
           onAction={handleDeviceAction}
+          onComponentUpdate={handleComponentUpdateRequest}
           onBulkAction={handleBulkAction}
           serverFilterIds={advancedFilterIds}
           serverFilterLoading={advancedFilterLoading}
@@ -1011,7 +1198,7 @@ export default function DevicesPage() {
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {gridDevices.map(device => (
+          {gridDevicesWithUpdateStatus.map(device => (
             <DeviceCard
               key={device.id}
               device={device}
@@ -1061,6 +1248,28 @@ export default function DevicesPage() {
               deviceCount: pendingScriptRun.devices.length,
               orgNames: scriptOrgNames,
             })}
+            isLoading={actionInProgress}
+          />
+        );
+      })()}
+
+      {pendingComponentUpdate && (() => {
+        const update = pendingComponentUpdate.component === 'agent'
+          ? pendingComponentUpdate.device.agentUpdate
+          : pendingComponentUpdate.device.watchdogUpdate;
+        const copy = componentUpdateCopy(pendingComponentUpdate.component, update);
+        return (
+          <ConfirmDialog
+            open={true}
+            onClose={() => setPendingComponentUpdate(null)}
+            onConfirm={() => {
+              const pending = pendingComponentUpdate;
+              void doComponentUpdate(pending);
+            }}
+            title={copy.title}
+            variant="warning"
+            confirmLabel={copy.confirmLabel}
+            message={`Queue ${copy.messageAction} to ${copy.target} for ${pendingComponentUpdate.device.hostname}?`}
             isLoading={actionInProgress}
           />
         );

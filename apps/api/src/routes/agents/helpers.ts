@@ -55,7 +55,7 @@ import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
-  normalizeAgentUpdatePolicy,
+  normalizeAgentUpdateSettings,
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
 import {
@@ -1994,10 +1994,9 @@ export function generateApiKey(): string {
 // ============================================
 
 /**
- * Read the org-level agent update policy from `organizations.settings.defaults`
- * (Org > General). Returns a normalized policy plus the raw maintenance-window
- * string; the gating decision lives in `shouldSendAgentUpgrade`. Unconfigured
- * orgs resolve to a permissive default (staged + no window = upgrade anytime).
+ * Read the org-level agent update settings from `organizations.settings.defaults`
+ * (Org > General). The normalizer accepts both the structured settings and the
+ * legacy policy/window keys so existing orgs do not need a migration.
  */
 export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdateSettings> {
   const [org] = await db
@@ -2007,12 +2006,7 @@ export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdat
     .limit(1);
   const settings = isObject(org?.settings) ? org.settings : {};
   const defaults = isObject(settings.defaults) ? settings.defaults : {};
-  const policy = normalizeAgentUpdatePolicy(defaults.agentUpdatePolicy);
-  const maintenanceWindow =
-    typeof defaults.maintenanceWindow === 'string' && defaults.maintenanceWindow.trim()
-      ? defaults.maintenanceWindow.trim()
-      : null;
-  return { policy, maintenanceWindow };
+  return normalizeAgentUpdateSettings(defaults);
 }
 
 export async function getOrgHelperSettings(orgId: string): Promise<{ enabled: boolean }> {

@@ -176,7 +176,8 @@ const (
 
 	// Dev push (fast dev binary update)
 	// Auto-update management
-	CmdSetAutoUpdate = "set_auto_update"
+	CmdSetAutoUpdate  = "set_auto_update"
+	CmdUpdateWatchdog = "update_watchdog"
 
 	CmdDevUpdate = "dev_update"
 

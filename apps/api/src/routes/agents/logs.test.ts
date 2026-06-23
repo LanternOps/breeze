@@ -195,5 +195,26 @@ describe('agent logs routes', () => {
         }),
       ]);
     });
+
+    it('accepts long custom build agentVersion values that fit the DB column', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+      const agentVersion = 'agent-watchdog-update-78da86d2e807bfee475e96180af3d60ce7236b60';
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: [
+            makeLogEntry({ agentVersion }),
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith([
+        expect.objectContaining({ agentVersion }),
+      ]);
+    });
   });
 });

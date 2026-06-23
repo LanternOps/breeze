@@ -27,6 +27,13 @@ const statusColors: Record<DeviceStatus, string> = {
   pending: 'bg-muted-foreground'
 };
 
+function deviceStatusText(device: Pick<Device, 'status' | 'componentUpdateStatusFullLabel'>): string {
+  if (device.status === 'updating' && device.componentUpdateStatusFullLabel) {
+    return device.componentUpdateStatusFullLabel;
+  }
+  return device.status.charAt(0).toUpperCase() + device.status.slice(1);
+}
+
 const osIcons: Record<OSType, React.ReactNode> = {
   windows: (
     <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -167,7 +174,7 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
             <div className="flex items-center gap-2">
               <h3 className="font-medium">{device.hostname}</h3>
               <span className={`h-2 w-2 rounded-full ${statusColors[device.status]}`} aria-hidden="true" />
-              <span className="sr-only">{device.status.charAt(0).toUpperCase() + device.status.slice(1)}</span>
+              <span className="sr-only">{deviceStatusText(device)}</span>
             </div>
             <p className="text-xs text-muted-foreground">{device.osVersion}</p>
           </div>

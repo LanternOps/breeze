@@ -94,6 +94,44 @@ export async function sendDeviceCommand(
   return data.command ?? data.data ?? data;
 }
 
+export async function sendComponentUpdate(
+  deviceId: string,
+  component: 'agent' | 'watchdog',
+  version?: string,
+): Promise<CommandResult & { targetVersion?: string; component?: 'agent' | 'watchdog' }> {
+  const response = await fetchWithAuth(`/devices/${deviceId}/component-update`, {
+    method: 'POST',
+    body: JSON.stringify({
+      component,
+      ...(version ? { version } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, `Failed to queue ${component} update`));
+  }
+
+  return response.json();
+}
+
+export async function sendLegacyAgentUpdate(
+  deviceId: string,
+  version?: string,
+): Promise<CommandResult & { targetVersion?: string; component?: 'agent'; setAutoUpdateCommandId?: string }> {
+  const response = await fetchWithAuth(`/devices/${deviceId}/legacy-agent-update`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...(version ? { version } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to queue legacy agent update'));
+  }
+
+  return response.json();
+}
+
 export type WakeFailureCode =
   | 'TARGET_NOT_FOUND'
   | 'NO_MACS'

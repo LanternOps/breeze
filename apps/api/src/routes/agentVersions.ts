@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import {
@@ -29,6 +29,10 @@ const requireAgentVersionAdmin = requirePermission(
   PERMISSIONS.ORGS_WRITE.resource,
   PERMISSIONS.ORGS_WRITE.action,
 );
+const requireAgentVersionRead = requirePermission(
+  PERMISSIONS.ORGS_READ.resource,
+  PERMISSIONS.ORGS_READ.action,
+);
 
 // Validation schemas
 const platformEnum = z.enum(["windows", "macos", "linux", "darwin"]);
@@ -51,7 +55,7 @@ const latestQuerySchema = z.object({
 });
 
 const downloadParamsSchema = z.object({
-  version: z.string().min(1).max(20),
+  version: z.string().min(1).max(128),
 });
 
 const downloadQuerySchema = z.object({
@@ -61,7 +65,7 @@ const downloadQuerySchema = z.object({
 });
 
 const createVersionSchema = z.object({
-  version: z.string().min(1).max(20),
+  version: z.string().min(1).max(128),
   platform: platformEnum,
   architecture: architectureEnum,
   downloadUrl: z.string().url(),
@@ -90,6 +94,37 @@ type ReleaseArtifactManifest = {
   release?: unknown;
   assets?: unknown;
 };
+
+// GET /agent-versions - List registered agent/watchdog versions for settings UI
+agentVersionRoutes.get(
+  "/",
+  authMiddleware,
+  requireScope("organization", "partner", "system"),
+  requireAgentVersionRead,
+  async (c) => {
+    const rows = await db
+      .select({
+        id: agentVersions.id,
+        version: agentVersions.version,
+        platform: agentVersions.platform,
+        architecture: agentVersions.architecture,
+        component: agentVersions.component,
+        isLatest: agentVersions.isLatest,
+        releaseNotes: agentVersions.releaseNotes,
+        createdAt: agentVersions.createdAt,
+      })
+      .from(agentVersions)
+      .where(inArray(agentVersions.component, ["agent", "watchdog"]))
+      .orderBy(desc(agentVersions.createdAt));
+
+    return c.json({
+      data: rows.map((row) => ({
+        ...row,
+        createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
+      })),
+    });
+  },
+);
 
 async function getUpdateManifestPublicKeys(): Promise<Buffer[]> {
   const configured = [
@@ -256,7 +291,8 @@ function dbPlatformToRouteOs(dbPlatform: string): string {
 }
 
 // Construct the server-relative download URL the agent should use. Applies to
-// component=agent and component=helper: both are pulled by the agent's verified
+// component=agent, component=helper, and component=watchdog: all are pulled by
+// the agent's verified
 // downloader (updater.downloadFromURL), which enforces host equality with the
 // agent's configured ServerURL. Without this rewrite the response would hand
 // back the canonical github.com asset URL, which the agent rejects — and, more

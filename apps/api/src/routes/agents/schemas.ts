@@ -555,7 +555,7 @@ export const agentLogEntrySchema = z.object({
     (val) => !val || JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ),
-  agentVersion: z.string().max(50).optional(),
+  agentVersion: z.string().max(128).optional(),
 });
 
 export const agentLogIngestSchema = z.object({

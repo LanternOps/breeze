@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, sql, desc, and } from 'drizzle-orm';
+import { eq, sql, desc, and, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
@@ -11,14 +11,34 @@ import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite } from './hel
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
+import type { CommandPayload } from '../../services/commandQueue';
 import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import {
+  resolveLegacyAgentUpdateTarget,
+  resolveManualComponentTarget,
+  type AgentUpdateComponent,
+} from '../../services/agentUpdateTargets';
 
 export const commandsRoutes = new Hono();
 
 commandsRoutes.use('*', authMiddleware);
 
 const COMMAND_SET_AUTO_UPDATE = 'set_auto_update';
+const COMMAND_LEGACY_AGENT_UPDATE = 'legacy_agent_update';
+const COMPONENT_UPDATE_TYPES: Record<AgentUpdateComponent, { type: string; targetRole: 'agent' | 'watchdog' }> = {
+  agent: { type: 'update_agent', targetRole: 'watchdog' },
+  watchdog: { type: 'update_watchdog', targetRole: 'agent' },
+};
+
+const componentUpdateSchema = z.object({
+  component: z.enum(['agent', 'watchdog']),
+  version: z.string().min(1).max(64).optional(),
+});
+
+const legacyAgentUpdateSchema = z.object({
+  version: z.string().min(1).max(64).optional(),
+});
 
 // POST /devices/bulk/commands - Queue a command for multiple devices
 commandsRoutes.post(
@@ -237,6 +257,270 @@ commandsRoutes.post(
     }
 
     return c.json({ commands: commandList, failed, skipped }, 201);
+  }
+);
+
+// POST /devices/:id/legacy-agent-update - Queue the old heartbeat-based updater path.
+commandsRoutes.post(
+  '/:id/legacy-agent-update',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('json', legacyAgentUpdateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+    const data = c.req.valid('json');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (device.status === 'decommissioned') {
+      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+    }
+
+    const target = await resolveLegacyAgentUpdateTarget({
+      device: {
+        id: device.id,
+        orgId: device.orgId,
+        osType: device.osType,
+        architecture: device.architecture,
+        agentVersion: device.agentVersion,
+        watchdogVersion: device.watchdogVersion,
+      },
+      version: data.version,
+    });
+    if (!target.ok) {
+      return c.json({ error: target.message, code: target.code, decision: target.decision }, target.status as 400 | 409);
+    }
+
+    const [existingPending] = await db
+      .select({
+        id: deviceCommands.id,
+        payload: deviceCommands.payload,
+        status: deviceCommands.status,
+      })
+      .from(deviceCommands)
+      .where(
+        and(
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.type, COMMAND_LEGACY_AGENT_UPDATE),
+          eq(deviceCommands.targetRole, 'server'),
+          inArray(deviceCommands.status, ['pending', 'sent']),
+        ),
+      )
+      .limit(1);
+    if (existingPending) {
+      const payload = existingPending.payload as Record<string, unknown> | null;
+      const existingVersion = typeof payload?.version === 'string' ? payload.version : null;
+      return c.json({
+        error: 'Legacy agent update is already pending for this device',
+        code: 'ALREADY_PENDING',
+        commandId: existingPending.id,
+        existingVersion,
+        status: existingPending.status,
+      }, 409);
+    }
+
+    const queued = await db.transaction(async (tx) => {
+      const [setAutoUpdateCommand] = await tx
+        .insert(deviceCommands)
+        .values({
+          deviceId,
+          type: COMMAND_SET_AUTO_UPDATE,
+          payload: {
+            enabled: true,
+            reason: COMMAND_LEGACY_AGENT_UPDATE,
+            targetVersion: target.targetVersion,
+          },
+          status: 'pending',
+          targetRole: 'agent',
+          createdBy: auth.user.id,
+        })
+        .returning();
+      if (!setAutoUpdateCommand) return null;
+
+      const [legacyCommand] = await tx
+        .insert(deviceCommands)
+        .values({
+          deviceId,
+          type: COMMAND_LEGACY_AGENT_UPDATE,
+          payload: {
+            component: 'agent',
+            version: target.targetVersion,
+            requestedVersion: data.version ?? null,
+            manual: true,
+            setAutoUpdateCommandId: setAutoUpdateCommand.id,
+          },
+          status: 'pending',
+          targetRole: 'server',
+          createdBy: auth.user.id,
+        })
+        .returning();
+      if (!legacyCommand) return null;
+
+      return { legacyCommand, setAutoUpdateCommand };
+    });
+
+    if (!queued) {
+      return c.json({ error: 'Failed to queue legacy agent update' }, 500);
+    }
+    const { legacyCommand, setAutoUpdateCommand } = queued;
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.legacy_agent_update.request',
+      resourceType: 'device_command',
+      resourceId: legacyCommand.id,
+      resourceName: COMMAND_LEGACY_AGENT_UPDATE,
+      details: {
+        deviceId,
+        component: 'agent',
+        targetVersion: target.targetVersion,
+        setAutoUpdateCommandId: setAutoUpdateCommand.id,
+        ...commandAuditDetails(legacyCommand.id, COMMAND_LEGACY_AGENT_UPDATE, (legacyCommand.payload ?? {}) as CommandPayload),
+      },
+    });
+
+    return c.json({
+      id: legacyCommand.id,
+      deviceId: legacyCommand.deviceId,
+      type: legacyCommand.type,
+      status: legacyCommand.status,
+      targetRole: legacyCommand.targetRole,
+      targetVersion: target.targetVersion,
+      component: 'agent',
+      setAutoUpdateCommandId: setAutoUpdateCommand.id,
+      createdAt: legacyCommand.createdAt,
+    }, 202);
+  },
+);
+
+// POST /devices/:id/component-update - Queue an explicit agent/watchdog update or repair
+commandsRoutes.post(
+  '/:id/component-update',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('json', componentUpdateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+    const data = c.req.valid('json');
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (device.status === 'decommissioned') {
+      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+    }
+    if (data.component === 'agent' && !device.watchdogVersion) {
+      return c.json({
+        error: 'Watchdog is required to update the main agent. Repair watchdog first.',
+        code: 'WATCHDOG_REQUIRED',
+      }, 409);
+    }
+
+    const target = await resolveManualComponentTarget({
+      device: {
+        id: device.id,
+        orgId: device.orgId,
+        osType: device.osType,
+        architecture: device.architecture,
+        agentVersion: device.agentVersion,
+        watchdogVersion: device.watchdogVersion,
+      },
+      component: data.component,
+      version: data.version,
+    });
+    if (!target.ok) {
+      return c.json({ error: target.message, code: target.code, decision: target.decision }, target.status as 400 | 409);
+    }
+
+    const commandSpec = COMPONENT_UPDATE_TYPES[data.component];
+    const existingPending = await db
+      .select({
+        id: deviceCommands.id,
+        payload: deviceCommands.payload,
+        status: deviceCommands.status,
+      })
+      .from(deviceCommands)
+      .where(
+        and(
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.type, commandSpec.type),
+          eq(deviceCommands.targetRole, commandSpec.targetRole),
+          inArray(deviceCommands.status, ['pending', 'sent']),
+        ),
+      )
+      .limit(20);
+    const duplicate = existingPending[0];
+    if (duplicate) {
+      const payload = duplicate.payload as Record<string, unknown> | null;
+      const existingVersion = typeof payload?.version === 'string' ? payload.version : null;
+      return c.json({
+        error: `${data.component} update is already pending for this device`,
+        code: 'ALREADY_PENDING',
+        commandId: duplicate.id,
+        existingVersion,
+        status: duplicate.status,
+      }, 409);
+    }
+
+    const [command] = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type: commandSpec.type,
+        payload: {
+          component: data.component,
+          version: target.targetVersion,
+          requestedVersion: data.version ?? null,
+          manual: true,
+        },
+        status: 'pending',
+        targetRole: commandSpec.targetRole,
+        createdBy: auth.user.id,
+      })
+      .returning();
+
+    if (!command) {
+      return c.json({ error: 'Failed to queue component update' }, 500);
+    }
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.component_update.request',
+      resourceType: 'device_command',
+      resourceId: command.id,
+      resourceName: commandSpec.type,
+      details: {
+        deviceId,
+        component: data.component,
+        targetVersion: target.targetVersion,
+        targetRole: commandSpec.targetRole,
+        ...commandAuditDetails(command.id, commandSpec.type, (command.payload ?? {}) as CommandPayload),
+      },
+    });
+
+    return c.json({
+      id: command.id,
+      deviceId: command.deviceId,
+      type: command.type,
+      status: command.status,
+      targetRole: command.targetRole,
+      targetVersion: target.targetVersion,
+      component: data.component,
+      createdAt: command.createdAt,
+    }, 202);
   }
 );
 

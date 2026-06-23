@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import type { AgentUpdateSettings, AgentUpdateDayOfWeek } from './agentUpdatePolicy';
 
 // ---------- mocks ----------
 
@@ -13,11 +14,32 @@ const runOutsideDbContextMock = vi.fn(async (fn: () => unknown) => fn());
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
 
+function updateSettings(
+  mode: AgentUpdateSettings['mode'],
+  timing: AgentUpdateSettings['timing'] = 'asap',
+  schedule: AgentUpdateSettings['schedule'] = null,
+): AgentUpdateSettings {
+  return {
+    mode,
+    timing: mode === 'manual' ? 'asap' : timing,
+    schedule: mode === 'manual' ? null : schedule,
+    pins: {},
+    legacyPolicy: null,
+    legacyMaintenanceWindow: null,
+    legacyWindowInvalid: false,
+  };
+}
+
 vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      select: (...args: unknown[]) => selectMock(...(args as [])),
+      update: (...args: unknown[]) => updateMock(...(args as [])),
+      insert: (...args: unknown[]) => insertMock(...(args as [])),
+    }),
   },
   runOutsideDbContext: (...args: unknown[]) =>
     runOutsideDbContextMock(...(args as [any])),
@@ -55,6 +77,18 @@ vi.mock('../../db/schema', () => ({
     tokenIssuedAt: 'devices.token_issued_at',
   },
   deviceMetrics: { deviceId: 'device_metrics.device_id' },
+  deviceCommands: {
+    id: 'device_commands.id',
+    deviceId: 'device_commands.device_id',
+    type: 'device_commands.type',
+    payload: 'device_commands.payload',
+    status: 'device_commands.status',
+    targetRole: 'device_commands.target_role',
+    result: 'device_commands.result',
+    createdAt: 'device_commands.created_at',
+    executedAt: 'device_commands.executed_at',
+    completedAt: 'device_commands.completed_at',
+  },
   agentLogs: { deviceId: 'agent_logs.device_id' },
   agentVersions: {
     platform: 'agent_versions.platform',
@@ -156,6 +190,30 @@ function selectChainResolving(value: unknown) {
       })),
     })),
   };
+}
+
+function selectChainBySelectedFields(args: {
+  deviceRow: Record<string, unknown>;
+  version: string;
+  markerRow?: Record<string, unknown>;
+  setAutoUpdateRow?: Record<string, unknown>;
+  pendingComponentCommands?: Record<string, unknown>[];
+}) {
+  selectMock.mockImplementation((fields?: Record<string, unknown>) => {
+    if (fields?.id === 'device_commands.id' && Object.keys(fields).length === 1) {
+      return selectChainResolving(args.pendingComponentCommands ?? []);
+    }
+    if (fields?.payload === 'device_commands.payload') {
+      return selectChainResolving(args.markerRow ? [args.markerRow] : []);
+    }
+    if (fields?.type === 'device_commands.type' && fields?.result === 'device_commands.result') {
+      return selectChainResolving(args.setAutoUpdateRow ? [args.setAutoUpdateRow] : []);
+    }
+    if (fields?.version === 'agent_versions.version') {
+      return selectChainResolving([{ version: args.version }]);
+    }
+    return selectChainResolving([args.deviceRow]);
+  });
 }
 
 function buildApp(): Hono {
@@ -413,6 +471,38 @@ describe('POST /agents/:id/heartbeat — main-agent-silent asymmetry detector (#
     expect(publishEvent).not.toHaveBeenCalled();
   });
 
+  it('Watchdog heartbeat accepts long build-tag versions and stores the full watchdog version', async () => {
+    const longWatchdogVersion = 'agent-watchdog-update-b826573971401b7274407fb701a4e5059be17f7e';
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          hostname: 'TST-LAPTOP-01',
+          lastSeenAt: oneMinuteAgo,
+          mainAgentSilentSince: null,
+        },
+      ]),
+    );
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentVersion: longWatchdogVersion,
+        role: 'watchdog',
+        watchdogState: 'MONITORING',
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.watchdogVersion).toBe(longWatchdogVersion);
+  });
+
   it('Watchdog heartbeat when device already mainAgentSilentSince → does NOT re-emit event (no spam)', async () => {
     // Already-silent state: subsequent watchdog ticks should idempotently
     // update watchdog cols without re-firing the event.
@@ -636,6 +726,32 @@ describe('POST /agents/:id/heartbeat — watchdog restart-stats logging (#799)',
     expect(capturedInsertTable).toBeUndefined();
     expect(capturedInsertValues).toBeUndefined();
   });
+
+  it('watchdog heartbeat still succeeds when command claiming fails', async () => {
+    const { claimPendingCommandsForDevice } = await import('../../services/commandDispatch');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(claimPendingCommandsForDevice).mockRejectedValueOnce(new Error('dispatch unavailable'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          role: 'watchdog',
+          agentVersion: '0.65.20',
+          watchdogState: 'MONITORING',
+        }),
+      });
+
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as { commands?: unknown[] };
+      expect(body.commands).toEqual([]);
+      expect(captureException).toHaveBeenCalledWith(expect.any(Error));
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -749,6 +865,24 @@ describe('POST /agents/:id/heartbeat — watchdog-branch agent recovery upgradeT
     expect(resp.status).toBe(200);
     const body = await resp.json() as { upgradeTo?: string };
     expect(body.upgradeTo).toBeUndefined();
+  });
+
+  it('does not return watchdogUpgradeTo on watchdog heartbeats', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+        architecture: 'amd64', agentVersion: '0.82.2', watchdogVersion: '0.65.20',
+        lastSeenAt: oneMinuteAgo, mainAgentSilentSince: null,
+      },
+      [{ version: '0.82.3' }],
+    );
+
+    const resp = await post();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { watchdogUpgradeTo?: string };
+    expect(body.watchdogUpgradeTo).toBeUndefined();
   });
 });
 
@@ -997,7 +1131,7 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   it('manual policy → withholds agent upgradeTo even when a newer version exists', async () => {
     const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1); // latest > reported
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('manual'));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1007,10 +1141,228 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     expect(body.upgradeTo).toBeFalsy();
   });
 
+  it('manual legacy marker → returns upgradeTo after set_auto_update completes', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('manual'));
+    const legacyDevice = { ...deviceRow, agentVersion: '0.82.1', watchdogVersion: '0.82.1' };
+    selectChainBySelectedFields({
+      deviceRow: legacyDevice,
+      version: '0.83.0',
+      markerRow: {
+        id: 'cmd-legacy',
+        payload: { version: '0.83.0', setAutoUpdateCommandId: 'cmd-auto' },
+        status: 'pending',
+      },
+      setAutoUpdateRow: {
+        id: 'cmd-auto',
+        type: 'set_auto_update',
+        status: 'completed',
+        result: { enabled: true },
+      },
+    });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.82.1', metrics: minimalHeartbeatBody.metrics }),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBe('0.83.0');
+  });
+
+  it('manual legacy marker → withholds upgradeTo until set_auto_update completes', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('manual'));
+    const legacyDevice = { ...deviceRow, agentVersion: '0.82.1', watchdogVersion: '0.82.1' };
+    selectChainBySelectedFields({
+      deviceRow: legacyDevice,
+      version: '0.83.0',
+      markerRow: {
+        id: 'cmd-legacy',
+        payload: { version: '0.83.0', setAutoUpdateCommandId: 'cmd-auto' },
+        status: 'pending',
+      },
+      setAutoUpdateRow: {
+        id: 'cmd-auto',
+        type: 'set_auto_update',
+        status: 'pending',
+        result: null,
+      },
+    });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.82.1', metrics: minimalHeartbeatBody.metrics }),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBeFalsy();
+  });
+
+  it('manual legacy marker → completes when the agent reports the target version', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('manual'));
+    const updateSets: Array<Record<string, unknown>> = [];
+    const insertValues: Array<Record<string, unknown>> = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((value: Record<string, unknown>) => {
+        updateSets.push(value);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    insertMock.mockImplementation(() => ({
+      values: vi.fn((value: Record<string, unknown>) => {
+        insertValues.push(value);
+        return Promise.resolve(undefined);
+      }),
+    }));
+    const upgradedDevice = { ...deviceRow, agentVersion: '0.82.1', watchdogVersion: '0.82.1' };
+    selectChainBySelectedFields({
+      deviceRow: upgradedDevice,
+      version: '0.83.0',
+      markerRow: {
+        id: 'cmd-legacy',
+        payload: { version: '0.83.0', setAutoUpdateCommandId: 'cmd-auto' },
+        status: 'sent',
+      },
+    });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.83.0', metrics: minimalHeartbeatBody.metrics }),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBeFalsy();
+    expect(updateSets).toContainEqual(expect.objectContaining({
+      status: 'completed',
+      result: expect.objectContaining({ updated_to: '0.83.0' }),
+    }));
+    expect(insertValues).toContainEqual(expect.objectContaining({
+      deviceId: 'device-1',
+      type: 'set_auto_update',
+      status: 'pending',
+      targetRole: 'agent',
+      createdBy: null,
+      payload: expect.objectContaining({
+        enabled: false,
+        reason: 'legacy_agent_update_complete',
+        sourceCommandId: 'cmd-legacy',
+        targetVersion: '0.83.0',
+      }),
+    }));
+  });
+
+  it('manual legacy marker → times out and restores org auto_update setting', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('manual'));
+    const updateSets: Array<Record<string, unknown>> = [];
+    const insertValues: Array<Record<string, unknown>> = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((value: Record<string, unknown>) => {
+        updateSets.push(value);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    insertMock.mockImplementation(() => ({
+      values: vi.fn((value: Record<string, unknown>) => {
+        insertValues.push(value);
+        return Promise.resolve(undefined);
+      }),
+    }));
+    const legacyDevice = { ...deviceRow, agentVersion: '0.82.1', watchdogVersion: '0.82.1' };
+    selectChainBySelectedFields({
+      deviceRow: legacyDevice,
+      version: '0.82.2',
+      markerRow: {
+        id: 'cmd-legacy',
+        payload: { version: '0.82.2', setAutoUpdateCommandId: 'cmd-auto' },
+        status: 'sent',
+        executedAt: new Date(Date.now() - 31 * 60 * 1000),
+      },
+    });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.82.1', metrics: minimalHeartbeatBody.metrics }),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBeFalsy();
+    expect(updateSets).toContainEqual(expect.objectContaining({
+      status: 'failed',
+      result: { error: 'legacy agent update timed out' },
+    }));
+    expect(insertValues).toContainEqual(expect.objectContaining({
+      deviceId: 'device-1',
+      type: 'set_auto_update',
+      status: 'pending',
+      targetRole: 'agent',
+      createdBy: null,
+      payload: expect.objectContaining({
+        enabled: false,
+        reason: 'legacy_agent_update_failed',
+        sourceCommandId: 'cmd-legacy',
+        targetVersion: '0.82.2',
+        error: 'legacy agent update timed out',
+      }),
+    }));
+  });
+
+  it('automatic legacy marker → restores auto_update=true after the agent reports the target version', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('automatic', 'asap'));
+    const insertValues: Array<Record<string, unknown>> = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    }));
+    insertMock.mockImplementation(() => ({
+      values: vi.fn((value: Record<string, unknown>) => {
+        insertValues.push(value);
+        return Promise.resolve(undefined);
+      }),
+    }));
+    const upgradedDevice = { ...deviceRow, agentVersion: '0.82.1', watchdogVersion: '0.82.1' };
+    selectChainBySelectedFields({
+      deviceRow: upgradedDevice,
+      version: '0.83.0',
+      markerRow: {
+        id: 'cmd-legacy',
+        payload: { version: '0.83.0', setAutoUpdateCommandId: 'cmd-auto' },
+        status: 'sent',
+      },
+    });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.83.0', metrics: minimalHeartbeatBody.metrics }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(insertValues).toContainEqual(expect.objectContaining({
+      type: 'set_auto_update',
+      targetRole: 'agent',
+      payload: expect.objectContaining({
+        enabled: true,
+        reason: 'legacy_agent_update_complete',
+        sourceCommandId: 'cmd-legacy',
+      }),
+    }));
+  });
+
   it('auto policy with no maintenance window → offers agent upgradeTo when newer exists', async () => {
     const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('automatic', 'asap'));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1025,8 +1377,14 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     vi.mocked(compareAgentVersions).mockReturnValue(1);
     // A window on a different UTC day than "now" guarantees we're outside it.
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const otherDay = days[(new Date().getUTCDay() + 3) % 7];
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'staged', maintenanceWindow: `${otherDay} 02:00-04:00` });
+    const otherDay = days[(new Date().getUTCDay() + 3) % 7]!;
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('automatic', 'weekly', {
+      windows: [{
+        dayOfWeek: otherDay.toLowerCase() as AgentUpdateDayOfWeek,
+        start: '02:00',
+        end: '04:00',
+      }],
+    }));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1036,7 +1394,7 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     expect(body.upgradeTo).toBeFalsy();
   });
 
-  it('fails open (offers upgrade) when the policy lookup throws', async () => {
+  it('fails closed (withholds upgrade) when the policy lookup throws', async () => {
     const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
     vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
@@ -1046,7 +1404,7 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     const resp = await postAgentHeartbeat();
     expect(resp.status).toBe(200);
     const body = await resp.json() as { upgradeTo?: string | null };
-    expect(body.upgradeTo).toBe('0.66.0');
+    expect(body.upgradeTo).toBeFalsy();
   });
 
   // A dev-push build (dev-*) must never be auto-upgraded back to a release,
@@ -1055,7 +1413,7 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   it('dev- agent build is never upgraded even under auto policy', async () => {
     const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('automatic', 'asap'));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1084,7 +1442,7 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
   // gated version-to-version branch rather than the ungated bootstrap branch.
   const deviceWithWatchdog = {
     id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
-    architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.0',
+    architecture: 'amd64', agentVersion: '0.83.0', watchdogVersion: '0.65.0',
     lastSeenAt: new Date(), mainAgentSilentSince: null,
   };
   // Fresh device missing both helper and watchdog — both take the bootstrap
@@ -1114,13 +1472,12 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
   async function postWithInstalledComponents(deviceRow: typeof deviceWithWatchdog) {
     const { compareAgentVersions } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1); // latest > reported, all components
-    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
-    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    selectChainBySelectedFields({ deviceRow, version: '0.66.0' });
     return buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        role: 'agent', agentVersion: '0.65.10', helperVersion: '0.65.0',
+        role: 'agent', agentVersion: deviceRow.agentVersion, helperVersion: '0.65.0',
         metrics: minimalHeartbeatBody.metrics,
       }),
     });
@@ -1128,7 +1485,7 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
 
   it('manual policy → withholds helper and watchdog version-to-version upgrades', async () => {
     const { getOrgAgentUpdatePolicy } = await import('./helpers');
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('manual'));
 
     const resp = await postWithInstalledComponents(deviceWithWatchdog);
     expect(resp.status).toBe(200);
@@ -1137,26 +1494,47 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
     expect(body.watchdogUpgradeTo).toBeFalsy();
   });
 
-  it('auto policy → offers helper and watchdog version-to-version upgrades', async () => {
+  it('auto policy → offers helper upgrade and queues watchdog update through the agent command path', async () => {
     const { getOrgAgentUpdatePolicy } = await import('./helpers');
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('automatic', 'asap'));
+    const valuesMock = vi.fn().mockResolvedValue(undefined);
+    insertMock.mockReturnValue({ values: valuesMock });
 
     const resp = await postWithInstalledComponents(deviceWithWatchdog);
     expect(resp.status).toBe(200);
     const body = await resp.json() as { helperUpgradeTo?: string | null; watchdogUpgradeTo?: string | null };
     expect(body.helperUpgradeTo).toBe('0.66.0');
-    expect(body.watchdogUpgradeTo).toBe('0.66.0');
+    expect(body.watchdogUpgradeTo).toBeFalsy();
+
+    const queuedWatchdogCommand = valuesMock.mock.calls
+      .map(([row]) => row as Record<string, unknown>)
+      .find((row) => row.type === 'update_watchdog');
+    expect(queuedWatchdogCommand).toMatchObject({
+      deviceId: 'device-1',
+      type: 'update_watchdog',
+      status: 'pending',
+      targetRole: 'agent',
+      createdBy: null,
+    });
+    expect(queuedWatchdogCommand?.payload).toMatchObject({
+      component: 'watchdog',
+      version: '0.66.0',
+      manual: false,
+      automatic: true,
+      source: 'policy-autoheal',
+      reason: 'outdated',
+    });
   });
 
-  it('manual policy → STILL bootstraps a missing helper and watchdog (bootstrap is ungated)', async () => {
+  it('manual policy → bootstraps missing helper but withholds automatic watchdog repair', async () => {
     const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue(updateSettings('manual'));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceNeedingBootstrap]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
-    // No helperVersion in the body → helper bootstrap branch; watchdogVersion
-    // null on the device → watchdog bootstrap branch. Both must fire under manual.
+    // No helperVersion in the body → helper bootstrap branch. watchdogVersion
+    // null on the device → watchdog repair branch, now gated by manual mode.
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1167,8 +1545,8 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
       upgradeTo?: string | null; helperUpgradeTo?: string | null; watchdogUpgradeTo?: string | null;
     };
     expect(body.upgradeTo).toBeFalsy(); // agent version-to-version IS gated → withheld
-    expect(body.helperUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite manual
-    expect(body.watchdogUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite manual
+    expect(body.helperUpgradeTo).toBe('0.66.0'); // helper bootstrap remains unchanged
+    expect(body.watchdogUpgradeTo).toBeFalsy(); // watchdog autoheal is manual-gated
   });
 });
 

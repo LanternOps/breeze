@@ -125,6 +125,7 @@ function rigDeviceLookup(device: unknown) {
   // identical `db.select().from(devices).where(eq(devices.id,...)).limit(1)`
   // call. The helper consumes the first row, so we return [device] (or []
   // when device is null) and stop there.
+  vi.mocked(db.select).mockReset();
   const limit = vi.fn().mockResolvedValue(device ? [device] : []);
   const where = vi.fn().mockReturnValue({ limit });
   const from = vi.fn().mockReturnValue({ where });
@@ -136,6 +137,7 @@ function rigDeviceThenSiteLookup(device: unknown, targetSite: unknown) {
   //   1. getDeviceWithOrgAndSiteCheck → fixture device
   //   2. target-site same-org validation → target site row
   // Return the device on the first call, the site on the second.
+  vi.mocked(db.select).mockReset();
   const deviceLimit = vi.fn().mockResolvedValue(device ? [device] : []);
   const deviceWhere = vi.fn().mockReturnValue({ limit: deviceLimit });
   const deviceFrom = vi.fn().mockReturnValue({ where: deviceWhere });
@@ -204,6 +206,8 @@ function rigPatchTransaction(updatedRow: unknown) {
 }
 
 function rigDeviceListRows(rows: unknown[]) {
+  vi.mocked(db.select).mockReset();
+
   const offset = vi.fn().mockResolvedValue(rows);
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
@@ -214,7 +218,18 @@ function rigDeviceListRows(rows: unknown[]) {
   const leftJoin = vi.fn().mockReturnValue(chain);
   chain.leftJoin = leftJoin;
   const from = vi.fn().mockReturnValue({ leftJoin });
-  vi.mocked(db.select).mockReturnValue({ from } as never);
+
+  const orgSettingsWhere = vi.fn().mockResolvedValue([{ id: 'org-123', settings: { defaults: { agentUpdateMode: 'manual' } } }]);
+  const orgSettingsFrom = vi.fn().mockReturnValue({ where: orgSettingsWhere });
+
+  const pendingOrderBy = vi.fn().mockResolvedValue([]);
+  const pendingWhere = vi.fn().mockReturnValue({ orderBy: pendingOrderBy });
+  const pendingFrom = vi.fn().mockReturnValue({ where: pendingWhere });
+
+  vi.mocked(db.select)
+    .mockReturnValueOnce({ from } as never)
+    .mockReturnValueOnce({ from: orgSettingsFrom } as never)
+    .mockReturnValueOnce({ from: pendingFrom } as never);
   vi.mocked(db.execute).mockResolvedValue([] as never);
   return { where };
 }

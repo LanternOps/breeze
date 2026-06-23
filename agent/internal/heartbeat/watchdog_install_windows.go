@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/serviceinstall"
@@ -41,6 +43,22 @@ func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 
 	s, err := m.OpenService(windowsWatchdogServiceName)
 	if err != nil {
+		if watchdogServiceMissing("", err) {
+			if err := replaceWatchdogBinaryWindows(tempPath, dest); err != nil {
+				return fmt.Errorf("watchdog install swap failed: %w", err)
+			}
+			hashErr := h.refreshWatchdogHashAllowlist(dest)
+			if out, installErr := exec.Command(dest, "service", "install").CombinedOutput(); installErr != nil {
+				return fmt.Errorf("watchdog service install: %s: %w", strings.TrimSpace(string(out)), installErr)
+			}
+			if err := startWatchdogServiceWindows(); err != nil {
+				return err
+			}
+			if hashErr != nil {
+				return hashErr
+			}
+			return nil
+		}
 		return fmt.Errorf("open service %q: %w", windowsWatchdogServiceName, err)
 	}
 	defer s.Close()
@@ -87,10 +105,32 @@ func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 		return fmt.Errorf("watchdog swap failed (service restarted on old binary): %w", err)
 	}
 
+	if err := h.refreshWatchdogHashAllowlist(dest); err != nil {
+		if startErr := s.Start(); startErr != nil {
+			return fmt.Errorf(
+				"watchdog hash allowlist refresh failed AND restart failed — watchdog is DOWN: hash=%w; restart=%v",
+				err, startErr,
+			)
+		}
+		return err
+	}
+
 	if err := s.Start(); err != nil {
 		return fmt.Errorf("start service %q after swap: %w", windowsWatchdogServiceName, err)
 	}
 	return nil
+}
+
+func startWatchdogServiceWindows() error {
+	out, err := exec.Command("sc", "start", windowsWatchdogServiceName).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	lower := strings.ToLower(string(out) + " " + err.Error())
+	if strings.Contains(lower, "already running") || strings.Contains(lower, "instance of the service is already running") {
+		return nil
+	}
+	return fmt.Errorf("start service %q after install: %s: %w", windowsWatchdogServiceName, strings.TrimSpace(string(out)), err)
 }
 
 // replaceWatchdogBinaryWindows copies the verified bytes at srcTemp over dest.

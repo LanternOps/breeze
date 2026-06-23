@@ -27,8 +27,20 @@ func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 	if err := replaceWatchdogBinaryUnix(tempPath, watchdogBinaryPathUnix); err != nil {
 		return err
 	}
+	if err := h.refreshWatchdogHashAllowlist(watchdogBinaryPathUnix); err != nil {
+		return err
+	}
 
 	if out, err := exec.Command("launchctl", "kickstart", "-k", "system/"+watchdogLaunchdLabel).CombinedOutput(); err != nil {
+		if watchdogServiceMissing(string(out), err) {
+			if installOut, installErr := exec.Command(watchdogBinaryPathUnix, "service", "install").CombinedOutput(); installErr != nil {
+				return fmt.Errorf("watchdog service install: %s: %w", strings.TrimSpace(string(installOut)), installErr)
+			}
+			if startOut, startErr := exec.Command("launchctl", "kickstart", "-k", "system/"+watchdogLaunchdLabel).CombinedOutput(); startErr != nil {
+				return fmt.Errorf("launchctl kickstart %s after install: %s: %w", watchdogLaunchdLabel, strings.TrimSpace(string(startOut)), startErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("launchctl kickstart %s: %s: %w", watchdogLaunchdLabel, strings.TrimSpace(string(out)), err)
 	}
 	return nil

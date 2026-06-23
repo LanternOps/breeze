@@ -81,11 +81,34 @@ vi.mock('../../services/commandQueue', () => ({
 vi.mock('../agents/enrollment', () => ({
   getGlobalEnrollmentSecret: vi.fn().mockReturnValue(null),
 }));
+vi.mock('../../services/agentUpdateTargets', () => ({
+  buildDeviceUpdateMetadata: vi.fn(async (devices: Array<{ id: string }>) => new Map(devices.map((device) => [device.id, {
+    agentUpdate: {
+      available: false,
+      currentVersion: null,
+      targetVersion: null,
+      mode: 'manual',
+      autoInstall: false,
+      pinned: false,
+      reason: 'current',
+    },
+    watchdogUpdate: {
+      available: false,
+      currentVersion: null,
+      targetVersion: null,
+      mode: 'manual',
+      autoInstall: false,
+      pinned: false,
+      reason: 'current',
+    },
+  }]))),
+}));
 
 import { coreRoutes } from './core';
 import { db } from '../../db';
+import { buildDeviceUpdateMetadata } from '../../services/agentUpdateTargets';
 
-function rigDeviceListRows(rows: unknown[]) {
+function rigDeviceListRows(rows: unknown[], componentCommandRows: unknown[] = []) {
   const offset = vi.fn().mockResolvedValue(rows);
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
@@ -97,7 +120,17 @@ function rigDeviceListRows(rows: unknown[]) {
   chain.leftJoin = leftJoin;
   chain.where = where;
   const from = vi.fn().mockReturnValue({ leftJoin });
-  vi.mocked(db.select).mockReturnValue({ from } as never);
+
+  const commandOrderBy = vi.fn().mockResolvedValue(componentCommandRows);
+  const commandWhere = vi.fn().mockReturnValue({ orderBy: commandOrderBy });
+  const commandFrom = vi.fn().mockReturnValue({ where: commandWhere });
+
+  vi.mocked(db.select).mockImplementation((fields?: Record<string, unknown>) => {
+    if (fields?.type && fields?.payload && fields?.status && fields?.createdAt) {
+      return { from: commandFrom } as never;
+    }
+    return { from } as never;
+  });
   vi.mocked(db.execute).mockResolvedValue([] as never);
 }
 
@@ -239,5 +272,170 @@ describe('GET /devices — response shape', () => {
     expect(row.mainAgentSilentSince).toBeNull();
     expect(row.watchdogVersion).toBeNull();
     expect(row.pendingReboot).toBe(false);
+  });
+
+  it('marks online rows with pending component commands as updating with operation-specific labels', async () => {
+    const deviceId = '22222222-2222-4222-8222-222222222222';
+    vi.mocked(buildDeviceUpdateMetadata).mockResolvedValueOnce(new Map([[deviceId, {
+      agentUpdate: {
+        available: false,
+        currentVersion: '0.82.1',
+        targetVersion: '0.82.1',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: false,
+        reason: 'current',
+      },
+      watchdogUpdate: {
+        available: true,
+        currentVersion: null,
+        targetVersion: '0.82.1',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: false,
+        missing: true,
+        reason: 'manual',
+      },
+    }]]));
+
+    rigDeviceListRows([
+      {
+        id: deviceId,
+        orgId: 'org-1',
+        siteId: 'site-1',
+        agentId: 'agent-linux-01',
+        hostname: 'linux-test-01',
+        displayName: null,
+        osType: 'linux',
+        deviceRole: 'workstation',
+        deviceRoleSource: 'auto',
+        osVersion: 'Debian 12',
+        osBuild: null,
+        architecture: 'amd64',
+        agentVersion: '0.82.1',
+        watchdogVersion: null,
+        status: 'online',
+        watchdogStatus: null,
+        mainAgentSilentSince: null,
+        pendingReboot: false,
+        lastSeenAt: new Date(),
+        enrolledAt: new Date(),
+        tags: [],
+        customFields: {},
+        desktopAccess: null,
+        lastUser: null,
+        uptimeSeconds: null,
+        isHeadless: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        cpuModel: null,
+        cpuCores: null,
+        ramTotalMb: null,
+        diskTotalGb: null,
+      },
+    ], [
+      {
+        deviceId,
+        type: 'update_watchdog',
+        payload: { component: 'watchdog', version: '0.82.1', reason: 'missing' },
+        status: 'sent',
+        createdAt: new Date(),
+      },
+    ]);
+
+    const res = await app.request('/devices?limit=50', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.data[0];
+
+    expect(row.status).toBe('updating');
+    expect(row.componentUpdateStatusLabel).toBe('Installing watchdog');
+    expect(row.componentUpdateStatusFullLabel).toBe('Installing watchdog');
+  });
+
+  it('does not mark a row as updating when a stale component command target is already installed', async () => {
+    const deviceId = '44444444-4444-4444-8444-444444444444';
+    vi.mocked(buildDeviceUpdateMetadata).mockResolvedValueOnce(new Map([[deviceId, {
+      agentUpdate: {
+        available: false,
+        currentVersion: '0.82.1',
+        targetVersion: '0.82.1',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: false,
+        reason: 'current',
+      },
+      watchdogUpdate: {
+        available: false,
+        currentVersion: '0.82.1',
+        targetVersion: '0.82.1',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: false,
+        reason: 'current',
+      },
+    }]]));
+
+    rigDeviceListRows([
+      {
+        id: deviceId,
+        orgId: 'org-1',
+        siteId: 'site-1',
+        agentId: 'agent-mac-01',
+        hostname: 'macbook-test-01',
+        displayName: null,
+        osType: 'macos',
+        deviceRole: 'workstation',
+        deviceRoleSource: 'auto',
+        osVersion: '15.0',
+        osBuild: null,
+        architecture: 'arm64',
+        agentVersion: '0.82.1',
+        watchdogVersion: '0.82.1',
+        status: 'online',
+        watchdogStatus: 'connected',
+        mainAgentSilentSince: null,
+        pendingReboot: false,
+        lastSeenAt: new Date(),
+        enrolledAt: new Date(),
+        tags: [],
+        customFields: {},
+        desktopAccess: null,
+        lastUser: null,
+        uptimeSeconds: null,
+        isHeadless: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        cpuModel: null,
+        cpuCores: null,
+        ramTotalMb: null,
+        diskTotalGb: null,
+      },
+    ], [
+      {
+        deviceId,
+        type: 'update_agent',
+        payload: { component: 'agent', version: '0.82.1' },
+        status: 'sent',
+        createdAt: new Date(),
+      },
+    ]);
+
+    const res = await app.request('/devices?limit=50', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.data[0];
+
+    expect(row.status).toBe('online');
+    expect(row.componentUpdateStatusLabel).toBeNull();
+    expect(row.componentUpdateStatusFullLabel).toBeNull();
   });
 });

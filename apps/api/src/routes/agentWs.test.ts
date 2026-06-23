@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
+const applyCompletedComponentUpdateVersionMock = vi.fn().mockResolvedValue(false);
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -24,6 +25,8 @@ vi.mock('../db/schema', () => ({
     previousWatchdogTokenHash: 'devices.previousWatchdogTokenHash',
     previousWatchdogTokenExpiresAt: 'devices.previousWatchdogTokenExpiresAt',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    hostname: 'devices.hostname',
     status: 'devices.status',
     lastSeenAt: 'devices.lastSeenAt',
     updatedAt: 'devices.updatedAt'
@@ -123,6 +126,10 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
 }));
 
+vi.mock('../services/componentUpdateResults', () => ({
+  applyCompletedComponentUpdateVersion: (...args: unknown[]) => applyCompletedComponentUpdateVersionMock(...(args as [])),
+}));
+
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 5, resetAt: new Date() })
 }));
@@ -172,6 +179,7 @@ import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { publishEvent } from '../services/eventBus';
 
 function wsMock() {
   return {
@@ -319,11 +327,45 @@ describe('agent websocket handshake', () => {
 
     expect(vi.mocked(handleTerminalOutput)).toHaveBeenCalledWith(sessionId, 'café\n');
   });
+
+  it('publishes a realtime updating status when the agent reports update_status', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult([
+      { id: 'device-123', siteId: 'site-123', hostname: 'host-alpha' },
+    ]) as any);
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'update_status',
+        targetVersion: '0.83.0',
+      }),
+    } as any, ws as any);
+
+    expect(publishEvent).toHaveBeenCalledWith(
+      'device.updated',
+      'org-123',
+      expect.objectContaining({
+        deviceId: 'device-123',
+        hostname: 'host-alpha',
+        fields: ['status'],
+        status: 'updating',
+        targetVersion: '0.83.0',
+      }),
+      'agent-ws',
+      { siteId: 'site-123' },
+    );
+  });
 });
 
 describe('agent websocket command results', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    applyCompletedComponentUpdateVersionMock.mockResolvedValue(false);
   });
 
   it('rejects cross-device command result updates', async () => {
@@ -383,6 +425,46 @@ describe('agent websocket command results', () => {
 
     expect(db.update).toHaveBeenCalledTimes(1);
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('post-processes completed component update results on the agent websocket', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-watchdog',
+          type: 'update_watchdog',
+          payload: { version: '0.82.1' },
+          deviceId: 'device-123',
+          targetRole: 'agent',
+        }
+      ]) as any);
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-watchdog' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '22222222-2222-4222-8222-222222222222',
+        status: 'completed',
+        exitCode: 0,
+        result: { updated_to: '0.82.1' },
+      })
+    } as any, ws as any);
+
+    expect(applyCompletedComponentUpdateVersionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'update_watchdog',
+        targetRole: 'agent',
+        payload: { version: '0.82.1' },
+      }),
+      'completed',
+      { updated_to: '0.82.1' },
+    );
   });
 
   it('rejects watchdog-targeted command results on the agent websocket', async () => {

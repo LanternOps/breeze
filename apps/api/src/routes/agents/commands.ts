@@ -28,6 +28,7 @@ import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../../services/agentCommandResultValidation';
+import { applyCompletedComponentUpdateVersion } from '../../services/componentUpdateResults';
 
 export const commandsRoutes = new Hono();
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
@@ -266,6 +267,13 @@ commandsRoutes.post(
     if (validationError) {
       console.warn(`[agents] ${validationError}`);
       return c.json({ success: true });
+    }
+
+    try {
+      await applyCompletedComponentUpdateVersion(command, normalizedData.status, normalizedData.result);
+    } catch (err) {
+      console.error(`[agents] component update post-processing failed for ${commandId}:`, err);
+      captureException(err);
     }
 
     if (

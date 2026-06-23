@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu, ArrowUpCircle, CircleAlert } from 'lucide-react';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
@@ -60,6 +60,8 @@ export type Device = {
   osBuild?: string;
   architecture?: string;
   status: DeviceStatus;
+  componentUpdateStatusLabel?: string | null;
+  componentUpdateStatusFullLabel?: string | null;
   cpuPercent: number;
   ramPercent: number;
   lastSeen: string;
@@ -69,6 +71,8 @@ export type Device = {
   siteName: string;
   agentVersion: string;
   watchdogVersion?: string | null;
+  agentUpdate?: ComponentUpdateInfo | null;
+  watchdogUpdate?: ComponentUpdateInfo | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -118,6 +122,19 @@ export type Device = {
   reliabilityTrend?: 'improving' | 'stable' | 'degrading' | null;
 };
 
+export type ComponentUpdateInfo = {
+  available: boolean;
+  currentVersion: string | null;
+  targetVersion: string | null;
+  mode: 'automatic' | 'manual';
+  autoInstall: boolean;
+  pinned: boolean;
+  action?: 'component-update' | 'legacy-agent-update';
+  blockedBy?: 'legacy-agent' | 'legacy-watchdog' | 'missing-watchdog';
+  missing?: boolean;
+  reason?: string;
+};
+
 // Columns that only make sense for the network arm (#1322); hidden unless
 // networkDevicesEnabled. Module-level so it isn't reallocated each render.
 const NETWORK_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>(['class', 'type']);
@@ -136,6 +153,7 @@ type DeviceListProps = {
   timezone?: string;
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
+  onComponentUpdate?: (device: Device, component: 'agent' | 'watchdog') => void;
   onBulkAction?: (action: string, devices: Device[]) => void;
   // Controlled inline filter state — now just the device search box, owned by
   // DevicesPage and shared with DeviceFilterToolbar. Every other structured
@@ -183,7 +201,7 @@ const statusLabels: Record<DeviceStatus, string> = {
   maintenance: 'Maint',
   decommissioned: 'Decom',
   quarantined: 'Quar',
-  updating: 'Upd',
+  updating: 'Updating',
   pending: 'Pend'
 };
 const statusFullLabels: Record<DeviceStatus, string> = {
@@ -195,6 +213,18 @@ const statusFullLabels: Record<DeviceStatus, string> = {
   updating: 'Updating',
   pending: 'Pending'
 };
+
+function deviceStatusLabel(device: Pick<Device, 'status' | 'componentUpdateStatusLabel'>): string {
+  return device.status === 'updating' && device.componentUpdateStatusLabel
+    ? device.componentUpdateStatusLabel
+    : statusLabels[device.status];
+}
+
+function deviceStatusFullLabel(device: Pick<Device, 'status' | 'componentUpdateStatusFullLabel'>): string {
+  return device.status === 'updating' && device.componentUpdateStatusFullLabel
+    ? device.componentUpdateStatusFullLabel
+    : statusFullLabels[device.status];
+}
 
 // Cap visible tag chips per row; the rest collapse into a +N chip, with the
 // full comma-joined list on the cell's title attribute (same overflow trick
@@ -300,6 +330,7 @@ export default function DeviceList({
   timezone,
   onSelect,
   onAction,
+  onComponentUpdate,
   onBulkAction,
   pageSize = 10,
   includeDecommissioned = false,
@@ -645,6 +676,116 @@ export default function DeviceList({
   // attribute doesn't exist for a printer/router, so don't imply 0/blank.
   const agentCell = (device: Device, node: React.ReactNode): React.ReactNode =>
     (device.deviceClass ?? 'agent') === 'network' ? dash : node;
+  const updateTooltip = (component: 'agent' | 'watchdog', update: ComponentUpdateInfo) => {
+    const target = update.targetVersion ?? 'latest';
+    const pinText = update.pinned ? ' Pinned target.' : '';
+    const componentLabel = component === 'agent' ? 'agent' : 'watchdog';
+    if (update.blockedBy === 'legacy-agent') {
+      return `Update the main agent first before updating or repairing the watchdog.${pinText}`;
+    }
+    if (update.blockedBy === 'legacy-watchdog') {
+      return `Update the watchdog first before updating the main agent.${pinText}`;
+    }
+    if (update.blockedBy === 'missing-watchdog') {
+      return `Watchdog is required before updating the main agent.${pinText}`;
+    }
+    if (update.action === 'legacy-agent-update' || update.reason === 'legacy-agent') {
+      if (update.mode === 'automatic' || update.autoInstall) {
+        return `Legacy agent will update automatically to ${target}.${pinText}`;
+      }
+      return `Legacy agent. Click to upgrade to ${target}.${pinText}`;
+    }
+    if (update.missing) {
+      if (update.mode === 'automatic' || update.autoInstall) {
+        return `Watchdog is missing. Repair will install automatically to ${target}.${pinText}`;
+      }
+      return `Watchdog is missing. Click to install ${target}.${pinText}`;
+    }
+    if (update.reason === 'non-release-version') {
+      return `Installed ${componentLabel} version is not a release build. Click to reinstall ${target}.${pinText}`;
+    }
+    if (update.mode === 'automatic' || update.autoInstall) {
+      if (update.reason === 'outside-schedule') {
+        return `Update will install automatically during the configured schedule to ${target}.${pinText}`;
+      }
+      return `Update will install automatically to ${target}.${pinText}`;
+    }
+    return `Click to update to ${target}.${pinText}`;
+  };
+  const componentUpdateActionLabel = (component: 'agent' | 'watchdog', update: ComponentUpdateInfo) => {
+    const componentLabel = component === 'agent' ? 'agent' : 'watchdog';
+    if (component === 'agent' && (update.action === 'legacy-agent-update' || update.reason === 'legacy-agent')) {
+      return 'upgrade the legacy agent';
+    }
+    if (update.reason === 'non-release-version') {
+      return `reinstall the ${componentLabel}`;
+    }
+    if (component === 'watchdog' && update.missing) {
+      return 'install or repair the watchdog';
+    }
+    return `update the ${componentLabel}`;
+  };
+  const updateTooltipForDevice = (
+    device: Device,
+    component: 'agent' | 'watchdog',
+    update: ComponentUpdateInfo,
+  ) => {
+    const tooltip = updateTooltip(component, update);
+    if (device.status === 'online') return tooltip;
+    return `${tooltip} Device status must be Up to ${componentUpdateActionLabel(component, update)}.`;
+  };
+  const versionWithUpdate = (
+    device: Device,
+    component: 'agent' | 'watchdog',
+    versionNode: React.ReactNode,
+  ) => {
+    const update = component === 'agent' ? device.agentUpdate : device.watchdogUpdate;
+    const content = <span>{versionNode}</span>;
+    if (!update?.available) return content;
+    const manualReinstall = update.reason === 'non-release-version';
+    const legacyAgentAction = component === 'agent' && update.action === 'legacy-agent-update';
+    const manualLegacyAgentAction = legacyAgentAction && update.mode === 'manual' && !update.autoInstall;
+    const blocked = Boolean(update.blockedBy);
+    const statusBlocked = device.status !== 'online';
+    const disabled = statusBlocked || blocked || (!manualReinstall && !manualLegacyAgentAction && (update.mode === 'automatic' || update.autoInstall));
+    const missingWatchdog = component === 'watchdog' && update.missing === true;
+    const warningReinstall = update.reason === 'non-release-version';
+    const legacyAgentWarning = component === 'agent' && (update.action === 'legacy-agent-update' || update.reason === 'legacy-agent');
+    const blockedWarning = Boolean(update.blockedBy);
+    const UpdateIcon = missingWatchdog || warningReinstall || legacyAgentWarning || blockedWarning ? CircleAlert : ArrowUpCircle;
+    const tooltip = updateTooltipForDevice(device, component, update);
+    const ariaLabel = missingWatchdog
+      ? 'Watchdog repair available'
+      : legacyAgentWarning
+        ? 'Legacy agent upgrade available'
+        : blockedWarning
+          ? `${component === 'agent' ? 'Agent' : 'Watchdog'} update blocked`
+      : warningReinstall
+        ? `${component === 'agent' ? 'Agent' : 'Watchdog'} reinstall available`
+        : `${component === 'agent' ? 'Agent' : 'Watchdog'} update available`;
+    return (
+      <span className="inline-flex min-w-0 items-center gap-1.5">
+        {content}
+        <span className="inline-flex" title={tooltip}>
+          <button
+            type="button"
+            title={tooltip}
+            aria-label={ariaLabel}
+            disabled={disabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!disabled) onComponentUpdate?.(device, component);
+            }}
+            className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-default disabled:pointer-events-none disabled:text-muted-foreground disabled:hover:bg-transparent ${
+              missingWatchdog ? 'text-destructive' : warningReinstall || legacyAgentWarning || blockedWarning ? 'text-warning' : 'text-primary'
+            }`}
+          >
+            <UpdateIcon className="h-4 w-4" />
+          </button>
+        </span>
+      </span>
+    );
+  };
   const columnDefs: Record<ColumnId, { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }> = {
     hostname: {
       header: () => sortHeader('hostname', 'Device', 'Sort by device'),
@@ -800,9 +941,9 @@ export default function DeviceList({
           <div className="flex flex-wrap items-center gap-1">
             <span
               className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
-              title={statusFullLabels[device.status]}
+              title={deviceStatusFullLabel(device)}
             >
-              {statusLabels[device.status]}
+              {deviceStatusLabel(device)}
             </span>
             {shouldShowAgentSilentBadge(device) && (
               <span
@@ -898,7 +1039,7 @@ export default function DeviceList({
       header: () => sortHeader('agentVersion', 'Agent Version', 'Sort by agent version'),
       cell: (device) => (
         <td key="agentVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-          {device.agentVersion || dash}
+          {agentCell(device, versionWithUpdate(device, 'agent', device.agentVersion || dash))}
         </td>
       ),
     },
@@ -906,7 +1047,11 @@ export default function DeviceList({
       header: () => sortHeader('watchdogVersion', 'Watchdog Version', 'Sort by watchdog version'),
       cell: (device) => (
         <td key="watchdogVersion" className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
-          {agentCell(device, fmtWatchdogVersion(device.watchdogVersion))}
+          {agentCell(device, versionWithUpdate(
+            device,
+            'watchdog',
+            device.watchdogUpdate?.missing ? 'Missing' : fmtWatchdogVersion(device.watchdogVersion),
+          ))}
         </td>
       ),
     },

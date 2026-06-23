@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import { isS3Configured, syncDirectory } from "./s3Storage";
@@ -63,6 +63,7 @@ const WATCHDOG_TARGETS = AGENT_TARGETS;
 interface BinaryInfo {
   filename: string;
   filePath: string;
+  component: "agent" | "watchdog";
   platform: string;
   architecture: string;
   checksum: string;
@@ -90,16 +91,18 @@ const PLATFORM_MAP: Record<string, string> = {
 
 function parseBinaryFilename(
   filename: string,
-): { platform: string; architecture: string } | null {
-  // Expected format: breeze-agent-{os}-{arch}[.exe]
+): { component: "agent" | "watchdog"; platform: string; architecture: string } | null {
+  // Expected format: breeze-{agent|watchdog}-{os}-{arch}[.exe]
   const match = filename.match(
-    /^breeze-agent-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$/,
+    /^breeze-(agent|watchdog)-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$/,
   );
   if (!match) return null;
-  const os = match[1]!;
+  const component = match[1] as "agent" | "watchdog";
+  const os = match[2]!;
   return {
+    component,
     platform: PLATFORM_MAP[os] ?? os,
-    architecture: match[2]!,
+    architecture: match[3]!,
   };
 }
 
@@ -238,7 +241,10 @@ async function getReleaseAssetMetadata(args: {
   };
 }
 
-async function scanBinaryDir(dir: string): Promise<BinaryInfo[]> {
+async function scanBinaryDir(
+  dir: string,
+  label = "Binary",
+): Promise<BinaryInfo[]> {
   const results: BinaryInfo[] = [];
 
   let entries: string[];
@@ -247,7 +253,7 @@ async function scanBinaryDir(dir: string): Promise<BinaryInfo[]> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[binarySync] Agent binary directory not found: ${dir} (${msg})`,
+      `[binarySync] ${label} binary directory not found: ${dir} (${msg})`,
     );
     return results;
   }
@@ -264,6 +270,7 @@ async function scanBinaryDir(dir: string): Promise<BinaryInfo[]> {
       results.push({
         filename,
         filePath,
+        component: parsed.component,
         platform: parsed.platform,
         architecture: parsed.architecture,
         checksum,
@@ -293,6 +300,9 @@ export async function syncBinaries(): Promise<void> {
   }
 
   const agentBinaryDir = resolve(process.env.AGENT_BINARY_DIR || "./agent/bin");
+  const watchdogBinaryDir = resolve(
+    process.env.WATCHDOG_BINARY_DIR || process.env.AGENT_BINARY_DIR || "./agent/bin",
+  );
   const viewerBinaryDir = resolve(
     process.env.VIEWER_BINARY_DIR || "./viewer/bin",
   );
@@ -342,8 +352,16 @@ export async function syncBinaries(): Promise<void> {
     }
   }
 
-  // Scan and register agent binaries in DB
-  const binaries = await scanBinaryDir(agentBinaryDir);
+  // Scan and register local agent/watchdog binaries in DB.
+  const binaries =
+    watchdogBinaryDir === agentBinaryDir
+      ? await scanBinaryDir(agentBinaryDir, "Agent/watchdog")
+      : [
+          ...(await scanBinaryDir(agentBinaryDir, "Agent")),
+          ...(await scanBinaryDir(watchdogBinaryDir, "Watchdog")).filter(
+            (bin) => bin.component === "watchdog",
+          ),
+        ];
   if (binaries.length > 0) {
     const serverUrl =
       process.env.PUBLIC_APP_URL ||
@@ -359,11 +377,15 @@ export async function syncBinaries(): Promise<void> {
     await db.transaction(async (tx) => {
       for (const bin of binaries) {
         const osParam = bin.platform === "macos" ? "darwin" : bin.platform;
-        const downloadUrl = `${serverUrl}/api/v1/agents/download/${osParam}/${bin.architecture}`;
+        const downloadPath =
+          bin.component === "watchdog"
+            ? `/api/v1/agents/download/watchdog/${osParam}/${bin.architecture}`
+            : `/api/v1/agents/download/${osParam}/${bin.architecture}`;
+        const downloadUrl = `${serverUrl}${downloadPath}`;
 
         const manifestObj = {
           version,
-          component: "agent",
+          component: bin.component,
           platform: bin.platform,
           arch: bin.architecture,
           url: downloadUrl,
@@ -381,6 +403,7 @@ export async function syncBinaries(): Promise<void> {
             and(
               eq(agentVersions.platform, bin.platform),
               eq(agentVersions.architecture, bin.architecture),
+              eq(agentVersions.component, bin.component),
               eq(agentVersions.isLatest, true),
             ),
           );
@@ -396,14 +419,14 @@ export async function syncBinaries(): Promise<void> {
             checksum: bin.checksum,
             fileSize: bin.fileSize,
             isLatest: true,
+            component: bin.component,
             releaseManifest,
             manifestSignature,
             signingKeyId: keyId,
           })
           .onConflictDoUpdate({
             // Match the actual unique constraint
-            // (version, platform, architecture, component). `component`
-            // defaults to 'agent' in the schema for the local-binary path.
+            // (version, platform, architecture, component).
             target: [
               agentVersions.version,
               agentVersions.platform,
@@ -423,8 +446,18 @@ export async function syncBinaries(): Promise<void> {
       }
     });
 
+    const countsByComponent = binaries.reduce<Record<string, number>>(
+      (counts, bin) => {
+        counts[bin.component] = (counts[bin.component] ?? 0) + 1;
+        return counts;
+      },
+      {},
+    );
+    const countSummary = Object.entries(countsByComponent)
+      .map(([component, count]) => `${component}: ${count}`)
+      .join(", ");
     console.log(
-      `[binarySync] Registered ${binaries.length} agent binaries (version: ${version})`,
+      `[binarySync] Registered ${binaries.length} local binaries (${countSummary}; version: ${version})`,
     );
   } else {
     console.log(
@@ -454,6 +487,9 @@ export async function syncBinaries(): Promise<void> {
 
     const agentSync = await syncDirectory(agentBinaryDir, "agent");
     logSyncResult("agent", agentSync);
+
+    const watchdogSync = await syncDirectory(watchdogBinaryDir, "watchdog");
+    logSyncResult("watchdog", watchdogSync);
 
     const viewerSync = await syncDirectory(viewerBinaryDir, "viewer");
     logSyncResult("viewer", viewerSync);
@@ -705,21 +741,29 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
     return;
 
   try {
-    const [existing] = await db
-      .select({ version: agentVersions.version })
+    const existingRows = await db
+      .select({ component: agentVersions.component })
       .from(agentVersions)
       .where(
         and(
           eq(agentVersions.version, currentVersion),
-          eq(agentVersions.component, "agent"),
+          inArray(agentVersions.component, ["agent", "watchdog"]),
         ),
       )
-      .limit(1);
+      .limit(2);
 
-    if (existing) return; // Already registered
+    const existingComponents = new Set(
+      existingRows.map((row) => row.component),
+    );
+    if (
+      existingComponents.has("agent") &&
+      existingComponents.has("watchdog")
+    ) {
+      return; // Already registered
+    }
 
     console.log(
-      `[binarySync] Version ${currentVersion} not found in agentVersions, syncing from GitHub`,
+      `[binarySync] Version ${currentVersion} is missing agent/watchdog rows in agentVersions, syncing from GitHub`,
     );
     const result = await syncFromGitHub(`v${currentVersion}`);
     console.log(

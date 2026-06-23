@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeAgentUpdatePolicy,
+  normalizeAgentUpdateSettings,
   parseMaintenanceWindow,
   isWithinMaintenanceWindow,
   shouldSendAgentUpgrade,
@@ -24,6 +25,83 @@ describe('normalizeAgentUpdatePolicy', () => {
     expect(normalizeAgentUpdatePolicy('')).toBe('staged');
     expect(normalizeAgentUpdatePolicy('bogus')).toBe('staged');
     expect(normalizeAgentUpdatePolicy(42)).toBe('staged');
+  });
+});
+
+describe('normalizeAgentUpdateSettings', () => {
+  it('maps legacy manual to structured manual', () => {
+    expect(normalizeAgentUpdateSettings({ agentUpdatePolicy: 'manual' })).toMatchObject({
+      mode: 'manual',
+      timing: 'asap',
+      schedule: null,
+    });
+  });
+
+  it('maps legacy automatic with a parseable day window to weekly', () => {
+    expect(normalizeAgentUpdateSettings({
+      agentUpdatePolicy: 'auto',
+      maintenanceWindow: 'Sun 02:00-04:00',
+    })).toMatchObject({
+      mode: 'automatic',
+      timing: 'weekly',
+      schedule: { windows: [{ dayOfWeek: 'sun', start: '02:00', end: '04:00' }] },
+    });
+  });
+
+  it('maps legacy automatic without a window to the default weekly schedule', () => {
+    expect(normalizeAgentUpdateSettings({
+      agentUpdatePolicy: 'auto',
+    })).toMatchObject({
+      mode: 'automatic',
+      timing: 'weekly',
+      schedule: { windows: [{ dayOfWeek: 'sun', start: '02:00', end: '04:00' }] },
+    });
+  });
+
+  it('maps malformed legacy windows to automatic asap with a warning flag', () => {
+    expect(normalizeAgentUpdateSettings({
+      agentUpdatePolicy: 'staged',
+      maintenanceWindow: 'sometime soon',
+    })).toMatchObject({
+      mode: 'automatic',
+      timing: 'asap',
+      schedule: null,
+      legacyWindowInvalid: true,
+    });
+  });
+
+  it('maps malformed legacy automatic windows to the default weekly schedule with a warning flag', () => {
+    expect(normalizeAgentUpdateSettings({
+      agentUpdatePolicy: 'auto',
+      maintenanceWindow: 'sometime soon',
+    })).toMatchObject({
+      mode: 'automatic',
+      timing: 'weekly',
+      schedule: { windows: [{ dayOfWeek: 'sun', start: '02:00', end: '04:00' }] },
+      legacyWindowInvalid: true,
+    });
+  });
+
+  it('accepts structured schedules with multiple windows', () => {
+    expect(normalizeAgentUpdateSettings({
+      agentUpdateMode: 'automatic',
+      agentUpdateTiming: 'weekly',
+      agentUpdateSchedule: {
+        windows: [
+          { dayOfWeek: 'mon', start: '01:00', end: '03:00' },
+          { dayOfWeek: 'wed', start: '22:30', end: '01:30' },
+        ],
+      },
+    })).toMatchObject({
+      mode: 'automatic',
+      timing: 'weekly',
+      schedule: {
+        windows: [
+          { dayOfWeek: 'mon', start: '01:00', end: '03:00' },
+          { dayOfWeek: 'wed', start: '22:30', end: '01:30' },
+        ],
+      },
+    });
   });
 });
 
@@ -109,15 +187,60 @@ describe('shouldSendAgentUpgrade', () => {
     expect(shouldSendAgentUpgrade({ policy: 'auto', maintenanceWindow: 'Sun 02:00-04:00' }, SUN_0300))
       .toEqual({ allow: true, reason: 'allowed' });
     expect(shouldSendAgentUpgrade({ policy: 'auto', maintenanceWindow: 'Sun 02:00-04:00' }, SUN_0500))
-      .toEqual({ allow: false, reason: 'outside-maintenance-window' });
+      .toEqual({ allow: false, reason: 'outside-schedule' });
     expect(shouldSendAgentUpgrade({ policy: 'staged', maintenanceWindow: 'Sun 02:00-04:00' }, SUN_0300))
       .toEqual({ allow: true, reason: 'allowed' });
     expect(shouldSendAgentUpgrade({ policy: 'staged', maintenanceWindow: 'Sun 02:00-04:00' }, SUN_0500))
-      .toEqual({ allow: false, reason: 'outside-maintenance-window' });
+      .toEqual({ allow: false, reason: 'outside-schedule' });
   });
 
   it('staged with no window behaves like auto-anytime (non-breaking default)', () => {
     expect(shouldSendAgentUpgrade({ policy: 'staged', maintenanceWindow: null }, SUN_0500))
       .toEqual({ allow: true, reason: 'allowed' });
+  });
+
+  it('structured weekly allows any selected time window', () => {
+    expect(shouldSendAgentUpgrade({
+      mode: 'automatic',
+      timing: 'weekly',
+      schedule: {
+        windows: [
+          { dayOfWeek: 'mon', start: '01:00', end: '03:00' },
+          { dayOfWeek: 'sun', start: '02:00', end: '04:00' },
+        ],
+      },
+      pins: {},
+      legacyPolicy: null,
+      legacyMaintenanceWindow: null,
+      legacyWindowInvalid: false,
+    }, SUN_0300)).toEqual({ allow: true, reason: 'allowed' });
+    expect(shouldSendAgentUpgrade({
+      mode: 'automatic',
+      timing: 'weekly',
+      schedule: { windows: [{ dayOfWeek: 'sun', start: '02:00', end: '04:00' }] },
+      pins: {},
+      legacyPolicy: null,
+      legacyMaintenanceWindow: null,
+      legacyWindowInvalid: false,
+    }, SUN_0500)).toEqual({ allow: false, reason: 'outside-schedule' });
+  });
+
+  it('structured weekly supports windows that wrap past midnight', () => {
+    const settings = {
+      mode: 'automatic' as const,
+      timing: 'weekly' as const,
+      schedule: { windows: [{ dayOfWeek: 'sat' as const, start: '22:00', end: '02:00' }] },
+      pins: {},
+      legacyPolicy: null,
+      legacyMaintenanceWindow: null,
+      legacyWindowInvalid: false,
+    };
+
+    expect(shouldSendAgentUpgrade(settings, new Date('2026-06-13T23:00:00Z')))
+      .toEqual({ allow: true, reason: 'allowed' });
+    expect(shouldSendAgentUpgrade(settings, new Date('2026-06-14T01:00:00Z')))
+      .toEqual({ allow: true, reason: 'allowed' });
+    expect(shouldSendAgentUpgrade(settings, new Date('2026-06-14T03:00:00Z')))
+      .toEqual({ allow: false, reason: 'outside-schedule' });
   });
 });

@@ -26,6 +26,8 @@ import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
+import { validateAgentUpdateDefaults } from './agents/agentUpdatePolicy';
+import { validateAgentVersionPinsAvailable } from '../services/agentUpdateTargets';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 
@@ -100,6 +102,15 @@ function preserveIpAllowlistOnOmit(
   return { ...incomingSettings, security: { ...security, ipAllowlist: currentList } };
 }
 
+async function validateAgentUpdateSettingsPayload(settings: unknown): Promise<string | null> {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return null;
+  const defaults = (settings as Record<string, unknown>).defaults;
+  if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) return null;
+  const shapeError = validateAgentUpdateDefaults(defaults);
+  if (shapeError) return shapeError;
+  return validateAgentVersionPinsAvailable(defaults);
+}
+
 const createOrganizationSchema = z.object({
   partnerId: z.string().guid().optional(),
   name: z.string().min(1),
@@ -115,6 +126,32 @@ const createOrganizationSchema = z.object({
 });
 
 const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true });
+
+const agentUpdateScheduleWindowSchema = z.object({
+  dayOfWeek: z.enum(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']),
+  start: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+  end: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+}).refine((window) => window.start !== window.end, {
+  message: 'start and end must be different',
+  path: ['end'],
+});
+
+const legacyAgentUpdateScheduleSchema = z.object({
+  dayOfWeek: z.enum(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']),
+  time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+});
+
+const agentUpdateScheduleSchema = z.union([
+  legacyAgentUpdateScheduleSchema,
+  z.object({
+    windows: z.array(agentUpdateScheduleWindowSchema).min(1).max(14),
+  }),
+]);
+
+const agentVersionPinsSchema = z.object({
+  agent: z.union([z.string().max(64), z.literal('')]).optional(),
+  watchdog: z.union([z.string().max(64), z.literal('')]).optional(),
+}).optional();
 
 const listSitesSchema = z.object({
   orgId: z.string().guid().optional(),
@@ -376,6 +413,10 @@ const partnerSettingsSchema = z.object({
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
     maintenanceWindow: z.string().optional(),
+    agentUpdateMode: z.enum(['automatic', 'manual']).optional(),
+    agentUpdateTiming: z.enum(['asap', 'weekly']).optional(),
+    agentUpdateSchedule: agentUpdateScheduleSchema.optional(),
+    agentVersionPins: agentVersionPinsSchema,
   }).optional(),
   branding: z.object({
     logoUrl: z.string().max(400_000, 'Logo data exceeds maximum size (400 KB)').optional(),
@@ -528,6 +569,11 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     };
   }
 
+  const agentUpdateSettingsError = await validateAgentUpdateSettingsPayload(newSettings);
+  if (agentUpdateSettingsError) {
+    return c.json({ error: agentUpdateSettingsError }, 400);
+  }
+
   // Tenant-isolation guard: defaultTriageOrgId is stored verbatim, but the
   // future auto-triage path will route mail INTO that org. A cross-partner id
   // here would route a partner's inbound mail to an org outside their tenant.
@@ -611,6 +657,22 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
     details: { changedFields: Object.keys(body) }
   });
 
+  if (body.settings?.defaults) {
+    const defaults = body.settings.defaults as Record<string, unknown>;
+    const updateKeys = ['agentUpdateMode', 'agentUpdateTiming', 'agentUpdateSchedule', 'agentVersionPins']
+      .filter((key) => key in defaults);
+    if (updateKeys.length > 0) {
+      writeRouteAudit(c, {
+        orgId: auditOrgId,
+        action: 'partner.agent_update_settings.update',
+        resourceType: 'partner',
+        resourceId: partner.id,
+        resourceName: partner.name,
+        details: { changedFields: updateKeys },
+      });
+    }
+  }
+
   return c.json(partner);
 });
 
@@ -657,6 +719,11 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
           currentPartner.settings,
           updates.settings as Record<string, unknown>,
         );
+      }
+
+      const agentUpdateSettingsError = await validateAgentUpdateSettingsPayload(updates.settings);
+      if (agentUpdateSettingsError) {
+        return c.json({ error: agentUpdateSettingsError }, 400);
       }
 
       // Keep the first-class `partners.timezone` column in sync with the
@@ -733,6 +800,24 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
       changedFields: Object.keys(data)
     }
   });
+
+  if (data.settings?.defaults && typeof data.settings.defaults === 'object') {
+    const defaults = data.settings.defaults as Record<string, unknown>;
+    const updateKeys = ['agentUpdateMode', 'agentUpdateTiming', 'agentUpdateSchedule', 'agentVersionPins']
+      .filter((key) => key in defaults);
+    if (updateKeys.length > 0) {
+      writeAuditEvent(c, {
+        orgId: auditOrgId,
+        actorId: auth.user?.id,
+        actorEmail: auth.user?.email,
+        action: 'partner.agent_update_settings.update',
+        resourceType: 'partner',
+        resourceId: partner.id,
+        resourceName: partner.name,
+        details: { changedFields: updateKeys },
+      });
+    }
+  }
 
   return c.json(partner);
 });
@@ -980,6 +1065,11 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
+  const agentUpdateSettingsError = await validateAgentUpdateSettingsPayload(data.settings);
+  if (agentUpdateSettingsError) {
+    return c.json({ error: agentUpdateSettingsError }, 400);
+  }
+
   let targetPartnerId: string | null = null;
 
   if (auth.scope === 'partner') {
@@ -1086,6 +1176,11 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     return c.json({ error: 'Organization not found' }, 404);
   }
 
+  const agentUpdateSettingsError = await validateAgentUpdateSettingsPayload(data.settings);
+  if (agentUpdateSettingsError) {
+    return c.json({ error: agentUpdateSettingsError }, 400);
+  }
+
   // Enforce partner locks on settings categories (after auth check)
   if (data.settings) {
     const settingsObj = data.settings as Record<string, unknown>;
@@ -1147,6 +1242,22 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     resourceName: organization.name,
     details: { changedFields: Object.keys(data) }
   });
+
+  if (data.settings?.defaults && typeof data.settings.defaults === 'object') {
+    const defaults = data.settings.defaults as Record<string, unknown>;
+    const updateKeys = ['agentUpdateMode', 'agentUpdateTiming', 'agentUpdateSchedule', 'agentVersionPins']
+      .filter((key) => key in defaults);
+    if (updateKeys.length > 0) {
+      writeRouteAudit(c, {
+        orgId: organization.id,
+        action: 'organization.agent_update_settings.update',
+        resourceType: 'organization',
+        resourceId: organization.id,
+        resourceName: organization.name,
+        details: { changedFields: updateKeys },
+      });
+    }
+  }
 
   return c.json(organization);
 }] as const;

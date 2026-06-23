@@ -121,6 +121,318 @@ describe('DeviceList — Device column display names', () => {
   });
 });
 
+describe('DeviceList — component update indicators', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  function showColumn(label: string) {
+    fireEvent.click(screen.getByRole('button', { name: /columns/i }));
+    fireEvent.click(screen.getByLabelText(label));
+  }
+
+  it('renders automatic agent updates as disabled with automatic-install tooltip copy', () => {
+    const device: Device = {
+      ...baseDevice,
+      agentUpdate: {
+        available: true,
+        currentVersion: '0.67.0',
+        targetVersion: '0.68.0',
+        mode: 'automatic',
+        autoInstall: true,
+        pinned: false,
+      },
+    };
+
+    render(<DeviceList devices={[device]} />);
+    showColumn('Agent Version');
+
+    const button = screen.getByRole('button', { name: 'Agent update available' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Update will install automatically to 0.68.0.');
+  });
+
+  it('calls the manual update callback when a manual agent update indicator is clicked', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      agentUpdate: {
+        available: true,
+        currentVersion: '0.67.0',
+        targetVersion: '0.68.0',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: true,
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Agent Version');
+
+    const button = screen.getByRole('button', { name: 'Agent update available' });
+    expect(button).toHaveAttribute('title', 'Click to update to 0.68.0. Pinned target.');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: device.id }), 'agent');
+  });
+
+  it('disables manual component updates when the device is down but keeps the update tooltip context', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      status: 'offline',
+      agentUpdate: {
+        available: true,
+        currentVersion: '0.67.0',
+        targetVersion: '0.68.0',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: true,
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Agent Version');
+
+    const button = screen.getByRole('button', { name: 'Agent update available' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title',
+      'Click to update to 0.68.0. Pinned target. Device status must be Up to update the agent.',
+    );
+    expect(button.parentElement).toHaveAttribute(
+      'title',
+      'Click to update to 0.68.0. Pinned target. Device status must be Up to update the agent.',
+    );
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).not.toHaveBeenCalled();
+  });
+
+  it('shows a clickable warning for legacy agents that need the heartbeat upgrade path', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      agentVersion: '0.82.1',
+      agentUpdate: {
+        available: true,
+        currentVersion: '0.82.1',
+        targetVersion: '0.83.0',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: false,
+        action: 'legacy-agent-update',
+        reason: 'legacy-agent',
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Agent Version');
+
+    const button = screen.getByRole('button', { name: 'Legacy agent upgrade available' });
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Legacy agent. Click to upgrade to 0.83.0.');
+    expect(button).toHaveClass('text-warning');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: device.id }), 'agent');
+  });
+
+  it('keeps automatic legacy agent warnings disabled while auto install is allowed', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      agentVersion: '0.82.1',
+      agentUpdate: {
+        available: true,
+        currentVersion: '0.82.1',
+        targetVersion: '0.83.0',
+        mode: 'automatic',
+        autoInstall: true,
+        pinned: false,
+        action: 'legacy-agent-update',
+        reason: 'legacy-agent',
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Agent Version');
+
+    const button = screen.getByRole('button', { name: 'Legacy agent upgrade available' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Legacy agent will update automatically to 0.83.0.');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).not.toHaveBeenCalled();
+  });
+
+  it('shows watchdog repair/update as blocked until the legacy main agent is upgraded', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      agentVersion: '0.82.1',
+      watchdogVersion: null,
+      watchdogUpdate: {
+        available: true,
+        currentVersion: null,
+        targetVersion: '0.83.0',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: false,
+        missing: true,
+        blockedBy: 'legacy-agent',
+        reason: 'legacy-agent',
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Watchdog Version');
+
+    expect(screen.getByText('Missing')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Watchdog repair available' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title',
+      'Update the main agent first before updating or repairing the watchdog.',
+    );
+    expect(button).toHaveClass('text-destructive');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).not.toHaveBeenCalled();
+  });
+
+  it('offers a clickable reinstall when the installed agent version is not a release build', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      agentVersion: 'integration-smoke-agent',
+      agentUpdate: {
+        available: true,
+        currentVersion: 'integration-smoke-agent',
+        targetVersion: '0.68.0',
+        mode: 'automatic',
+        autoInstall: false,
+        pinned: false,
+        reason: 'non-release-version',
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Agent Version');
+
+    const button = screen.getByRole('button', { name: 'Agent reinstall available' });
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title',
+      'Installed agent version is not a release build. Click to reinstall 0.68.0.',
+    );
+    expect(button).toHaveClass('text-warning');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: device.id }), 'agent');
+  });
+
+  it('disables reinstall actions when the device is down but preserves reinstall copy', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      status: 'offline',
+      agentVersion: 'integration-smoke-agent',
+      agentUpdate: {
+        available: true,
+        currentVersion: 'integration-smoke-agent',
+        targetVersion: '0.68.0',
+        mode: 'automatic',
+        autoInstall: false,
+        pinned: false,
+        reason: 'non-release-version',
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Agent Version');
+
+    const button = screen.getByRole('button', { name: 'Agent reinstall available' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title',
+      'Installed agent version is not a release build. Click to reinstall 0.68.0. Device status must be Up to reinstall the agent.',
+    );
+    expect(button).toHaveClass('text-warning');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).not.toHaveBeenCalled();
+  });
+
+  it('offers a clickable warning reinstall when the installed watchdog version is not a release build', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      watchdogVersion: 'agent-watchdog-update-bbce5c5dab306bf0df72989a134441f104173945',
+      watchdogUpdate: {
+        available: true,
+        currentVersion: 'agent-watchdog-update-bbce5c5dab306bf0df72989a134441f104173945',
+        targetVersion: '0.68.0',
+        mode: 'automatic',
+        autoInstall: false,
+        pinned: false,
+        reason: 'non-release-version',
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Watchdog Version');
+
+    const button = screen.getByRole('button', { name: 'Watchdog reinstall available' });
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title',
+      'Installed watchdog version is not a release build. Click to reinstall 0.68.0.',
+    );
+    expect(button).toHaveClass('text-warning');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: device.id }), 'watchdog');
+  });
+
+  it('shows missing watchdog with a manual repair indicator', () => {
+    const onComponentUpdate = vi.fn();
+    const device: Device = {
+      ...baseDevice,
+      watchdogVersion: null,
+      watchdogUpdate: {
+        available: true,
+        currentVersion: null,
+        targetVersion: '0.68.0',
+        mode: 'manual',
+        autoInstall: false,
+        pinned: false,
+        missing: true,
+      },
+    };
+
+    render(<DeviceList devices={[device]} onComponentUpdate={onComponentUpdate} />);
+    showColumn('Watchdog Version');
+
+    expect(screen.getByText('Missing')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Watchdog repair available' });
+    expect(button).toHaveAttribute('title', 'Watchdog is missing. Click to install 0.68.0.');
+    expect(button).toHaveClass('text-destructive');
+
+    fireEvent.click(button);
+
+    expect(onComponentUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: device.id }), 'watchdog');
+  });
+});
+
 describe('DeviceList — agent-silent (watchdog OK) badge (#800 web-UI gap)', () => {
   it('renders the amber badge when mainAgentSilentSince is set AND watchdog is reporting', () => {
     const device: Device = {
@@ -347,8 +659,27 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
 
     const { container } = render(<DeviceList devices={devices} />);
 
+    expect(screen.getByText('Updating')).toBeInTheDocument();
+    expect(screen.queryByText('Upd')).toBeNull();
+
     clickHeader('Sort by status');
     expect(rowOrder(container)).toEqual(['host-on', 'host-upd', 'host-pend', 'host-maint', 'host-quar', 'host-off']);
+  });
+
+  it('renders an operation-specific label for an updating component row', () => {
+    const devices: Device[] = [
+      {
+        ...baseDevice,
+        status: 'updating',
+        componentUpdateStatusLabel: 'Reinstalling agent',
+        componentUpdateStatusFullLabel: 'Reinstalling agent',
+      },
+    ];
+
+    render(<DeviceList devices={devices} />);
+
+    expect(screen.getByText('Reinstalling agent')).toBeInTheDocument();
+    expect(screen.queryByText('Updating')).toBeNull();
   });
 
   it('keeps dash cells last in BOTH directions (offline device has no CPU reading)', () => {

@@ -288,7 +288,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 	heartbeatTicker := time.NewTicker(wdCfg.HeartbeatStaleThreshold)
 	defer heartbeatTicker.Stop()
 
-	// Failover poll ticker — only used in FAILOVER state.
+	// Watchdog command poll ticker. In FAILOVER it also carries heartbeat
+	// duties; while healthy it still claims operator-queued watchdog commands
+	// such as manual agent updates.
 	failoverTicker := time.NewTicker(wdCfg.FailoverPollInterval)
 	defer failoverTicker.Stop()
 
@@ -369,11 +371,23 @@ func runWatchdog(stopCh <-chan struct{}) {
 			handleIPCMessage(env, wd, journal, cfg, tokenStore)
 
 		case <-failoverTicker.C:
-			// Only poll in FAILOVER state.
-			if wd.State() != watchdog.StateFailover || failoverClient == nil {
+			if tokenStore.Reveal() == "" {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h)
+			switch wd.State() {
+			case watchdog.StateFailover:
+				if failoverClient == nil {
+					failoverClient = watchdog.NewFailoverClient(
+						cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
+					)
+				}
+				handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h)
+			case watchdog.StateMonitoring:
+				commandClient := watchdog.NewFailoverClient(
+					cfg.ServerURL, cfg.AgentID, tokenStore.Reveal(), nil,
+				)
+				handleWatchdogCommandPoll(commandClient, wd, journal, cfg, tokenStore, recovery)
+			}
 		}
 
 		// State-driven actions after each tick.
@@ -413,7 +427,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 			// Flap-detection gate: if we've exceeded the 24h budget, jump to FAILOVER.
-			if recovery.Count24h() >= cfg.Watchdog.MaxRestartsPer24h {
+			if cfg.Watchdog.MaxRestartsPer24h > 0 && recovery.Count24h() >= cfg.Watchdog.MaxRestartsPer24h {
 				journal.Log(watchdog.LevelError, "recovery.flap_detected", map[string]any{
 					"count_24h": recovery.Count24h(),
 				})
@@ -581,6 +595,43 @@ func handleFailoverPoll(
 	pollCmds, err := fc.PollCommands()
 	if err != nil {
 		journal.Log(watchdog.LevelError, "failover.poll_failed", map[string]any{
+			"error": err.Error(),
+		})
+		pollCmds = nil
+	}
+
+	executeFailoverCommands(heartbeatCmds, pollCmds, func(cmd watchdog.FailoverCommand) {
+		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
+	})
+}
+
+// handleWatchdogCommandPoll reports watchdog presence and claims watchdog-targeted
+// commands while the main agent is healthy. Manual agent updates are queued to
+// targetRole=watchdog, so waiting for FAILOVER would leave healthy devices with
+// pending no-op updates. The monitoring heartbeat is also what lets the API
+// populate devices.watchdog_version for healthy agents.
+func handleWatchdogCommandPoll(
+	fc *watchdog.FailoverClient,
+	wd *watchdog.Watchdog,
+	journal *watchdog.Journal,
+	cfg *config.Config,
+	tokens *tokenHolder,
+	recovery *watchdog.RecoveryManager,
+) {
+	stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)
+	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
+	var heartbeatCmds []watchdog.FailoverCommand
+	if err != nil {
+		journal.Log(watchdog.LevelError, "monitoring.heartbeat_failed", map[string]any{
+			"error": err.Error(),
+		})
+	} else {
+		heartbeatCmds = processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	}
+
+	pollCmds, err := fc.PollCommands()
+	if err != nil {
+		journal.Log(watchdog.LevelError, "command.poll_failed", map[string]any{
 			"error": err.Error(),
 		})
 		pollCmds = nil
@@ -929,6 +980,6 @@ func currentRestartStats(rm *watchdog.RecoveryManager, maxPer24h int) watchdog.R
 	return watchdog.RestartStats{
 		Count24h:      count,
 		LastRestartAt: rm.LastRestartAt(),
-		FlapDetected:  count >= maxPer24h,
+		FlapDetected:  maxPer24h > 0 && count >= maxPer24h,
 	}
 }

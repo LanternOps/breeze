@@ -5,8 +5,8 @@
  * The pure gating logic lives in agentUpdatePolicy.ts (tested separately); this
  * file pins the JSONB extraction + normalization seam that the heartbeat tests
  * mock away: nested settings.defaults lookup, isObject guards at both levels,
- * unknown-policy fallback to `staged`, and whitespace-trim-to-null of the
- * maintenance window. That seam is the one most likely to silently break (a
+ * legacy-to-structured mapping, and warning flags for malformed legacy
+ * maintenance windows. That seam is the one most likely to silently break (a
  * renamed key → permissive default) on a settings-schema change.
  *
  * helpers.ts has a large import graph, so the mock harness below mirrors
@@ -121,57 +121,84 @@ describe('getOrgAgentUpdatePolicy', () => {
 
   it('reads a fully configured policy + maintenance window', async () => {
     dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'manual', maintenanceWindow: 'Sun 02:00-04:00' } } }]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'manual', maintenanceWindow: 'Sun 02:00-04:00',
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'manual',
+      timing: 'asap',
+      schedule: null,
+      legacyPolicy: 'manual',
+      legacyMaintenanceWindow: 'Sun 02:00-04:00',
+      legacyWindowInvalid: false,
     });
   });
 
-  it('trims a maintenance window and passes through auto/staged', async () => {
-    dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: '  02:00-04:00  ' } } }]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'auto', maintenanceWindow: '02:00-04:00',
+  it('maps a parseable legacy window to weekly', async () => {
+    dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: '  Sun 02:00-04:00  ' } } }]);
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'automatic',
+      timing: 'weekly',
+      schedule: { windows: [{ dayOfWeek: 'sun', start: '02:00', end: '04:00' }] },
+      legacyPolicy: 'auto',
+      legacyMaintenanceWindow: 'Sun 02:00-04:00',
     });
   });
 
   it('normalizes a whitespace-only window to null', async () => {
     dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'staged', maintenanceWindow: '   ' } } }]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'staged', maintenanceWindow: null,
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'automatic',
+      timing: 'asap',
+      schedule: null,
+      legacyPolicy: 'staged',
+      legacyMaintenanceWindow: null,
     });
   });
 
   it('normalizes a non-string window to null', async () => {
     dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'manual', maintenanceWindow: 42 } } }]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'manual', maintenanceWindow: null,
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'manual',
+      timing: 'asap',
+      schedule: null,
+      legacyPolicy: 'manual',
+      legacyMaintenanceWindow: null,
     });
   });
 
-  it('falls back to the permissive default (staged + null) for an unknown policy', async () => {
+  it('falls back to the structured automatic/asap default for an unknown policy', async () => {
     dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'bogus' } } }]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'staged', maintenanceWindow: null,
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'automatic',
+      timing: 'asap',
+      schedule: null,
+      legacyPolicy: null,
+      legacyMaintenanceWindow: null,
     });
   });
 
   it('defaults when defaults sub-object is absent', async () => {
     dbMock._setResult([{ settings: { somethingElse: true } }]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'staged', maintenanceWindow: null,
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'automatic',
+      timing: 'asap',
+      schedule: null,
     });
   });
 
   it('defaults when settings is absent / non-object', async () => {
     dbMock._setResult([{ settings: null }]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'staged', maintenanceWindow: null,
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'automatic',
+      timing: 'asap',
+      schedule: null,
     });
   });
 
   it('defaults when the org row is missing entirely', async () => {
     dbMock._setResult([]);
-    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
-      policy: 'staged', maintenanceWindow: null,
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toMatchObject({
+      mode: 'automatic',
+      timing: 'asap',
+      schedule: null,
     });
   });
 });

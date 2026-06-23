@@ -3,7 +3,14 @@ import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
-import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubWatchdogUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import {
+  getBinarySource,
+  getGithubAgentUrl,
+  getGithubAgentPkgUrl,
+  getGithubHelperUrl,
+  getGithubWatchdogUrl,
+  HELPER_FILENAMES,
+} from '../../services/binarySource';
 
 export const downloadRoutes = new Hono();
 
@@ -330,7 +337,7 @@ downloadRoutes.get('/download/watchdog/:os/:arch', async (c) => {
     }
   }
 
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const binaryDir = resolve(process.env.WATCHDOG_BINARY_DIR || process.env.AGENT_BINARY_DIR || './agent/bin');
   const filePath = join(binaryDir, filename);
 
   let fileStat: ReturnType<typeof statSync>;

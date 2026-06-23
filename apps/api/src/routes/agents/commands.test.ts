@@ -6,6 +6,7 @@ const updateMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
 const claimPendingCommandsForDeviceMock = vi.fn();
+const applyCompletedComponentUpdateVersionMock = vi.fn().mockResolvedValue(false);
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -56,6 +57,10 @@ vi.mock('../../services/commandDispatch', () => ({
   claimPendingCommandsForDevice: (...args: unknown[]) => claimPendingCommandsForDeviceMock(...(args as [])),
 }));
 
+vi.mock('../../services/componentUpdateResults', () => ({
+  applyCompletedComponentUpdateVersion: (...args: unknown[]) => applyCompletedComponentUpdateVersionMock(...(args as [])),
+}));
+
 vi.mock('../../services/vaultSyncPersistence', () => ({
   applyVaultSyncCommandResult: vi.fn(),
 }));
@@ -88,6 +93,7 @@ describe('agent commands routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    applyCompletedComponentUpdateVersionMock.mockResolvedValue(false);
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
@@ -200,5 +206,48 @@ describe('agent commands routes', () => {
 
     expect(res.status).toBe(403);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('post-processes completed component update results', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'update_watchdog',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: { version: '0.82.1' },
+        },
+      ])
+    );
+    updateMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+        },
+      ])
+    );
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'completed',
+        result: { updated_to: '0.82.1' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(applyCompletedComponentUpdateVersionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: commandId,
+        type: 'update_watchdog',
+        targetRole: 'agent',
+        payload: { version: '0.82.1' },
+      }),
+      'completed',
+      { updated_to: '0.82.1' },
+    );
   });
 });

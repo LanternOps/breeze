@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import {
   devices,
+  deviceCommands,
   deviceHardware,
   deviceReliability,
   deviceNetwork,
@@ -52,6 +53,12 @@ import { sendCommandToAgent, isAgentConnected } from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
+import {
+  buildDeviceUpdateMetadata,
+  compareAgentReleaseVersions,
+  isComparableReleaseVersion,
+} from '../../services/agentUpdateTargets';
+import type { DeviceUpdateMetadata } from '../../services/agentUpdateTargets';
 
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
@@ -123,6 +130,88 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'software_inventory', 'software_policy_audit', 'sql_instances',
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
+
+type PendingComponentUpdateStatus = {
+  label: string;
+  fullLabel: string;
+};
+
+function pendingComponentUpdateStatusFromCommand(
+  command: Pick<typeof deviceCommands.$inferSelect, 'type' | 'payload'>,
+  updates: DeviceUpdateMetadata | undefined,
+): PendingComponentUpdateStatus | null {
+  const payload = command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+    ? command.payload as Record<string, unknown>
+    : {};
+  const targetVersion = typeof payload.version === 'string' && payload.version.trim()
+    ? payload.version.trim()
+    : null;
+
+  if (command.type === 'legacy_agent_update') {
+    if (!targetVersion || componentVersionSatisfiesTarget(updates?.agentUpdate.currentVersion, targetVersion)) {
+      return null;
+    }
+    return { label: 'Upgrading agent', fullLabel: 'Upgrading legacy agent' };
+  }
+
+  if (command.type !== 'update_agent' && command.type !== 'update_watchdog') return null;
+
+  const component = command.type === 'update_agent' ? 'agent' : 'watchdog';
+  const update = component === 'agent' ? updates?.agentUpdate : updates?.watchdogUpdate;
+  if (!targetVersion || componentVersionSatisfiesTarget(update?.currentVersion, targetVersion)) {
+    return null;
+  }
+
+  const payloadReason = typeof payload.reason === 'string' ? payload.reason : null;
+  const isInstall = component === 'watchdog' && (update?.missing === true || payloadReason === 'missing');
+  const isReinstall = update?.reason === 'non-release-version' || payloadReason === 'non-release-version';
+  const verb = isInstall ? 'Installing' : isReinstall ? 'Reinstalling' : 'Updating';
+  const label = `${verb} ${component}`;
+  return { label, fullLabel: label };
+}
+
+function componentVersionSatisfiesTarget(currentVersion: string | null | undefined, targetVersion: string): boolean {
+  if (!currentVersion) return false;
+  if (currentVersion === targetVersion) return true;
+  if (isComparableReleaseVersion(currentVersion) && isComparableReleaseVersion(targetVersion)) {
+    return compareAgentReleaseVersions(currentVersion, targetVersion) >= 0;
+  }
+  return false;
+}
+
+async function loadPendingComponentUpdateStatuses(
+  deviceIds: string[],
+  updateMetadata: Map<string, DeviceUpdateMetadata>,
+): Promise<Map<string, PendingComponentUpdateStatus>> {
+  const statuses = new Map<string, PendingComponentUpdateStatus>();
+  if (deviceIds.length === 0) return statuses;
+
+  const rows = await db
+    .select({
+      deviceId: deviceCommands.deviceId,
+      type: deviceCommands.type,
+      payload: deviceCommands.payload,
+      status: deviceCommands.status,
+      createdAt: deviceCommands.createdAt,
+    })
+    .from(deviceCommands)
+    .where(
+      and(
+        inArray(deviceCommands.deviceId, deviceIds),
+        inArray(deviceCommands.status, ['pending', 'sent']),
+        inArray(deviceCommands.type, ['update_agent', 'update_watchdog', 'legacy_agent_update']),
+      ),
+    )
+    .orderBy(desc(deviceCommands.createdAt));
+
+  for (const row of rows) {
+    if (statuses.has(row.deviceId)) continue;
+    const status = pendingComponentUpdateStatusFromCommand(row, updateMetadata.get(row.deviceId));
+    if (status) statuses.set(row.deviceId, status);
+  }
+
+  return statuses;
+}
 
 /**
  * Tables that denormalize `org_id` for RLS but have NO `device_id` column,
@@ -619,9 +708,24 @@ coreRoutes.get(
       }
     }
 
-    // Transform to include hardware and latest metrics as nested objects
+    const updateMetadata = await buildDeviceUpdateMetadata(deviceList.map((d) => ({
+      id: d.id,
+      orgId: d.orgId,
+      osType: d.osType,
+      architecture: d.architecture,
+      agentVersion: d.agentVersion,
+      watchdogVersion: d.watchdogVersion,
+    })));
+    const pendingComponentUpdateStatuses = await loadPendingComponentUpdateStatuses(deviceIds, updateMetadata);
+
+    // Transform to include hardware, latest metrics, and server-authoritative
+    // update metadata as nested objects.
     const data = deviceList.map(d => {
       const latestMetrics = latestMetricsByDevice.get(d.id);
+      const updates = updateMetadata.get(d.id);
+      const pendingComponentUpdate = d.status === 'offline' || d.status === 'decommissioned'
+        ? null
+        : pendingComponentUpdateStatuses.get(d.id);
 
       return {
         id: d.id,
@@ -638,7 +742,9 @@ coreRoutes.get(
         architecture: d.architecture,
         agentVersion: d.agentVersion,
         watchdogVersion: d.watchdogVersion,
-        status: d.status,
+        status: pendingComponentUpdate ? 'updating' : d.status,
+        componentUpdateStatusLabel: pendingComponentUpdate?.label ?? null,
+        componentUpdateStatusFullLabel: pendingComponentUpdate?.fullLabel ?? null,
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,
         pendingReboot: d.pendingReboot,
@@ -670,7 +776,9 @@ coreRoutes.get(
             ramPercent: latestMetrics.ramPercent,
             timestamp: latestMetrics.timestamp
           }
-          : null
+          : null,
+        agentUpdate: updates?.agentUpdate ?? null,
+        watchdogUpdate: updates?.watchdogUpdate ?? null,
       };
     });
 
@@ -830,6 +938,16 @@ coreRoutes.get(
       remoteAccessLaunchSkipReason = 'config_error';
     }
 
+    const updateMetadata = await buildDeviceUpdateMetadata([{
+      id: device.id,
+      orgId: device.orgId,
+      osType: device.osType,
+      architecture: device.architecture,
+      agentVersion: device.agentVersion,
+      watchdogVersion: device.watchdogVersion,
+    }]);
+    const updates = updateMetadata.get(device.id);
+
     return c.json({
       ...stripSensitiveDeviceFields(device),
       hardware: hardware || null,
@@ -842,6 +960,8 @@ coreRoutes.get(
       remoteAccessPolicy,
       hasRemoteAccessLauncher,
       remoteAccessLaunchSkipReason,
+      agentUpdate: updates?.agentUpdate ?? null,
+      watchdogUpdate: updates?.watchdogUpdate ?? null,
     });
   }
 );

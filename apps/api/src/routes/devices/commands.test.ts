@@ -1,16 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('../../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: {
+vi.mock('../../db', () => {
+  const dbMock = {
     select: vi.fn(),
     insert: vi.fn(),
-    update: vi.fn()
-  }
-}));
+    update: vi.fn(),
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock)),
+  };
+  return {
+    runOutsideDbContext: vi.fn((fn) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    db: dbMock,
+  };
+});
 
 // Wake-on-LAN brings a long transitive import chain through the API surface
 // (commands.ts -> wakeOnLan.ts -> agentWs.ts -> remoteAccessPolicy.ts ->
@@ -79,11 +83,17 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
+vi.mock('../../services/agentUpdateTargets', () => ({
+  resolveLegacyAgentUpdateTarget: vi.fn(),
+  resolveManualComponentTarget: vi.fn(),
+}));
+
 import { commandsRoutes } from './commands';
 import { db } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
+import { resolveLegacyAgentUpdateTarget, resolveManualComponentTarget } from '../../services/agentUpdateTargets';
 
 describe('device commands routes', () => {
   let app: Hono;
@@ -632,6 +642,309 @@ describe('device commands routes', () => {
         });
         expect(res.status).toBe(202);
       });
+    });
+  });
+
+  describe('POST /devices/:id/legacy-agent-update', () => {
+    it('queues set_auto_update plus a server marker for legacy agents', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online',
+        osType: 'linux',
+        architecture: 'amd64',
+        agentVersion: '0.82.1',
+        watchdogVersion: '0.82.1',
+      } as never);
+      vi.mocked(resolveLegacyAgentUpdateTarget).mockResolvedValueOnce({
+        ok: true,
+        targetVersion: '0.83.0',
+        decision: {} as never,
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as never);
+      const setAutoValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'cmd-auto',
+          deviceId: 'device-a',
+          type: 'set_auto_update',
+          payload: { enabled: true },
+          status: 'pending',
+          targetRole: 'agent',
+          createdAt: new Date(),
+        }]),
+      });
+      const legacyValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'cmd-legacy',
+          deviceId: 'device-a',
+          type: 'legacy_agent_update',
+          payload: { component: 'agent', version: '0.83.0', setAutoUpdateCommandId: 'cmd-auto' },
+          status: 'pending',
+          targetRole: 'server',
+          createdAt: new Date(),
+        }]),
+      });
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({ values: setAutoValues } as never)
+        .mockReturnValueOnce({ values: legacyValues } as never);
+
+      const res = await app.request('/devices/device-a/legacy-agent-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(202);
+      expect(setAutoValues).toHaveBeenCalledWith(expect.objectContaining({
+        deviceId: 'device-a',
+        type: 'set_auto_update',
+        targetRole: 'agent',
+        payload: expect.objectContaining({
+          enabled: true,
+          reason: 'legacy_agent_update',
+          targetVersion: '0.83.0',
+        }),
+      }));
+      expect(legacyValues).toHaveBeenCalledWith(expect.objectContaining({
+        deviceId: 'device-a',
+        type: 'legacy_agent_update',
+        targetRole: 'server',
+        payload: expect.objectContaining({
+          component: 'agent',
+          version: '0.83.0',
+          setAutoUpdateCommandId: 'cmd-auto',
+          manual: true,
+        }),
+      }));
+      const body = await res.json();
+      expect(body).toMatchObject({
+        id: 'cmd-legacy',
+        type: 'legacy_agent_update',
+        targetRole: 'server',
+        targetVersion: '0.83.0',
+        setAutoUpdateCommandId: 'cmd-auto',
+      });
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'device.legacy_agent_update.request',
+        details: expect.objectContaining({
+          targetVersion: '0.83.0',
+          setAutoUpdateCommandId: 'cmd-auto',
+        }),
+      }));
+    });
+
+    it('rejects duplicate legacy agent markers', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online',
+        osType: 'linux',
+        architecture: 'amd64',
+        agentVersion: '0.82.1',
+        watchdogVersion: '0.82.1',
+      } as never);
+      vi.mocked(resolveLegacyAgentUpdateTarget).mockResolvedValueOnce({
+        ok: true,
+        targetVersion: '0.83.0',
+        decision: {} as never,
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'cmd-existing',
+              status: 'sent',
+              payload: { version: '0.83.0' },
+            }]),
+          }),
+        }),
+      } as never);
+
+      const res = await app.request('/devices/device-a/legacy-agent-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        code: 'ALREADY_PENDING',
+        commandId: 'cmd-existing',
+        existingVersion: '0.83.0',
+        status: 'sent',
+      });
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /devices/:id/component-update', () => {
+    it('queues manual agent updates to the watchdog role', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online',
+        osType: 'windows',
+        architecture: 'amd64',
+        agentVersion: '0.65.0',
+        watchdogVersion: '0.65.0',
+      } as never);
+      vi.mocked(resolveManualComponentTarget).mockResolvedValueOnce({
+        ok: true,
+        targetVersion: '0.66.0',
+        decision: {} as never,
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as never);
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'cmd-agent',
+          deviceId: 'device-a',
+          type: 'update_agent',
+          payload: { component: 'agent', version: '0.66.0', manual: true },
+          status: 'pending',
+          targetRole: 'watchdog',
+          createdAt: new Date(),
+        }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as never);
+
+      const res = await app.request('/devices/device-a/component-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ component: 'agent' }),
+      });
+
+      expect(res.status).toBe(202);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        deviceId: 'device-a',
+        type: 'update_agent',
+        targetRole: 'watchdog',
+        payload: expect.objectContaining({
+          component: 'agent',
+          version: '0.66.0',
+          manual: true,
+        }),
+      }));
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'device.component_update.request',
+        details: expect.objectContaining({
+          component: 'agent',
+          targetVersion: '0.66.0',
+          targetRole: 'watchdog',
+        }),
+      }));
+    });
+
+    it('queues missing watchdog repair to the normal agent role', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online',
+        osType: 'windows',
+        architecture: 'amd64',
+        agentVersion: '0.65.0',
+        watchdogVersion: null,
+      } as never);
+      vi.mocked(resolveManualComponentTarget).mockResolvedValueOnce({
+        ok: true,
+        targetVersion: '0.66.0',
+        decision: {} as never,
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as never);
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'cmd-watchdog',
+          deviceId: 'device-a',
+          type: 'update_watchdog',
+          payload: { component: 'watchdog', version: '0.66.0', manual: true },
+          status: 'pending',
+          targetRole: 'agent',
+          createdAt: new Date(),
+        }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as never);
+
+      const res = await app.request('/devices/device-a/component-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ component: 'watchdog' }),
+      });
+
+      expect(res.status).toBe(202);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        deviceId: 'device-a',
+        type: 'update_watchdog',
+        targetRole: 'agent',
+        payload: expect.objectContaining({
+          component: 'watchdog',
+          version: '0.66.0',
+          manual: true,
+        }),
+      }));
+    });
+
+    it('rejects a second pending update for the same component even when the target differs', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online',
+        osType: 'windows',
+        architecture: 'amd64',
+        agentVersion: '0.65.0',
+        watchdogVersion: '0.65.0',
+      } as never);
+      vi.mocked(resolveManualComponentTarget).mockResolvedValueOnce({
+        ok: true,
+        targetVersion: '0.67.0',
+        decision: {} as never,
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'cmd-existing',
+              status: 'pending',
+              payload: { version: '0.66.0' },
+            }]),
+          }),
+        }),
+      } as never);
+
+      const res = await app.request('/devices/device-a/component-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ component: 'agent', version: '0.67.0' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('ALREADY_PENDING');
+      expect(body.commandId).toBe('cmd-existing');
+      expect(body.existingVersion).toBe('0.66.0');
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -64,6 +67,14 @@ func TestExecuteFailoverCommands_HeartbeatBeforePollPreservingOrder(t *testing.T
 	}
 }
 
+func TestCurrentRestartStats_DisablesFlapDetectionWhenThresholdUnset(t *testing.T) {
+	recovery := watchdog.NewRecoveryManager(3, 0)
+	stats := currentRestartStats(recovery, 0)
+	if stats.FlapDetected {
+		t.Fatal("expected unset max restarts threshold to disable flap detection")
+	}
+}
+
 func TestProcessInitialFailoverHeartbeatResponse_ExecutesCommandsAndProcessesUpgrades(t *testing.T) {
 	journal, err := watchdog.NewJournal(t.TempDir(), 1, 1)
 	if err != nil {
@@ -107,6 +118,151 @@ func TestProcessInitialFailoverHeartbeatResponse_ExecutesCommandsAndProcessesUpg
 		if !hasJournalEvent(events, tc.event) {
 			t.Fatalf("expected %s event %q in journal, got %#v", tc.name, tc.event, events)
 		}
+	}
+}
+
+func TestHandleWatchdogCommandPoll_ExecutesCommandsWhileMonitoring(t *testing.T) {
+	var resultCommandID string
+	var resultStatus string
+	var heartbeatCalled bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/agent-1/heartbeat":
+			if got := r.Header.Get("X-Breeze-Role"); got != "watchdog" {
+				t.Errorf("X-Breeze-Role = %q, want watchdog", got)
+				http.Error(w, "bad role header", http.StatusBadRequest)
+				return
+			}
+			var body struct {
+				Role          string `json:"role"`
+				WatchdogState string `json:"watchdogState"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode heartbeat body: %v", err)
+				http.Error(w, "bad heartbeat body", http.StatusBadRequest)
+				return
+			}
+			if body.Role != "watchdog" || body.WatchdogState != watchdog.StateMonitoring {
+				t.Errorf("heartbeat role/state = %q/%q, want watchdog/%s", body.Role, body.WatchdogState, watchdog.StateMonitoring)
+				http.Error(w, "bad heartbeat", http.StatusBadRequest)
+				return
+			}
+			heartbeatCalled = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"commands": []watchdog.FailoverCommand{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents/agent-1/commands":
+			if got := r.URL.Query().Get("role"); got != "watchdog" {
+				t.Errorf("role query = %q, want watchdog", got)
+				http.Error(w, "bad role", http.StatusBadRequest)
+				return
+			}
+			if got := r.Header.Get("X-Breeze-Role"); got != "watchdog" {
+				t.Errorf("X-Breeze-Role = %q, want watchdog", got)
+				http.Error(w, "bad role header", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"commands": []watchdog.FailoverCommand{
+					{ID: "cmd-healthy", Type: "collect_diagnostics"},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/agent-1/logs":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/agent-1/commands/cmd-healthy/result":
+			var body struct {
+				Status string `json:"status"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode result body: %v", err)
+				http.Error(w, "bad result body", http.StatusBadRequest)
+				return
+			}
+			resultCommandID = "cmd-healthy"
+			resultStatus = body.Status
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	journal, err := watchdog.NewJournal(t.TempDir(), 1, 1)
+	if err != nil {
+		t.Fatalf("new journal: %v", err)
+	}
+	defer journal.Close()
+
+	cfg := &config.Config{
+		AgentID:   "agent-1",
+		ServerURL: server.URL,
+	}
+	cfg.Watchdog.MaxRestartsPer24h = 5
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	wd.HandleEvent(watchdog.EventIPCConnected)
+	recovery := watchdog.NewRecoveryManager(3, 0)
+	client := watchdog.NewFailoverClient(server.URL, "agent-1", "tok-watchdog", nil)
+
+	handleWatchdogCommandPoll(client, wd, journal, cfg, &tokenHolder{}, recovery)
+
+	if !heartbeatCalled {
+		t.Fatal("expected monitoring watchdog heartbeat before command poll")
+	}
+	if resultCommandID != "cmd-healthy" {
+		t.Fatalf("result command id = %q, want cmd-healthy", resultCommandID)
+	}
+	if resultStatus != "completed" {
+		t.Fatalf("result status = %q, want completed", resultStatus)
+	}
+}
+
+func TestHandleWatchdogCommandPoll_ExecutesHeartbeatCommandsWhileMonitoring(t *testing.T) {
+	var resultCommandID string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/agent-1/heartbeat":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"commands": []watchdog.FailoverCommand{
+					{ID: "cmd-heartbeat", Type: "collect_diagnostics"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents/agent-1/commands":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"commands": []watchdog.FailoverCommand{},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/agent-1/logs":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/agent-1/commands/cmd-heartbeat/result":
+			resultCommandID = "cmd-heartbeat"
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	journal, err := watchdog.NewJournal(t.TempDir(), 1, 1)
+	if err != nil {
+		t.Fatalf("new journal: %v", err)
+	}
+	defer journal.Close()
+
+	cfg := &config.Config{
+		AgentID:   "agent-1",
+		ServerURL: server.URL,
+	}
+	cfg.Watchdog.MaxRestartsPer24h = 5
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	wd.HandleEvent(watchdog.EventIPCConnected)
+	recovery := watchdog.NewRecoveryManager(3, 0)
+	client := watchdog.NewFailoverClient(server.URL, "agent-1", "tok-watchdog", nil)
+
+	handleWatchdogCommandPoll(client, wd, journal, cfg, &tokenHolder{}, recovery)
+
+	if resultCommandID != "cmd-heartbeat" {
+		t.Fatalf("result command id = %q, want cmd-heartbeat", resultCommandID)
 	}
 }
 

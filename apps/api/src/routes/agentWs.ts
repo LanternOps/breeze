@@ -37,6 +37,7 @@ import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
+import { applyCompletedComponentUpdateVersion } from '../services/componentUpdateResults';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64'] as const;
@@ -1448,6 +1449,13 @@ async function processCommandResult(
       command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
         ? command.payload as Record<string, unknown>
         : {};
+    try {
+      await applyCompletedComponentUpdateVersion(command, normalizedResult.status, normalizedResult.result);
+    } catch (err) {
+      console.error(`[AgentWs] component update post-processing failed for ${result.commandId}:`, err);
+      captureException(err);
+    }
+
     if (DR_COMMAND_TYPES.has(command.type) && typeof commandPayload.drExecutionId === 'string') {
       try {
         const { handleDrCommandResult } = await import('./backup/drResultHandler');
@@ -1707,22 +1715,41 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
         // Handle update_status messages: agent is about to self-update
         if (message.type === 'update_status' && typeof message.targetVersion === 'string') {
+          let updatedDevice: { id: string; siteId: string | null; hostname: string | null } | undefined;
           if (agentDb) {
             await runWithAgentDbAccess(async () => {
               try {
-                await db
+                const [row] = await db
                   .update(devices)
                   .set({
                     status: 'updating',
                     lastSeenAt: new Date(),
                     updatedAt: new Date()
                   })
-                  .where(eq(devices.agentId, agentId));
+                  .where(eq(devices.agentId, agentId))
+                  .returning({
+                    id: devices.id,
+                    siteId: devices.siteId,
+                    hostname: devices.hostname,
+                  });
+                updatedDevice = row;
                 console.log(`[AgentWs] Agent ${agentId} entering update to ${message.targetVersion}`);
               } catch (error) {
                 console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
               }
             });
+            if (updatedDevice) {
+              publishEvent('device.updated', agentDb.orgId, {
+                deviceId: updatedDevice.id,
+                hostname: updatedDevice.hostname,
+                fields: ['status'],
+                status: 'updating',
+                targetVersion: message.targetVersion,
+              }, 'agent-ws', { siteId: updatedDevice.siteId ?? undefined }).catch(err => {
+                console.error('[AgentWs] Failed to publish device.updated update status:', err);
+                captureException(err);
+              });
+            }
           }
           return;
         }

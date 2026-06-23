@@ -2,7 +2,7 @@ import { pgTable, uuid, varchar, text, timestamp, boolean, bigint, unique, index
 
 export const agentVersions = pgTable('agent_versions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  version: varchar('version', { length: 20 }).notNull(),
+  version: varchar('version', { length: 128 }).notNull(),
   platform: varchar('platform', { length: 20 }).notNull(), // windows, macos, linux
   architecture: varchar('architecture', { length: 20 }).notNull(), // amd64, arm64
   downloadUrl: text('download_url').notNull(),
