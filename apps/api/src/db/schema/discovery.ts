@@ -281,3 +281,20 @@ export const topologyLayout = pgTable('topology_layout', {
   siteNodeUnique: uniqueIndex('topology_layout_site_node_unique')
     .on(table.siteId, table.nodeType, table.nodeId)
 }));
+
+// topology_manual_nodes: hand-mapped placeholder gear (Phase 4, issue #1728).
+// org_id-direct (RLS shape 1): breeze_has_org_access(org_id). RLS lives in the migration.
+export const topologyManualNodes = pgTable('topology_manual_nodes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  label: text('label').notNull(),
+  // 'switch' | 'router' | 'ap' | 'firewall' | 'patch_panel' | 'other' — enforced by a CHECK in the migration
+  role: text('role').notNull(),
+  notes: text('notes'),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  orgSiteIdx: index('topology_manual_nodes_org_site_idx').on(table.orgId, table.siteId)
+}));
