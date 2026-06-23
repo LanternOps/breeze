@@ -1,12 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as d3 from 'd3';
+import cytoscape from 'cytoscape';
+import fcose from 'cytoscape-fcose';
 import { fetchWithAuth } from '../../stores/auth';
-import { cn, heightPxClass, leftPxClass, topPxClass } from '@/lib/utils';
+import { runAction } from '@/lib/runAction';
+import { cn, heightPxClass } from '@/lib/utils';
 import {
   groupNodesBySubnet,
   parseProfileSubnets,
   type SubnetGroup
 } from './topologySubnets';
+
+// Register the fcose layout once at module scope (guarded — re-registering on a
+// hot-reload throws). Used for Auto-arrange of never-placed nodes only.
+let fcoseRegistered = false;
+function registerFcose() {
+  if (fcoseRegistered) return;
+  try {
+    cytoscape.use(fcose);
+  } catch {
+    // Already registered (HMR / duplicate import) — non-fatal.
+  }
+  fcoseRegistered = true;
+}
 
 export type TopologyNodeType =
   | 'router'
@@ -26,25 +41,29 @@ export type TopologyNode = {
   type: TopologyNodeType;
   status: TopologyNodeStatus;
   ipAddress?: string;
-  // Layout fields populated per-render.
+  siteId?: string;
   subnet?: string;
-  x?: number;
-  y?: number;
-  fx?: number | null;
-  fy?: number | null;
 };
 
 export type TopologyEdgeMethod = 'lldp' | 'cdp' | 'fdb' | 'manual';
 
 export type TopologyLink = {
-  source: string | TopologyNode;
-  target: string | TopologyNode;
+  id: string;
+  source: string;
+  target: string;
   type: 'wired' | 'wireless';
-  subnet?: string;
   method?: TopologyEdgeMethod;
   confidence?: string | null;
   interfaceName?: string | null;
   vlan?: number | null;
+};
+
+export type TopologyLayoutRow = {
+  nodeType: 'discovered_asset' | 'manual_node';
+  nodeId: string;
+  x: number;
+  y: number;
+  pinned: boolean;
 };
 
 type ApiTopologyNode = {
@@ -53,9 +72,11 @@ type ApiTopologyNode = {
   type?: string | null;
   status?: string | null;
   ipAddress?: string | null;
+  siteId?: string | null;
 };
 
 type ApiTopologyLink = {
+  id?: string | null;
   source: string;
   target: string;
   type?: string | null;
@@ -70,62 +91,10 @@ type NetworkTopologyMapProps = {
   onNodeClick?: (nodeId: string) => void;
 };
 
-// Above this node count we abandon the live force simulation (which gets
-// expensive and visually unstable) in favor of a static grouped grid. Issue
-// #1325 Tier 1 perf guard.
-const FORCE_SIM_NODE_LIMIT = 150;
-
-const typeColors: Record<TopologyNodeType, string> = {
-  router: '#0f766e',
-  switch: '#2563eb',
-  server: '#7c3aed',
-  workstation: '#0f172a',
-  printer: '#f97316',
-  firewall: '#dc2626',
-  access_point: '#0891b2',
-  device: '#1e293b',
-  unknown: '#6b7280'
-};
-
-// Measured-edge provenance coloring (issue #1728): LLDP/CDP are high-confidence
-// measured adjacency (blue), FDB is medium (green, Phase 2), manual is asserted
-// (orange dashed, Phase 4); anything else falls back to grey.
-const EDGE_COLOR_BY_METHOD: Record<string, string> = {
-  lldp: '#3b82f6', // blue (high)
-  cdp: '#3b82f6', // blue (high)
-  fdb: '#22c55e', // green (medium) — Phase 2
-  manual: '#f97316' // orange (asserted) — Phase 4
-};
-const EDGE_COLOR_DEFAULT = '#94a3b8';
-
-const statusStroke: Record<TopologyNodeStatus, string> = {
-  online: '#22c55e',
-  offline: '#ef4444',
-  warning: '#eab308'
-};
-
 const statusDotClass: Record<TopologyNodeStatus, string> = {
   online: 'bg-green-500',
   offline: 'bg-red-500',
   warning: 'bg-yellow-500'
-};
-
-const statusTextClass: Record<TopologyNodeStatus, string> = {
-  online: 'text-green-500',
-  offline: 'text-red-500',
-  warning: 'text-yellow-500'
-};
-
-const typeIcon: Record<TopologyNodeType, string> = {
-  router: 'R',
-  switch: 'S',
-  server: 'V',
-  workstation: 'W',
-  printer: 'P',
-  firewall: 'F',
-  access_point: 'A',
-  device: 'D',
-  unknown: '?'
 };
 
 const typeLabels: Record<TopologyNodeType, string> = {
@@ -152,32 +121,45 @@ const typeMap: Record<string, TopologyNodeType> = {
   unknown: 'unknown'
 };
 
-// Infrastructure nodes anchor a subnet and get visual emphasis (larger radius).
+const typeColors: Record<TopologyNodeType, string> = {
+  router: '#0f766e',
+  switch: '#2563eb',
+  server: '#7c3aed',
+  workstation: '#0f172a',
+  printer: '#f97316',
+  firewall: '#dc2626',
+  access_point: '#0891b2',
+  device: '#1e293b',
+  unknown: '#6b7280'
+};
+
+const statusStroke: Record<TopologyNodeStatus, string> = {
+  online: '#22c55e',
+  offline: '#ef4444',
+  warning: '#eab308'
+};
+
+// Infrastructure nodes anchor a subnet and get visual emphasis (larger / hub shape).
 const INFRA_TYPES = new Set<TopologyNodeType>(['router', 'switch', 'firewall', 'access_point']);
-
-const NODE_RADIUS = 18;
-const INFRA_NODE_RADIUS = 26;
-
-function nodeRadius(node: TopologyNode): number {
-  return INFRA_TYPES.has(node.type) ? INFRA_NODE_RADIUS : NODE_RADIUS;
-}
 
 function mapNode(node: ApiTopologyNode): TopologyNode {
   const normalizedType = (node.type ?? 'unknown').toLowerCase();
   const normalizedStatus = (node.status ?? 'online').toLowerCase();
-
   return {
     id: node.id,
     label: node.label ?? node.id,
     type: typeMap[normalizedType] ?? 'unknown',
-    status: normalizedStatus === 'offline' || normalizedStatus === 'warning' ? normalizedStatus : 'online',
-    ipAddress: node.ipAddress ?? undefined
+    status:
+      normalizedStatus === 'offline' || normalizedStatus === 'warning' ? normalizedStatus : 'online',
+    ipAddress: node.ipAddress ?? undefined,
+    siteId: node.siteId ?? undefined
   };
 }
 
-function mapLink(link: ApiTopologyLink): TopologyLink {
+function mapLink(link: ApiTopologyLink, idx: number): TopologyLink {
   const linkType = (link.type ?? 'wired').toLowerCase();
   return {
+    id: link.id ?? `${link.source}->${link.target}-${idx}`,
     source: link.source,
     target: link.target,
     type: linkType === 'wireless' ? 'wireless' : 'wired',
@@ -188,52 +170,93 @@ function mapLink(link: ApiTopologyLink): TopologyLink {
   };
 }
 
-type LayoutGroup = {
-  group: SubnetGroup<TopologyNode>;
-  cx: number;
-  cy: number;
-};
-
 /**
- * Assign each subnet group a cluster centre on a grid. Used both as the seed
- * for force-clustering (small graphs) and as the final position for the static
- * grid layout (large graphs).
+ * Cytoscape stylesheet. Node styling keys off `data(infra)`/`data(status)`;
+ * edges color by measured provenance (`data(method)`):
+ *   lldp/cdp (high)   → solid blue   (#2563eb)
+ *   fdb (medium)      → solid green  (#16a34a)
+ *   manual (asserted) → dashed orange(#f97316)  (ships now, used in Phase 4)
  */
-function computeGroupCentres(
-  groups: SubnetGroup<TopologyNode>[],
-  width: number,
-  height: number
-): LayoutGroup[] {
-  const count = groups.length || 1;
-  const cols = Math.ceil(Math.sqrt(count));
-  const rows = Math.ceil(count / cols);
-  const cellW = width / cols;
-  const cellH = height / rows;
-
-  return groups.map((group, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    return {
-      group,
-      cx: cellW * (col + 0.5),
-      cy: cellH * (row + 0.5)
-    };
-  });
+function buildStylesheet(): cytoscape.StylesheetStyle[] {
+  return [
+    {
+      selector: 'node',
+      style: {
+        'background-color': (ele: cytoscape.NodeSingular) =>
+          typeColors[(ele.data('type') as TopologyNodeType) ?? 'unknown'] ?? typeColors.unknown,
+        'border-color': (ele: cytoscape.NodeSingular) =>
+          statusStroke[(ele.data('status') as TopologyNodeStatus) ?? 'online'] ?? statusStroke.online,
+        'border-width': 3,
+        label: 'data(label)',
+        color: '#334155',
+        'font-size': 11,
+        'text-valign': 'bottom',
+        'text-margin-y': 4,
+        width: 30,
+        height: 30
+      } as cytoscape.Css.Node
+    },
+    {
+      selector: 'node[?infra]',
+      style: {
+        width: 48,
+        height: 48,
+        shape: 'round-rectangle',
+        'border-width': 4
+      } as cytoscape.Css.Node
+    },
+    {
+      selector: '$node > node',
+      style: {
+        'background-opacity': 0.06,
+        'border-width': 1,
+        'border-color': '#cbd5e1',
+        label: 'data(label)',
+        'text-valign': 'top',
+        'font-size': 12,
+        color: '#475569'
+      } as cytoscape.Css.Node
+    },
+    {
+      selector: 'edge',
+      style: {
+        width: 2,
+        'line-color': '#94a3b8',
+        'curve-style': 'bezier'
+      } as cytoscape.Css.Edge
+    },
+    {
+      selector: 'edge[method = "lldp"], edge[method = "cdp"]',
+      style: { 'line-color': '#2563eb', 'line-style': 'solid' } as cytoscape.Css.Edge
+    },
+    {
+      selector: 'edge[method = "fdb"]',
+      style: { 'line-color': '#16a34a', 'line-style': 'solid' } as cytoscape.Css.Edge
+    },
+    {
+      selector: 'edge[method = "manual"]',
+      style: { 'line-color': '#f97316', 'line-style': 'dashed' } as cytoscape.Css.Edge
+    }
+  ];
 }
 
 export default function NetworkTopologyMap({ height = 560, onNodeClick }: NetworkTopologyMapProps) {
   const [nodes, setNodes] = useState<TopologyNode[]>([]);
   const [links, setLinks] = useState<TopologyLink[]>([]);
+  const [layout, setLayout] = useState<TopologyLayoutRow[]>([]);
   const [profileSubnets, setProfileSubnets] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [tooltip, setTooltip] = useState<{
-    x: number;
-    y: number;
-    node: TopologyNode;
-  } | null>(null);
+
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const cyRef = useRef<cytoscape.Core | null>(null);
+  // siteId per node, so a drag can persist the dragged node's own site.
+  const siteByNodeRef = useRef<Map<string, string | undefined>>(new Map());
+  // node ids that already have a saved (placed) position — Auto-arrange must not
+  // disturb these.
+  const placedRef = useRef<Set<string>>(new Set());
+  const onNodeClickRef = useRef(onNodeClick);
+  onNodeClickRef.current = onNodeClick;
 
   const fetchTopology = useCallback(async () => {
     try {
@@ -247,23 +270,25 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
       const rawNodes = data.nodes ?? data.data?.nodes ?? [];
       const rawLinks = data.edges ?? data.links ?? data.data?.edges ?? [];
       const rawSubnets: string[] = Array.isArray(data.subnets) ? data.subnets : [];
+      const rawLayout: TopologyLayoutRow[] = Array.isArray(data.layout) ? data.layout : [];
+
       const mappedNodes: TopologyNode[] = rawNodes.map(mapNode);
       const nodeIds = new Set(mappedNodes.map((n: TopologyNode) => n.id));
 
-      // Only ever render edges the backend actually observed. We deliberately do
-      // NOT fabricate adjacency from IP prefixes anymore (issue #1325): the
-      // system collects no real inter-host connectivity, so a guessed star is
-      // misleading. Real LLDP/CDP/SNMP-bridge collection is a Tier 2 follow-up.
+      // Only ever render edges the backend actually observed (issue #1325). We
+      // deliberately do NOT fabricate adjacency from IP prefixes.
       const mappedLinks: TopologyLink[] = rawLinks
         .map(mapLink)
-        .filter((l: TopologyLink) => {
-          const src = typeof l.source === 'string' ? l.source : l.source.id;
-          const tgt = typeof l.target === 'string' ? l.target : l.target.id;
-          return nodeIds.has(src) && nodeIds.has(tgt);
-        });
+        .filter((l: TopologyLink) => nodeIds.has(l.source) && nodeIds.has(l.target));
 
       setNodes(mappedNodes);
       setLinks(mappedLinks);
+      // Skip malformed layout rows so a bad x/y can't crash the canvas.
+      setLayout(
+        rawLayout.filter(
+          (r) => r && Number.isFinite(r.x) && Number.isFinite(r.y) && typeof r.nodeId === 'string'
+        )
+      );
       setProfileSubnets(rawSubnets);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -276,15 +301,12 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     fetchTopology();
   }, [fetchTopology]);
 
-  const nodesMemo = useMemo(() => nodes.map(node => ({ ...node })), [nodes]);
-  const linksMemo = useMemo(() => links.map(link => ({ ...link })), [links]);
-
   const subnetGroups = useMemo(
     () => groupNodesBySubnet(nodes, parseProfileSubnets(profileSubnets)),
     [nodes, profileSubnets]
   );
 
-  // Stamp the resolved subnet label onto each node for tooltips/legend.
+  // subnet label per node → compound parent grouping.
   const subnetByNodeId = useMemo(() => {
     const map = new Map<string, string>();
     for (const group of subnetGroups) {
@@ -293,256 +315,129 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     return map;
   }, [subnetGroups]);
 
+  const persistDrag = useCallback(async (nodeId: string, x: number, y: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const siteId = siteByNodeRef.current.get(nodeId);
+    if (!siteId) return; // can't scope the upsert without a site
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth('/discovery/topology/layout', {
+            method: 'PATCH',
+            body: JSON.stringify({
+              siteId,
+              positions: [{ nodeType: 'discovered_asset', nodeId, x, y }]
+            })
+          }),
+        errorFallback: 'Failed to save node position',
+        successMessage: 'Layout saved',
+        onUnauthorized: () => {
+          /* let the auth redirect handle it */
+        }
+      });
+      placedRef.current.add(nodeId);
+    } catch {
+      // runAction already surfaced the error toast; nothing else to do here.
+    }
+  }, []);
+
+  // (Re)build the Cytoscape graph whenever the data changes.
   useEffect(() => {
-    if (!svgRef.current) return;
+    if (!mountRef.current) return;
+    registerFcose();
 
-    const svg = d3.select(svgRef.current);
-    svg.selectAll('*').remove();
+    // Track which nodes have a saved position (consumed by preset; protected by
+    // Auto-arrange).
+    const layoutById = new Map<string, TopologyLayoutRow>();
+    for (const row of layout) layoutById.set(row.nodeId, row);
+    placedRef.current = new Set(layoutById.keys());
 
-    const { width } = svgRef.current.getBoundingClientRect();
-    const chartWidth = width || 800;
-    const chartHeight = height;
+    // siteId lookup for drag persistence.
+    const siteMap = new Map<string, string | undefined>();
+    for (const n of nodes) siteMap.set(n.id, n.siteId);
+    siteByNodeRef.current = siteMap;
 
-    svg.attr('viewBox', `0 0 ${chartWidth} ${chartHeight}`);
-
-    // Defs for pulsing animation
-    const defs = svg.append('defs');
-    const style = defs.append('style');
-    style.text(`
-      @keyframes pulse-stroke {
-        0%, 100% { stroke-opacity: 1; }
-        50% { stroke-opacity: 0.4; }
+    // Compound parents for subnet groups; child nodes reference their parent.
+    const parentIds = new Set<string>();
+    const elements: cytoscape.ElementDefinition[] = [];
+    for (const group of subnetGroups) {
+      if (group.nodes.length === 0) continue;
+      const parentId = `group:${group.label}`;
+      parentIds.add(parentId);
+      elements.push({ data: { id: parentId, label: group.label } });
+    }
+    for (const node of nodes) {
+      const subnet = subnetByNodeId.get(node.id);
+      const parent = subnet ? `group:${subnet}` : undefined;
+      const saved = layoutById.get(node.id);
+      const data: Record<string, unknown> = {
+        id: node.id,
+        label: node.label,
+        type: node.type,
+        status: node.status,
+        infra: INFRA_TYPES.has(node.type) ? 1 : 0
+      };
+      if (parent && parentIds.has(parent)) data.parent = parent;
+      const def: cytoscape.ElementDefinition = { data };
+      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+        def.position = { x: saved.x, y: saved.y };
       }
-      .node-online { animation: pulse-stroke 2.5s ease-in-out infinite; }
-    `);
-
-    // Zoom container
-    const container = svg.append('g').attr('class', 'zoom-container');
-
-    const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.2, 3])
-      .on('zoom', (event) => {
-        container.attr('transform', event.transform);
-      });
-    svg.call(zoomBehavior);
-
-    const groupCentres = computeGroupCentres(subnetGroups, chartWidth, chartHeight);
-    const centreByNodeId = new Map<string, LayoutGroup>();
-    for (const lg of groupCentres) {
-      for (const node of lg.group.nodes) centreByNodeId.set(node.id, lg);
+      elements.push(def);
     }
-
-    // Seed nodes near their subnet centre so clusters form quickly / read well.
-    for (const node of nodesMemo) {
-      const lg = centreByNodeId.get(node.id);
-      if (lg) {
-        node.x = lg.cx + (Math.random() - 0.5) * 40;
-        node.y = lg.cy + (Math.random() - 0.5) * 40;
-      }
-    }
-
-    // ---- Subnet group containers (labelled) ----
-    const groupLayer = container.append('g').attr('class', 'subnet-groups');
-    const groupCells = groupLayer
-      .selectAll<SVGGElement, LayoutGroup>('g')
-      .data(groupCentres)
-      .enter()
-      .append('g')
-      .attr('class', 'subnet-group');
-
-    groupCells
-      .append('text')
-      .attr('x', (d) => d.cx)
-      .attr('y', (d) => d.cy)
-      .attr('text-anchor', 'middle')
-      .attr('class', 'subnet-group-label')
-      .attr('font-size', 12)
-      .attr('font-weight', '600')
-      .attr('fill', '#475569')
-      .attr('pointer-events', 'none')
-      .each(function (d) {
-        const text = d3.select(this);
-        text.append('tspan').attr('x', d.cx).text(d.group.label);
-        text
-          .append('tspan')
-          .attr('x', d.cx)
-          .attr('dy', '1.2em')
-          .attr('font-size', 10)
-          .attr('font-weight', '400')
-          .attr('fill', '#94a3b8')
-          .text(`${d.group.nodes.length} host${d.group.nodes.length === 1 ? '' : 's'}`);
-      });
-
-    const useForceSim = nodesMemo.length <= FORCE_SIM_NODE_LIMIT;
-
-    // ---- Edges (only when the backend observed real ones) ----
-    const linkLayer = container.append('g').attr('class', 'links');
-    const link = linkLayer
-      .selectAll<SVGLineElement, TopologyLink>('line')
-      .data(linksMemo)
-      .enter()
-      .append('line')
-      .attr('stroke', (d) => EDGE_COLOR_BY_METHOD[d.method ?? ''] ?? EDGE_COLOR_DEFAULT)
-      .attr('stroke-opacity', 0.85)
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', (d) => (d.method === 'manual' ? '6 4' : '0'));
-
-    // ---- Nodes ----
-    const nodeGroup = container
-      .append('g')
-      .attr('class', 'nodes')
-      .selectAll<SVGGElement, TopologyNode>('g')
-      .data(nodesMemo)
-      .enter()
-      .append('g')
-      .style('cursor', 'pointer');
-
-    nodeGroup
-      .append('circle')
-      .attr('r', (d) => nodeRadius(d))
-      .attr('fill', (d) => typeColors[d.type])
-      .attr('stroke', (d) => statusStroke[d.status])
-      .attr('stroke-width', (d) => (INFRA_TYPES.has(d.type) ? 4 : 3))
-      .attr('class', (d) => (d.status === 'online' ? 'node-online' : ''));
-
-    nodeGroup
-      .append('text')
-      .attr('text-anchor', 'middle')
-      .attr('dy', '0.35em')
-      .attr('font-size', (d) => (INFRA_TYPES.has(d.type) ? 15 : 13))
-      .attr('font-weight', '700')
-      .attr('fill', '#fff')
-      .attr('pointer-events', 'none')
-      .text((d) => typeIcon[d.type] ?? '?');
-
-    nodeGroup
-      .append('text')
-      .attr('text-anchor', 'middle')
-      .attr('dy', (d) => nodeRadius(d) + 14)
-      .attr('font-size', 11)
-      .attr('fill', '#334155')
-      .attr('pointer-events', 'none')
-      .text((d) => d.label);
-
-    // Hover + tooltip
-    nodeGroup
-      .on('mouseenter', (event: MouseEvent, d: TopologyNode) => {
-        const subnet = subnetByNodeId.get(d.id);
-        nodeGroup.attr('opacity', (n) =>
-          n.id === d.id || subnetByNodeId.get(n.id) === subnet ? 1 : 0.25
-        );
-        setTooltip({ x: event.pageX + 12, y: event.pageY - 10, node: { ...d, subnet } });
-      })
-      .on('mousemove', (event: MouseEvent) => {
-        setTooltip((prev) =>
-          prev ? { ...prev, x: event.pageX + 12, y: event.pageY - 10 } : null
-        );
-      })
-      .on('mouseleave', () => {
-        nodeGroup.attr('opacity', 1);
-        setTooltip(null);
-      });
-
-    if (onNodeClick) {
-      nodeGroup.on('click', (_event: MouseEvent, d: TopologyNode) => {
-        onNodeClick(d.id);
+    for (const link of links) {
+      elements.push({
+        data: {
+          id: link.id,
+          source: link.source,
+          target: link.target,
+          method: link.method ?? null,
+          confidence: link.confidence ?? null
+        }
       });
     }
 
-    const positionNodes = () => {
-      nodeGroup.attr('transform', (d) => `translate(${d.x ?? 0}, ${d.y ?? 0})`);
-      link
-        .attr('x1', (d) => (d.source as unknown as TopologyNode).x ?? 0)
-        .attr('y1', (d) => (d.source as unknown as TopologyNode).y ?? 0)
-        .attr('x2', (d) => (d.target as unknown as TopologyNode).x ?? 0)
-        .attr('y2', (d) => (d.target as unknown as TopologyNode).y ?? 0);
-    };
+    const cy = cytoscape({
+      container: mountRef.current,
+      elements,
+      style: buildStylesheet(),
+      // preset: consume saved positions; never auto-layout on every render.
+      layout: { name: 'preset' },
+      wheelSensitivity: 0.2
+    });
+    cyRef.current = cy;
 
-    if (!useForceSim) {
-      // Static grouped grid: lay nodes out in a tidy block under each subnet
-      // centre. No simulation — cheap and stable for large result sets.
-      for (const lg of groupCentres) {
-        const members = lg.group.nodes;
-        const perRow = Math.ceil(Math.sqrt(members.length)) || 1;
-        const spacing = 52;
-        members.forEach((member, idx) => {
-          const liveNode = nodesMemo.find((n) => n.id === member.id);
-          if (!liveNode) return;
-          const col = idx % perRow;
-          const row = Math.floor(idx / perRow);
-          const rowCount = Math.ceil(members.length / perRow);
-          liveNode.x = lg.cx + (col - (perRow - 1) / 2) * spacing;
-          liveNode.y = lg.cy + 28 + (row - (rowCount - 1) / 2) * spacing;
-        });
-      }
-      positionNodes();
-      return () => {};
-    }
+    cy.on('dragfree', 'node', (evt: cytoscape.EventObject) => {
+      const target = evt.target as cytoscape.NodeSingular;
+      const id = target.id();
+      const pos = target.position();
+      void persistDrag(id, pos.x, pos.y);
+    });
 
-    // Force layout with per-subnet clustering: forceX/forceY pull each node to
-    // its subnet centre, so groups stay visually separated instead of forming
-    // one hairball.
-    const simulation = d3
-      .forceSimulation<TopologyNode>(nodesMemo)
-      .force(
-        'link',
-        d3
-          .forceLink<TopologyNode, TopologyLink>(linksMemo)
-          .id((d) => d.id)
-          .distance(90)
-      )
-      .force('charge', d3.forceManyBody().strength(-220))
-      .force(
-        'x',
-        d3
-          .forceX<TopologyNode>((d) => centreByNodeId.get(d.id)?.cx ?? chartWidth / 2)
-          .strength(0.35)
-      )
-      .force(
-        'y',
-        d3
-          .forceY<TopologyNode>((d) => centreByNodeId.get(d.id)?.cy ?? chartHeight / 2)
-          .strength(0.35)
-      )
-      .force('collision', d3.forceCollide<TopologyNode>().radius((d) => nodeRadius(d) + 14));
-
-    const drag = d3.drag<SVGGElement, TopologyNode>()
-      .on('start', (event, d) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x;
-        d.fy = d.y;
-      })
-      .on('drag', (event, d) => {
-        d.fx = event.x;
-        d.fy = event.y;
-      })
-      .on('end', (event, d) => {
-        if (!event.active) simulation.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
-      });
-    nodeGroup.call(drag);
-
-    // Keep subnet labels anchored to the live cluster centroid.
-    simulation.on('tick', () => {
-      positionNodes();
-      groupCells.select<SVGTextElement>('text').each(function (d) {
-        const members = d.group.nodes
-          .map((m) => nodesMemo.find((n) => n.id === m.id))
-          .filter((n): n is TopologyNode => !!n);
-        if (members.length === 0) return;
-        const cx = members.reduce((sum, n) => sum + (n.x ?? 0), 0) / members.length;
-        const minY = Math.min(...members.map((n) => (n.y ?? 0) - nodeRadius(n)));
-        const text = d3.select(this);
-        text.selectAll('tspan').attr('x', cx);
-        text.attr('y', minY - 24);
-      });
+    cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
+      const cb = onNodeClickRef.current;
+      if (cb) cb((evt.target as cytoscape.NodeSingular).id());
     });
 
     return () => {
-      simulation.stop();
+      cy.destroy();
+      cyRef.current = null;
     };
-  }, [height, linksMemo, nodesMemo, onNodeClick, subnetGroups, subnetByNodeId]);
+  }, [nodes, links, layout, subnetGroups, subnetByNodeId, persistDrag]);
+
+  // Auto-arrange: lay out ONLY never-placed nodes; pinned/positioned nodes are
+  // locked first so their saved positions are preserved.
+  const autoArrange = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const placed = placedRef.current;
+    const locked = cy.nodes().filter((n: cytoscape.NodeSingular) => placed.has(n.id()));
+    locked.lock();
+    const unplaced = cy.nodes().filter((n: cytoscape.NodeSingular) => !placed.has(n.id()));
+    unplaced
+      .layout({ name: 'fcose', animate: false, randomize: false } as cytoscape.LayoutOptions)
+      .run();
+    locked.unlock();
+  }, []);
 
   if (loading && nodes.length === 0) {
     return (
@@ -570,15 +465,13 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
     );
   }
 
-  const isLargeSet = nodes.length > FORCE_SIM_NODE_LIMIT;
-
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Network Topology</h2>
           <p className="text-sm text-muted-foreground">
-            Discovered assets grouped by subnet. Scroll to zoom, drag to pan.
+            Discovered assets grouped by subnet. Scroll to zoom, drag to pan or reposition nodes.
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -596,10 +489,18 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
           </span>
           {links.length > 0 && (
             <span data-testid="topology-provenance-legend" className="flex items-center gap-1.5">
-              <span className="inline-block h-0.5 w-4" style={{ backgroundColor: '#3b82f6' }} />
+              <span className="inline-block h-0.5 w-4" style={{ backgroundColor: '#2563eb' }} />
               LLDP/CDP (measured)
             </span>
           )}
+          <button
+            type="button"
+            data-testid="topology-auto-arrange"
+            onClick={autoArrange}
+            className="rounded-md border bg-muted/40 px-2.5 py-1 font-medium text-foreground hover:bg-muted"
+          >
+            Auto-arrange
+          </button>
         </div>
       </div>
 
@@ -616,50 +517,26 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
       >
         {links.length === 0 ? (
           <>
-            Connection lines are shown only when real adjacency is measured (LLDP/CDP/SNMP).
-            None has been collected yet, so assets are grouped by subnet without inferred links.
+            Connection lines are shown only when real adjacency is measured (LLDP/CDP/SNMP). None has
+            been collected yet, so assets are grouped by subnet without inferred links.
           </>
         ) : (
           <>Connection lines reflect measured adjacency.</>
         )}
-        {isLargeSet && (
-          <> Showing a static grouped layout for {nodes.length} assets (force layout disabled above {FORCE_SIM_NODE_LIMIT}).</>
-        )}
       </div>
 
-      <div ref={containerRef} className="relative mt-4 overflow-hidden rounded-md border bg-muted/30">
-        <svg ref={svgRef} data-testid="topology-svg" className={cn('h-full w-full', heightPxClass(height))} />
-        {tooltip && (
-          <div
-            className={cn(
-              'pointer-events-none fixed z-50 rounded-md border bg-card px-3 py-2 text-xs shadow-lg',
-              leftPxClass(tooltip.x),
-              topPxClass(tooltip.y)
-            )}
-          >
-            <p className="font-semibold">{tooltip.node.label}</p>
-            {tooltip.node.ipAddress && (
-              <p className="text-muted-foreground">{tooltip.node.ipAddress}</p>
-            )}
-            {tooltip.node.subnet && (
-              <p className="text-muted-foreground">Subnet: {tooltip.node.subnet}</p>
-            )}
-            <p className="text-muted-foreground">
-              {typeLabels[tooltip.node.type]} &middot;{' '}
-              <span className={cn('font-medium', statusTextClass[tooltip.node.status])}>
-                {tooltip.node.status}
-              </span>
-            </p>
-          </div>
-        )}
-      </div>
+      <div
+        ref={mountRef}
+        data-testid="topology-cytoscape"
+        className={cn('relative mt-4 w-full overflow-hidden rounded-md border bg-muted/30', heightPxClass(height))}
+      />
 
       {/* Subnet legend with host counts. */}
       {subnetGroups.length > 0 && (
         <div className="mt-4" data-testid="topology-subnet-legend">
           <p className="mb-1.5 text-xs font-medium text-muted-foreground">Subnets</p>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {subnetGroups.map((group) => (
+            {subnetGroups.map((group: SubnetGroup<TopologyNode>) => (
               <span
                 key={group.label}
                 className="flex items-center gap-1.5 rounded-full border bg-muted/40 px-2 py-0.5 text-muted-foreground"
@@ -676,20 +553,7 @@ export default function NetworkTopologyMap({ height = 560, onNodeClick }: Networ
       <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         {Object.entries(typeColors).map(([type, color]) => (
           <span key={type} className="flex items-center gap-1.5">
-            <svg width="16" height="16" viewBox="0 0 16 16">
-              <circle cx="8" cy="8" r="7" fill={color} />
-              <text
-                x="8"
-                y="8"
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize="8"
-                fontWeight="700"
-                fill="#fff"
-              >
-                {typeIcon[type as TopologyNodeType] ?? '?'}
-              </text>
-            </svg>
+            <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: color }} />
             {typeLabels[type as TopologyNodeType] ?? type}
           </span>
         ))}

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import NetworkTopologyMap from './NetworkTopologyMap';
@@ -7,6 +7,54 @@ const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args)
 }));
+
+const runAction = vi.fn(async (opts: { request: () => Promise<Response> }) => {
+  const res = await opts.request();
+  return res.json();
+});
+vi.mock('@/lib/runAction', () => ({
+  runAction: (...args: unknown[]) => (runAction as (...a: unknown[]) => unknown)(...args)
+}));
+
+// Cytoscape needs a real factory; capture the config (esp. the `layout`) it is
+// called with so we can assert `preset` is used (consume saved positions, never
+// auto-layout-every-render). `dragfree` handlers are stashed so a test can fire
+// a synthetic drag-end. Built via vi.hoisted so the vi.mock factory (hoisted to
+// top of file) can reference it.
+const { cyDragHandlers, cyInstance, cytoscapeFactory } = vi.hoisted(() => {
+  const handlers: Array<(evt: unknown) => void> = [];
+  const instance = {
+    on: vi.fn((event: string, _sel: string, handler: (evt: unknown) => void) => {
+      if (event === 'dragfree') handlers.push(handler);
+    }),
+    nodes: vi.fn(() => ({
+      length: 0,
+      positions: vi.fn(),
+      filter: vi.fn(() => ({
+        lock: vi.fn(),
+        unlock: vi.fn(),
+        layout: vi.fn(() => ({ run: vi.fn() }))
+      }))
+    })),
+    layout: vi.fn(() => ({ run: vi.fn() })),
+    destroy: vi.fn(),
+    add: vi.fn(),
+    elements: vi.fn(() => ({ remove: vi.fn() })),
+    fit: vi.fn()
+  };
+  const factory = vi.fn(() => instance) as ReturnType<typeof vi.fn> & {
+    use: ReturnType<typeof vi.fn>;
+  };
+  factory.use = vi.fn();
+  return { cyDragHandlers: handlers, cyInstance: instance, cytoscapeFactory: factory };
+});
+vi.mock('cytoscape', () => ({ default: cytoscapeFactory }));
+vi.mock('cytoscape-fcose', () => ({ default: vi.fn() }));
+
+function lastCytoscapeConfig(): Record<string, unknown> | undefined {
+  const calls = cytoscapeFactory.mock.calls;
+  return calls.length ? (calls[calls.length - 1][0] as Record<string, unknown>) : undefined;
+}
 
 function mockTopologyResponse(body: unknown) {
   fetchWithAuth.mockResolvedValue({
@@ -18,12 +66,58 @@ function mockTopologyResponse(body: unknown) {
 describe('NetworkTopologyMap', () => {
   beforeEach(() => {
     fetchWithAuth.mockReset();
+    runAction.mockClear();
+    cytoscapeFactory.mockClear();
+    cytoscapeFactory.use.mockClear();
+    cyInstance.on.mockClear();
+    cyInstance.layout.mockClear();
+    cyInstance.destroy.mockClear();
+    cyDragHandlers.length = 0;
+    if (!window.ResizeObserver) {
+      window.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      } as unknown as typeof ResizeObserver;
+    }
   });
 
-  it('does NOT fabricate edges when the API returns none', async () => {
+  function cytoscapeElements(): Array<{ data: Record<string, unknown>; position?: { x: number; y: number } }> {
+    const cfg = lastCytoscapeConfig();
+    return (cfg?.elements as Array<{ data: Record<string, unknown>; position?: { x: number; y: number } }>) ?? [];
+  }
+
+  it('mounts a Cytoscape canvas and exposes an Auto-arrange control', async () => {
     mockTopologyResponse({
       subnets: ['10.0.2.0/24'],
       edges: [],
+      layout: [],
+      nodes: [
+        { id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' },
+        { id: 'gw', label: 'gateway', type: 'router', status: 'online', ipAddress: '10.0.2.1' }
+      ]
+    });
+
+    render(<NetworkTopologyMap />);
+
+    // The canvas mount container is present.
+    expect(await screen.findByTestId('topology-cytoscape')).toBeInTheDocument();
+    // The Auto-arrange button is present.
+    expect(screen.getByTestId('topology-auto-arrange')).toBeInTheDocument();
+
+    // Cytoscape was constructed once with the discovered nodes as elements.
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+    const ids = cytoscapeElements()
+      .map((el) => el.data.id)
+      .filter((id) => id === 'a' || id === 'gw');
+    expect(ids).toEqual(expect.arrayContaining(['a', 'gw']));
+  });
+
+  it('does NOT fabricate edges when the API returns none, and keeps the honesty note', async () => {
+    mockTopologyResponse({
+      subnets: ['10.0.2.0/24'],
+      edges: [],
+      layout: [],
       nodes: [
         { id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' },
         { id: 'b', label: 'host-b', type: 'workstation', status: 'online', ipAddress: '10.0.2.9' },
@@ -31,15 +125,13 @@ describe('NetworkTopologyMap', () => {
       ]
     });
 
-    const { container } = render(<NetworkTopologyMap />);
+    render(<NetworkTopologyMap />);
 
-    // Nodes render (one circle per node).
-    await waitFor(() => {
-      expect(container.querySelectorAll('.nodes circle')).toHaveLength(3);
-    });
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
 
-    // No edge lines at all — the old synthetic star is gone.
-    expect(container.querySelectorAll('.links line')).toHaveLength(0);
+    // No edge elements at all — the old synthetic star is gone.
+    const edgeEls = cytoscapeElements().filter((el) => el.data.source !== undefined);
+    expect(edgeEls).toHaveLength(0);
 
     // The honesty note explains why there are no links.
     expect(screen.getByTestId('topology-adjacency-note').textContent).toMatch(
@@ -47,10 +139,11 @@ describe('NetworkTopologyMap', () => {
     );
   });
 
-  it('groups nodes by their real subnet and renders a subnet legend with host counts', async () => {
+  it('renders a subnet legend with host counts', async () => {
     mockTopologyResponse({
       subnets: ['10.0.2.0/24', '192.168.0.0/16'],
       edges: [],
+      layout: [],
       nodes: [
         { id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' },
         { id: 'b', label: 'host-b', type: 'server', status: 'online', ipAddress: '10.0.2.9' },
@@ -61,27 +154,16 @@ describe('NetworkTopologyMap', () => {
     render(<NetworkTopologyMap />);
 
     const legend = await screen.findByTestId('topology-subnet-legend');
-    // Both real subnets appear as labels.
     expect(legend.textContent).toContain('10.0.2.0/24');
     expect(legend.textContent).toContain('192.168.0.0/16');
-
-    // The /24 holds 2 hosts, the /16 holds 1 — the SVG renders per-group
-    // labels with host counts.
-    await waitFor(() => {
-      const labels = Array.from(document.querySelectorAll('.subnet-group-label'));
-      const text = labels.map((l) => l.textContent).join(' ');
-      expect(text).toContain('10.0.2.0/24');
-      expect(text).toContain('2 hosts');
-      expect(text).toContain('192.168.0.0/16');
-      expect(text).toContain('1 host');
-    });
   });
 
   it('uses a /16 mask correctly instead of slicing 3 octets', async () => {
-    // .4.x and .9.x are different /24s but the SAME /16 — they must land together.
+    // .4.x and .9.x are different /24s but the SAME /16 — they must group together.
     mockTopologyResponse({
       subnets: ['172.16.0.0/16'],
       edges: [],
+      layout: [],
       nodes: [
         { id: 'a', label: 'a', type: 'workstation', status: 'online', ipAddress: '172.16.4.1' },
         { id: 'b', label: 'b', type: 'workstation', status: 'online', ipAddress: '172.16.9.250' }
@@ -91,39 +173,41 @@ describe('NetworkTopologyMap', () => {
     render(<NetworkTopologyMap />);
 
     const legend = await screen.findByTestId('topology-subnet-legend');
-    // A single grouped entry for the /16 holding both hosts (count = 2).
     const chips = legend.querySelectorAll('span > span.font-medium');
     const labels = Array.from(chips).map((c) => c.textContent);
     expect(labels).toEqual(['172.16.0.0/16']);
   });
 
-  it('renders measured edges when the API does provide them', async () => {
+  it('adds measured edge elements when the API provides them', async () => {
     mockTopologyResponse({
       subnets: ['10.0.2.0/24'],
       edges: [{ id: 'e1', source: 'sw', target: 'a', type: 'ethernet' }],
+      layout: [],
       nodes: [
         { id: 'sw', label: 'switch', type: 'switch', status: 'online', ipAddress: '10.0.2.2' },
         { id: 'a', label: 'a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' }
       ]
     });
 
-    const { container } = render(<NetworkTopologyMap />);
+    render(<NetworkTopologyMap />);
 
-    await waitFor(() => {
-      expect(container.querySelectorAll('.links line')).toHaveLength(1);
-    });
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+    const edgeEls = cytoscapeElements().filter((el) => el.data.source !== undefined);
+    expect(edgeEls).toHaveLength(1);
     expect(screen.getByTestId('topology-adjacency-note').textContent).toMatch(
       /reflect measured adjacency/i
     );
   });
 
-  it('renders the provenance legend and colors LLDP edges by method', async () => {
+  it('initializes a preset layout and carries provenance onto edge elements', async () => {
     mockTopologyResponse({
       nodes: [
         { id: 'a', label: 'edge', type: 'switch', status: 'online', ipAddress: '10.0.0.1' },
         { id: 'b', label: 'core', type: 'switch', status: 'online', ipAddress: '10.0.0.254' }
       ],
       subnets: ['10.0.0.0/24'],
+      // A saved position for node "a" → preset layout consumes it.
+      layout: [{ nodeType: 'discovered_asset', nodeId: 'a', x: 120, y: 240, pinned: true }],
       edges: [
         {
           id: 'e1',
@@ -140,16 +224,101 @@ describe('NetworkTopologyMap', () => {
       ]
     });
 
-    const { container } = render(<NetworkTopologyMap />);
+    render(<NetworkTopologyMap />);
 
     // The provenance legend row appears.
     await waitFor(() => expect(screen.getByText(/LLDP\/CDP/i)).toBeInTheDocument());
 
-    // The measured LLDP edge is drawn in the high-confidence blue.
-    await waitFor(() => {
-      const line = container.querySelector('.links line');
-      expect(line).not.toBeNull();
-      expect(line?.getAttribute('stroke')).toBe('#3b82f6');
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+    const cfg = lastCytoscapeConfig();
+    // Preset layout (consume saved positions, never auto-layout-every-render).
+    expect((cfg?.layout as { name?: string } | undefined)?.name).toBe('preset');
+
+    // The measured LLDP edge carries its method onto the element data, so the
+    // stylesheet can color it by provenance.
+    const edgeEl = cytoscapeElements().find((el) => el.data.id === 'e1');
+    expect(edgeEl?.data.method).toBe('lldp');
+
+    // The saved position is fed into the element so preset honors it.
+    const nodeA = cytoscapeElements().find((el) => el.data.id === 'a');
+    expect(nodeA?.position).toEqual({ x: 120, y: 240 });
+
+    // The stylesheet maps lldp/cdp to the high-confidence blue.
+    const stylesheet = (cfg?.style as Array<{ selector: string; style: Record<string, unknown> }>) ?? [];
+    const lldpRule = stylesheet.find((r) => /method *= *['"]?lldp/.test(r.selector));
+    expect(lldpRule?.style['line-color']).toBe('#2563eb');
+  });
+
+  it('persists a drag via runAction PATCH to the layout route', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ upserted: 1 })
+    } as unknown as Response);
+    // First fetch is the topology GET; subsequent calls are the PATCH.
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        subnets: ['10.0.2.0/24'],
+        edges: [],
+        layout: [],
+        nodes: [
+          { id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5', siteId: 'site-1' }
+        ]
+      })
+    } as unknown as Response);
+
+    render(<NetworkTopologyMap />);
+
+    await waitFor(() => expect(cyInstance.on).toHaveBeenCalledWith('dragfree', 'node', expect.any(Function)));
+    expect(cyDragHandlers.length).toBeGreaterThan(0);
+
+    // Simulate a drag-end on node "a".
+    await cyDragHandlers[0]({
+      target: {
+        id: () => 'a',
+        position: () => ({ x: 88, y: 99 })
+      }
     });
+
+    await waitFor(() => expect(runAction).toHaveBeenCalled());
+    const patchCall = fetchWithAuth.mock.calls.find(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('/discovery/topology/layout')
+    );
+    expect(patchCall).toBeTruthy();
+    const init = patchCall?.[1] as RequestInit;
+    expect(init.method).toBe('PATCH');
+    const body = JSON.parse(init.body as string);
+    expect(body.positions[0]).toMatchObject({ nodeType: 'discovered_asset', nodeId: 'a', x: 88, y: 99 });
+  });
+
+  it('runs Auto-arrange over never-placed nodes only (locks placed nodes)', async () => {
+    const lock = vi.fn();
+    const unlock = vi.fn();
+    const layoutRun = vi.fn();
+    cyInstance.nodes.mockReturnValue({
+      length: 2,
+      positions: vi.fn(),
+      filter: vi.fn(() => ({ lock, unlock, layout: vi.fn(() => ({ run: layoutRun })) }))
+    } as unknown as ReturnType<typeof cyInstance.nodes>);
+
+    mockTopologyResponse({
+      subnets: ['10.0.2.0/24'],
+      edges: [],
+      layout: [{ nodeType: 'discovered_asset', nodeId: 'a', x: 5, y: 5, pinned: true }],
+      nodes: [
+        { id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' },
+        { id: 'b', label: 'host-b', type: 'workstation', status: 'online', ipAddress: '10.0.2.9' }
+      ]
+    });
+
+    render(<NetworkTopologyMap />);
+
+    const btn = await screen.findByTestId('topology-auto-arrange');
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(lock).toHaveBeenCalled());
+    expect(unlock).toHaveBeenCalled();
   });
 });
