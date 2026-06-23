@@ -559,6 +559,22 @@ function clearSavedViewport(): void {
   }
 }
 
+// Ceiling on the zoom that fit-to-content may apply. Without it, a sparse graph
+// in a large canvas (e.g. after Expand) makes fit() zoom way in and the node
+// icons balloon. Capping keeps icons at roughly their designed size; the graph
+// just centres with margin instead of magnifying (#1728).
+const FIT_MAX_ZOOM = 1.1;
+
+function fitToContent(cy: cytoscape.Core): void {
+  if (!cy.elements().nonempty()) return;
+  cy.fit(undefined, 24);
+  if (cy.zoom() > FIT_MAX_ZOOM) {
+    // fit() centres the content; re-zoom around the viewport centre so it stays
+    // centred while we cap the level.
+    cy.zoom({ level: FIT_MAX_ZOOM, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  }
+}
+
 export default function NetworkTopologyMap({
   height = 600,
   onNodeClick,
@@ -984,7 +1000,7 @@ export default function NetworkTopologyMap({
     const fitView = () => {
       if (!cy.elements().nonempty()) return;
       programmaticViewRef.current = true;
-      cy.fit(undefined, 24);
+      fitToContent(cy);
       programmaticViewRef.current = false;
     };
 
@@ -1263,11 +1279,9 @@ export default function NetworkTopologyMap({
     userMovedViewportRef.current = false;
     if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
     clearSavedViewport();
-    if (cy.elements().nonempty()) {
-      programmaticViewRef.current = true;
-      cy.fit(undefined, 24);
-      programmaticViewRef.current = false;
-    }
+    programmaticViewRef.current = true;
+    fitToContent(cy);
+    programmaticViewRef.current = false;
   }, []);
 
   if (loading && nodes.length === 0) {
