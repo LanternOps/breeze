@@ -470,17 +470,26 @@ export async function syncBinaries(): Promise<void> {
     // + the agent's handleWatchdogUpgrade). Previously only syncFromGitHub did
     // this, leaving local watchdogs frozen at install-time version.
     if (watchdogBinaries.length > 0) {
-      await registerLocalBinaries({
-        binaries: watchdogBinaries,
-        component: "watchdog",
-        version,
-        keyId,
-        downloadUrlFor: (osParam, arch) =>
-          `${serverUrl}/api/v1/agents/download/watchdog/${osParam}/${arch}`,
-      });
-      console.log(
-        `[binarySync] Registered ${watchdogBinaries.length} watchdog binaries (version: ${version})`,
-      );
+      // Isolate watchdog registration so a watchdog-only failure (e.g. signing)
+      // doesn't abort the rest of syncBinaries after the agent already
+      // registered — mirrors the GitHub path's per-component try/catch.
+      try {
+        await registerLocalBinaries({
+          binaries: watchdogBinaries,
+          component: "watchdog",
+          version,
+          keyId,
+          downloadUrlFor: (osParam, arch) =>
+            `${serverUrl}/api/v1/agents/download/watchdog/${osParam}/${arch}`,
+        });
+        console.log(
+          `[binarySync] Registered ${watchdogBinaries.length} watchdog binaries (version: ${version})`,
+        );
+      } catch (err) {
+        console.error(
+          `[binarySync] Failed to register local watchdog binaries — watchdog auto-update unavailable: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     } else {
       console.warn(
         "[binarySync] No local watchdog binaries found — watchdog auto-update unavailable on this self-hosted deploy",

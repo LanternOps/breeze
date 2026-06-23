@@ -113,6 +113,18 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.data.helperVersion).toBeUndefined();
   });
 
+  it('drops oversized watchdogVersion instead of rejecting (#1802)', () => {
+    const payload = {
+      ...minimal,
+      watchdogVersion: 'v'.repeat(50),
+    };
+
+    const result = heartbeatSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.watchdogVersion).toBeUndefined();
+  });
+
   it('drops bad osBuild instead of rejecting', () => {
     const payload = {
       ...minimal,

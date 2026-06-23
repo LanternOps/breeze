@@ -27,9 +27,13 @@ const watchdogVersionReadTimeout = 5 * time.Second
 //  1. watchdogInstalledVersion — authoritative after a successful swap THIS run.
 //  2. a cached on-disk read — the binary is exec'd at most once per process run.
 //
-// Returns "" when the version can't be determined (no watchdog installed, an
-// older watchdog without a parseable `status`, or a read error); the server
-// treats an absent value as "unknown" and leaves the stored value untouched.
+// Returns "" when the version can't be determined; the server treats an absent
+// value as "unknown" and leaves the stored value untouched. A read is cached
+// only when its result is STABLE (unsupported platform, or watchdog not
+// installed): a *transient* read failure (e.g. the exec timed out under load) is
+// NOT cached, so it retries on the next heartbeat rather than silently
+// suppressing telemetry for the whole process lifetime — which would re-create
+// the exact #1802 staleness through a narrower door.
 func (h *Heartbeat) installedWatchdogVersion() string {
 	h.watchdogUpgradeMu.Lock()
 	if h.watchdogInstalledVersion != "" {
@@ -48,26 +52,34 @@ func (h *Heartbeat) installedWatchdogVersion() string {
 	if read == nil {
 		read = readInstalledWatchdogVersion
 	}
-	v := read()
+	v, stable := read()
 
-	h.watchdogUpgradeMu.Lock()
-	h.watchdogVersionDisk = v
-	h.watchdogVersionRead = true
-	h.watchdogUpgradeMu.Unlock()
+	if stable {
+		h.watchdogUpgradeMu.Lock()
+		h.watchdogVersionDisk = v
+		h.watchdogVersionRead = true
+		h.watchdogUpgradeMu.Unlock()
+	}
 	return v
 }
 
 // readInstalledWatchdogVersion execs the on-disk watchdog binary's `status`
-// subcommand and parses the version it prints. Returns "" on any failure (binary
-// absent, exec error, timeout, or no version line) — telemetry is best-effort
-// and must never fail or stall the heartbeat.
-func readInstalledWatchdogVersion() string {
+// subcommand and parses the version it prints. It returns (version, stable):
+//   - ("", true)  — unsupported platform or watchdog not installed. A STABLE
+//     state worth caching; a bootstrap install + swap will set the in-memory
+//     version (which takes priority) once one happens.
+//   - ("", false) — the binary exists but couldn't be read (exec error, timeout,
+//     or an old watchdog without `status`). TRANSIENT: logged and not cached so
+//     it retries. Telemetry is best-effort and never fails or stalls the
+//     heartbeat regardless.
+//   - (version, true) — read succeeded.
+func readInstalledWatchdogVersion() (string, bool) {
 	path, err := watchdogBinaryPath()
 	if err != nil || path == "" {
-		return ""
+		return "", true // unsupported platform — stable
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
-		return ""
+		return "", true // not installed — stable; bootstrap+swap will set it
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), watchdogVersionReadTimeout)
@@ -75,9 +87,14 @@ func readInstalledWatchdogVersion() string {
 
 	out, err := exec.CommandContext(ctx, path, "status").Output()
 	if err != nil {
-		return ""
+		// Installed but unreadable. Leave a trail so a device silently never
+		// reporting watchdog_version is debuggable (#1802), but don't fail or
+		// stall the heartbeat — and don't cache, so a transient failure retries.
+		log.Warn("could not read installed watchdog version; heartbeat will omit it this tick",
+			"path", path, "error", err.Error())
+		return "", false
 	}
-	return parseWatchdogStatusVersion(string(out))
+	return parseWatchdogStatusVersion(string(out)), true
 }
 
 // parseWatchdogStatusVersion extracts the version from `breeze-watchdog status`

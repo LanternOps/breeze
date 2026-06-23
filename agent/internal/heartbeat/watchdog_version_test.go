@@ -48,9 +48,9 @@ func TestInstalledWatchdogVersion_PrefersInMemorySwap(t *testing.T) {
 	calls := 0
 	h := &Heartbeat{
 		watchdogInstalledVersion: "0.82.1",
-		watchdogVersionReader: func() string {
+		watchdogVersionReader: func() (string, bool) {
 			calls++
-			return "0.69.0"
+			return "0.69.0", true
 		},
 	}
 
@@ -65,9 +65,9 @@ func TestInstalledWatchdogVersion_PrefersInMemorySwap(t *testing.T) {
 func TestInstalledWatchdogVersion_ReadsAndCaches(t *testing.T) {
 	calls := 0
 	h := &Heartbeat{
-		watchdogVersionReader: func() string {
+		watchdogVersionReader: func() (string, bool) {
 			calls++
-			return "0.69.0"
+			return "0.69.0", true
 		},
 	}
 
@@ -83,12 +83,13 @@ func TestInstalledWatchdogVersion_ReadsAndCaches(t *testing.T) {
 	}
 }
 
-func TestInstalledWatchdogVersion_CachesEmptyRead(t *testing.T) {
+func TestInstalledWatchdogVersion_CachesStableEmptyRead(t *testing.T) {
 	calls := 0
 	h := &Heartbeat{
-		watchdogVersionReader: func() string {
+		// stable=true models "watchdog not installed" — a steady state.
+		watchdogVersionReader: func() (string, bool) {
 			calls++
-			return ""
+			return "", true
 		},
 	}
 
@@ -98,8 +99,45 @@ func TestInstalledWatchdogVersion_CachesEmptyRead(t *testing.T) {
 	if got := h.installedWatchdogVersion(); got != "" {
 		t.Fatalf("expected empty version on second call, got %q", got)
 	}
-	// An empty (failed/unknown) read is still cached so we don't exec every tick.
+	// A STABLE empty result (not installed) is cached so we don't exec every tick.
 	if calls != 1 {
-		t.Fatalf("expected reader called once even for empty result, got %d", calls)
+		t.Fatalf("expected reader called once for a stable empty result, got %d", calls)
+	}
+}
+
+func TestInstalledWatchdogVersion_DoesNotCacheTransientFailure(t *testing.T) {
+	calls := 0
+	h := &Heartbeat{
+		// stable=false models "installed but unreadable" — a transient failure
+		// (exec error / timeout) that must NOT be cached, else a one-off blip
+		// would suppress watchdog telemetry for the whole process lifetime
+		// (the exact #1802 staleness this PR fixes).
+		watchdogVersionReader: func() (string, bool) {
+			calls++
+			if calls >= 3 {
+				return "0.82.1", true // recovers on the 3rd attempt
+			}
+			return "", false
+		},
+	}
+
+	if got := h.installedWatchdogVersion(); got != "" {
+		t.Fatalf("attempt 1: expected empty, got %q", got)
+	}
+	if got := h.installedWatchdogVersion(); got != "" {
+		t.Fatalf("attempt 2: expected empty (retried, not cached), got %q", got)
+	}
+	if got := h.installedWatchdogVersion(); got != "0.82.1" {
+		t.Fatalf("attempt 3: expected recovered version 0.82.1, got %q", got)
+	}
+	if calls != 3 {
+		t.Fatalf("expected reader retried each tick until a stable read (3 calls), got %d", calls)
+	}
+	// Now it's cached — a 4th call must not re-read.
+	if got := h.installedWatchdogVersion(); got != "0.82.1" {
+		t.Fatalf("attempt 4: expected cached 0.82.1, got %q", got)
+	}
+	if calls != 3 {
+		t.Fatalf("expected stable read to be cached (still 3 calls), got %d", calls)
 	}
 }

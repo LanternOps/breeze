@@ -315,9 +315,10 @@ type Heartbeat struct {
 
 	// watchdogVersionReader is an optional test seam: when non-nil,
 	// installedWatchdogVersion calls this instead of the real on-disk read
-	// (readInstalledWatchdogVersion, which execs `breeze-watchdog status`). nil
-	// in production.
-	watchdogVersionReader func() string
+	// (readInstalledWatchdogVersion, which execs `breeze-watchdog status`). It
+	// returns (version, stable) — stable=false marks a transient failure that
+	// must NOT be cached. nil in production.
+	watchdogVersionReader func() (string, bool)
 
 	// watchdog upgrade bookkeeping, guarded by watchdogUpgradeMu. The server
 	// keeps sending watchdogUpgradeTo until a watchdog FAILOVER heartbeat
@@ -332,8 +333,9 @@ type Heartbeat struct {
 	watchdogLastAttemptAt    time.Time
 	// watchdogVersionDisk caches the version parsed from the on-disk watchdog
 	// binary so we exec it at most once per process run; watchdogVersionRead
-	// records that the (possibly-empty) read happened. A successful swap sets
-	// watchdogInstalledVersion, which takes priority over this cache.
+	// records that a STABLE read happened (not installed, or a successful read).
+	// A transient read failure is not cached, so it retries next tick. A
+	// successful swap sets watchdogInstalledVersion, which takes priority here.
 	watchdogVersionDisk string
 	watchdogVersionRead bool
 }

@@ -27,6 +27,19 @@ vi.mock("../db", () => ({
   },
 }));
 
+// Capture eq/and so a test can inspect the WHERE built for the per-component
+// isLatest demote (#1802). Preserve every other drizzle-orm export so the real
+// schema (pgTable/varchar/...) still loads.
+const drizzleSpies = vi.hoisted(() => ({
+  eq: vi.fn((column: unknown, value: unknown) => ({ __op: "eq", column, value })),
+  and: vi.fn((...clauses: unknown[]) => ({ __op: "and", clauses })),
+}));
+
+vi.mock("drizzle-orm", async (importActual) => {
+  const actual = await importActual<typeof import("drizzle-orm")>();
+  return { ...actual, eq: drizzleSpies.eq, and: drizzleSpies.and };
+});
+
 const fsMocks = vi.hoisted(() => ({
   readdir: vi.fn(),
   readFile: vi.fn(),
@@ -309,6 +322,30 @@ describe("binarySync", () => {
         platform: "linux",
         arch: "amd64",
       });
+    });
+
+    it("scopes the isLatest demote per-component so registering watchdog never clobbers the agent", async () => {
+      // The whole reason registerLocalBinaries exists: its demote
+      // (UPDATE ... SET isLatest=false WHERE ... component=?) MUST be
+      // component-scoped, or registering the watchdog would clear the agent's
+      // isLatest row for the same platform/arch and break agent auto-update
+      // fleet-wide. Assert each component's demote carries its own component eq.
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-linux-amd64",
+        "breeze-watchdog-linux-amd64",
+      ] as any);
+
+      await syncBinaries();
+
+      // The only eq(..., 'agent'|'watchdog') calls come from the demote's
+      // component filter (the upsert target uses bare column refs, not eq).
+      const componentFilterValues = drizzleSpies.eq.mock.calls
+        .map(([, value]) => value)
+        .filter((value) => value === "agent" || value === "watchdog");
+
+      expect(componentFilterValues).toContain("agent");
+      expect(componentFilterValues).toContain("watchdog");
     });
 
     it("warns and skips watchdog registration when no watchdog binary is present", async () => {
