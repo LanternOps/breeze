@@ -11,6 +11,8 @@ import {
   discoveredAssets,
   networkTopology,
   topologyLayout,
+  topologyManualNodes,
+  sites,
   networkMonitors,
   snmpDevices,
   snmpAlertThresholds,
@@ -293,6 +295,17 @@ const layoutPatchSchema = z.object({
     x: z.number().finite(),
     y: z.number().finite(),
   })).min(1).max(2000),
+});
+
+// Manual topology placeholder node (#1728 phase 4). `orgId` is server-derived via
+// resolveOrgId; `siteId` is validated against the resolved org + caller site access.
+const manualNodeRoleSchema = z.enum(['switch', 'router', 'ap', 'firewall', 'patch_panel', 'other']);
+const createManualNodeSchema = z.object({
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid(),
+  label: z.string().trim().min(1).max(255),
+  role: manualNodeRoleSchema,
+  notes: z.string().trim().max(2000).optional(),
 });
 
 const bulkApproveSchema = z.object({
@@ -1381,5 +1394,56 @@ discoveryRoutes.patch(
     });
 
     return c.json({ upserted });
+  }
+);
+
+// POST /discovery/topology/manual-node — create a hand-mapped placeholder node
+// (#1728 phase 4). Runs on the request `db` so the INSERT is RLS-scoped to the
+// caller (org/site server-derived); never a bare/system pool (silent 0-row class).
+discoveryRoutes.post(
+  '/topology/manual-node',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  zValidator('json', createManualNodeSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgId(auth, body.orgId, true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    // Site must belong to the resolved org (RLS doesn't defend the site axis).
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.id, body.siteId), eq(sites.orgId, orgResult.orgId!)))
+      .limit(1);
+    if (!site) return c.json({ error: 'Site not found' }, 404);
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const [node] = await db
+      .insert(topologyManualNodes)
+      .values({
+        orgId: orgResult.orgId!,
+        siteId: body.siteId,
+        label: body.label,
+        role: body.role,
+        notes: body.notes ?? null,
+        createdBy: auth.user?.id ?? null,
+      })
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId ?? undefined,
+      action: 'discovery.topology.manual_node.create',
+      resourceType: 'topology_manual_node',
+      resourceId: node?.id,
+      resourceName: node?.label,
+    });
+
+    return c.json(node, 201);
   }
 );
