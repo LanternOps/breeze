@@ -10,6 +10,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
+import { setSentryRequestContext } from '../services/sentry';
 import { mfaForcePartnerAdmin } from '../config/env';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
@@ -455,6 +456,15 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     canAccessOrg,
     allowedSiteIds,
     canAccessSite
+  });
+
+  // #1379 B2 — tag this request's Sentry isolation scope with the tenant so
+  // any event captured downstream is attributable. Non-secret ids only.
+  setSentryRequestContext({
+    userId: user.id,
+    scope: payload.scope,
+    orgId: payload.orgId,
+    partnerId: payload.partnerId
   });
 
   // The return value matters: ipAllowlistGuard returns its deny/error
