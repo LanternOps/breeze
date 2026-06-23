@@ -822,7 +822,6 @@ jobs:
           APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
           MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
           NODE_ENV: test
-          DB_CONTEXTLESS_WRITE_STRICT: 'true'
         run: pnpm --filter=@breeze/api test:integration
 
       # The rls-coverage contract test inspects pg_catalog to verify every
@@ -842,7 +841,6 @@ jobs:
           APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
           MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
           NODE_ENV: test
-          DB_CONTEXTLESS_WRITE_STRICT: 'true'
         run: pnpm --filter=@breeze/api test:rls-coverage
 
       - name: Show container logs on failure

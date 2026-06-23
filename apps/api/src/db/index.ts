@@ -241,11 +241,17 @@ function reportContextlessWrite(label: string): void {
   const message =
     `DB write ${label} ran with no RLS access context — `
     + `wrap in withDbAccessContext/withSystemDbAccessContext (#1375)`;
-  // #1379 A1 — escalate to a hard failure under an env gate so a contextless
-  // write reds CI instead of only warning. OFF by default (prod stays warn-only
-  // and never throws). The intentional contextless paths don't reach here:
-  // auditAdminPool bypasses this proxy, and device_commands writes under an
-  // explicit system context. Mirrors assertOutsideHeldDbContext's strict gate.
+  // #1379 A1 — opt-in escalation: set DB_CONTEXTLESS_WRITE_STRICT to make a
+  // contextless write THROW instead of only warning, so a targeted run (a
+  // developer hunting a #1375 regression) fails loudly. OFF by default — prod
+  // AND CI stay warn-only for now. Global CI enforcement is deferred: ~20 RLS
+  // negative-control integration tests deliberately issue contextless writes
+  // through this proxy to prove DB-layer rejection, and must be migrated off
+  // the proxy (or opt out) before the gate can be flipped on suite-wide
+  // (tracked as a #1379 follow-up). The genuinely-intentional production paths
+  // never reach here anyway: auditAdminPool bypasses this proxy, and
+  // device_commands writes under an explicit system context. Mirrors
+  // assertOutsideHeldDbContext's strict gate.
   if (STRICT_TRIPWIRE_VALUES.has((process.env.DB_CONTEXTLESS_WRITE_STRICT ?? '').trim().toLowerCase())) {
     throw new Error(message);
   }
