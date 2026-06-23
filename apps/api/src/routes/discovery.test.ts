@@ -72,7 +72,12 @@ vi.mock('../db', () => ({
     })),
     transaction: vi.fn(async (fn: any) => fn({
       select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
-      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          onConflictDoUpdate: vi.fn(() => Promise.resolve()),
+        })),
+      })),
     }))
   },
   withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
@@ -120,6 +125,14 @@ vi.mock('../db/schema', () => ({
   peripheralPolicies: {}
 }));
 
+// Persistent record of requirePermission(resource, action) wiring. Lives in a
+// vi.hoisted block so it survives vi.clearAllMocks() — the discovery route module
+// creates its gates at import time (module top-level), before any test/beforeEach
+// runs, so the import-time call would otherwise be cleared away.
+const { requirePermissionWiring } = vi.hoisted(() => ({
+  requirePermissionWiring: [] as Array<[string, string]>,
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     const restrict = c.req.header('x-restrict-site');
@@ -141,7 +154,10 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => {
+    requirePermissionWiring.push([resource, action]);
+    return async (_c: any, next: any) => next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
@@ -270,6 +286,110 @@ describe('discovery routes', () => {
         y: 240.25,
         pinned: true,
       });
+    });
+  });
+
+  describe('PATCH /discovery/topology/layout', () => {
+    const validBody = {
+      siteId: '00000000-0000-0000-0000-000000000001',
+      positions: [
+        {
+          nodeType: 'discovered_asset' as const,
+          nodeId: '00000000-0000-0000-0000-000000000020',
+          x: 100.5,
+          y: 200.25,
+        },
+        {
+          nodeType: 'discovered_asset' as const,
+          nodeId: '00000000-0000-0000-0000-000000000021',
+          x: 300,
+          y: 400,
+        },
+      ],
+    };
+
+    it('is gated by requirePermission(topology, write) at the route module', () => {
+      // The gate const is created at import time; assert the wiring was recorded.
+      expect(requirePermissionWiring).toContainEqual(['topology', 'write']);
+    });
+
+    it('upserts positions keyed on (site_id, node_type, node_id) with pinned=true and updated_by=auth.user.id', async () => {
+      const insertValues: any[] = [];
+      const conflictArgs: any[] = [];
+      (db.transaction as any).mockImplementationOnce(async (fn: any) =>
+        fn({
+          insert: vi.fn(() => ({
+            values: vi.fn((v: any) => {
+              insertValues.push(v);
+              return {
+                onConflictDoUpdate: vi.fn((args: any) => {
+                  conflictArgs.push(args);
+                  return Promise.resolve();
+                }),
+              };
+            }),
+          })),
+        }),
+      );
+
+      const res = await app.request('/discovery/topology/layout', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(validBody),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ upserted: 2 });
+
+      expect(insertValues).toHaveLength(2);
+      expect(insertValues[0]).toMatchObject({
+        orgId: '00000000-0000-0000-0000-000000000000',
+        siteId: '00000000-0000-0000-0000-000000000001',
+        nodeType: 'discovered_asset',
+        nodeId: '00000000-0000-0000-0000-000000000020',
+        x: 100.5,
+        y: 200.25,
+        pinned: true,
+        updatedBy: 'user-123',
+      });
+
+      // upsert keyed on (site_id, node_type, node_id), sets pinned=true + updatedBy
+      expect(conflictArgs[0].target).toEqual([
+        topologyLayout.siteId,
+        topologyLayout.nodeType,
+        topologyLayout.nodeId,
+      ]);
+      expect(conflictArgs[0].set).toMatchObject({
+        x: 100.5,
+        y: 200.25,
+        pinned: true,
+        updatedBy: 'user-123',
+      });
+    });
+
+    it('returns 403 when a site-restricted caller targets an out-of-scope site', async () => {
+      const res = await app.request('/discovery/topology/layout', {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+          'x-restrict-site': '00000000-0000-0000-0000-000000000099',
+        },
+        body: JSON.stringify(validBody),
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects an empty positions array (min 1)', async () => {
+      const res = await app.request('/discovery/topology/layout', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: validBody.siteId, positions: [] }),
+      });
+
+      expect(res.status).toBe(400);
     });
   });
 

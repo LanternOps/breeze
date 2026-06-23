@@ -45,6 +45,10 @@ const requireDiscoveryExecute = requirePermission(
   PERMISSIONS.DEVICES_EXECUTE.resource,
   PERMISSIONS.DEVICES_EXECUTE.action,
 );
+const requireTopologyWrite = requirePermission(
+  PERMISSIONS.TOPOLOGY_WRITE.resource,
+  PERMISSIONS.TOPOLOGY_WRITE.action,
+);
 
 // --- Helpers ---
 
@@ -274,6 +278,21 @@ const linkAssetSchema = z.object({
 
 const topologyQuerySchema = z.object({
   orgId: z.string().guid().optional()
+});
+
+// LOCKED body contract for the drag-to-save layout upsert (#1728). `siteId`
+// scopes the upsert key (rows are unique per site_id/node_type/node_id) and is
+// validated against the caller's site access; `orgId` is server-derived via
+// resolveOrgId. Each accepted position becomes an upsert with pinned=true.
+const layoutPatchSchema = z.object({
+  siteId: z.string().guid(),
+  orgId: z.string().guid().optional(),
+  positions: z.array(z.object({
+    nodeType: z.enum(['discovered_asset', 'manual_node']),
+    nodeId: z.string().guid(),
+    x: z.number().finite(),
+    y: z.number().finite(),
+  })).min(1).max(2000),
 });
 
 const bulkApproveSchema = z.object({
@@ -1314,5 +1333,50 @@ discoveryRoutes.get(
           (e.connectionType === 'ethernet' || e.connectionType === 'routed')
       }))
     });
+  }
+);
+
+// PATCH /discovery/topology/layout — batch upsert saved node positions
+// (drag-to-save, #1728). Runs on the request `db` so writes are RLS-scoped to the
+// caller (org/site server-derived); never a bare/system pool (silent 0-row class).
+discoveryRoutes.patch(
+  '/topology/layout',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  zValidator('json', layoutPatchSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const orgResult = resolveOrgId(auth, body.orgId, true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    let upserted = 0;
+    await db.transaction(async (tx) => {
+      for (const p of body.positions) {
+        await tx
+          .insert(topologyLayout)
+          .values({
+            orgId: orgResult.orgId!,
+            siteId: body.siteId,
+            nodeType: p.nodeType,
+            nodeId: p.nodeId,
+            x: p.x,
+            y: p.y,
+            pinned: true,
+            updatedBy: auth.user?.id ?? null,
+          })
+          .onConflictDoUpdate({
+            target: [topologyLayout.siteId, topologyLayout.nodeType, topologyLayout.nodeId],
+            set: { x: p.x, y: p.y, pinned: true, updatedBy: auth.user?.id ?? null, updatedAt: new Date() },
+          });
+        upserted += 1;
+      }
+    });
+
+    return c.json({ upserted });
   }
 );
