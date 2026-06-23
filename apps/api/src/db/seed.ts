@@ -265,6 +265,7 @@ export const SYSTEM_ROLES = [
       'reports:read', 'reports:write', 'reports:delete', 'reports:export',
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',
+      'topology:read', 'topology:write',
       'remote:access',
       'audit:read'
     ]

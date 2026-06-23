@@ -118,3 +118,15 @@ describe('SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 });
+
+describe('topology:write permission (issue #1728)', () => {
+  it('topology:write is a seeded permission', () => {
+    const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
+    expect(keys).toContain('topology:write');
+  });
+
+  it('Org Admin carries the topology:write grant', () => {
+    const orgAdmin = SYSTEM_ROLES.find((r) => r.name === 'Org Admin');
+    expect(orgAdmin?.permissions).toContain('topology:write');
+  });
+});
