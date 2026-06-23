@@ -132,8 +132,12 @@ function normalizeEncryptionStatus(raw?: string | null): 'encrypted' | 'partial'
   if (!raw) return 'unknown';
   const value = raw.toLowerCase();
   if (value.includes('partial')) return 'partial';
-  if (value.includes('encrypted')) return 'encrypted';
+  // 'unencrypted' must be checked before 'encrypted' -- 'encrypted' is a
+  // substring of 'unencrypted', so the original order classified every
+  // unencrypted device as encrypted and scored it 100 in the posture score
+  // (the same #1831 substring bug fixed in routes/security/helpers.ts).
   if (value.includes('unencrypted') || value.includes('off') || value.includes('disabled')) return 'unencrypted';
+  if (value.includes('encrypted')) return 'encrypted';
   return 'unknown';
 }
 
@@ -172,7 +176,7 @@ function scorePatchCompliance(input: DeviceInput): FactorResult {
   };
 }
 
-function scoreEncryption(input: DeviceInput): FactorResult {
+export function scoreEncryption(input: DeviceInput): FactorResult {
   const volumeCoverage = getEncryptionVolumeCoverage(input.security.encryptionDetails);
   if (volumeCoverage !== null) {
     return {
