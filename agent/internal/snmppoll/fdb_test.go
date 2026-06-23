@@ -161,6 +161,29 @@ func TestParseIfName(t *testing.T) {
 	}
 }
 
+func TestParseQBridgeVlanByMac(t *testing.T) {
+	pdus := []gosnmp.SnmpPDU{
+		// vlan 100, mac 00:50:56:ab:cd:ef
+		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.100.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(3)},
+		// malformed suffix (mac too short) → dropped
+		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.100.0.80.86", Type: gosnmp.Integer, Value: big.NewInt(7)},
+		// same mac under a second vlan 200 → first-wins keeps vlan 100
+		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.200.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(9)},
+		// non-matching prefix → dropped
+		{Name: ".1.3.6.1.2.1.99.9.9.9.9.100.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(1)},
+	}
+	got := parseQBridgeVlanByMac(pdus)
+	want := map[string]int{"00:50:56:ab:cd:ef": 100}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for mac, vlan := range want {
+		if got[mac] != vlan {
+			t.Errorf("mac %s: got vlan %d, want %d (first-wins)", mac, got[mac], vlan)
+		}
+	}
+}
+
 func TestBuildPortIfNameMap(t *testing.T) {
 	portIfIndex := map[int]int{3: 10001, 5: 10003, 7: 20000}
 	ifNames := map[int]string{10001: "Gi0/3", 10003: "Gi0/5"}

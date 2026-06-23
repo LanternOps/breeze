@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	oidFdbPortColumn     = ".1.3.6.1.2.1.17.4.3.1.2." // dot1dTpFdbPort
-	oidBridgePortIfIndex = ".1.3.6.1.2.1.17.1.4.1.2." // dot1dBasePortIfIndex
-	oidIfName            = ".1.3.6.1.2.1.31.1.1.1.1." // ifName
+	oidFdbPortColumn     = ".1.3.6.1.2.1.17.4.3.1.2."     // dot1dTpFdbPort
+	oidBridgePortIfIndex = ".1.3.6.1.2.1.17.1.4.1.2."     // dot1dBasePortIfIndex
+	oidIfName            = ".1.3.6.1.2.1.31.1.1.1.1."     // ifName
+	oidQBridgeFdbPort    = ".1.3.6.1.2.1.17.7.1.2.2.1.2." // dot1qTpFdbPort: .<vlan>.<6 mac>
 )
 
 type FdbRow struct {
@@ -127,6 +128,42 @@ func buildPortIfNameMap(portIfIndex map[int]int, ifNames map[int]string) map[int
 	for port, ifIndex := range portIfIndex {
 		if name, ok := ifNames[ifIndex]; ok {
 			out[port] = name
+		}
+	}
+	return out
+}
+
+// parseQBridgeVlanByMac walks dot1qTpFdbPort PDUs (suffix .<vlan>.<6 mac
+// octets>) into MAC→vlan. Best-effort: many switches expose no Q-BRIDGE table,
+// in which case the result is empty and FDB rows keep a nil VLAN. If the same
+// MAC appears under multiple VLANs, the first encountered wins deterministically.
+func parseQBridgeVlanByMac(pdus []gosnmp.SnmpPDU) map[string]int {
+	out := make(map[string]int)
+	for _, pdu := range pdus {
+		norm := pdu.Name
+		if !strings.HasPrefix(norm, ".") {
+			norm = "." + norm
+		}
+		if !strings.HasPrefix(norm, oidQBridgeFdbPort) {
+			continue
+		}
+		suffix := strings.TrimPrefix(norm, oidQBridgeFdbPort)
+		parts := strings.SplitN(suffix, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		vlan, err := strconv.Atoi(parts[0])
+		if err != nil || vlan <= 0 {
+			continue
+		}
+		// Reconstruct a column-prefixed OID so the 6-octet MAC parser handles
+		// the trailing MAC component.
+		mac, ok := macFromOIDSuffix("."+oidQBridgeFdbPort[1:]+parts[1], oidQBridgeFdbPort)
+		if !ok {
+			continue
+		}
+		if _, exists := out[mac]; !exists { // first-wins
+			out[mac] = vlan
 		}
 	}
 	return out
