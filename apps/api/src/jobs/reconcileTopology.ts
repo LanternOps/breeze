@@ -245,6 +245,69 @@ export async function reconcileTopology(
       });
   }
 
+  // ── Phase 2: FDB host attachment ──────────────────────────────────────────
+  // For each switch's bridge-FDB rows, attach known hosts to access (non-uplink)
+  // ports. INSERT/upsert-only on the provenance index — never reads or mutates
+  // method='manual' edges. assetIndex.byMac is keyed by normMac (hex-only), the
+  // same normalization computeFdbAttachments applies to each fdb row MAC.
+  let totUnknownMac = 0;
+  let totUplink = 0;
+  let totOverThreshold = 0;
+  let totAttached = 0;
+  for (const deviceAdj of adjacency) {
+    const switchAssetId =
+      assetIndex.byIp.get(deviceAdj.sourceDeviceIp) ??
+      (deviceAdj.sourceChassisId
+        ? assetIndex.byMac.get(normMac(deviceAdj.sourceChassisId))
+        : undefined) ??
+      null;
+    const r = computeFdbAttachments(deviceAdj, switchAssetId, assetIndex.byMac);
+    totUnknownMac += r.skippedUnknownMac;
+    totUplink += r.skippedUplinkPort;
+    totOverThreshold += r.skippedOverThreshold;
+    for (const att of r.attachments) {
+      await db
+        .insert(networkTopology)
+        .values({
+          orgId,
+          siteId,
+          sourceType: 'discovered_asset',
+          sourceId: att.switchAssetId,
+          targetType: 'discovered_asset',
+          targetId: att.hostAssetId,
+          connectionType: 'access',
+          method: 'fdb',
+          confidence: 'medium',
+          interfaceName: att.interfaceName,
+          vlan: att.vlan,
+          lastVerifiedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [
+            networkTopology.orgId, networkTopology.siteId,
+            networkTopology.sourceType, networkTopology.sourceId,
+            networkTopology.targetType, networkTopology.targetId,
+            networkTopology.method,
+          ],
+          set: {
+            connectionType: 'access',
+            confidence: 'medium',
+            interfaceName: att.interfaceName,
+            vlan: att.vlan,
+            lastVerifiedAt: new Date(),
+            updatedAt: new Date(),
+          },
+        });
+      totAttached++;
+    }
+  }
+  if (totUnknownMac || totUplink || totOverThreshold) {
+    console.log(
+      `[DiscoveryWorker] FDB reconcile org=${orgId} site=${siteId}: attached=${totAttached} ` +
+        `skipped_unknown_mac=${totUnknownMac} skipped_uplink=${totUplink} skipped_over_threshold=${totOverThreshold}`,
+    );
+  }
+
   await ageOutMeasuredEdges(orgId, siteId, edges);
 }
 
