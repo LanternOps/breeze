@@ -8,6 +8,7 @@ import { deviceVulnerabilities, vulnerabilities } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const vulnerabilityRoutes = new Hono();
 
@@ -41,6 +42,24 @@ const deviceParamSchema = z.object({
 const remediateSchema = z.object({
   deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(200),
 });
+
+const idParamSchema = z.object({
+  id: z.string().uuid(),
+});
+
+const acceptRiskSchema = z.object({
+  reason: z.string().trim().min(1).max(2000),
+  acceptedUntil: z.string().datetime(),
+});
+
+const mitigateSchema = z.object({
+  note: z.string().trim().min(1).max(2000),
+});
+
+const requireVulnerabilityWrite = requirePermission(
+  PERMISSIONS.DEVICES_WRITE.resource,
+  PERMISSIONS.DEVICES_WRITE.action,
+);
 
 type DeviceVulnerabilityRow = {
   id: string;
@@ -217,5 +236,89 @@ vulnerabilityRoutes.post(
       success: result.scheduled > 0 || deviceVulnerabilityIds.length === 0,
       ...result,
     });
+  },
+);
+
+// POST /:id/accept-risk — accept a finding's risk with a reason + expiry. Org-scoped
+// state write (DEVICES_WRITE; no MFA/execute — it queues no command).
+vulnerabilityRoutes.post(
+  '/:id/accept-risk',
+  requireVulnerabilityWrite,
+  zValidator('param', idParamSchema),
+  zValidator('json', acceptRiskSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const { reason, acceptedUntil } = c.req.valid('json');
+
+    if (new Date(acceptedUntil).getTime() <= Date.now()) {
+      return c.json({ success: false, error: 'acceptedUntil must be in the future' }, 400);
+    }
+
+    // Load under request RLS so a cross-org id is invisible (404, not a silent 0-row write).
+    const [row] = await db
+      .select({ id: deviceVulnerabilities.id, orgId: deviceVulnerabilities.orgId })
+      .from(deviceVulnerabilities)
+      .where(eq(deviceVulnerabilities.id, id))
+      .limit(1);
+    if (!row) {
+      return c.json({ success: false, error: 'Vulnerability finding not found' }, 404);
+    }
+
+    await db
+      .update(deviceVulnerabilities)
+      .set({
+        status: 'accepted',
+        acceptedBy: auth.user.id,
+        acceptedUntil: new Date(acceptedUntil),
+        mitigationNote: reason,
+      })
+      .where(eq(deviceVulnerabilities.id, id));
+
+    writeRouteAudit(c, {
+      orgId: row.orgId,
+      action: 'vulnerability.accept_risk',
+      resourceType: 'device_vulnerability',
+      resourceId: id,
+      details: { acceptedUntil, reason },
+    });
+
+    return c.json({ success: true });
+  },
+);
+
+// POST /:id/mitigate — mark a finding mitigated with a note. Org-scoped state write.
+vulnerabilityRoutes.post(
+  '/:id/mitigate',
+  requireVulnerabilityWrite,
+  zValidator('param', idParamSchema),
+  zValidator('json', mitigateSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const { note } = c.req.valid('json');
+
+    const [row] = await db
+      .select({ id: deviceVulnerabilities.id, orgId: deviceVulnerabilities.orgId })
+      .from(deviceVulnerabilities)
+      .where(eq(deviceVulnerabilities.id, id))
+      .limit(1);
+    if (!row) {
+      return c.json({ success: false, error: 'Vulnerability finding not found' }, 404);
+    }
+
+    await db
+      .update(deviceVulnerabilities)
+      .set({ status: 'mitigated', mitigationNote: note, resolvedAt: new Date() })
+      .where(eq(deviceVulnerabilities.id, id));
+
+    writeRouteAudit(c, {
+      orgId: row.orgId,
+      action: 'vulnerability.mitigate',
+      resourceType: 'device_vulnerability',
+      resourceId: id,
+      details: { note },
+    });
+
+    return c.json({ success: true });
   },
 );
