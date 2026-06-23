@@ -51,8 +51,10 @@ export interface DeviceUpdateInput {
 }
 
 const COMPONENTS: AgentUpdateComponent[] = ['agent', 'watchdog'];
-const COMPONENT_UPDATE_AGENT_MIN_VERSION = '0.82.2';
-const WATCHDOG_HEALTHY_COMMAND_MIN_VERSION = '0.82.2';
+// 0.83.0 shipped before the component-update plumbing in this branch merged,
+// so official release agents/watchdogs at 0.83.0 and below are still legacy.
+const COMPONENT_UPDATE_AGENT_MIN_VERSION = '0.83.1';
+const WATCHDOG_HEALTHY_COMMAND_MIN_VERSION = '0.83.1';
 
 function normalizeArchitecture(architecture: string | null | undefined): 'amd64' | 'arm64' | null {
   if (!architecture) return null;
