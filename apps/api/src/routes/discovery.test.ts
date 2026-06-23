@@ -97,6 +97,13 @@ vi.mock('../db/schema', () => ({
     nodeType: 'topologyLayout.nodeType',
     nodeId: 'topologyLayout.nodeId',
   },
+  topologyManualNodes: {
+    id: 'topologyManualNodes.id',
+    orgId: 'topologyManualNodes.orgId',
+    siteId: 'topologyManualNodes.siteId',
+    label: 'topologyManualNodes.label',
+    role: 'topologyManualNodes.role',
+  },
   networkMonitors: {},
   snmpDevices: {},
   snmpAlertThresholds: {},

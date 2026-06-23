@@ -1319,18 +1319,37 @@ discoveryRoutes.get(
       ? await db.select().from(topologyLayout).where(eq(topologyLayout.orgId, orgResult.orgId))
       : await db.select().from(topologyLayout);
 
-    const nodes = assets.map((a) => ({
-      id: a.id,
-      type: a.assetType,
-      label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
-      status: a.isOnline ? 'online' : 'offline',
-      approvalStatus: a.approvalStatus,
-      ipAddress: a.ipAddress,
-      macAddress: a.macAddress,
-      // Each node carries its own siteId so the client can scope the
-      // layout PATCH per (site_id, node_type, node_id) (#1728).
-      siteId: a.siteId
-    }));
+    // Hand-mapped placeholder nodes (#1728 phase 4). Org-scoped like the rest;
+    // never touched by scan reconciliation. Surfaced alongside discovered nodes.
+    const manualNodes = orgResult.orgId
+      ? await db
+          .select()
+          .from(topologyManualNodes)
+          .where(eq(topologyManualNodes.orgId, orgResult.orgId))
+      : await db.select().from(topologyManualNodes);
+
+    const nodes = [
+      ...assets.map((a) => ({
+        id: a.id,
+        type: a.assetType,
+        label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
+        status: a.isOnline ? 'online' : 'offline',
+        approvalStatus: a.approvalStatus,
+        ipAddress: a.ipAddress,
+        macAddress: a.macAddress,
+        // Each node carries its own siteId so the client can scope the
+        // layout PATCH per (site_id, node_type, node_id) (#1728).
+        siteId: a.siteId,
+        kind: 'discovered' as const,
+      })),
+      ...manualNodes.map((m) => ({
+        id: m.id,
+        type: m.role,
+        label: m.label,
+        siteId: m.siteId,
+        kind: 'manual' as const,
+      })),
+    ];
 
     return c.json({
       nodes,
@@ -1356,6 +1375,7 @@ discoveryRoutes.get(
         confidence: e.confidence ?? null,
         interfaceName: e.interfaceName ?? null,
         vlan: e.vlan ?? null,
+        createdBy: e.createdBy ?? null,
         inferred:
           e.sourceType === 'discovered_asset' &&
           e.targetType === 'discovered_asset' &&
