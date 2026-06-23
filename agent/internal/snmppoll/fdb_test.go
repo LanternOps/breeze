@@ -124,3 +124,58 @@ func TestParseFdbPortColumn_SkipsBadRows(t *testing.T) {
 		t.Fatalf("unexpected row: %+v", rows[0])
 	}
 }
+
+func TestParseBridgePortIfIndex(t *testing.T) {
+	pdus := []gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.17.1.4.1.2.3", Type: gosnmp.Integer, Value: big.NewInt(10001)},
+		{Name: ".1.3.6.1.2.1.17.1.4.1.2.5", Type: gosnmp.Integer, Value: big.NewInt(10003)},
+		// malformed suffix (multi-component) → dropped
+		{Name: ".1.3.6.1.2.1.17.1.4.1.2.5.7", Type: gosnmp.Integer, Value: big.NewInt(99999)},
+	}
+	got := parseBridgePortIfIndex(pdus)
+	want := map[int]int{3: 10001, 5: 10003}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for port, ifIndex := range want {
+		if got[port] != ifIndex {
+			t.Errorf("port %d: got ifIndex %d, want %d", port, got[port], ifIndex)
+		}
+	}
+}
+
+func TestParseIfName(t *testing.T) {
+	pdus := []gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10001", Type: gosnmp.OctetString, Value: []byte("Gi0/3")},
+		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10003", Type: gosnmp.OctetString, Value: []byte("Gi0/5")},
+	}
+	got := parseIfName(pdus)
+	want := map[int]string{10001: "Gi0/3", 10003: "Gi0/5"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for ifIndex, name := range want {
+		if got[ifIndex] != name {
+			t.Errorf("ifIndex %d: got %q, want %q", ifIndex, got[ifIndex], name)
+		}
+	}
+}
+
+func TestBuildPortIfNameMap(t *testing.T) {
+	portIfIndex := map[int]int{3: 10001, 5: 10003, 7: 20000}
+	ifNames := map[int]string{10001: "Gi0/3", 10003: "Gi0/5"}
+	got := buildPortIfNameMap(portIfIndex, ifNames)
+	want := map[int]string{3: "Gi0/3", 5: "Gi0/5"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for port, name := range want {
+		if got[port] != name {
+			t.Errorf("port %d: got %q, want %q", port, got[port], name)
+		}
+	}
+	// bridge port 7 has an ifIndex (20000) with no ifName → omitted
+	if _, ok := got[7]; ok {
+		t.Errorf("port 7 should be omitted (no ifName for its ifIndex)")
+	}
+}
