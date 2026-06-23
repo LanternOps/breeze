@@ -181,21 +181,26 @@ Ends an active elevation early.
 | `priority` | int | Lower runs first; default 100 |
 | `enabled` | bool | Default true |
 | `siteId` | uuid \| null | Narrow to one site; null = org-wide |
-| `matchSigner` | string | Code-signer (executable rule) |
+| `matchSigner` | string | Code-signer (executable rule). Mutually exclusive with `matchSignerGroupId` |
+| `matchSignerGroupId` | uuid \| null | Reference a reusable [signer group](#signer-groups) instead of a single `matchSigner` (executable rule) |
 | `matchHash` | string | SHA-256 hex digest (executable rule) |
 | `matchPathGlob` | string | File-path glob (executable rule) |
 | `matchParentImage` | string | Parent process (executable rule) |
+| `matchCommandLine` | string | Case-insensitive substring of the launched process command line (executable rule) |
 | `matchUser` | string | Narrow by requesting user |
 | `matchAdGroup` | string | Narrow by AD group |
 | `matchToolName` | string | AI tool name (tool-action rule) |
 | `matchRiskTier` | int | Risk tier 0–4 (tool-action rule) |
+| `matchNegate` | string[] \| null | Criterion keys the engine inverts ("does not match"). Valid keys: `signer`, `signerGroup`, `hash`, `pathGlob`, `parentImage`, `commandLine`, `user`, `adGroup`, `toolName`, `riskTier` |
 | `timeWindow` | object | `{ start, end, days?, timezone? }`, `HH:MM` 24h, days 0–6 (Sun–Sat) |
 | `approvalDurationMinutes` | int | 1–1440; null falls back to the org default |
 
 Rule-shape validation (enforced on create and on the merged result of an update):
 
-- A rule must carry **at least one identifying criterion** (signer/hash/path/parent/user/group/tool/tier). A rule scoped only by time window -- or nothing -- is rejected with `400`.
-- A rule is either **executable-shaped** (signer/hash/path/parent) or **tool-action-shaped** (tool name / risk tier). Mixing the two is rejected, because no single observation carries both.
+- A rule must carry **at least one identifying criterion** (signer / signer group / hash / path / parent / command line / user / group / tool / tier). A rule scoped only by time window -- or nothing -- is rejected with `400`.
+- A rule is either **executable-shaped** (signer / signer group / hash / path / parent / command line) or **tool-action-shaped** (tool name / risk tier). Mixing the two is rejected, because no single observation carries both.
+- `matchSigner` and `matchSignerGroupId` are **mutually exclusive** -- a rule references a single signer *or* a signer group, not both.
+- A negated criterion never turns missing data into a match: if the observation didn't report the value a negated criterion checks, the rule does not match.
 - `verdict: "ignore"` is not valid for tool-action rules -- a tool action must be decided.
 
 Create returns `201` with the full rule; update returns `200`.
@@ -219,6 +224,73 @@ Dry-runs draft criteria against historical requests so you can see what a rule *
 ```
 
 The preview is a pure per-rule match -- it does not replay priority shadowing or the software-policy bridge. Historical rows do not store AD groups, so any draft containing `matchAdGroup` reports zero matches.
+
+---
+
+## Signer groups
+
+A signer group is a named, reusable set of trusted code-signer (subject) patterns that executable rules can reference via `matchSignerGroupId` instead of repeating the same publisher across rules.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/pam/signer-groups` | List the org's signer groups. |
+| `POST` | `/pam/signer-groups` | Create a signer group. |
+| `PATCH` | `/pam/signer-groups/:id` | Partial update (`name`, `description`, `signers`). |
+| `DELETE` | `/pam/signer-groups/:id` | Delete a group; `409` if it is still referenced by a rule. |
+
+Reads require `devices:read`; writes require `devices:write` + MFA.
+
+```json
+{
+  "name": "Trusted browser vendors",
+  "description": "Publishers whose installers we auto-approve",
+  "signers": ["Mozilla Corporation", "Google LLC"]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | Required, 1–255 chars |
+| `description` | string \| null | Optional, max 2000 chars |
+| `signers` | string[] | Up to 500 trimmed entries, each max 255 chars; de-duplicated case-insensitively |
+
+`GET` and create/update return the full group(s):
+
+```json
+{
+  "success": true,
+  "signerGroups": [
+    {
+      "id": "…",
+      "orgId": "…",
+      "name": "Trusted browser vendors",
+      "description": "Publishers whose installers we auto-approve",
+      "signers": ["Mozilla Corporation", "Google LLC"],
+      "createdAt": "…",
+      "updatedAt": "…"
+    }
+  ]
+}
+```
+
+Create returns `201`. `DELETE` returns `409` (with a message naming the referencing-rule count) when the group is still used by a rule -- detach those rules first.
+
+---
+
+## Org default verdict
+
+The default verdict decides an elevation that matches no software policy and no PAM rule.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/pam/config` | Get the org's PAM config (`devices:read`). |
+| `PUT` | `/pam/config` | Set the default unmatched verdict (`devices:write` + MFA). |
+
+```json
+{ "success": true, "config": { "orgId": "…", "defaultUnmatchedVerdict": "require_approval" } }
+```
+
+`defaultUnmatchedVerdict` is `require_approval` (the default, also applied when no config row exists) or `auto_deny`. `PUT` accepts `{ "defaultUnmatchedVerdict": "require_approval" | "auto_deny" }`.
 
 ---
 
@@ -262,7 +334,7 @@ The route is single-use: it atomically transitions the request from `approved` t
 |---|---|---|
 | `POST` | `/agents/:id/elevation-requests` | Agent reports an observed UAC consent prompt. |
 
-This endpoint is called **by the agent**, authenticated with the agent bearer token (not a user JWT), and is documented here for completeness. It records a UAC observation as an `elevation_requests` row with `flowType: uac_intercept`, runs the decisioning chain (software-policy bridge → PAM rules → pending), and emits the corresponding event and audit rows.
+This endpoint is called **by the agent**, authenticated with the agent bearer token (not a user JWT), and is documented here for completeness. It records a UAC observation as an `elevation_requests` row with `flowType: uac_intercept`, runs the decisioning chain (software-policy bridge → PAM rules → org [default verdict](#org-default-verdict)), and emits the corresponding event and audit rows. When the result is `pending`, Breeze additionally fans out a mobile approval request to each eligible technician and pushes it to their phones (best-effort — the `201` does not depend on push delivery; the first approver to decide on mobile wins and the siblings expire).
 
 Request body (synthesized fields like `reason` are written server-side; the agent only sends discovery data):
 
@@ -290,7 +362,7 @@ Request body (synthesized fields like `reason` are written server-side; the agen
 | `413` | Body exceeds 32 KB |
 | `429` | Per-device rate limit exceeded (about 10 requests/second) |
 
-Decisioning fails safe: if either evaluator errors, the request is recorded as `pending` rather than auto-approved.
+Decisioning fails safe: if either evaluator *errors*, the request is recorded as `pending` rather than auto-approved, regardless of the org's configured default verdict. When no policy and no rule match (without an error), the org [default verdict](#org-default-verdict) decides — `pending` under `require_approval`, or `denied` under `auto_deny`.
 
 ---
 

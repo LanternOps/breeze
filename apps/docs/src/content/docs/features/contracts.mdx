@@ -56,6 +56,16 @@ Per-device and per-seat lines can be scoped to a specific **site** so you bill o
 
 The contract list shows an **estimated monthly recurring** strip across active contracts (normalized for cadence) and a per-contract **estimate** column, so you can see recurring value at a glance.
 
+## From an Accepted Quote
+
+When a customer accepts a quote or proposal that includes recurring (monthly or annual) line items, Breeze automatically creates a **draft contract** from those recurring lines — so an accepted proposal turns straight into the agreement that bills it, with no re-keying.
+
+- Monthly and annual lines are split into **separate draft contracts** (one billing cadence each).
+- The draft inherits the quote's terms, currency, and the prices the customer agreed to.
+- It lands as a **draft** for you to review, adjust lines, and **activate** when you're ready to start billing.
+
+Any one-time charges on the same quote become an invoice instead, not a contract.
+
 ## Managing the Lifecycle
 
 | Action | Effect |
@@ -69,6 +79,21 @@ You can also **generate now** to create the current period's invoice immediately
 
 <Aside>
   When auto-issue is enabled, generated invoices can be emailed to the customer automatically if a billing email is configured. Otherwise they land as drafts for you to review and send.
+</Aside>
+
+## Auto-Renewal
+
+A contract with an **end date** can be set to renew itself automatically instead of expiring. When auto-renew is on, Breeze extends the contract's term in place before it lapses, so billing continues without a gap and you never have to recreate the agreement.
+
+To enable it, give the contract an end date, then turn on **Auto-renew at end of term** and set:
+
+- **Renewal term (months)** — how far each renewal extends the end date (for example, 12 to renew for another year).
+- **Advance notice (days)** — how many days before the end date Breeze warns you that a renewal is coming. Defaults to 30.
+
+On the contract's detail page, the **Renewal** summary shows the current setting (the renewal term, the current end date, and the notice lead time) or that the contract does not auto-renew.
+
+<Aside>
+  Renewal notices go to your team (the MSP), not to the customer. As a renewal approaches, the contract's organization and partner users get an **advance notice**; once Breeze extends the term, they get a **confirmation**. To stop a renewal, turn off auto-renew before the end date. (Clearing the end date also turns auto-renew off.)
 </Aside>
 
 ## Permissions
