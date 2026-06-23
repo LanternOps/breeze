@@ -184,6 +184,63 @@ func TestParseQBridgeVlanByMac(t *testing.T) {
 	}
 }
 
+func TestAssembleFdbEntries_Golden(t *testing.T) {
+	// FDB-port golden (Task 2): 00:50:56:ab:cd:ef→3, 00:1e:67:01:02:03→5,
+	// aa:bb:cc:dd:ee:ff→5. Add one extra row on bridge port 99 whose ifIndex has
+	// no mapping → entry still emitted with empty IfName.
+	fdbPortPDUs := append(loadFdbGolden(t),
+		gosnmp.SnmpPDU{
+			Name:  ".1.3.6.1.2.1.17.4.3.1.2.0.30.103.9.9.9",
+			Type:  gosnmp.Integer,
+			Value: big.NewInt(99),
+		},
+	)
+
+	// base-port/ifName goldens (Task 3): port 3→Gi0/3, port 5→Gi0/5. Port 99 is
+	// intentionally absent so its FDB row resolves no ifName.
+	basePortPDUs := []gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.17.1.4.1.2.3", Type: gosnmp.Integer, Value: big.NewInt(10001)},
+		{Name: ".1.3.6.1.2.1.17.1.4.1.2.5", Type: gosnmp.Integer, Value: big.NewInt(10003)},
+	}
+	ifNamePDUs := []gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10001", Type: gosnmp.OctetString, Value: []byte("Gi0/3")},
+		{Name: ".1.3.6.1.2.1.31.1.1.1.1.10003", Type: gosnmp.OctetString, Value: []byte("Gi0/5")},
+	}
+
+	// Q-BRIDGE golden (Task 4): vlan 100 only for 00:50:56:ab:cd:ef.
+	qBridgePDUs := []gosnmp.SnmpPDU{
+		{Name: ".1.3.6.1.2.1.17.7.1.2.2.1.2.100.0.80.86.171.205.239", Type: gosnmp.Integer, Value: big.NewInt(3)},
+	}
+
+	entries := AssembleFdbEntries(fdbPortPDUs, basePortPDUs, ifNamePDUs, qBridgePDUs)
+
+	if len(entries) != 4 {
+		t.Fatalf("got %d entries, want 4: %+v", len(entries), entries)
+	}
+
+	byMac := make(map[string]FdbEntry, len(entries))
+	for _, e := range entries {
+		byMac[e.MAC] = e
+	}
+
+	// 00:50:56:ab:cd:ef → port 3, ifName Gi0/3, vlan 100
+	if e := byMac["00:50:56:ab:cd:ef"]; e.BridgePort != 3 || e.IfName != "Gi0/3" || e.VLAN != 100 {
+		t.Errorf("00:50:56:ab:cd:ef: got %+v, want {bridgePort:3 ifName:Gi0/3 vlan:100}", e)
+	}
+	// 00:1e:67:01:02:03 → port 5, ifName Gi0/5, no vlan
+	if e := byMac["00:1e:67:01:02:03"]; e.BridgePort != 5 || e.IfName != "Gi0/5" || e.VLAN != 0 {
+		t.Errorf("00:1e:67:01:02:03: got %+v, want {bridgePort:5 ifName:Gi0/5 vlan:0}", e)
+	}
+	// aa:bb:cc:dd:ee:ff → port 5, ifName Gi0/5, no vlan
+	if e := byMac["aa:bb:cc:dd:ee:ff"]; e.BridgePort != 5 || e.IfName != "Gi0/5" || e.VLAN != 0 {
+		t.Errorf("aa:bb:cc:dd:ee:ff: got %+v, want {bridgePort:5 ifName:Gi0/5 vlan:0}", e)
+	}
+	// 00:1e:67:09:09:09 → port 99, no ifName mapping, no vlan
+	if e := byMac["00:1e:67:09:09:09"]; e.BridgePort != 99 || e.IfName != "" || e.VLAN != 0 {
+		t.Errorf("00:1e:67:09:09:09: got %+v, want {bridgePort:99 ifName:\"\" vlan:0}", e)
+	}
+}
+
 func TestBuildPortIfNameMap(t *testing.T) {
 	portIfIndex := map[int]int{3: 10001, 5: 10003, 7: 20000}
 	ifNames := map[int]string{10001: "Gi0/3", 10003: "Gi0/5"}

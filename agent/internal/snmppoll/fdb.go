@@ -169,6 +169,41 @@ func parseQBridgeVlanByMac(pdus []gosnmp.SnmpPDU) map[string]int {
 	return out
 }
 
+// FdbEntry is one assembled bridge-FDB row ready to ride in a DeviceAdjacency.
+// Field names/JSON tags map 1:1 onto the locked cross-phase
+// FdbEntry { mac; bridgePort; ifName?; vlan? } contract.
+type FdbEntry struct {
+	MAC        string `json:"mac"`
+	BridgePort int    `json:"bridgePort"`
+	IfName     string `json:"ifName,omitempty"`
+	VLAN       int    `json:"vlan,omitempty"`
+}
+
+// AssembleFdbEntries combines the four already-walked SNMP subtrees into the
+// per-device []FdbEntry. It is a pure function over fetched PDU slices so it is
+// fully unit-testable with golden fixtures (no socket). IfName is resolved where
+// the bridge port maps; VLAN is set only where the Q-BRIDGE table supplied one.
+// An FDB row whose bridge port has no ifIndex/ifName mapping is still emitted
+// (with an empty IfName) so host attachment can fall back to the port number.
+func AssembleFdbEntries(fdbPortPDUs, basePortPDUs, ifNamePDUs, qBridgePDUs []gosnmp.SnmpPDU) []FdbEntry {
+	rows := parseFdbPortColumn(fdbPortPDUs)
+	portIfName := buildPortIfNameMap(parseBridgePortIfIndex(basePortPDUs), parseIfName(ifNamePDUs))
+	vlanByMac := parseQBridgeVlanByMac(qBridgePDUs)
+
+	entries := make([]FdbEntry, 0, len(rows))
+	for _, r := range rows {
+		e := FdbEntry{MAC: r.MAC, BridgePort: r.BridgePort}
+		if name, ok := portIfName[r.BridgePort]; ok {
+			e.IfName = name
+		}
+		if vlan, ok := vlanByMac[r.MAC]; ok {
+			e.VLAN = vlan
+		}
+		entries = append(entries, e)
+	}
+	return entries
+}
+
 // toInt coerces a ParseValue result (int64/uint64/string) into an int.
 func toInt(v any) (int, bool) {
 	switch n := v.(type) {
