@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   automationQueueJobDataSchema,
+  deviceAdjacencySchema,
   discoveryQueueJobDataSchema,
+  fdbEntrySchema,
   sensitiveDataQueueJobDataSchema,
 } from './queueSchemas';
 
@@ -201,5 +203,33 @@ describe('discovery process-results adjacency', () => {
   });
   it('accepts a payload without adjacency (optional)', () => {
     expect(() => discoveryQueueJobDataSchema.parse(base)).not.toThrow();
+  });
+});
+
+describe('fdb adjacency schema (Phase 2)', () => {
+  it('parses a DeviceAdjacency with a fully-populated fdb entry', () => {
+    const parsed = deviceAdjacencySchema.parse({
+      sourceDeviceIp: '10.0.0.1',
+      lldp: [],
+      cdp: [],
+      fdb: [{ mac: 'aa:bb:cc:dd:ee:ff', bridgePort: 5, ifName: 'Gi0/5', vlan: 100 }],
+    });
+    expect(parsed.fdb).toHaveLength(1);
+    expect(parsed.fdb[0]).toEqual({ mac: 'aa:bb:cc:dd:ee:ff', bridgePort: 5, ifName: 'Gi0/5', vlan: 100 });
+  });
+
+  it('rejects an fdb entry with an extra unknown key (.strict())', () => {
+    expect(() =>
+      fdbEntrySchema.parse({ mac: 'aa:bb:cc:dd:ee:ff', bridgePort: 5, unexpected: true }),
+    ).toThrow();
+  });
+
+  it('defaults fdb to [] when omitted', () => {
+    const parsed = deviceAdjacencySchema.parse({
+      sourceDeviceIp: '10.0.0.1',
+      lldp: [],
+      cdp: [],
+    });
+    expect(parsed.fdb).toEqual([]);
   });
 });

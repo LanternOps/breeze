@@ -101,18 +101,18 @@ const cdpNeighborSchema = z.object({
   remotePortId: z.string(),
   remoteAddress: z.string().optional(),
 }).strict();
-const fdbEntrySchema = z.object({
-  mac: z.string(),
-  bridgePort: z.number().int(),
-  ifName: z.string().optional(),
-  vlan: z.number().int().optional(),
+export const fdbEntrySchema = z.object({
+  mac: z.string().min(1),
+  bridgePort: z.number().int().nonnegative(),
+  ifName: z.string().min(1).optional(),
+  vlan: z.number().int().positive().optional(),
 }).strict();
 export const deviceAdjacencySchema = z.object({
   sourceDeviceIp: z.string(),
   sourceChassisId: z.string().optional(),
   lldp: z.array(lldpNeighborSchema),
   cdp: z.array(cdpNeighborSchema),
-  fdb: z.array(fdbEntrySchema),
+  fdb: z.array(fdbEntrySchema).default([]),
 }).strict();
 
 export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
@@ -265,6 +265,7 @@ export const recoveryBootMediaQueueJobDataSchema = z.object({
 
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
+export type FdbEntry = z.infer<typeof fdbEntrySchema>;
 export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
 export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
 export type AutomationAssignmentLevel = z.infer<typeof automationAssignmentLevelSchema>;
