@@ -51,6 +51,21 @@ describe('scoreEncryption', () => {
     expect(scoreEncryption(deviceInputWithEncryption('disabled') as never).score).toBe(0);
   });
 
+  it('classifies mixed-case unencrypted as unencrypted (score 0)', () => {
+    expect(scoreEncryption(deviceInputWithEncryption('Unencrypted') as never).score).toBe(0);
+  });
+
+  // "unknown" must stay distinct from "unencrypted": it is a low-confidence
+  // data gap (score 50), not a definite 0. Guards against a fail-safe
+  // overcorrection that collapses unknown -> 0 (or -> 100).
+  it('treats unknown/missing status as a 50-score data gap, not 0 or 100', () => {
+    for (const status of ['unknown', '', null] as const) {
+      const result = scoreEncryption(deviceInputWithEncryption(status) as never);
+      expect(result.score).toBe(50);
+      expect(result.dataGap).toBeTruthy();
+    }
+  });
+
   it('prefers volume coverage over the status string when details are present', () => {
     const result = scoreEncryption(
       deviceInputWithEncryption('unencrypted', { volumes: [{ protected: true }, { protected: true }] }) as never
