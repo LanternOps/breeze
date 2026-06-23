@@ -86,6 +86,15 @@ describe('ORG_CASCADE_DELETE_ORDER', () => {
     expect(ORG_CASCADE_DELETE_ORDER.at(-1)).toBe('organizations');
   });
 
+  it('includes topology_layout in localeCompare order', () => {
+    expect(ORG_CASCADE_DELETE_ORDER).toContain('topology_layout');
+    const sorted = [...ORG_CASCADE_DELETE_ORDER].sort((a, b) => a.localeCompare(b));
+    // organizations is intentionally last; ignore it for the order check
+    const withoutOrgs = ORG_CASCADE_DELETE_ORDER.filter((t) => t !== 'organizations');
+    const sortedWithoutOrgs = sorted.filter((t) => t !== 'organizations');
+    expect(withoutOrgs).toEqual(sortedWithoutOrgs);
+  });
+
   it('routes append-only ML feedback labels through the audit-admin delete path', () => {
     expect(ORG_CASCADE_DELETE_ORDER).toContain('ml_feedback_events');
     expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('ml_feedback_events')).toBe(true);

@@ -5,7 +5,7 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
-import { networkTopology } from '../db/schema';
+import { networkTopology, topologyLayout } from '../db/schema';
 
 vi.mock('../services', () => ({}));
 
@@ -86,6 +86,12 @@ vi.mock('../db/schema', () => ({
   discoveryJobs: { id: 'discoveryJobs.id' },
   discoveredAssets: { id: 'discoveredAssets.id', orgId: 'discoveredAssets.orgId', siteId: 'discoveredAssets.siteId' },
   networkTopology: { orgId: 'orgId' },
+  topologyLayout: {
+    orgId: 'topologyLayout.orgId',
+    siteId: 'topologyLayout.siteId',
+    nodeType: 'topologyLayout.nodeType',
+    nodeId: 'topologyLayout.nodeId',
+  },
   networkMonitors: {},
   snmpDevices: {},
   snmpAlertThresholds: {},
@@ -943,6 +949,26 @@ describe('discovery routes', () => {
         });
 
         expect(res.status).toBe(200);
+      });
+
+      it('deletes saved topology_layout rows for the asset within the delete transaction (#1728)', async () => {
+        setSiteRestrictedAuth(undefined);
+        mockAssetOnly({ id: ASSET_IN, orgId: ORG, hostname: 'h', ipAddress: '10.0.0.1', siteId: SITE_OUT });
+        const txDelete = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+          select: vi.fn().mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }),
+          delete: txDelete,
+        }));
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        // The transaction must issue a delete against the topology_layout table.
+        const deletedTables = txDelete.mock.calls.map((call) => call[0]);
+        expect(deletedTables).toContain(topologyLayout);
       });
 
       it('does not gate deletion when the caller is unrestricted', async () => {

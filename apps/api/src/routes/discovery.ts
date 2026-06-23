@@ -10,6 +10,7 @@ import {
   discoveryJobs,
   discoveredAssets,
   networkTopology,
+  topologyLayout,
   networkMonitors,
   snmpDevices,
   snmpAlertThresholds,
@@ -1207,6 +1208,14 @@ discoveryRoutes.delete(
         .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, existing.orgId)));
       await tx.delete(networkMonitors)
         .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, existing.orgId)));
+      // Remove any saved topology layout positions for this asset (#1728).
+      await tx.delete(topologyLayout).where(
+        and(
+          eq(topologyLayout.orgId, existing.orgId),
+          eq(topologyLayout.nodeType, 'discovered_asset'),
+          eq(topologyLayout.nodeId, assetId),
+        ),
+      );
       await tx.delete(discoveredAssets).where(eq(discoveredAssets.id, assetId));
     });
 
