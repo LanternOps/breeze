@@ -31,9 +31,9 @@ The Breeze MCP server uses the **SSE + HTTP POST** transport, which is the stand
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/v1/mcp/sse` | `GET` | Opens a long-lived Server-Sent Events stream. The server sends an `endpoint` event containing the URL the client should POST messages to, then streams responses and keepalive pings. |
-| `/mcp/message` | `POST` | Receives JSON-RPC 2.0 requests from the client. If a `sessionId` query parameter is present and matches an active SSE session, the response is delivered over SSE (HTTP 202). Otherwise the response is returned inline. |
+| `/api/v1/mcp/message` | `POST` | Receives JSON-RPC 2.0 requests from the client. If a `sessionId` query parameter is present and matches an active SSE session, the response is delivered over SSE (HTTP 202). Otherwise the response is returned inline. |
 
-The SSE stream sends keepalive pings every 30 seconds to prevent proxy timeouts. The client can also call `/mcp/message` without an SSE session for stateless, request-response usage.
+The SSE stream sends keepalive pings every 30 seconds to prevent proxy timeouts. The client can also call `/api/v1/mcp/message` without an SSE session for stateless, request-response usage.
 
 ---
 
@@ -104,7 +104,7 @@ API key authentication via the `X-API-Key` header continues to work for self-hos
 {
   "mcpServers": {
     "breeze": {
-      "url": "https://your-breeze-instance.example.com/mcp/sse",
+      "url": "https://your-breeze-instance.example.com/api/v1/mcp/sse",
       "headers": {
         "X-API-Key": "brz_your_api_key_here"
       }
@@ -118,7 +118,7 @@ API key authentication via the `X-API-Key` header continues to work for self-hos
 {
   "mcpServers": {
     "breeze": {
-      "url": "https://your-breeze-instance.example.com/mcp/sse",
+      "url": "https://your-breeze-instance.example.com/api/v1/mcp/sse",
       "headers": {
         "X-API-Key": "brz_your_api_key_here"
       }
@@ -155,7 +155,7 @@ The config file on Windows is located at `%APPDATA%\Claude\claude_desktop_config
 {
   "mcpServers": {
     "breeze": {
-      "url": "https://your-breeze-instance.example.com/mcp/sse",
+      "url": "https://your-breeze-instance.example.com/api/v1/mcp/sse",
       "headers": {
         "X-API-Key": "brz_your_api_key_here"
       }
@@ -330,8 +330,8 @@ These apply in production (`NODE_ENV=production`) and are backed by Redis slidin
 
 | Endpoint | Default limit | Window | Env override |
 |---|---|---|---|
-| `GET /mcp/sse` | 30 connections | 60 seconds | `MCP_SSE_RATE_LIMIT_PER_MINUTE` |
-| `POST /mcp/message` | 120 requests | 60 seconds | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` |
+| `GET /api/v1/mcp/sse` | 30 connections | 60 seconds | `MCP_SSE_RATE_LIMIT_PER_MINUTE` |
+| `POST /api/v1/mcp/message` | 120 requests | 60 seconds | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` |
 
 When a rate limit is exceeded, the server returns HTTP 429 with a `Retry-After` header.
 
@@ -623,4 +623,4 @@ The tool name in `tools/call` does not match any registered tool. Use `tools/lis
 
 ### Stale SSE session
 
-SSE sessions expire after 30 minutes. If you see errors about missing sessions, the client should reconnect to `/mcp/sse` to obtain a new session.
+SSE sessions expire after 30 minutes. If you see errors about missing sessions, the client should reconnect to `/api/v1/mcp/sse` to obtain a new session.
