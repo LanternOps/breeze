@@ -24,6 +24,9 @@ export default defineConfig({
       // Worker-level integration test: renewal pre-pass runs before billing sweep
       // so an at-boundary auto-renew contract bills instead of expiring.
       'src/jobs/contractWorker.renewal.integration.test.ts',
+      // Co-located real-DB integration test for the MSRC vuln-source-sync job
+      // (BE-16): exercises syncMsrcMonth upserts into the global vuln tables.
+      'src/jobs/vulnerabilityJobs.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's
