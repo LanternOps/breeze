@@ -4,8 +4,8 @@ import { z } from 'zod';
 import { and, desc, eq, ilike, inArray, type SQL } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { deviceVulnerabilities, vulnerabilities } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -63,6 +63,42 @@ const requireVulnerabilityWrite = requirePermission(
   PERMISSIONS.DEVICES_WRITE.resource,
   PERMISSIONS.DEVICES_WRITE.action,
 );
+
+type FindingAccess =
+  | { ok: true; row: { id: string; orgId: string; deviceId: string } }
+  | { ok: false; status: 404 | 403; error: string };
+
+/**
+ * Load a device-vulnerability finding for a write (accept-risk / mitigate) and
+ * enforce BOTH axes: org via the request RLS context, and the intra-org SITE
+ * axis via `auth.canAccessSite` (RLS does NOT isolate sites — same gate the
+ * remediate path applies). A cross-org id is invisible under RLS (404); a
+ * finding on a device outside the caller's site allowlist is denied (403).
+ */
+async function loadFindingForWrite(id: string, auth: AuthContext): Promise<FindingAccess> {
+  const [row] = await db
+    .select({
+      id: deviceVulnerabilities.id,
+      orgId: deviceVulnerabilities.orgId,
+      deviceId: deviceVulnerabilities.deviceId,
+    })
+    .from(deviceVulnerabilities)
+    .where(eq(deviceVulnerabilities.id, id))
+    .limit(1);
+  if (!row) return { ok: false, status: 404, error: 'Vulnerability finding not found' };
+
+  const orgCond = auth.orgCondition(devices.orgId);
+  const [device] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(orgCond ? and(eq(devices.id, row.deviceId), orgCond) : eq(devices.id, row.deviceId))
+    .limit(1);
+  if (!device) return { ok: false, status: 404, error: 'Vulnerability finding not found' };
+  if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+    return { ok: false, status: 403, error: 'Access to this site denied' };
+  }
+  return { ok: true, row };
+}
 
 type DeviceVulnerabilityRow = {
   id: string;
@@ -258,15 +294,11 @@ vulnerabilityRoutes.post(
       return c.json({ success: false, error: 'acceptedUntil must be in the future' }, 400);
     }
 
-    // Load under request RLS so a cross-org id is invisible (404, not a silent 0-row write).
-    const [row] = await db
-      .select({ id: deviceVulnerabilities.id, orgId: deviceVulnerabilities.orgId })
-      .from(deviceVulnerabilities)
-      .where(eq(deviceVulnerabilities.id, id))
-      .limit(1);
-    if (!row) {
-      return c.json({ success: false, error: 'Vulnerability finding not found' }, 404);
+    const access = await loadFindingForWrite(id, auth);
+    if (!access.ok) {
+      return c.json({ success: false, error: access.error }, access.status);
     }
+    const { row } = access;
 
     await db
       .update(deviceVulnerabilities)
@@ -297,17 +329,15 @@ vulnerabilityRoutes.post(
   zValidator('param', idParamSchema),
   zValidator('json', mitigateSchema),
   async (c) => {
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const { note } = c.req.valid('json');
 
-    const [row] = await db
-      .select({ id: deviceVulnerabilities.id, orgId: deviceVulnerabilities.orgId })
-      .from(deviceVulnerabilities)
-      .where(eq(deviceVulnerabilities.id, id))
-      .limit(1);
-    if (!row) {
-      return c.json({ success: false, error: 'Vulnerability finding not found' }, 404);
+    const access = await loadFindingForWrite(id, auth);
+    if (!access.ok) {
+      return c.json({ success: false, error: access.error }, access.status);
     }
+    const { row } = access;
 
     await db
       .update(deviceVulnerabilities)
