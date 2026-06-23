@@ -107,6 +107,30 @@ export function captureMessage(
   });
 }
 
+/**
+ * Attach the authenticated tenant/user to the current request's Sentry
+ * isolation scope (#1379 B2). Every event captured later in the request —
+ * route throws, contextless-write warnings, RLS-deny tags — inherits these,
+ * so triage on a multi-tenant RMM stops being guesswork. Only non-secret
+ * identifiers are tagged (no token, no password, no mfaSecret).
+ */
+export function setSentryRequestContext(ctx: {
+  userId: string;
+  scope: 'system' | 'partner' | 'organization';
+  orgId: string | null;
+  partnerId: string | null;
+}): void {
+  if (!initialized) {
+    return;
+  }
+  // Module-level setters target the per-request isolation scope under the
+  // node http integration — safe across concurrent requests and async hops.
+  Sentry.setUser({ id: ctx.userId });
+  Sentry.setTag('scope', ctx.scope);
+  Sentry.setTag('orgId', ctx.orgId ?? 'none');
+  Sentry.setTag('partnerId', ctx.partnerId ?? 'none');
+}
+
 export async function flushSentry(timeoutMs = 2000): Promise<void> {
   if (!initialized) {
     return;
