@@ -299,14 +299,59 @@ function mapLink(link: ApiTopologyLink, idx: number): TopologyLink {
   };
 }
 
+// Canvas colours that must track the app theme. The Cytoscape stylesheet renders
+// to <canvas>, so it can't consume CSS custom properties the way the DOM chrome
+// does — we resolve the relevant design tokens at build time and rebuild the
+// stylesheet when the theme flips (#1728 critique: dark-mode parity).
+type TopologyTheme = {
+  surface: string; // --card: node border halo + label chip + subnet label chip
+  ink: string; // --foreground: node + subnet labels
+  border: string; // --border: subnet box outline + hover ring
+  muted: string; // --muted-foreground: subnet box fill + label
+  primary: string; // --primary: selection ring + halo
+};
+
+// Light-mode fallbacks (also used for SSR / jsdom where getComputedStyle is empty).
+const DEFAULT_TOPOLOGY_THEME: TopologyTheme = {
+  surface: '#ffffff',
+  ink: '#1e293b',
+  border: '#cbd5e1',
+  muted: '#64748b',
+  primary: '#3b56c4'
+};
+
+function readTopologyTheme(): TopologyTheme {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return DEFAULT_TOPOLOGY_THEME;
+  }
+  const cs = getComputedStyle(document.documentElement);
+  // Tokens are stored as space-separated HSL channels ("220 20% 99%"); Cytoscape's
+  // colour parser wants the comma form, so normalise it.
+  const token = (name: string, fallback: string): string => {
+    const raw = cs.getPropertyValue(name).trim();
+    const parts = raw.split(/\s+/);
+    return parts.length === 3 ? `hsl(${parts[0]}, ${parts[1]}, ${parts[2]})` : fallback;
+  };
+  return {
+    surface: token('--card', DEFAULT_TOPOLOGY_THEME.surface),
+    ink: token('--foreground', DEFAULT_TOPOLOGY_THEME.ink),
+    border: token('--border', DEFAULT_TOPOLOGY_THEME.border),
+    muted: token('--muted-foreground', DEFAULT_TOPOLOGY_THEME.muted),
+    primary: token('--primary', DEFAULT_TOPOLOGY_THEME.primary)
+  };
+}
+
 /**
  * Cytoscape stylesheet. Node styling keys off `data(infra)`/`data(status)`;
  * edges color by measured provenance (`data(method)`):
  *   lldp/cdp (high)   → solid blue   (#2563eb)
  *   fdb (medium)      → solid green  (#16a34a)
  *   manual (asserted) → dashed orange(#f97316)  (ships now, used in Phase 4)
+ * Theme-dependent neutrals (node border, labels, subnet box) come from `theme`
+ * so the canvas tracks light/dark; semantic hues (type fills, provenance edge
+ * colours, status pips, amber connect-source) are fixed and read on both.
  */
-function buildStylesheet(): cytoscape.StylesheetStyle[] {
+function buildStylesheet(theme: TopologyTheme): cytoscape.StylesheetStyle[] {
   const nodeType = (ele: cytoscape.NodeSingular) =>
     (ele.data('type') as TopologyNodeType) ?? 'unknown';
   const nodeStatus = (ele: cytoscape.NodeSingular) =>
@@ -333,16 +378,16 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         'background-clip': ['none', 'none'],
         'background-image-containment': 'over',
         'bounds-expansion': 6,
-        'border-color': '#ffffff',
+        'border-color': theme.surface,
         'border-width': 2,
         'border-opacity': 0.95,
         label: 'data(label)',
-        color: '#1e293b',
+        color: theme.ink,
         'font-size': 11,
         'font-weight': 600,
         'text-valign': 'bottom',
         'text-margin-y': 6,
-        'text-background-color': '#f8fafc',
+        'text-background-color': theme.surface,
         'text-background-opacity': 0.82,
         'text-background-padding': 3,
         'text-background-shape': 'round-rectangle',
@@ -368,11 +413,11 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       selector: '$node > node',
       style: {
         shape: 'round-rectangle',
-        'background-color': '#64748b',
+        'background-color': theme.muted,
         'background-opacity': 0.05,
         'background-image': 'none',
         'border-width': 1,
-        'border-color': '#cbd5e1',
+        'border-color': theme.border,
         'border-opacity': 0.9,
         label: 'data(label)',
         'text-valign': 'top',
@@ -380,8 +425,8 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         'text-margin-y': -6,
         'font-size': 11,
         'font-weight': 600,
-        color: '#64748b',
-        'text-background-color': '#ffffff',
+        color: theme.muted,
+        'text-background-color': theme.surface,
         'text-background-opacity': 0.9,
         'text-background-padding': 4,
         'text-background-shape': 'round-rectangle',
@@ -417,7 +462,7 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       // Hover: lift the tile and thicken its ring; cursor handled in JS.
       selector: 'node.tp-hover',
       style: {
-        'border-color': '#cbd5e1',
+        'border-color': theme.border,
         'border-width': 4,
         'border-opacity': 1,
         'z-index': 20
@@ -427,10 +472,10 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       // Selection: brand-blue ring + halo, raised above neighbours.
       selector: 'node.tp-selected',
       style: {
-        'border-color': '#3b56c4',
+        'border-color': theme.primary,
         'border-width': 4,
         'border-opacity': 1,
-        'overlay-color': '#3b56c4',
+        'overlay-color': theme.primary,
         'overlay-opacity': 0.14,
         'overlay-padding': 7,
         'z-index': 30
@@ -484,6 +529,11 @@ export default function NetworkTopologyMap({
   // Canvas pixel height, recomputed to fit the viewport so the map's header and
   // the legends below it stay visible without scrolling the card (#1728).
   const [canvasHeight, setCanvasHeight] = useState(height);
+  // Inline two-step delete confirm (#1728 critique): the first click on a delete
+  // button arms it ("Confirm delete?"), the second performs the irreversible
+  // action. Auto-disarms after 3s so a stray first click can't linger.
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -573,6 +623,26 @@ export default function NetworkTopologyMap({
   const presentTypes = useMemo(
     () => (Object.keys(typeColors) as TopologyNodeType[]).filter((t) => nodes.some((n) => n.type === t)),
     [nodes]
+  );
+
+  // Select a node from outside the canvas (the accessible device list / keyboard
+  // path). Mirrors a canvas tap: opens the inspector and drives the same
+  // selection-highlight effect, so keyboard + screen-reader users can reach every
+  // device without a pointer — the <canvas> itself isn't focusable (#1728 P0).
+  const selectNodeById = useCallback(
+    (node: TopologyNode) => {
+      setSelected({
+        id: node.id,
+        group: 'nodes',
+        kind: node.kind === 'manual' ? 'manual' : 'discovered',
+        label: node.label,
+        nodeType: node.type,
+        status: node.status,
+        ipAddress: node.ipAddress ?? null,
+        subnet: subnetByNodeId.get(node.id) ?? null
+      });
+    },
+    [subnetByNodeId]
   );
 
   const addManualNode = useCallback(
@@ -712,6 +782,22 @@ export default function NetworkTopologyMap({
     setSelected(null);
   }, [editMode]);
 
+  // Arm the inline delete confirm; auto-disarm after 3s.
+  const armDelete = useCallback(() => {
+    setConfirmDelete(true);
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    confirmTimerRef.current = setTimeout(() => setConfirmDelete(false), 3000);
+  }, []);
+
+  // A new selection (or a cleared one) always starts disarmed.
+  useEffect(() => {
+    setConfirmDelete(false);
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    return () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    };
+  }, [selected]);
+
   const persistDrag = useCallback(
     async (
       nodeId: string,
@@ -812,7 +898,7 @@ export default function NetworkTopologyMap({
     const cy = cytoscape({
       container: mountRef.current,
       elements,
-      style: buildStylesheet(),
+      style: buildStylesheet(readTopologyTheme()),
       // preset: consume saved positions; never auto-layout on every render.
       layout: { name: 'preset' },
       wheelSensitivity: 0.2,
@@ -957,6 +1043,17 @@ export default function NetworkTopologyMap({
     cy.userZoomingEnabled(editMode);
     cy.autoungrabify(!editMode);
   }, [editMode]);
+
+  // Rebuild the canvas stylesheet from the resolved design tokens whenever the
+  // theme flips (the `dark` class toggles on <html>), so the graph tracks
+  // light/dark instead of staying a light island in a dark shell (#1728).
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const apply = () => cyRef.current?.style(buildStylesheet(readTopologyTheme()));
+    const observer = new MutationObserver(apply);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
 
   // Fit the canvas height to the viewport so the legends below the map stay
   // visible without scrolling the card off-screen. The chrome above the canvas
@@ -1185,10 +1282,16 @@ export default function NetworkTopologyMap({
                 <button
                   type="button"
                   data-testid="topology-delete-node"
-                  onClick={() => void deleteManualNode(selected.id)}
-                  className="rounded-md border border-destructive/50 px-2.5 py-1.5 text-xs font-medium text-destructive transition hover:bg-destructive/10"
+                  aria-label={confirmDelete ? 'Confirm delete node' : 'Delete node'}
+                  onClick={() => (confirmDelete ? void deleteManualNode(selected.id) : armDelete())}
+                  className={cn(
+                    'rounded-md px-2.5 py-1.5 text-xs font-medium transition',
+                    confirmDelete
+                      ? 'bg-destructive text-destructive-foreground hover:opacity-90'
+                      : 'border border-destructive/50 text-destructive hover:bg-destructive/10'
+                  )}
                 >
-                  Delete node
+                  {confirmDelete ? 'Confirm delete?' : 'Delete node'}
                 </button>
               )}
             </>
@@ -1240,10 +1343,16 @@ export default function NetworkTopologyMap({
                 <button
                   type="button"
                   data-testid="topology-delete-edge"
-                  onClick={() => void deleteManualEdge(selected.id)}
-                  className="rounded-md border border-destructive/50 px-2.5 py-1.5 text-xs font-medium text-destructive transition hover:bg-destructive/10"
+                  aria-label={confirmDelete ? 'Confirm delete connection' : 'Delete connection'}
+                  onClick={() => (confirmDelete ? void deleteManualEdge(selected.id) : armDelete())}
+                  className={cn(
+                    'rounded-md px-2.5 py-1.5 text-xs font-medium transition',
+                    confirmDelete
+                      ? 'bg-destructive text-destructive-foreground hover:opacity-90'
+                      : 'border border-destructive/50 text-destructive hover:bg-destructive/10'
+                  )}
                 >
-                  Delete connection
+                  {confirmDelete ? 'Confirm delete?' : 'Delete connection'}
                 </button>
               )}
               {selected.method !== 'manual' && editMode && (
@@ -1290,6 +1399,12 @@ export default function NetworkTopologyMap({
       <div
         ref={mountRef}
         data-testid="topology-cytoscape"
+        role="img"
+        aria-label={
+          nodes.length > 0
+            ? `Network topology map: ${nodes.length} device${nodes.length === 1 ? '' : 's'}. Use the device list below to inspect each device with the keyboard.`
+            : 'Network topology map: no devices discovered yet.'
+        }
         className="relative mt-4 w-full overflow-hidden rounded-md border bg-muted/30 [background-image:radial-gradient(hsl(var(--border))_1px,transparent_0)] [background-size:22px_22px]"
         // Cytoscape requires a real pixel height on its container. An inline style
         // is used deliberately: the `u-h-px-*` utility classes are runtime-built
@@ -1311,12 +1426,49 @@ export default function NetworkTopologyMap({
         )}
       </div>
 
+      {/* Accessible device list (#1728 P0): a keyboard-focusable, screen-reader
+          enumerable route to every node, since the Cytoscape <canvas> exposes no
+          DOM. Selecting a row drives the same inspector + canvas highlight as a
+          tap. Collapsed by default to stay out of the sighted/mouse user's way. */}
+      {nodes.length > 0 && (
+        <details className="mt-4 rounded-md border bg-card" data-testid="topology-device-list">
+          <summary className="cursor-pointer select-none rounded-md px-3 py-2 text-xs font-semibold text-muted-foreground transition hover:text-foreground">
+            All devices ({nodes.length})
+          </summary>
+          <ul className="max-h-64 overflow-auto border-t p-1.5" role="list">
+            {nodes.map((n) => (
+              <li key={n.id}>
+                <button
+                  type="button"
+                  data-testid={`topology-device-row-${n.id}`}
+                  aria-pressed={selected?.id === n.id}
+                  onClick={() => selectNodeById(n)}
+                  className={cn(
+                    'flex w-full items-center gap-2.5 rounded px-2 py-1.5 text-left text-xs transition hover:bg-muted',
+                    selected?.id === n.id && 'bg-muted'
+                  )}
+                >
+                  <NodeBadge type={n.type} size={20} />
+                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">{n.label}</span>
+                  <span className="hidden items-center gap-1 text-muted-foreground sm:inline-flex">
+                    <span className={cn('h-1.5 w-1.5 rounded-full', statusDotClass[n.status])} aria-hidden />
+                    {statusLabel[n.status]}
+                  </span>
+                  <span className="text-muted-foreground">{typeLabels[n.type]}</span>
+                  {n.ipAddress && (
+                    <span className="hidden font-mono text-muted-foreground md:inline">{n.ipAddress}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
       {/* Subnet legend with host counts. */}
       {subnetGroups.length > 0 && (
         <div className="mt-4" data-testid="topology-subnet-legend">
-          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground/80">
-            Subnets
-          </p>
+          <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Subnets</p>
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             {subnetGroups.map((group: SubnetGroup<TopologyNode>) => (
               <span
@@ -1324,7 +1476,7 @@ export default function NetworkTopologyMap({
                 className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 shadow-sm"
               >
                 <span className="font-medium text-foreground">{group.label}</span>
-                <span className="rounded-full bg-muted px-1.5 text-[11px] font-medium text-muted-foreground">
+                <span className="rounded-full bg-muted px-1.5 text-[11px] font-semibold text-foreground">
                   {group.nodes.length}
                 </span>
               </span>
@@ -1343,7 +1495,7 @@ export default function NetworkTopologyMap({
             </span>
           ))}
           {onNodeClick && (
-            <span className="ml-auto text-muted-foreground/60">Click a node to inspect</span>
+            <span className="ml-auto text-muted-foreground">Click a node to inspect</span>
           )}
         </div>
       )}

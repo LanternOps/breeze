@@ -11,7 +11,7 @@ vi.mock('../../stores/auth', () => ({
 // Edit-mode gating (#1728 phase 4) calls usePermissions(). Most tests exercise
 // the read-only view (deny topology:write); the edit-only controls (Auto-arrange)
 // flip the mock to grant it per-test. Hoisted so the vi.mock factory can see it.
-const { canMock } = vi.hoisted(() => ({ canMock: vi.fn(() => false) }));
+const { canMock } = vi.hoisted(() => ({ canMock: vi.fn((..._a: unknown[]) => false) }));
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (...a: unknown[]) => canMock(...a) })
 }));
@@ -68,7 +68,9 @@ const { cyDragHandlers, cyInstance, cytoscapeFactory } = vi.hoisted(() => {
     // Edit-only interactivity toggles (#1728): set on mode change; no-ops here.
     userPanningEnabled: vi.fn(),
     userZoomingEnabled: vi.fn(),
-    autoungrabify: vi.fn()
+    autoungrabify: vi.fn(),
+    // Theme-change stylesheet rebuild (#1728): no-op in jsdom.
+    style: vi.fn()
   };
   const factory = vi.fn(() => instance) as ReturnType<typeof vi.fn> & {
     use: ReturnType<typeof vi.fn>;
@@ -364,5 +366,36 @@ describe('NetworkTopologyMap', () => {
 
     await waitFor(() => expect(lock).toHaveBeenCalled());
     expect(unlock).toHaveBeenCalled();
+  });
+
+  it('exposes a keyboard-accessible device list that drives the inspector + detail (#1728 P0)', async () => {
+    const onNodeClick = vi.fn();
+    mockTopologyResponse({
+      subnets: ['10.0.2.0/24'],
+      edges: [],
+      layout: [],
+      nodes: [
+        { id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' },
+        { id: 'gw', label: 'gateway', type: 'router', status: 'online', ipAddress: '10.0.2.1' }
+      ]
+    });
+
+    render(<NetworkTopologyMap onNodeClick={onNodeClick} />);
+
+    // The canvas is a <canvas> with no focusable nodes; the device list is the
+    // keyboard/screen-reader route. Each device is a real <button>.
+    const row = await screen.findByTestId('topology-device-row-gw');
+    expect(row.tagName).toBe('BUTTON');
+
+    // Selecting a row opens the inspector for that device (same as a canvas tap)…
+    fireEvent.click(row);
+    const inspector = await screen.findByTestId('topology-inspector');
+    expect(inspector).toHaveTextContent('gateway');
+    expect(row).toHaveAttribute('aria-pressed', 'true');
+
+    // …and a tap alone must NOT open the detail modal — that's the second step.
+    expect(onNodeClick).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByTestId('topology-inspector-view-details'));
+    expect(onNodeClick).toHaveBeenCalledWith('gw');
   });
 });

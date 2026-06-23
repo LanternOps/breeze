@@ -80,7 +80,9 @@ const { cyInstance, cytoscapeFactory, cyHandlers } = vi.hoisted(() => {
     // edit mode changes; chainable no-ops are enough for jsdom.
     userPanningEnabled: vi.fn(),
     userZoomingEnabled: vi.fn(),
-    autoungrabify: vi.fn()
+    autoungrabify: vi.fn(),
+    // Theme-change stylesheet rebuild (#1728): no-op in jsdom.
+    style: vi.fn()
   };
   const factory = vi.fn(() => instance) as ReturnType<typeof vi.fn> & {
     use: ReturnType<typeof vi.fn>;
@@ -293,7 +295,11 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       json: async () => ({ success: true })
     } as unknown as Response);
 
+    // Two-step delete (#1728 critique): the first click only arms the confirm; the
+    // second click performs the irreversible delete.
     await user.click(await screen.findByTestId('topology-delete-edge'));
+    expect(await screen.findByTestId('topology-delete-edge')).toHaveTextContent('Confirm delete?');
+    await user.click(screen.getByTestId('topology-delete-edge'));
 
     await waitFor(() => {
       const call = fetchWithAuth.mock.calls.find(
@@ -364,7 +370,10 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       json: async () => ({ success: true })
     } as unknown as Response);
 
+    // Two-step delete (#1728 critique): first click arms, second confirms.
     await user.click(await screen.findByTestId('topology-delete-node'));
+    expect(await screen.findByTestId('topology-delete-node')).toHaveTextContent('Confirm delete?');
+    await user.click(screen.getByTestId('topology-delete-node'));
 
     await waitFor(() => {
       const call = fetchWithAuth.mock.calls.find(
