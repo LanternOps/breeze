@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import { LayoutGrid, Pencil, Check, ArrowRight, X, Network } from 'lucide-react';
+import { LayoutGrid, Pencil, Check, ArrowRight, X, Network, Maximize2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 import { runAction, handleActionError } from '@/lib/runAction';
@@ -506,6 +506,60 @@ function buildStylesheet(theme: TopologyTheme): cytoscape.StylesheetStyle[] {
   ];
 }
 
+// Persisted pan/zoom so a user's view survives reloads (#1728). Keyed by a
+// signature of the node set so a different topology (e.g. another org) doesn't
+// inherit a stale viewport — it falls back to fit-to-screen instead.
+const VIEWPORT_STORAGE_KEY = 'breeze.topology.viewport';
+
+type SavedViewport = { sig: string; zoom: number; pan: { x: number; y: number } };
+
+function topologySignature(nodes: TopologyNode[]): string {
+  const joined = nodes.map((n) => n.id).sort().join('|');
+  let hash = 0;
+  for (let i = 0; i < joined.length; i++) hash = (hash * 31 + joined.charCodeAt(i)) | 0;
+  return `${nodes.length}:${hash}`;
+}
+
+function readSavedViewport(): SavedViewport | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (
+      v &&
+      typeof v.sig === 'string' &&
+      Number.isFinite(v.zoom) &&
+      v.pan &&
+      Number.isFinite(v.pan.x) &&
+      Number.isFinite(v.pan.y)
+    ) {
+      return v as SavedViewport;
+    }
+  } catch {
+    /* malformed / storage disabled — ignore */
+  }
+  return null;
+}
+
+function saveViewport(v: SavedViewport): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(v));
+  } catch {
+    /* storage disabled — ignore */
+  }
+}
+
+function clearSavedViewport(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(VIEWPORT_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function NetworkTopologyMap({
   height = 600,
   onNodeClick,
@@ -537,6 +591,12 @@ export default function NetworkTopologyMap({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
+  // Viewport (pan/zoom) bookkeeping: `userMoved` suppresses auto-fit once the
+  // user takes control; `programmatic` flags our own fit/restore so the events
+  // they emit don't count as user input; the timer debounces persistence.
+  const userMovedViewportRef = useRef(false);
+  const programmaticViewRef = useRef(false);
+  const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // siteId per node, so a drag can persist the dragged node's own site.
   const siteByNodeRef = useRef<Map<string, string | undefined>>(new Map());
   // node ids that already have a saved (placed) position — Auto-arrange must not
@@ -901,10 +961,10 @@ export default function NetworkTopologyMap({
       // preset: consume saved positions; never auto-layout on every render.
       layout: { name: 'preset' },
       wheelSensitivity: 0.2,
-      // Static in view mode; pan/zoom/drag unlock only in edit mode (#1728). The
-      // editMode effect keeps these in sync on toggle.
-      userPanningEnabled: editModeRef.current,
-      userZoomingEnabled: editModeRef.current,
+      // Pan + scroll-zoom are always on; only node-dragging is edit-only (#1728).
+      // The editMode effect keeps `autoungrabify` in sync on toggle.
+      userPanningEnabled: true,
+      userZoomingEnabled: true,
       autoungrabify: !editModeRef.current,
       boxSelectionEnabled: false
     });
@@ -913,12 +973,44 @@ export default function NetworkTopologyMap({
     // The container may have been laid out (or resized from a hidden tab) after
     // cytoscape measured it; re-measure and frame the saved positions so nodes
     // are visible on first paint rather than parked off-screen.
-    cy.resize();
-    if (cy.elements().nonempty()) cy.fit(undefined, 24);
+    const sig = topologySignature(nodes);
+    userMovedViewportRef.current = false;
+    const fitView = () => {
+      if (!cy.elements().nonempty()) return;
+      programmaticViewRef.current = true;
+      cy.fit(undefined, 24);
+      programmaticViewRef.current = false;
+    };
 
-    // Keep the graph framed and filling the canvas whenever the container
-    // resizes — height recompute, window width changes, sidebar collapse. Refit
-    // in view mode; in edit mode preserve the user's pan/zoom. rAF-debounced.
+    cy.resize();
+    // Restore the saved pan/zoom for THIS topology (matched by signature) so the
+    // view survives reloads; otherwise frame the whole graph (#1728).
+    const saved = readSavedViewport();
+    if (saved && saved.sig === sig) {
+      programmaticViewRef.current = true;
+      cy.zoom(saved.zoom);
+      cy.pan(saved.pan);
+      programmaticViewRef.current = false;
+      userMovedViewportRef.current = true; // honor it; don't auto-refit over it
+    } else {
+      fitView();
+    }
+
+    // A user pan/zoom takes control of the viewport and is persisted (debounced).
+    // The programmatic guard ignores the events our own fit/restore emits.
+    cy.on('zoom pan', () => {
+      if (programmaticViewRef.current) return;
+      userMovedViewportRef.current = true;
+      if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
+      viewportSaveTimerRef.current = setTimeout(() => {
+        const c = cyRef.current;
+        if (c) saveViewport({ sig, zoom: c.zoom(), pan: c.pan() });
+      }, 400);
+    });
+
+    // Keep the graph framed when the container resizes (height recompute, window
+    // width changes, sidebar collapse) — unless the user has taken control of the
+    // viewport, in which case their pan/zoom is preserved. rAF-debounced.
     let refitRaf = 0;
     const resizeObserver =
       typeof ResizeObserver !== 'undefined'
@@ -928,7 +1020,7 @@ export default function NetworkTopologyMap({
               const c = cyRef.current;
               if (!c) return;
               c.resize();
-              if (!editModeRef.current && c.elements().nonempty()) c.fit(undefined, 24);
+              if (!userMovedViewportRef.current) fitView();
             });
           })
         : null;
@@ -1024,6 +1116,7 @@ export default function NetworkTopologyMap({
     return () => {
       cancelAnimationFrame(refitRaf);
       resizeObserver?.disconnect();
+      if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
       cy.destroy();
       cyRef.current = null;
     };
@@ -1055,11 +1148,13 @@ export default function NetworkTopologyMap({
   // no pan, no scroll-zoom, no node dragging. Edit mode unlocks all three. The
   // same flags are set at cy-creation from editModeRef so a data-driven rebuild
   // preserves the current mode.
+  // View mode allows pan + scroll-zoom so a technician can read a large map;
+  // only node *dragging* (repositioning) is gated to edit mode (#1728).
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    cy.userPanningEnabled(editMode);
-    cy.userZoomingEnabled(editMode);
+    cy.userPanningEnabled(true);
+    cy.userZoomingEnabled(true);
     cy.autoungrabify(!editMode);
   }, [editMode]);
 
@@ -1115,6 +1210,21 @@ export default function NetworkTopologyMap({
     locked.unlock();
   }, []);
 
+  // "Fit": drop any saved/locked viewport and frame the whole graph again. The
+  // escape hatch after the user has panned/zoomed away (#1728).
+  const resetView = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    userMovedViewportRef.current = false;
+    if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
+    clearSavedViewport();
+    if (cy.elements().nonempty()) {
+      programmaticViewRef.current = true;
+      cy.fit(undefined, 24);
+      programmaticViewRef.current = false;
+    }
+  }, []);
+
   if (loading && nodes.length === 0) {
     return (
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
@@ -1151,6 +1261,18 @@ export default function NetworkTopologyMap({
           )}
         </div>
         <div className="flex items-center gap-2">
+          {nodes.length > 0 && (
+            <button
+              type="button"
+              data-testid="topology-fit-view"
+              onClick={resetView}
+              title="Fit the whole map to view"
+              className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
+            >
+              <Maximize2 className="h-4 w-4 text-muted-foreground" aria-hidden />
+              Fit
+            </button>
+          )}
           {editMode && (
             <button
               type="button"

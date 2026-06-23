@@ -76,6 +76,8 @@ const { cyInstance, cytoscapeFactory, cyHandlers } = vi.hoisted(() => {
     })),
     fit: vi.fn(),
     resize: vi.fn(),
+    zoom: vi.fn(() => 1),
+    pan: vi.fn(() => ({ x: 0, y: 0 })),
     // Edit-only interactivity toggles (#1728): the component flips these when
     // edit mode changes; chainable no-ops are enough for jsdom.
     userPanningEnabled: vi.fn(),

@@ -65,6 +65,8 @@ const { cyDragHandlers, cyInstance, cytoscapeFactory } = vi.hoisted(() => {
     })),
     fit: vi.fn(),
     resize: vi.fn(),
+    zoom: vi.fn(() => 1),
+    pan: vi.fn(() => ({ x: 0, y: 0 })),
     // Edit-only interactivity toggles (#1728): set on mode change; no-ops here.
     userPanningEnabled: vi.fn(),
     userZoomingEnabled: vi.fn(),
@@ -371,6 +373,24 @@ describe('NetworkTopologyMap', () => {
 
     await waitFor(() => expect(lock).toHaveBeenCalled());
     expect(unlock).toHaveBeenCalled();
+  });
+
+  it('enables pan + zoom in read-only view but keeps nodes undraggable (#1728)', async () => {
+    mockTopologyResponse({
+      subnets: [],
+      edges: [],
+      layout: [],
+      nodes: [{ id: 'a', label: 'host-a', type: 'workstation', status: 'online', ipAddress: '10.0.2.5' }]
+    });
+
+    render(<NetworkTopologyMap />);
+
+    await waitFor(() => expect(cytoscapeFactory).toHaveBeenCalled());
+    const cfg = lastCytoscapeConfig();
+    expect(cfg?.userPanningEnabled).toBe(true);
+    expect(cfg?.userZoomingEnabled).toBe(true);
+    // Nodes are NOT draggable in the read-only view — only edit mode unlocks that.
+    expect(cfg?.autoungrabify).toBe(true);
   });
 
   it('exposes a keyboard-accessible device list that drives the inspector + detail (#1728 P0)', async () => {
