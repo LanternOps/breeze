@@ -5,8 +5,9 @@ import { and, desc, eq, ilike, inArray, type SQL } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceVulnerabilities, vulnerabilities } from '../db/schema';
-import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 
 export const vulnerabilityRoutes = new Hono();
 
@@ -35,6 +36,10 @@ const listQuerySchema = z.object({
 
 const deviceParamSchema = z.object({
   deviceId: z.string().uuid(),
+});
+
+const remediateSchema = z.object({
+  deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(200),
 });
 
 type DeviceVulnerabilityRow = {
@@ -184,5 +189,33 @@ vulnerabilityRoutes.get(
     const query = c.req.valid('query');
     const items = await listVulnerabilities({ ...query, deviceId });
     return c.json({ items });
+  },
+);
+
+// POST /remediate — schedule per-device install commands for a set of findings.
+// The `*` middleware already enforces auth + scope + DEVICES_READ; this high-power
+// write additionally requires DEVICES_EXECUTE + MFA (mirrors /devices/:id/patches/install).
+vulnerabilityRoutes.post(
+  '/remediate',
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('json', remediateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceVulnerabilityIds } = c.req.valid('json');
+    // Org-scope callers pass their org; partner/system callers pass '' so the
+    // core derives the org per-device (auth.orgId is null off org scope).
+    const result = await remediateVulnerabilities(
+      auth.orgId ?? '',
+      deviceVulnerabilityIds,
+      auth.user.id,
+      auth,
+    );
+    // runAction treats {success:false} as a failure; report success when at least
+    // one finding was scheduled (or nothing was asked).
+    return c.json({
+      success: result.scheduled > 0 || deviceVulnerabilityIds.length === 0,
+      ...result,
+    });
   },
 );
