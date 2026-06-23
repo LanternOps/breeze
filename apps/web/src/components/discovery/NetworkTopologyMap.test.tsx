@@ -45,8 +45,9 @@ const { cyDragHandlers, cyInstance, cytoscapeFactory } = vi.hoisted(() => {
     layout: vi.fn(() => ({ run: vi.fn() })),
     destroy: vi.fn(),
     add: vi.fn(),
-    elements: vi.fn(() => ({ remove: vi.fn() })),
-    fit: vi.fn()
+    elements: vi.fn(() => ({ remove: vi.fn(), nonempty: () => true })),
+    fit: vi.fn(),
+    resize: vi.fn()
   };
   const factory = vi.fn(() => instance) as ReturnType<typeof vi.fn> & {
     use: ReturnType<typeof vi.fn>;

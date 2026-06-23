@@ -4,7 +4,7 @@ import fcose from 'cytoscape-fcose';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 import { runAction, handleActionError } from '@/lib/runAction';
-import { cn, heightPxClass } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import {
   groupNodesBySubnet,
   parseProfileSubnets,
@@ -611,6 +611,12 @@ export default function NetworkTopologyMap({
     });
     cyRef.current = cy;
 
+    // The container may have been laid out (or resized from a hidden tab) after
+    // cytoscape measured it; re-measure and frame the saved positions so nodes
+    // are visible on first paint rather than parked off-screen.
+    cy.resize();
+    if (cy.elements().nonempty()) cy.fit(undefined, 30);
+
     cy.on('dragfree', 'node', (evt: cytoscape.EventObject) => {
       const target = evt.target as cytoscape.NodeSingular;
       const id = target.id();
@@ -841,7 +847,12 @@ export default function NetworkTopologyMap({
       <div
         ref={mountRef}
         data-testid="topology-cytoscape"
-        className={cn('relative mt-4 w-full overflow-hidden rounded-md border bg-muted/30', heightPxClass(height))}
+        className="relative mt-4 w-full overflow-hidden rounded-md border bg-muted/30"
+        // Cytoscape requires a real pixel height on its container. An inline style
+        // is used deliberately: the `u-h-px-*` utility classes are runtime-built
+        // (`u-h-px-${n}`) and get purged from the production CSS, so a class-based
+        // height collapses the canvas to 0 in prod (issue #1728).
+        style={{ height: `${height}px` }}
       />
 
       {/* Subnet legend with host counts. */}
