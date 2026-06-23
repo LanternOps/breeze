@@ -10,6 +10,7 @@ import {
   integer,
   inet,
   real,
+  doublePrecision,
   uniqueIndex,
   index
 } from 'drizzle-orm/pg-core';
@@ -261,4 +262,22 @@ export const networkTopology = pgTable('network_topology', {
   provenanceUnique: uniqueIndex('ux_network_topology_provenance').on(
     table.orgId, table.siteId, table.sourceType, table.sourceId, table.targetType, table.targetId, table.method
   )
+}));
+
+// topology_layout: saved Cytoscape node positions (Phase 3, issue #1728).
+// org_id-direct (RLS shape 1): breeze_has_org_access(org_id).
+export const topologyLayout = pgTable('topology_layout', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  nodeType: varchar('node_type', { length: 32 }).notNull(), // 'discovered_asset' | 'manual_node'
+  nodeId: uuid('node_id').notNull(),
+  x: doublePrecision('x').notNull(),
+  y: doublePrecision('y').notNull(),
+  pinned: boolean('pinned').notNull().default(false),
+  updatedBy: uuid('updated_by').references(() => users.id),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  siteNodeUnique: uniqueIndex('topology_layout_site_node_unique')
+    .on(table.siteId, table.nodeType, table.nodeId)
 }));
