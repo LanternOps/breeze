@@ -459,16 +459,28 @@ export async function syncBinaries(): Promise<void> {
     console.log(
       `[binarySync] Registered ${binaries.length} local binaries (${countSummary}; version: ${version})`,
     );
+
+    const registeredComponents = new Set(binaries.map((bin) => bin.component));
+    if (!registeredComponents.has("agent")) {
+      console.warn(
+        "[binarySync] No local agent binaries found; agent update targets will be unavailable in local binary mode",
+      );
+    }
+    if (!registeredComponents.has("watchdog")) {
+      console.warn(
+        "[binarySync] No local watchdog binaries found; watchdog update targets will be unavailable in local binary mode",
+      );
+    }
   } else {
     console.log(
       "[binarySync] No local agent binaries found, falling back to GitHub sync",
     );
     await syncFromGitHub();
+    // Verify the current version is registered after the GitHub fallback. This
+    // catches stale volumes and missed syncs without mixing GitHub release
+    // metadata into a successful local-binary registration.
+    await ensureCurrentVersionRegistered();
   }
-
-  // Verify the current version is registered — catches stale volumes and missed syncs.
-  // This is the safety net for self-hosted deployments where binaries-init may not refresh.
-  await ensureCurrentVersionRegistered();
 
   // Sync to S3 if configured (runs regardless of whether agent binaries were found)
   if (isS3Configured()) {

@@ -275,6 +275,54 @@ describe("binarySync", () => {
     }
   });
 
+  it("does not GitHub-sync over local agent metadata when local watchdog binaries are absent", async () => {
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.WATCHDOG_BINARY_DIR = "/fake/watchdog/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    process.env.APP_VERSION = "0.65.9";
+    delete process.env.BREEZE_VERSION;
+
+    fsMocks.readdir.mockImplementation(async (dir: string) => {
+      if (dir === "/fake/agent/bin") return ["breeze-agent-linux-amd64"];
+      if (dir === "/fake/watchdog/bin") return [];
+      return [];
+    });
+    fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+    fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+
+    const fetchMock = vi.fn(async () => {
+      throw new Error("GitHub should not be called after local registration");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await syncBinaries();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(manifestSigningMocks.ensureActiveSigningKey).toHaveBeenCalled();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls).toHaveLength(1);
+      expect(insertCalls[0]).toMatchObject({
+        version: "0.65.9",
+        platform: "linux",
+        architecture: "amd64",
+        component: "agent",
+        signingKeyId: "deploy-test-aaaaaaaa",
+        manifestSignature: "test-signature-base64",
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[binarySync] No local watchdog binaries found; watchdog update targets will be unavailable in local binary mode",
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("logs at console.error (not warn) when stale-volume detection + GitHub fallback both fail (#644)", async () => {
     // Stale-volume path: BREEZE_VERSION != VERSION-file value.
     // We force the GitHub fallback to throw by making fetch reject. The
