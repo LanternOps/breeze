@@ -48,6 +48,8 @@ export default defineConfig({
       'src/services/vulnerabilityEvents.integration.test.ts',
       // Co-located real-DB integration test for BE-16 Phase 4 remediation events.
       'src/services/vulnerabilityRemediationEvents.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 Phase 4 AI read tools.
+      'src/services/aiToolsVulnerability.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's

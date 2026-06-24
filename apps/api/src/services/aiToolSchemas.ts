@@ -104,6 +104,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid,
   }),
 
+  // BE-16 vulnerability tools. status/severity accept any case (feeds disagree on
+  // casing); the handler re-normalizes to lowercase before querying.
+  get_vulnerability_report: z.object({
+    status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
+    severity: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['low', 'medium', 'high', 'critical'])).optional(),
+  }),
+
+  get_device_vulnerabilities: z.object({
+    deviceId: uuid,
+    status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
+  }),
+
   // PAM Brain elevation tools (#1160). durationMinutes/limit are intentionally
   // un-capped here — the handlers clamp them (480 / 100) so the Brain can pass a
   // larger value without a validation failure.

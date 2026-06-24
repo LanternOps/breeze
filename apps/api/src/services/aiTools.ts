@@ -14,6 +14,7 @@ import { validateToolInput } from './aiToolSchemas';
 
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
+import { registerVulnerabilityTools } from './aiToolsVulnerability';
 import { registerBackupTools } from './aiToolsBackup';
 import { registerBackupVmTools } from './aiToolsBackupVm';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
@@ -247,6 +248,7 @@ registerRemoteTools(aiTools);
 registerAgentMgmtTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
+registerVulnerabilityTools(aiTools);
 
 // ============================================
 // Exports
