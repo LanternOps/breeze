@@ -372,10 +372,11 @@ vulnerabilityRoutes.post(
 );
 
 // POST /:id/accept-risk — accept a finding's risk with a reason + expiry. Org-scoped
-// state write (DEVICES_WRITE; no MFA/execute — it queues no command).
+// state write gated on vulnerabilities:accept_risk (formal waiver; higher trust than
+// a compensating-control mitigate write, which stays on devices:write).
 vulnerabilityRoutes.post(
   '/:id/accept-risk',
-  requireVulnerabilityWrite,
+  requirePermission(PERMISSIONS.VULN_RISK_ACCEPT.resource, PERMISSIONS.VULN_RISK_ACCEPT.action),
   zValidator('param', idParamSchema),
   zValidator('json', acceptRiskSchema),
   async (c) => {
@@ -415,7 +416,10 @@ vulnerabilityRoutes.post(
   },
 );
 
-// POST /:id/mitigate — mark a finding mitigated with a note. Org-scoped state write.
+// POST /:id/mitigate — mark a finding mitigated with a note. Org-scoped state
+// write on devices:write (NOT the accept_risk gate): mitigate asserts a
+// compensating control is in place (technician work) and is reversible via the
+// now-governance-gated reopen. Accepting risk is the formal waiver.
 vulnerabilityRoutes.post(
   '/:id/mitigate',
   requireVulnerabilityWrite,
@@ -449,12 +453,13 @@ vulnerabilityRoutes.post(
   },
 );
 
-// POST /:id/reopen — revert an accepted/mitigated finding back to open. Org-scoped
-// state write (DEVICES_WRITE; no MFA/execute — it queues no command). Clears all
-// resolution fields so the finding is treated as newly-open again.
+// POST /:id/reopen — revert an accepted/mitigated finding back to open. Gated on
+// vulnerabilities:accept_risk (symmetric with accept-risk: both are governance
+// operations on the waiver lifecycle). Clears all resolution fields so the finding
+// is treated as newly-open again.
 vulnerabilityRoutes.post(
   '/:id/reopen',
-  requireVulnerabilityWrite,
+  requirePermission(PERMISSIONS.VULN_RISK_ACCEPT.resource, PERMISSIONS.VULN_RISK_ACCEPT.action),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth');
