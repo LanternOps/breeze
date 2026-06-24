@@ -85,11 +85,11 @@ require_grep 'verify_sha256.*TMPFILE.*EXPECTED_SHA256' apps/api/src/routes/agent
 require_grep 'Refusing to install without a trusted checksum' apps/api/src/routes/agents/download.ts \
   "generated Linux installer must fail closed without checksum metadata"
 
-require_grep 'checksums\.txt' agent/cmd/breeze-agent/watchdog_bootstrap.go \
+require_grep 'checksums\.txt' agent/internal/agentapp/watchdog_bootstrap.go \
   "watchdog bootstrap must fetch release checksums.txt"
-require_grep 'verifyFileSHA256' agent/cmd/breeze-agent/watchdog_bootstrap.go \
+require_grep 'verifyFileSHA256' agent/internal/agentapp/watchdog_bootstrap.go \
   "watchdog bootstrap must verify SHA-256 before install"
-require_grep 'checksum mismatch' agent/cmd/breeze-agent/watchdog_bootstrap_test.go \
+require_grep 'checksum mismatch' agent/internal/agentapp/watchdog_bootstrap_test.go \
   "watchdog bootstrap tests must cover checksum mismatch"
 
 require_grep '"packageManager": "pnpm@10\.33\.4"' package.json \
