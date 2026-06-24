@@ -199,7 +199,11 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     cyInstance.getElementById.mockImplementation((id: string) => ({
       empty: () => !(id in kindById),
       data: (key: string) => (key === 'kind' ? kindById[id] : id),
-      remove: vi.fn()
+      remove: vi.fn(),
+      addClass: vi.fn(),
+      closedNeighborhood: () => ({}),
+      connectedNodes: () => ({}),
+      union: () => ({})
     }));
 
     // Capture the edit API the component publishes (used by both the connect
@@ -255,7 +259,11 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
     cyInstance.getElementById.mockImplementation((id: string) => ({
       empty: () => !(id in kindById),
       data: (key: string) => (key === 'kind' ? kindById[id] : id),
-      remove: vi.fn()
+      remove: vi.fn(),
+      addClass: vi.fn(),
+      closedNeighborhood: () => ({}),
+      connectedNodes: () => ({}),
+      union: () => ({})
     }));
 
     let connectNodes: ((sourceId: string, targetId: string) => Promise<void>) | undefined;
@@ -278,6 +286,7 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       data: (_key: string) => undefined,
       remove: removeSpy,
       addClass: vi.fn(),
+      closedNeighborhood: () => ({}),
       connectedNodes: () => ({}),
       union: () => ({})
     }));
@@ -355,7 +364,9 @@ describe('NetworkTopologyMap edit mode (#1728 phase 4)', () => {
       remove: removeSpy,
       connectedEdges: () => ({ remove: connectedRemoveSpy }),
       addClass: vi.fn(),
-      closedNeighborhood: () => ({})
+      closedNeighborhood: () => ({}),
+      connectedNodes: () => ({}),
+      union: () => ({})
     }));
 
     let api: TopologyEditApi | undefined;
