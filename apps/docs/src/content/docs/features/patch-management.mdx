@@ -11,7 +11,7 @@ import patchesScreenshot from '../../../assets/screenshots/patches.png';
 
 Patch Management gives you full control over the complete update lifecycle for every device in your fleet: discover available patches, review and approve them, deploy to targets, and roll back if something goes wrong. The system is designed to make large-scale patching auditable and safe — every action is recorded, partial failures are surfaced immediately, and no patch reaches a device without an explicit approval step.
 
-Every patch goes through an approval workflow before it can be deployed. Approvals are scoped per organization, which means MSPs can manage each customer's patch posture independently. A patch approved for one customer is not automatically approved for another, and rejections or deferrals in one organization do not affect any other.
+Every patch goes through an approval workflow before it can be deployed. Approvals are managed at the **partner (MSP) level**: a patch you approve, decline, or defer applies across all the organizations you manage, so you set each patch's posture once instead of repeating the decision per customer. Approvals can optionally be tied to a specific [update ring](/features/update-rings/), in which case they apply only to the devices that ring covers; a ring-less approval is a partner-wide blanket decision. Only partner-level and system administrators can approve patches — organization-scoped users cannot.
 
 Compliance reports give you a point-in-time snapshot of your fleet's patch status, suitable for internal audit reviews and customer-facing reporting. Reports are generated asynchronously and can be exported as CSV or PDF.
 
@@ -144,14 +144,13 @@ Scanning is asynchronous. The scan command is sent to the agent on each target d
 
 ## Reviewing and Approving Patches
 
-For all approval endpoints below, `orgId` is accepted either in the JSON body (as shown) or as the `?orgId=` query parameter. Organization-scoped tokens auto-resolve `orgId`. An optional `ringId` field (UUID) ties the approval to a specific deployment ring; if you don't pass it, approvals are not ring-scoped and the response returns `ringId: null`.
+All approval endpoints below are **partner-scoped** (partner or system scope, plus MFA). The partner is resolved from your login; system administrators may pass an optional `partnerId` (in the body or as `?partnerId=`). An optional `ringId` field (UUID) ties the approval to a specific [update ring](/features/update-rings/); omit it for a partner-wide approval and the response returns `ringId: null`. No `orgId` is required or accepted — a single decision spans every organization you manage.
 
 ### Approving
 
 ```bash
 POST /patches/:id/approve
 {
-  "orgId": "uuid",
   "ringId": "ring-uuid",
   "note": "Reviewed — approved for production fleet"
 }
@@ -162,7 +161,6 @@ POST /patches/:id/approve
 ```bash
 POST /patches/:id/decline
 {
-  "orgId": "uuid",
   "note": "Known conflict with legacy app"
 }
 ```
@@ -174,7 +172,6 @@ Rejection creates an audit record but is not a permanent block. The stored appro
 ```bash
 POST /patches/:id/defer
 {
-  "orgId": "uuid",
   "deferUntil": "2026-03-01T00:00:00Z",
   "note": "Wait for Q1 change window"
 }
@@ -187,8 +184,8 @@ A deferred patch returns to `pending` status automatically when the `deferUntil`
 ```bash
 POST /patches/bulk-approve
 {
-  "orgId": "uuid",
   "patchIds": ["uuid-1", "uuid-2"],
+  "ringId": "ring-uuid",
   "note": "March cycle approval"
 }
 ```
@@ -210,6 +207,8 @@ Partial success is possible. Patches that could not be approved (e.g., already i
 A patch job is the unit of work that delivers approved patches to a set of devices. Jobs can be created automatically from a Configuration Policy patch schedule or manually via the UI or API. Each job targets a specific set of devices; when a job runs, the platform sends an `install_patches` command to each target device via its active WebSocket connection.
 
 Devices must be online (WebSocket connected) to receive the install command. If a device is offline when a job runs, it will be marked as pending within the job and will not receive the command until it reconnects, depending on how the job is configured.
+
+Scheduled patch jobs are reliable across restarts. If a job's scheduled run is ever lost before it reaches the queue — for example during a service restart — Breeze automatically detects the stranded job after its scheduled time and re-runs it, so no scheduled patch cycle is silently skipped.
 
 ### Monitoring Jobs
 
@@ -476,7 +475,7 @@ Approval does not automatically trigger a deployment. Once a patch is approved, 
 The patch's `uninstallCommand` returned a non-zero exit code on the target device. Check the `errorMessage` field on the rollback record for the specific error output. Note that some patches, particularly certain cumulative OS updates, do not support programmatic uninstall and cannot be rolled back through this mechanism.
 
 **Compliance percentage lower than expected.**
-Check for devices with `failed` or `missing` patch status — these reduce the compliance score. Also verify that the relevant patches are in `approved` state for the organization in question. Unapproved patches are not deployed and show as `pending`, which counts against compliance.
+Check for devices with `failed` or `missing` patch status — these reduce the compliance score. Also verify that the relevant patches are in `approved` state at the partner level (optionally for the relevant update ring). Unapproved patches are not deployed and show as `pending`, which counts against compliance.
 
 **Compliance report stuck in `running`.**
 Check the background queue worker status in your infrastructure. The compliance report worker is a separate worker process from the main API worker. If that worker is down or backlogged, reports will remain in `running` or `pending` indefinitely. Restarting the compliance worker will resume processing.

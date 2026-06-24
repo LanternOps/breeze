@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.81.0",
-  "reviewedAt": "2026-06-16",
-  "notes": "Bumped after v0.70.0..v0.81.0 sweep (Tier 1): new billing docs (product-catalog, invoices, contracts, online-payments) + new ai-for-office; ticketing email-to-ticket section; portal invoices/payments. Deferred Tier 2 (Breeze Authenticator/risk-tiered approvals, unified network devices in Devices list, process drill-down, warranty collection)."
+  "lastReviewedRef": "v0.83.0",
+  "reviewedAt": "2026-06-23",
+  "notes": "Bumped after v0.82.1..v0.83.0 sweep: partner-owned config policies, partner-wide SentinelOne + Huntress GUI webhook, partner-scoped update rings & patch approvals, PAM signer-group catalog + rule cluster (command-line/negation/default-verdict) + UAC->mobile bridge, remote session consent & notification, device-type-aware reliability + sortable column + card actions, quotes->draft-contract + contract auto-renew, ticketing edit/delete/move-org. Skipped: VM/VDI detection (#1387) is backend-only, no UI surface yet."
 }

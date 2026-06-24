@@ -100,6 +100,8 @@ The separation-of-duties property the system enforces today is **automation cann
   **Human requester-vs-approver separation is not yet enforced.** The respond route does not compare the approving user against the requester, and the elevation flows that matter here (`uac_intercept`, `tech_jit_admin`) do not record an originating user identity at all (`subjectUserId` is `null` on every insert), so the control plane has nothing to compare against. Today, a user who holds `devices:execute` + MFA can approve a request -- including one tied to their own work. Treat requester/approver separation as an **operational** control: rely on approval reasons, the requester/device context surfaced in the UI, and anomaly alerting, not on a system-enforced block.
 
   A self-approval gate is planned but **not active in production**. The mobile *hold-to-confirm* step-up (a deliberate 5-second hold when a user's own phone approves a request for that same user) lives on the separate Helper/mobile approval-request path and is keyed on an `isRecursive` flag. That flag's derivation currently returns `false` for all real traffic -- the requesting-client identity is not yet plumbed through the AI-agent/mobile-MCP path -- so the hold-to-confirm gate does not fire today. It will become active once the mobile-MCP step-up path lands.
+
+  Note that the live UAC-to-mobile fan-out is structurally a non-self-approval regardless: a pending `uac_intercept` elevation fans out one mobile approval request to each *eligible technician*, and those rows are created with `isRecursive: false` because the requester is an end user at the device, never the approving technician. The requester/approver identities differ by construction for that flow even though no system-enforced same-user block exists.
 </Aside>
 
 Every approve, deny, and revoke is gated by:
@@ -118,9 +120,9 @@ When the agent reports a UAC observation, the control plane decides it before an
 
 1. **Software-policy bridge.** The device's winning software policy is consulted first: an allowlist match auto-approves, a blocklist match denies.
 2. **PAM rules.** When no software policy binds, the org's enabled PAM rules run in priority order; the first match wins with its verdict (`auto_approve`, `auto_deny`, `require_approval`, or `ignore`).
-3. **Pending.** With no policy and no matching rule, the request is held pending for a human.
+3. **Org default verdict.** With no policy and no matching rule, the request falls to the org's configured **default verdict for unmatched elevations**. The default -- and the behavior when no configuration row exists -- is **require approval** (held pending for a human); an org may instead opt into **auto-deny**, failing unmatched elevations closed. An auto-deny here is a deliberate, configured decision, not an evaluator error.
 
-This chain **fails safe**. If either evaluator errors, the request falls through to `pending` -- never to an auto-approval. Degrading a would-be blocklist denial to a pending row is preferable to dropping the observation, and an evaluator outage can never become a silent grant.
+This chain **fails safe**. If either evaluator *errors*, the request falls through to `pending` -- never to an auto-approval (regardless of the configured default verdict). Degrading a would-be blocklist denial to a pending row is preferable to dropping the observation, and an evaluator outage can never become a silent grant.
 
 A rule must carry at least one identifying criterion; a rule scoped only by time window (or nothing) is rejected at the API, because it would match every elevation in the org -- catastrophic for an auto-approve verdict.
 

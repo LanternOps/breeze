@@ -14,7 +14,7 @@ Currently supported EDR vendors:
 | **Huntress** | Agents, incidents | Webhook ingestion, manual sync |
 | **SentinelOne** | Agents, threats, site mappings | Device isolation, threat actions (kill, quarantine, rollback), manual sync |
 
-Both integrations follow the same pattern: you provide API credentials, Breeze syncs agent and threat data on a schedule, and the synced data is automatically mapped to your existing Breeze devices.
+Both integrations are configured once at the **partner** level: with your scope selector set to **All orgs** you provide the vendor's API credentials, map each vendor's organizations/sites to your Breeze organizations, and Breeze syncs agent and threat data on a schedule. The synced data is attributed to the correct customer and matched to your existing Breeze devices.
 
 ### Auto-Linking: How EDR Agents Map to Breeze Devices
 
@@ -55,10 +55,21 @@ The Huntress integration syncs agent inventory and incident reports from your Hu
 
 ### Webhook Configuration
 
-Huntress can push event notifications to Breeze in real time via webhooks. Configure the webhook URL in your Huntress dashboard:
+Huntress can push event notifications to Breeze in real time via webhooks.
+
+#### Getting the webhook URL and secret from Breeze
+
+You no longer need to hand-build the webhook URL. With your scope set to **All orgs**, open **Integrations > Security > Huntress**. Once the integration is connected, the **Inbound webhook** section shows:
+
+<Steps>
+1. The exact, region-correct **Webhook URL** to paste into Huntress, with a **Copy** button. The URL includes an `integrationId` query parameter that tells Breeze which partner the events belong to — keep it in the URL.
+2. A **Webhook Secret** field with a **Generate** button. Click **Generate** to create a strong secret, copy it (it is shown only once), paste the same value into Huntress's webhook configuration, then **Save** to store it. Breeze keeps it encrypted and never displays it again.
+</Steps>
+
+The webhook URL has the form:
 
 ```
-POST https://your-breeze-instance.com/api/v1/huntress/webhook
+POST https://your-breeze-instance.com/api/v1/huntress/webhook?integrationId=<id>
 ```
 
 Webhook payloads are verified using HMAC-SHA256 signature validation:
@@ -167,15 +178,19 @@ The SentinelOne integration provides deeper operational capabilities beyond data
 ### Setting Up SentinelOne
 
 <Steps>
-1. In the Breeze dashboard, navigate to **Integrations**, open the **Security** tab, and select **SentinelOne**.
+1. Set your scope selector to **All orgs**, then navigate to **Integrations**, open the **Security** tab, and select **SentinelOne**. SentinelOne is configured once for the whole partner.
 2. Provide a **name** for the integration.
 3. Enter your **SentinelOne management console URL** (e.g., `https://usea1.sentinelone.net`).
 4. Enter your **SentinelOne API token**. This is encrypted at rest before being stored.
-5. Click **Save**. An initial sync is automatically scheduled.
+5. Click **Save & Connect**. An initial sync is automatically scheduled.
 </Steps>
 
 <Aside>
-  Creating or updating a SentinelOne integration requires the `orgs:write` permission and MFA verification. Only one SentinelOne integration is allowed per organization.
+  The SentinelOne integration is configured at the **partner** level — one SentinelOne tenant serves all of your customer organizations. The connection and credential fields are only available with your scope selector set to **All orgs**. You then map each SentinelOne site to a Breeze organization (see [Site Mappings](#site-mappings) below). Organization users can view the threats and agents for their mapped org but cannot change the connection or mappings.
+</Aside>
+
+<Aside>
+  Creating or updating a SentinelOne integration requires the `orgs:write` permission and MFA verification. Only one active SentinelOne integration is allowed per partner.
 </Aside>
 
 #### MFA Requirements by Operation
@@ -239,13 +254,13 @@ The following SentinelOne operations require MFA verification before they can be
 SentinelOne organizes agents into "Sites." Breeze lets you map SentinelOne sites to Breeze organizations, enabling multi-tenant EDR management from a single SentinelOne console.
 
 <Steps>
-1. Navigate to **Settings > Integrations > SentinelOne > Sites**.
-2. View the list of SentinelOne sites with their agent counts.
-3. For each site, select the Breeze organization it should map to.
-4. Click **Save** to apply the mapping.
+1. With your scope selector set to **All orgs**, open **Integrations > Security > SentinelOne** and find the **Site mapping** section.
+2. Review the list of discovered SentinelOne sites, each shown with its agent count.
+3. For each SentinelOne site, select the Breeze organization it should map to. Unmapped sites stay quarantined — their agents and threats are not attributed to any customer — until assigned.
+4. The mapping saves immediately.
 </Steps>
 
-To remove a mapping, set the target organization to `null`.
+To remove a mapping, clear the selected Breeze organization.
 
 ### Device Isolation
 
@@ -339,12 +354,14 @@ Each integration tracks its last sync result:
 | `lastSyncStatus` | Result: success or failure indicator |
 | `lastSyncError` | Error message from the last failed sync (nullable) |
 
+After you click **Sync Now** for Huntress, Breeze polls the integration and shows the live status (Syncing → Connected/Error). On success it reports the result counts (for example, agents, incidents, and organizations synced); on failure it shows the actual error from the last run rather than a generic "triggered" message.
+
 ### Sync Error Handling and Retries
 
 Sync jobs are processed through a background queue. If a sync fails (for example, due to a network timeout or an API rate limit from the EDR vendor), the following happens:
 
 - **SentinelOne syncs** automatically retry up to **3 times** with exponential backoff (starting at 2 seconds, then 4 seconds, then 8 seconds).
-- **Huntress syncs** do not have built-in retries. If a Huntress sync fails, trigger another manual sync or wait for the next scheduled sync cycle.
+- **Huntress syncs** automatically retry up to **3 times** with exponential backoff, so a transient failure (network timeout, rate limit, or a temporary database connection drop) recovers without operator intervention. The integration's live status and the last run's result counts are surfaced in the dashboard so you can see whether the most recent sync succeeded.
 - The `lastSyncError` field on the integration record is updated with the error message from the most recent failure. Check this field in the dashboard or API to diagnose sync issues.
 - If the initial sync scheduled on integration creation fails, a warning is returned in the API response: *"Initial sync could not be scheduled. Data will sync on the next scheduled cycle."*
 
@@ -367,19 +384,19 @@ All authenticated endpoints require `organization`, `partner`, or `system` scope
 
 ### SentinelOne
 
-All endpoints require authentication with `organization`, `partner`, or `system` scope. Mounted at `/api/v1/sentinel-one`.
+All endpoints require authentication. Credentials and mappings are managed at **partner** scope; organization-scoped users get read-only access to their mapped data and a `403` on credential or mapping changes. The partner is resolved from the caller's token; system-scope callers pass an optional `partnerId` query parameter. Mounted at `/api/v1/s1`.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `GET` | `/integration` | Yes | Get the SentinelOne integration for the current org |
-| `POST` | `/integration` | Yes + MFA | Create or update a SentinelOne integration |
+| `GET` | `/integration` | Yes | Get the partner's SentinelOne integration |
+| `POST` | `/integration` | Yes + MFA (partner) | Create or update the SentinelOne integration |
 | `GET` | `/status` | Yes | Get integration status and threat summary |
 | `GET` | `/threats` | Yes | List threats with filters |
 | `POST` | `/isolate` | Yes + MFA | Isolate or unisolate devices |
 | `POST` | `/threat-action` | Yes + MFA | Execute a threat action (kill, quarantine, rollback) |
 | `POST` | `/sync` | Yes | Trigger a manual SentinelOne sync |
 | `GET` | `/sites` | Yes | List SentinelOne sites with agent counts and org mappings |
-| `POST` | `/sites/map` | Yes | Map or unmap a SentinelOne site to a Breeze organization |
+| `POST` | `/organizations/map` | Yes (partner) | Map or unmap a SentinelOne site to a Breeze organization (`{ integrationId, s1SiteId, orgId }`) |
 
 ---
 
