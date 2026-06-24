@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, type AuthContext } from '../../middleware/auth';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
@@ -33,8 +34,19 @@ const settingsSchema = z.object({
   message: 'At least one setting is required',
 });
 
+// CSRF binding cookie: the OAuth callback must complete in the SAME browser
+// that initiated /connect. Without it, an attacker who captures a victim into
+// their own connect flow could link the victim's QuickBooks realm into the
+// attacker's partner (or vice-versa). Mirrors the SSO callback's state-cookie
+// defense (routes/sso.ts). The callback is intentionally NOT behind
+// authMiddleware — a browser redirect from Intuit carries no Bearer token —
+// so the signed `state` + this cookie are the authentication.
+const ACCOUNTING_STATE_COOKIE = 'breeze_accounting_oauth_state';
+const STATE_TTL_MS = 10 * 60 * 1000;
+
 interface AccountingStatePayload {
   partnerId: string;
+  userId: string | null;
   nonce: string;
   exp: number;
 }
@@ -47,31 +59,30 @@ function signingSecret(): string | null {
     || (process.env.NODE_ENV === 'production' ? null : 'test-only-accounting-oauth-state-secret');
 }
 
-function signStatePayload(encodedPayload: string): string | null {
+function hmac(label: string, value: string): string | null {
   const secret = signingSecret();
   if (!secret) return null;
-  return createHmac('sha256', secret).update(`accounting-oauth:${encodedPayload}`).digest('base64url');
+  return createHmac('sha256', secret).update(`${label}:${value}`).digest('base64url');
 }
 
-function createState(partnerId: string): string | null {
+function createState(partnerId: string, userId: string | null): string | null {
   const payload: AccountingStatePayload = {
     partnerId,
+    userId,
     nonce: randomBytes(16).toString('hex'),
-    exp: Date.now() + 10 * 60 * 1000,
+    exp: Date.now() + STATE_TTL_MS,
   };
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = signStatePayload(encoded);
+  const sig = hmac('accounting-oauth', encoded);
   return sig ? `${encoded}.${sig}` : null;
 }
 
 function verifyState(state: string): AccountingStatePayload | null {
   const [encoded, sig] = state.split('.');
   if (!encoded || !sig) return null;
-  const expected = signStatePayload(encoded);
+  const expected = hmac('accounting-oauth', encoded);
   if (!expected) return null;
-  const left = Buffer.from(sig, 'utf8');
-  const right = Buffer.from(expected, 'utf8');
-  if (left.length !== right.length || !timingSafeEqual(left, right)) return null;
+  if (!constantTimeEqual(sig, expected)) return null;
   try {
     const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as AccountingStatePayload;
     if (!parsed.partnerId || !parsed.nonce || !parsed.exp || parsed.exp < Date.now()) return null;
@@ -79,6 +90,16 @@ function verifyState(state: string): AccountingStatePayload | null {
   } catch {
     return null;
   }
+}
+
+function stateCookieValue(state: string): string | null {
+  return hmac('accounting-oauth-cookie', state);
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function resolvePartnerId(auth: Pick<AuthContext, 'scope' | 'partnerId'>, requested?: string): { partnerId: string } | { error: string; status: 400 | 403 } {
@@ -105,22 +126,35 @@ function validateProviderConfig(provider: AccountingProviderId): string | null {
   return null;
 }
 
-accountingRoutes.use('*', authMiddleware);
-
-accountingRoutes.get('/:provider/connect', partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+// Initiate the OAuth flow. Authenticated + MFA-gated: this is the privileged
+// action that decides which partner an external accounting realm links to.
+accountingRoutes.get('/:provider/connect', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
-  const state = createState(partner.partnerId);
-  if (!state) return c.json({ error: 'OAuth state signing secret is not configured' }, 500);
+  const state = createState(partner.partnerId, auth.user?.id ?? null);
+  const cookieValue = state ? stateCookieValue(state) : null;
+  if (!state || !cookieValue) return c.json({ error: 'OAuth state signing secret is not configured' }, 500);
+
+  setCookie(c, ACCOUNTING_STATE_COOKIE, cookieValue, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'Lax', // sent on the top-level redirect back from Intuit
+    path: '/',
+    maxAge: STATE_TTL_MS / 1000,
+  });
+
   const authUrl = getAccountingProvider(provider).buildAuthUrl(state);
   return c.json({ authUrl });
 });
 
-accountingRoutes.get('/:provider/callback', partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', callbackQuerySchema), async (c) => {
+// OAuth redirect target. NO authMiddleware — Intuit redirects the browser here
+// with no Bearer token. Authentication is the signed `state` + binding cookie.
+accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSchema), zValidator('query', callbackQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const query = c.req.valid('query');
   const configError = validateProviderConfig(provider);
@@ -128,13 +162,26 @@ accountingRoutes.get('/:provider/callback', partnerScopes, requireMfa(), zValida
 
   const state = verifyState(query.state);
   if (!state) return c.json({ error: 'Invalid or expired OAuth state' }, 400);
-  const partner = resolvePartnerId(c.get('auth'), state.partnerId);
-  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  if (partner.partnerId !== state.partnerId) return c.json({ error: 'OAuth state partner mismatch' }, 403);
+
+  const expectedCookie = stateCookieValue(query.state);
+  const presentedCookie = getCookie(c, ACCOUNTING_STATE_COOKIE);
+  if (!expectedCookie || !presentedCookie || !constantTimeEqual(presentedCookie, expectedCookie)) {
+    return c.json({ error: 'OAuth state binding mismatch' }, 400);
+  }
 
   const providerClient = getAccountingProvider(provider);
-  const tokens = await runOutsideDbContext(() => providerClient.exchangeCode(query.code, query.realmId));
-  await upsertConnection(db, partner.partnerId, provider, {
+  let tokens;
+  try {
+    tokens = await runOutsideDbContext(() => providerClient.exchangeCode(query.code, query.realmId));
+  } catch {
+    deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
+    return c.redirect('/integrations?accounting=quickbooks&error=exchange_failed');
+  }
+
+  // No request auth context here, so the write would match 0 rows under
+  // breeze_app RLS (silent failure). Run it in system context with the
+  // partnerId taken from the verified state.
+  await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
     realmId: tokens.realmId,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
@@ -143,13 +190,14 @@ accountingRoutes.get('/:provider/callback', partnerScopes, requireMfa(), zValida
     environment: QBO_ENVIRONMENT as 'sandbox' | 'production',
     status: 'connected',
     lastError: null,
-    connectedBy: c.get('auth').user.id,
-  });
+    connectedBy: state.userId,
+  }));
 
+  deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
   return c.redirect('/integrations?accounting=quickbooks&connected=1');
 });
 
-accountingRoutes.post('/:provider/disconnect', partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -157,7 +205,7 @@ accountingRoutes.post('/:provider/disconnect', partnerScopes, requireMfa(), zVal
   return c.json({ disconnected: true });
 });
 
-accountingRoutes.get('/:provider', partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -182,7 +230,7 @@ accountingRoutes.get('/:provider', partnerScopes, zValidator('param', providerPa
   });
 });
 
-accountingRoutes.patch('/:provider/settings', partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), async (c) => {
+accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), async (c) => {
   const { provider } = c.req.valid('param');
   const body = c.req.valid('json');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
