@@ -118,3 +118,39 @@ describe('SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 });
+
+describe('vulnerability risk-acceptance RBAC', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines vulnerabilities:accept_risk in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some(
+        (p) => p.resource === 'vulnerabilities' && p.action === 'accept_risk',
+      ),
+    ).toBe(true);
+  });
+
+  it('grants vulnerabilities:accept_risk to Org Admin', () => {
+    expect(byName('Org Admin')?.permissions).toContain('vulnerabilities:accept_risk');
+  });
+
+  it('does NOT grant vulnerabilities:accept_risk to Org Technician', () => {
+    expect(byName('Org Technician')?.permissions).not.toContain('vulnerabilities:accept_risk');
+  });
+
+  it('seeds an org-scope Security Approver role with minimal perms', () => {
+    const role = byName('Security Approver');
+    expect(role?.scope).toBe('organization');
+    expect(role?.permissions).toEqual(['devices:read', 'vulnerabilities:accept_risk']);
+  });
+
+  it('seeds a partner-scope Partner Security Approver role with minimal perms', () => {
+    const role = byName('Partner Security Approver');
+    expect(role?.scope).toBe('partner');
+    expect(role?.permissions).toEqual([
+      'devices:read',
+      'organizations:read',
+      'vulnerabilities:accept_risk',
+    ]);
+  });
+});

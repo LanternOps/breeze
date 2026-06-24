@@ -184,6 +184,10 @@ export const DEFAULT_PERMISSIONS = [
   // Billing
   { resource: 'billing', action: 'manage', description: 'Manage partner billing and billing portal access' },
 
+  // Vulnerability management (BE-16)
+  { resource: 'vulnerabilities', action: 'accept_risk',
+    description: 'Waive (accept risk) and reopen vulnerability findings' },
+
   // Admin
   { resource: '*', action: '*', description: 'Full administrative access' }
 ];
@@ -262,7 +266,8 @@ export const SYSTEM_ROLES = [
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',
       'remote:access',
-      'audit:read'
+      'audit:read',
+      'vulnerabilities:accept_risk'
     ]
   },
   {
@@ -290,6 +295,25 @@ export const SYSTEM_ROLES = [
       'tickets:read',
       'reports:read',
       'sites:read'
+    ]
+  },
+  {
+    name: 'Security Approver',
+    scope: 'organization' as const,
+    description: 'Review and waive (accept risk) / reopen vulnerability findings',
+    permissions: [
+      'devices:read',
+      'vulnerabilities:accept_risk'
+    ]
+  },
+  {
+    name: 'Partner Security Approver',
+    scope: 'partner' as const,
+    description: 'Review and waive (accept risk) / reopen vulnerability findings across assigned organizations',
+    permissions: [
+      'devices:read',
+      'organizations:read',
+      'vulnerabilities:accept_risk'
     ]
   }
 ];

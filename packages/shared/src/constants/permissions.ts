@@ -104,6 +104,11 @@ export const PERMISSION_GRANTS = {
   // Billing
   BILLING_MANAGE: { resource: 'billing', action: 'manage' },
 
+  // Vulnerability management (BE-16) — risk-acceptance governance capability.
+  // Gates accept-risk + reopen above devices:write so a default technician
+  // cannot unilaterally waive a critical/KEV finding.
+  VULN_RISK_ACCEPT: { resource: 'vulnerabilities', action: 'accept_risk' },
+
   // Admin
   ADMIN_ALL: { resource: '*', action: '*' },
 } as const;
