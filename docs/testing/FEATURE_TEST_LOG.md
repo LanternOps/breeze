@@ -2817,3 +2817,131 @@ Stack: dev compose on merged `main`, target `http://localhost`, creds `admin@bre
 - No `recharts`/ResizeObserver console errors on any chart page in the real browser (Security, Analytics, Reports preview all render).
 
 **Notable confirmations (no regression):** Custom Fields partner-wide write (RLS #1611 holds); AI tool execution resolves (#1591 holds); enrollment-key one-time secret reveal; org→guided-site onboarding; named delete confirms everywhere; system roles immutable.
+
+## UI QA Sweep — 2026-06-20 (since 2026-06-19 sweep / v0.81.0 release)
+
+Target: http://localhost (docker dev). Login: admin@breeze.local (Partner Admin, multi-org seed: Default Partner → Default Organization, Northwind IT, Acme Managed Services). Fixture: 1 online Windows device (WIN-DHQNR1F8LO2). Driver: Playwright MCP.
+Scope: re-verify 6/19 fix-PRs that resolved the prior sweep's own findings (Tier 1) + new 6/20–6/21 feature PRs with a UI surface (Tier 2). The ~30-PR security-review-#2 hardening wave is backend/agent/RLS/audit (no web surface) → out of scope for this browser sweep.
+
+### Env recovery (pre-sweep)
+- Docker Desktop had crashed (daemon socket gone) + API was crash-looping: `ERR_MODULE_NOT_FOUND @fastify/busboy` from streamingUpload.ts (PR #1664, merged 6/20 after the 22h-old dev image was built → stale container node_modules). Fixed: relaunched Docker, `pnpm install` inside breeze-api (created the missing `apps/api/node_modules/@fastify/busboy` symlink into the anon volume), restarted api+caddy. health → 200.
+
+### #1647 sidebar footer API version — PASS
+- ✅ Footer reads the API version DYNAMICALLY (Sidebar.tsx:332 `apiVersion` state fetched from `/health` → `version`), no longer hardcoded. Shows "Web dev · API 0.63.5".
+- Note: `0.63.5` is this dev container's stale `API_VERSION` env (the `/health` endpoint genuinely returns `{"version":"0.63.5"}`); prod derives it from `BREEZE_VERSION`. Dev-env artifact, NOT a regression. The #1647 mechanism (live, not stale-hardcoded) is correct.
+
+### Billing-RBAC nav filter + access-denied (#1629 / #1640) — PASS (resolves prior sweep finding #3)
+- ✅ #1629: logged in as billing@breeze.local (Partner Billing role). Sidebar now shows **11 links** (Dashboard, Fleet, Workspace, Quotes, Invoices, Contracts, Catalog, Integrations, Partner, AI Usage, Filters) — down from the buggy **44**. NO admin-only entries (/settings/users, /settings/roles, /devices, /security, /pam, /scripts, /dns-security all absent). The full-admin-sidebar leak for billing roles is fixed; nav is permission-filtered.
+- ✅ #1640: billing user → /settings/roles renders a clean **"Access denied — You don't have permission to manage roles. … contact your administrator."** (role-specific copy), NOT the old generic "Failed to fetch roles / Try again". The 403-as-transient-fetch-failure UX bug is fixed.
+- ⚠️ Minor: the gated page still emits 4 console 403s (GET /roles, /orgs/organizations, /time-entries/running, /orgs/partners/me) — fetches fire then are caught and rendered as access-denied. Cosmetic console noise; no functional impact.
+
+### Alerts routing-rules load + scope-aware write (#1643 / #1654) — PASS
+- ✅ #1643: GET /alerts/routing-rules?orgId=… returns **200** on the Channels tab load (no 400). The load regression is fixed.
+- ✅ #1654: created routing rule "QA Critical Routing" (critical → QA Email Channel) → POST /alerts/routing-rules?orgId=… **201 Created**, auto-refetch 200, section updated to "1 rule" and the rule name renders. Scope-aware org resolution on the write path works end-to-end for a partner-scope admin. Outcome visibly confirmed.
+- Test artifact left in DB: routing rule "QA Critical Routing" on Default Organization.
+
+### Integrations hub — Distributors + Identity (#1635 / #1632) — PASS
+- ✅ #1635: Integrations hub now has category tabs (Webhooks / PSA / Security / Monitoring / Identity / **Distributors**). Distributors tab shows **Pax8** (clean "Not connected" state + OAuth client-credentials form: Display name / Client ID / Client secret / Webhook secret; "Secrets stored encrypted, never returned; Saving requires MFA verification") AND **TD SYNNEX** (moved out of catalog settings into the hub). Both present.
+- ✅ #1632: Identity tab (Google Workspace / Microsoft 365). Disabled Google Workspace renders a **calm informational state** — "Google Workspace integration is not enabled on this instance. An administrator enables it by setting GOOGLE_WORKSPACE_ENABLED on the API server, then reloading this page." No "error/failed/try again" treatment.
+- ⚠️ Minor: GET /api/v1/google/connection 404s in console (integration disabled) — this is the signal the calm state catches; expected, no functional impact.
+
+### Org-create slug auto-derive (#1646) — PASS
+- ✅ Settings → Organizations → "Add organization": typing name "QA Slug Derive Test" live-derived slug "qa-slug-derive-test" in the Slug field. Cancelled (did not create) to keep the 3-org seed clean.
+
+### User time-format setting (#1672) — PASS
+- ✅ Settings → Profile → Theming: new "Time format" control as a button pair with live preview — "12-hour / 3:45 PM" vs "24-hour / 15:45". Default 12-hour.
+- ✅ Toggling to 24-hour fired PATCH /users/me → 200 (auto-saves on click, no separate Save). Reloaded the page → 24-hour stayed selected (aria-pressed=true) → persisted server-side. Reset back to 12-hour (admin default restored).
+- Note: did not separately verify a rendered timestamp switches to 24h across the app (preview + persistence confirmed; display-application is wired through the same user pref).
+
+### Partner settings load (#1642) — PASS
+- ✅ /settings/partner renders the full tab set (Company / Regional / Security / Notifications / Event Logs / Defaults / Branding / AI Budgets / Remote / Ticketing) with Company/Address/Contact content; NO access-denied shown. The flash-of-access-denied-before-load is gone for the admin path (loading→content). (Transient flash is timing-dependent; positive signal is a clean direct render.)
+
+### Remote-desktop viewer toolbar / bitrate / concurrent-session (#1641 / #1669 / #1627) — BLOCKED (needs live WebRTC desktop session)
+- Partner → Remote tab is Remote-Tool Providers (RustDesk/TeamViewer/built-in WebRTC), NOT a bitrate control — #1669's configurable/raised WebRTC bitrate ceiling lives in the desktop viewer/session negotiation, not in settings.
+- /remote page exposes Start Terminal / File Transfer / Session History; the desktop viewer (#1641 redesigned toolbar + connection UI, #1669 bitrate, #1627 2nd-concurrent-session guard) launches via a device's "Connect Desktop" and requires an established WebRTC desktop stream — not negotiable from the headless MCP browser. Marked BLOCKED. Prereq: a real browser + a device running the desktop helper. (Connection-UI-only partial check attempted separately.)
+
+### Quote "Due on acceptance" total (#1628) — PASS (resolves prior sweep finding #4)
+- ✅ Built a fresh draft quote (Default Org) with a one-time line "Onboarding Setup" $500 + a monthly line "Managed Services" $100/mo. Live Totals now show: One-time $500.00, Monthly recurring $100.00/mo, Annual $0.00/yr, **DUE ON ACCEPTANCE $500.00** (one-time only, NOT $600).
+- ✅ The first-period figure is now shown SEPARATELY as a secondary line: "First-period total (incl. recurring) $600.00" with explanatory copy "Accepting this quote invoices only the one-time charges now. Recurring lines (monthly + annual) bill on their own schedule." The $1,950-vs-$500 ambiguity from the prior sweep is resolved — the headline is unambiguously the one-time amount.
+
+### Seller contact + Terms & Conditions on quotes/invoices (#1651) — PASS
+- ✅ Editor has a "Terms & Conditions" panel; entered text persisted to DB `quotes.terms_and_conditions` (verified: "Net 30 payment terms. 90-day hardware warranty. Recurring services auto-renew annually.").
+- ✅ Schema present: `quotes.seller_snapshot` (per-quote seller contact snapshot) + `partners.billing_company_name / billing_email / billing_phone / billing_address_{line1,line2,city,region,postal_code,country}` as the seller-contact source.
+- ✅ Preview tab renders the quote PDF as a blob: iframe (authenticated render succeeds). NOTE: PDF text not OCR'd from the DOM (blob iframe) — T&C + seller render in the PDF layer; confirmed via persistence + successful PDF render rather than pixel-reading the PDF.
+- Test artifact: draft quote d72c8549 (Default Org, $500 one-time + $100/mo) left in DB.
+
+### Quote acceptUrl empty-authority guard (#1639) — PASS (resolves prior sweep finding #2)
+- ✅ Sent the draft (now Q-2026-0003). Send POST 200; response `acceptUrl = "https://2breeze.app/quote/<jwt>"` — a VALID absolute URL. The prior sweep's malformed `https:///portal/quote/...` (empty host) is gone: with `PUBLIC_PORTAL_URL=https:///portal` (still empty-authority in this env), the builder now rejects/avoids it and falls back to a valid base (PUBLIC_APP_URL). No customer would get an unclickable empty-host link.
+- ✅ Bonus (#1651): send response includes `sellerSnapshot:{name:"Default Partner", email/phone/address:null}` (seller captured at send; nulls only because seed partner billing fields are empty) + `termsAndConditions` present.
+- ⚠️ Path note (carryover, not #1639): acceptUrl path is `/quote/<token>`. Locally the portal mounts at `/portal/quote/...`; prod #1474 describes `/c/quote/...`. The HOST is now valid but the PATH PREFIX vs the actual portal mount should be confirmed in prod (separate from the empty-authority fix).
+
+### Public portal quote-accept hydration (#1630) — BLOCKED in local dev (needs prod portal build)
+- SSR PASS: http://localhost/portal/quote/<token> server-renders the full proposal — "Proposal Q-2026-0003 from Default Partner", pricing (Onboarding Setup $500 ONE-TIME, Managed Services $100/mo MONTHLY), and the **#1628 totals propagate to the customer view**: "Due on acceptance $500.00", "First-period total (incl. recurring) $600.00", "Accepting invoices only the one-time charges now…".
+- ❌ Island NOT hydrated (same as prior sweep): `<astro-island component="PublicQuoteView.tsx" client="load">` still has `ssr` attr (hydrated=false); "Accept & sign" button present but inert.
+- Root cause THIS run is the documented dev-env limitation (NOT the CSP error the prior sweep saw): island JS 404s at the **un-based** `http://localhost/src/components/portal/PublicQuoteView.tsx` → `[astro-island] Error hydrating … Failed to fetch dynamically imported module`. The portal runs `pnpm dev` (astro dev) under base `/portal`; astro dev emits un-based `/src/...` module URLs that Caddy doesn't route to the portal container.
+- Verdict: #1630's hash-CSP/hydration fix CANNOT be validated against an astro-dev portal — it requires a PROD portal build (bundled, base-aware module URLs + experimental.csp hashes). Consistent with the prior sweep's "re-test on a prod portal build" guidance. Backend accept path was already proven by the prior sweep (converted + invoice + replay guard).
+
+### Theme preserved on auth pages (#1649) — PASS
+- ✅ Set theme=dark, loaded /forgot-password (auth page) → html gets class "dark", body bg rgb(13,16,23). Auth pages respect the stored theme (no force-to-light). Reset to light after.
+
+### Monitoring/Discovery hash tab state (#1645) — PASS
+- ✅ /monitoring: clicking "Network Checks" → URL `/monitoring#checks` (hash, not ?query).
+- ✅ /discovery: clicking "Profiles" → URL `/discovery#profiles` (hash). Both areas now use window.location.hash for tab state per the repo convention.
+
+### Patches respect org switcher + action feedback (#1636) — PASS
+- ✅ Org switcher: /patches header + device list follow the active-org switch. Default Organization → "Patch Management / Default Organization", 0 of 1 devices compliant, WIN-DHQNR1F8LO2 listed (1 pending). Switched to Northwind IT → "Patch Management / Northwind IT", 0 of 0 devices, WIN device gone. Switched back → device returns. The patches view no longer ignores the org switcher.
+- ✅ Action feedback: device #patches tab "Run OS patch scan" → POST /patches/scan?orgId=… **200** (org-scoped) with a transient success toast. Non-destructive scan path surfaces feedback. (Did NOT click "Install pending OS patches" — that triggers a real install on the live box. Approve/reject approval-workflow feedback was exercised by the 6/19 patching sweep.)
+
+### Invoice manual payment record + void (#1701) — PASS
+- ✅ INV-2026-0003 ($500 Issued): "Record payment" form (amount/method/reference/date). Recorded $500 Bank transfer (ref QA-MANUAL-PAY-001) → POST /invoices/:id/payments 200 → status Issued→**Paid**, Balance due **$0.00**, payment listed. Outcome visibly confirmed.
+- ✅ Per-payment "Void" → payment removed, status Paid→**Issued**, balance restored **$500.00**. Outcome confirmed.
+- ✅ AUDIT (the #1701 core): both actions logged to audit_logs — `invoice.payment.recorded` AND `invoice.payment.voided`, resource_type `invoice_payment`, details `{amount, method, invoiceId}`. Verified via DB.
+- State: invoice returned to Issued/$500 (void undid the test payment — no lasting artifact).
+
+### Tickets partner org-access (#1666) — PASS (UI), backend authz
+- ✅ /tickets renders for the partner admin with real tickets ("High CPU sustained on WIN-DHQNR1F8LO2", 2 open) + org filter (all 3 orgs), priority/category filters, Create ticket. Partner-scope admin reads tickets across its orgs (correct). The restrictive enforcement (a partner user only reads orgs they can access) is backend authz — best verified by integration tests, not a browser positive path.
+
+### SSO admin gating + domain verification (#1691 / #1695) — N/A for browser sweep (backend/gating)
+- #1695 is explicitly backend ("SSO domain verification … backend"); #1691 is permission gating (sso:admin). Partner → Security tab has password/MFA/session/IP-allowlist but NO SSO config UI surface. These are security-review-#2 backend+permission PRs with no meaningful click-path. Out of scope for Playwright; covered by integration/unit tests.
+
+---
+
+## UI QA Sweep — 2026-06-20 — SUMMARY
+
+| PR | Area | Result |
+|---|---|---|
+| #1647 | Sidebar footer API version (dynamic) | PASS |
+| #1629 | Billing-role sidebar nav permission-filtered | PASS (fixes prior finding #3) |
+| #1640 | Gated route → clean access-denied | PASS (fixes prior finding #3) |
+| #1643 | /alerts/routing-rules 200 on load | PASS |
+| #1654 | Routing-rule scope-aware write | PASS |
+| #1635 | Integrations hub: Pax8 + TD SYNNEX (Distributors) | PASS |
+| #1632 | Disabled identity integration calm state | PASS |
+| #1646 | Org-create slug auto-derive | PASS |
+| #1672 | User time-format setting (12/24h, persists) | PASS |
+| #1642 | Partner settings no flash-of-access-denied | PASS |
+| #1628 | Quote "Due on acceptance" = one-time | PASS (fixes prior finding #4) |
+| #1651 | Seller contact + T&C on quotes/invoices | PASS |
+| #1639 | Quote acceptUrl rejects empty-authority | PASS (fixes prior finding #2) |
+| #1630 | Public portal accept page hydration | BLOCKED (needs prod portal build; SSR ok) |
+| #1645 | Monitoring/Discovery hash tab state | PASS |
+| #1649 | Theme preserved on auth pages | PASS |
+| #1636 | Patches respect org switcher + feedback | PASS |
+| #1701 | Invoice manual payment record/void + audit | PASS |
+| #1666 | Tickets partner org-access (UI render) | PASS |
+| #1641/#1669/#1627 | Remote-desktop viewer toolbar/bitrate/concurrent | BLOCKED (live WebRTC session) |
+| #1691/#1695 | SSO admin gating + domain verify | N/A (backend/gating) |
+
+### Top findings
+1. **All 6/19 fix-PRs that resolved the prior sweep's own findings are verified working in-browser** — billing-RBAC nav filter + clean access-denied (#1629/#1640, finding #3), quote "Due on acceptance" one-time total with separate first-period line (#1628, finding #4), and acceptUrl empty-authority guard (#1639, finding #2). The prior sweep's top systemic issues are closed.
+2. **NO new defects found.** Non-PASS items are all environment-BLOCKED, not code defects: public portal accept-page hydration (#1630 — astro-dev portal can't serve base-aware island modules; needs a prod portal build) and the remote-desktop viewer set (#1641/#1669/#1627 — needs a live WebRTC desktop stream not negotiable from headless Chromium).
+3. **#1628 fix propagates to the customer-facing portal view** (SSR), not just the admin editor — "Due on acceptance $500 / First-period $600" + explanatory copy render in the public proposal.
+4. **#1701 audit logging confirmed at the DB layer** — both invoice.payment.recorded and invoice.payment.voided write audit_logs entries with amount/method/invoiceId.
+5. Pre-existing/cosmetic carryovers (not regressions): admin Quote/Invoice "Customer" shows raw org UUID prefix; gated pages emit benign console 403/404s that the UI catches; /settings/billing (Stripe key) still not in sidebar.
+
+### Env / state notes
+- Env recovery: Docker Desktop crash + API ERR_MODULE_NOT_FOUND @fastify/busboy (PR #1664 added the dep after the 22h-old dev image was built). Fix = pnpm install inside breeze-api (anon node_modules volume) + restart api/caddy.
+- Test artifacts left in local DB: routing rule "QA Critical Routing" (Default Org); draft→sent quote Q-2026-0003 (Default Org, $500 one-time + $100/mo). INV-2026-0003 returned to Issued (payment voided). Admin time-format reset to 12h; theme reset to light.
+
+### Issue filed
+- **#1712** [UI] Quote detail "Customer" shows raw org UUID prefix instead of organization name — root cause `QuoteDetail.tsx:99` (`quote.billToName ?? quote.orgId.slice(0,8)`). Cosmetic carryover from prior sweeps; QuoteDetail-only (InvoiceDetail unaffected).

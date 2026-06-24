@@ -17,6 +17,20 @@
 - [ ] **#1602** (Billy) — FormData uploads get a 10-min timeout (was a blanket 30s). _Fixes #1601 ("signal is aborted without reason" on a ~190 MB MSI that actually uploaded)._
   - **Verify:** Upload a large software-package version (>30s transfer). Upload completes with a success state — no spurious "signal is aborted" error toast. _(Merged pending green re-run — see queue.md.)_
 
+### Round 44 — merged 2026-06-22
+
+- [ ] **#1761** (Billy) — PAM rule matching cluster (command-line / negation / default-unmatched verdict). _Has a rule-config modal/tab in the PAM admin surface._
+  - **Verify:** PAM config UI → create a rule with a command-line pattern + a negated criterion; save (uses `runAction`). Confirm an unmatched elevation stays **pending/require-approval** (fail-closed) and that the `auto_deny` default behaves as configured. Backend decisioning verified in review; this is the config-UI eyeball.
+- [ ] **#1717** (ramphex) — macOS RAM now reported **pressure-aware** (active+wired+compressed, excluding cached/purgeable) instead of raw resident. _Not a layout change — a metric-value shift._
+  - **Verify:** On a macOS device detail + fleet RAM dashboards, used-RAM% should read **lower/more realistic** than before (macOS previously overstated via cached pages). Confirm no macOS device falsely trips/clears a RAM alert surprisingly. `ramUsedMb` on macOS now means pressure-equivalent, diverging slightly from the Linux/Windows resident semantics for the same field.
+
+### Round 45 — merged 2026-06-22
+
+- [ ] **#1718** (ramphex) — Devices list: the "Hostname" column is now **"Device"**, showing the display name as the primary label with hostname as muted secondary text (when distinct); quick search now matches **display name OR hostname**; global search descriptions dedupe hostname and append last user.
+  - **Verify:** /devices → a device with a display name set shows the friendly name on top + hostname beneath; the search box (placeholder "Search devices") filters by both display name and hostname; sorting the Device column still works (numeric collation). Global top-bar search shows `hostname · status · user` without duplicating the hostname when it's also the title.
+- [ ] **#1771** (Billy) — PAM reusable **signer-group (trusted-publisher) catalog** — a new Signer Groups tab in the PAM admin surface + rule wiring.
+  - **Verify:** PAM config UI → Signer Groups tab: create/edit/delete a signer group (save uses `runAction`); reference it from a PAM rule. Backend (Shape-1 RLS, fail-closed foreign-org ingest) verified in review; this is the catalog-UI eyeball. _Note: matching is subject-CN-only — thumbprint pinning tracked as #1776._
+
 ## Verified ✓
 
 _(move items here with the date you confirmed them, e.g. `- [x] #NNNN — verified 2026-06-20 in local docker`)_
