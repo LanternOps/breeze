@@ -14,6 +14,7 @@ import {
   ScrollText,
   Network,
   CheckCircle,
+  Bug,
   Info,
   Server,
   Shield,
@@ -23,6 +24,7 @@ import {
   Usb,
   Ticket,
   TrendingUp,
+  HeartPulse,
 } from 'lucide-react';
 import { formatUptime } from '../../lib/utils';
 import type { Device, DeviceStatus } from './DeviceList';
@@ -32,6 +34,7 @@ import DeviceInfoTab from './DeviceInfoTab';
 import DeviceHardwareInventory from './DeviceHardwareInventory';
 import DeviceSoftwareInventory from './DeviceSoftwareInventory';
 import DevicePatchStatusTab from './DevicePatchStatusTab';
+import DeviceVulnerabilitiesTab from './DeviceVulnerabilitiesTab';
 import DeviceSecurityTab from './DeviceSecurityTab';
 import DeviceAlertHistory from './DeviceAlertHistory';
 import DeviceActivityFeed from './DeviceActivityFeed';
@@ -56,6 +59,7 @@ import DeviceBackupTab from '../backup/DeviceBackupTab';
 import DeviceTicketsTab from '../tickets/DeviceTicketsTab';
 import DeviceAnomaliesPanel from './DeviceAnomaliesPanel';
 import DeviceReliabilityPanel from './DeviceReliabilityPanel';
+import DeviceMonitoringTab from './DeviceMonitoringTab';
 
 type Tab =
   | 'overview'
@@ -63,6 +67,7 @@ type Tab =
   | 'hardware'
   | 'software'
   | 'patches'
+  | 'vulnerabilities'
   | 'security'
   | 'management'
   | 'effective-config'
@@ -71,6 +76,7 @@ type Tab =
   | 'scripts'
   | 'performance'
   | 'eventlog'
+  | 'monitoring'
   | 'activities'
   | 'connections'
   | 'filesystem'
@@ -126,9 +132,9 @@ function formatLastSeen(dateString: string, timezone?: string): string {
 }
 
 const VALID_TABS: Tab[] = [
-  'overview', 'details', 'hardware', 'software', 'patches', 'security',
+  'overview', 'details', 'hardware', 'software', 'patches', 'vulnerabilities', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
-  'anomalies', 'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
+  'anomalies', 'eventlog', 'monitoring', 'activities', 'connections', 'filesystem', 'ip-history',
   'boot-performance', 'playbooks', 'peripherals', 'backup', 'tickets',
 ];
 
@@ -148,6 +154,10 @@ function getAnomalyIdFromHash(): string | undefined {
 export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
   const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
   const [focusedAnomalyId, setFocusedAnomalyId] = useState<string | undefined>(getAnomalyIdFromHash);
+  // Whether the Overview Activity pane has anything to show. Defaults to true so
+  // the common (populated) layout never flashes; the feed reports false to
+  // collapse the right rail and place Activity as a full-width bottom strip.
+  const [activityHasContent, setActivityHasContent] = useState(true);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -177,10 +187,12 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'anomalies', label: 'Anomalies', icon: <TrendingUp className="h-4 w-4" />, title: 'Metric anomaly signals for this device' },
     { id: 'tickets', label: 'Tickets', icon: <Ticket className="h-4 w-4" />, title: 'Tickets linked to this device' },
     { id: 'eventlog', label: 'Event Log', icon: <FileText className="h-4 w-4" />, title: 'Windows/macOS system event logs' },
+    { id: 'monitoring', label: 'Monitoring', icon: <HeartPulse className="h-4 w-4" />, title: 'Service/process watch results from Configuration Policies' },
     // --- Inventory ---
     { id: 'hardware', label: 'Hardware', icon: <Cpu className="h-4 w-4" />, separator: true },
     { id: 'software', label: 'Software', icon: <Package className="h-4 w-4" /> },
     { id: 'patches', label: 'Patches', icon: <CheckCircle className="h-4 w-4" />, title: 'OS update and patch status' },
+    { id: 'vulnerabilities', label: 'Vulnerabilities', icon: <Bug className="h-4 w-4" />, title: 'CVEs detected on this device' },
     { id: 'peripherals', label: 'Peripherals', icon: <Usb className="h-4 w-4" />, title: 'USB, Bluetooth, and connected devices' },
     // --- Management ---
     { id: 'scripts', label: 'Scripts', icon: <Terminal className="h-4 w-4" />, separator: true, title: 'Script execution history' },
@@ -239,8 +251,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       <OverflowTabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => switchTab(id as Tab)} />
 
       {activeTab === 'overview' && (
-        <div className="grid gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2 space-y-6">
+        <div className={activityHasContent ? 'grid gap-6 lg:grid-cols-3' : 'space-y-6'}>
+          <div className={`space-y-6 ${activityHasContent ? 'lg:col-span-2' : ''}`}>
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — divided on ≥sm. Stats are content-sized (flex, not
                 an equal-width grid) with non-wrapping labels and values so e.g.
@@ -299,7 +311,12 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             <DeviceWarrantyCard deviceId={device.id} compact />
           </div>
 
-          <DeviceActivityFeed deviceId={device.id} timezone={effectiveTimezone} />
+          <DeviceActivityFeed
+            deviceId={device.id}
+            timezone={effectiveTimezone}
+            layout={activityHasContent ? 'rail' : 'strip'}
+            onHasContentChange={setActivityHasContent}
+          />
         </div>
       )}
 
@@ -317,6 +334,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'patches' && (
         <DevicePatchStatusTab deviceId={device.id} timezone={effectiveTimezone} osType={device.os} />
+      )}
+
+      {activeTab === 'vulnerabilities' && (
+        <DeviceVulnerabilitiesTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'filesystem' && (
@@ -378,6 +399,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'eventlog' && (
         <DeviceLogsTab deviceId={device.id} timezone={effectiveTimezone} osType={device.os} />
+      )}
+
+      {activeTab === 'monitoring' && (
+        <DeviceMonitoringTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'activities' && (

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray, sql, desc, asc, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
   configPolicyAssignments,
@@ -102,9 +103,30 @@ function resolveOrgId(auth: AuthContext, requestedOrgId?: string): ResolveOrgIdR
   return { error: 'Organization context required', status: 400 };
 }
 
+// Read endpoints support "All Orgs": when no orgId is requested, scope to every
+// org the caller can reach via auth.orgCondition() (returns undefined for system
+// scope — no filter, RLS governs). A requested orgId must be accessible. Unlike
+// resolveOrgId (used by the policy writes, which need a single target org), this
+// never demands a single org, so partner/system callers can aggregate.
+type OrgReadScope =
+  | { applyTo: (column: PgColumn) => SQL | undefined }
+  | { error: string; status: 403 };
+
+function resolveOrgReadScope(auth: AuthContext, requestedOrgId?: string): OrgReadScope {
+  if (requestedOrgId) {
+    if (!auth.canAccessOrg(requestedOrgId)) {
+      return { error: 'Access to this organization denied', status: 403 };
+    }
+    return { applyTo: (column) => eq(column, requestedOrgId) };
+  }
+  return { applyTo: (column) => auth.orgCondition(column) };
+}
+
 type PolicyStatus = 'allowed' | 'blocked' | 'audit' | 'no_policy';
 
-async function getPolicyStatusMap(orgId: string): Promise<Map<string, PolicyStatus>> {
+async function getPolicyStatusMap(orgFilter: SQL | undefined): Promise<Map<string, PolicyStatus>> {
+  const conditions: SQL[] = [eq(softwarePolicies.isActive, true)];
+  if (orgFilter) conditions.push(orgFilter);
   const policies = await db
     .select({
       mode: softwarePolicies.mode,
@@ -112,8 +134,13 @@ async function getPolicyStatusMap(orgId: string): Promise<Map<string, PolicyStat
       isActive: softwarePolicies.isActive,
     })
     .from(softwarePolicies)
-    .where(and(eq(softwarePolicies.orgId, orgId), eq(softwarePolicies.isActive, true)));
+    .where(and(...conditions));
 
+  // Keyed by name|vendor with no org dimension. In an "All Orgs" aggregate this
+  // collapses policies from every accessible org onto one row; if two orgs hold
+  // conflicting policies for the same software the badge is last-write-wins. This
+  // is a display approximation on an org-collapsed row, never a cross-tenant read
+  // (RLS still scopes the policies query to accessible orgs).
   const statusMap = new Map<string, PolicyStatus>();
 
   for (const policy of policies) {
@@ -208,13 +235,14 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
   const perms = c.get('permissions') as UserPermissions | undefined;
   const { search, vendor, limit, offset, sortBy, sortOrder } = c.req.valid('query');
 
-  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
-  if ('error' in orgResult) {
-    return c.json({ error: orgResult.error }, orgResult.status);
+  const orgScope = resolveOrgReadScope(auth, c.req.query('orgId'));
+  if ('error' in orgScope) {
+    return c.json({ error: orgScope.error }, orgScope.status);
   }
-  const { orgId } = orgResult;
 
-  const conditions: SQL[] = [eq(devices.orgId, orgId)];
+  const conditions: SQL[] = [];
+  const deviceOrgFilter = orgScope.applyTo(devices.orgId);
+  if (deviceOrgFilter) conditions.push(deviceOrgFilter);
   if (perms?.allowedSiteIds) {
     if (perms.allowedSiteIds.length === 0) {
       return c.json({ data: [], pagination: { total: 0, limit, offset } });
@@ -231,7 +259,9 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
     conditions.push(sql`LOWER(COALESCE(${softwareInventory.vendor}, '')) LIKE LOWER(${'%' + escaped + '%'})`);
   }
 
-  const whereClause = and(...conditions);
+  // System-scope "All Orgs" with no search/site filter leaves conditions empty;
+  // fall back to TRUE so the raw-SQL WHERE clause stays valid (RLS still scopes).
+  const whereClause = conditions.length > 0 ? and(...conditions) : sql`TRUE`;
 
   // Count total unique software entries
   const countResult = await db.execute(sql`
@@ -272,7 +302,7 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
   `);
 
   // Build policy status map
-  const policyStatusMap = await getPolicyStatusMap(orgId);
+  const policyStatusMap = await getPolicyStatusMap(orgScope.applyTo(softwarePolicies.orgId));
 
   // Process results
   const data = (rows as unknown as Array<{
@@ -660,16 +690,16 @@ softwareInventoryRoutes.get('/:name/devices', requireSoftwareInventoryRead, zVal
   const softwareName = decodeURIComponent(c.req.param('name'));
   const { vendor, limit, offset } = c.req.valid('query');
 
-  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
-  if ('error' in orgResult) {
-    return c.json({ error: orgResult.error }, orgResult.status);
+  const orgScope = resolveOrgReadScope(auth, c.req.query('orgId'));
+  if ('error' in orgScope) {
+    return c.json({ error: orgScope.error }, orgScope.status);
   }
-  const { orgId } = orgResult;
 
   const conditions: SQL[] = [
-    eq(devices.orgId, orgId),
     sql`LOWER(${softwareInventory.name}) = LOWER(${softwareName})`,
   ];
+  const deviceOrgFilter = orgScope.applyTo(devices.orgId);
+  if (deviceOrgFilter) conditions.push(deviceOrgFilter);
   if (perms?.allowedSiteIds) {
     if (perms.allowedSiteIds.length === 0) {
       return c.json({

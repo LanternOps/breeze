@@ -149,6 +149,79 @@ func (s *Session) handleInputMessage(data []byte) {
 	}
 }
 
+// handleBlockLocalInput engages or releases blocking of the local physical
+// keyboard/mouse on the target for this session (issue #966) and reports the
+// outcome to the viewer via a block_local_input_result control message.
+//
+// Per-session refcount safety: this session adjusts the InputBlockManager's
+// refcount at most once (engage) and releases it at most once (here or in
+// doCleanup), guarded by s.localInputBlocked. Toggling on when already on, or
+// off when already off, is a no-op that still re-reports current status.
+func (s *Session) handleBlockLocalInput(block bool) {
+	var (
+		supported = true
+		ok        = true
+		errMsg    string
+	)
+
+	if block {
+		// Engage only if this session isn't already holding a block.
+		if s.localInputBlocked.Load() {
+			supported = GetInputBlockManager().Supported()
+		} else {
+			sup, err := GetInputBlockManager().Engage()
+			supported = sup
+			if err != nil {
+				ok = false
+				errMsg = err.Error()
+				slog.Warn("Failed to block local input", "session", s.id, "error", errMsg)
+			} else if sup {
+				s.localInputBlocked.Store(true)
+				slog.Info("Local input blocked for session", "session", s.id)
+			} else {
+				slog.Info("Local input blocking not supported on this platform", "session", s.id)
+			}
+		}
+	} else {
+		supported = GetInputBlockManager().Supported()
+		// Release only if this session is currently holding a block.
+		if s.localInputBlocked.CompareAndSwap(true, false) {
+			if err := GetInputBlockManager().Release(); err != nil {
+				ok = false
+				errMsg = err.Error()
+				slog.Warn("Failed to release local-input block", "session", s.id, "error", errMsg)
+			} else {
+				slog.Info("Local input unblocked for session", "session", s.id)
+			}
+		}
+	}
+
+	// blocked reflects the resulting per-session state the viewer should show.
+	blocked := s.localInputBlocked.Load()
+	body := map[string]any{
+		"type":      "block_local_input_result",
+		"supported": supported,
+		"blocked":   blocked,
+		"ok":        ok,
+	}
+	if errMsg != "" {
+		body["error"] = errMsg
+	}
+	resp, err := json.Marshal(body)
+	if err != nil {
+		slog.Warn("Failed to marshal block_local_input_result", "session", s.id, "error", err.Error())
+		return
+	}
+	s.mu.RLock()
+	dc := s.controlDC
+	s.mu.RUnlock()
+	if dc != nil {
+		if err := dc.SendText(string(resp)); err != nil {
+			slog.Debug("Failed to send block_local_input_result", "session", s.id, "error", err.Error())
+		}
+	}
+}
+
 // handleControlMessage processes control messages (bitrate, quality changes)
 func (s *Session) handleControlMessage(data []byte) {
 	if len(data) > maxControlMessageBytes {
@@ -333,6 +406,13 @@ func (s *Session) handleControlMessage(data []byte) {
 		if dc != nil {
 			dc.SendText(string(resp))
 		}
+	case "block_local_input":
+		// Toggle blocking of the LOCAL physical keyboard/mouse on the target so
+		// the on-site user and the remote operator stop fighting for control
+		// (issue #966). Value != 0 engages, 0 releases. The block auto-releases
+		// on session end (doCleanup), agent crash (OS-level), and a max-duration
+		// watchdog — see input_block.go.
+		s.handleBlockLocalInput(msg.Value != 0)
 	case "lock_workstation":
 		slog.Info("Lock workstation requested via control channel", "session", s.id)
 		lockErr := LockWorkstation()

@@ -24,6 +24,32 @@ export default defineConfig({
       // Worker-level integration test: renewal pre-pass runs before billing sweep
       // so an at-boundary auto-renew contract bills instead of expiring.
       'src/jobs/contractWorker.renewal.integration.test.ts',
+      // Co-located real-DB integration test for the MSRC vuln-source-sync job
+      // (BE-16): exercises syncMsrcMonth upserts into the global vuln tables.
+      'src/jobs/vulnerabilityJobs.integration.test.ts',
+      // Co-located real-DB integration test for the NVD vuln-source-sync job
+      // (BE-16): exercises curated-CPE match fact generation.
+      'src/jobs/vulnerabilityJobsNvd.integration.test.ts',
+      // Co-located real-DB integration test for the Apple SOFA vuln-source-sync job
+      // (BE-16): exercises macOS OS vulnerability fact generation.
+      'src/jobs/vulnerabilityJobsSofa.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 correlation: materializes
+      // device_vulnerabilities from software_inventory and global match facts.
+      'src/services/vulnerabilityCorrelation.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 Phase 2 correlation:
+      // CPE range matching and macOS OS vulnerability facts.
+      'src/services/vulnerabilityCorrelationPhase2.integration.test.ts',
+      // Co-located real-DB integration test for the curated CPE map seed loader.
+      'src/services/cpeMap.integration.test.ts',
+      // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
+      'src/services/exploitFeeds.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 Phase 4 domain events:
+      // vulnerability.critical_detected emission from correlation.
+      'src/services/vulnerabilityEvents.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 Phase 4 remediation events.
+      'src/services/vulnerabilityRemediationEvents.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 Phase 4 AI read tools.
+      'src/services/aiToolsVulnerability.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's

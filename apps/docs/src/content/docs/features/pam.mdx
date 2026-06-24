@@ -22,14 +22,14 @@ PAM covers three kinds of elevation, all of which land in the same queue:
 | **AI tool action** | A privileged action proposed by the Breeze AI agent (Brain) or Helper that requires a human to sign off before it runs. |
 
 <Aside type="tip">
-  PAM never lets a request self-approve. An AI- or Helper-initiated elevation, and a UAC prompt with no matching rule, always default to **pending** -- waiting on a person -- so automation can never quietly relax its own approval.
+  PAM never lets a request self-approve. An AI- or Helper-initiated elevation always defaults to **pending** -- waiting on a person -- so automation can never quietly relax its own approval. A UAC prompt with no matching rule follows the org's **Default verdict** (require approval by default; optionally auto-deny), never an auto-approval.
 </Aside>
 
 ---
 
 ## The Privileged Access Console
 
-The console is organized into four tabs. A **Live / Offline** indicator in the header shows whether the page is receiving real-time updates -- when an elevation is requested, decided, activated, expired, or revoked anywhere in the fleet, the open tab refreshes itself.
+The console is organized into five tabs. A **Live / Offline** indicator in the header shows whether the page is receiving real-time updates -- when an elevation is requested, decided, activated, expired, or revoked anywhere in the fleet, the open tab refreshes itself.
 
 ### Overview
 
@@ -84,11 +84,31 @@ A rule's verdict is one of:
 
 Criteria identify *what* is being elevated and *who* is asking. A rule must carry at least one identifying criterion -- you can't write a rule that matches everything:
 
-- **Executable rules** match on code-signer, file hash, file path (glob), or parent process.
+- **Executable rules** match on code-signer (a single publisher or a reusable **signer group**), file hash, file path (glob), parent process, or the launched **command line** (a case-insensitive substring match).
 - **AI tool-action rules** match on the tool name and risk tier.
 - Both shapes can additionally narrow by **user**, **AD group**, and a **time window** (with day-of-week and time-zone awareness, including windows that wrap past midnight).
 
+Any criterion can be **negated** — turn on "does not match" beneath a field to make the rule fire when that criterion is *not* satisfied (for example, "signer is *not* Microsoft Corporation"). Negation never turns missing data into a match: if the agent didn't report the value a negated criterion checks, the rule simply doesn't match.
+
 Evaluation order is: a **Software Policy** allowlist/blocklist match decides first; if nothing there applies, PAM rules run in priority order and the first match wins. Use the enable/disable switch to retire a rule without deleting it, or **Add rule** to create one from scratch.
+
+The Rules tab also carries a **Default verdict** control — what happens to an elevation that matches no software policy and no rule. The default is **Require approval** (the request waits for a human); you can switch it to **Auto-deny** to fail unmatched elevations closed instead.
+
+### Signer Groups
+
+Signer Groups let you define a named list of trusted code-signing publishers once and reuse it across many rules, instead of re-typing the same publisher into every rule. A group is a list of Authenticode signer names (the certificate subject — for example, *Microsoft Corporation*), matched case-insensitively.
+
+<Steps>
+
+1. On the **Signer Groups** tab, click **Add signer group**.
+
+2. Give the group a **name** and an optional description, then add one publisher per row.
+
+3. Save. The group is now available to reference from any executable rule.
+
+</Steps>
+
+In a rule's **Executable** criteria, pick the group from the **Signer group** dropdown instead of typing a single signer — the rule then matches when the executable is signed by *any* publisher in the group. A rule references either a single signer *or* a signer group, not both. A group that's still referenced by a rule can't be deleted; remove those references first.
 
 ### Audit
 
@@ -111,7 +131,7 @@ The flagship PAM flow turns a standard Windows UAC consent prompt into a governe
 4. The approver makes the call from any of three surfaces:
    - The **Privileged Access console** in the web dashboard (Requests tab).
    - The **Helper desktop app**, which raises a native approval dialog on the user's own screen.
-   - The **mobile app**, which renders the elevation -- showing the executable, signer, and the requester's reason -- with biometric step-up.
+   - The **mobile app**, which renders the elevation -- showing the executable, signer, and the requester's reason -- with biometric step-up. When a UAC elevation lands in the pending queue, Breeze pushes it to the phones of every technician eligible to approve it; the first to approve or deny on mobile decides it, and the request clears from the other approvers' inboxes.
 
 5. On approval, a **just-in-time admin window** opens for the granted duration. On denial, the elevation is blocked.
 

@@ -45,6 +45,10 @@ export type EventType =
   | 'patch.installed'
   | 'patch.failed'
   | 'patch.rollback'
+  // Vulnerability events (BE-16)
+  | 'vulnerability.critical_detected'
+  | 'vulnerability.remediation_scheduled'
+  | 'vulnerability.remediated'
   // Backup verification events
   | 'backup.verification_failed'
   | 'backup.verification_passed'
@@ -605,6 +609,10 @@ export const EVENT_TYPES = {
   PATCH_INSTALLED: 'patch.installed' as const,
   PATCH_FAILED: 'patch.failed' as const,
   PATCH_ROLLBACK: 'patch.rollback' as const,
+  // Vulnerability (BE-16)
+  VULNERABILITY_CRITICAL_DETECTED: 'vulnerability.critical_detected' as const,
+  VULNERABILITY_REMEDIATION_SCHEDULED: 'vulnerability.remediation_scheduled' as const,
+  VULNERABILITY_REMEDIATED: 'vulnerability.remediated' as const,
   // Backup verification
   BACKUP_VERIFICATION_FAILED: 'backup.verification_failed' as const,
   BACKUP_VERIFICATION_PASSED: 'backup.verification_passed' as const,

@@ -18,6 +18,28 @@ const RLS_DENY_SQLSTATE = '42501';
 
 let initialized = false;
 
+const SENSITIVE_KEYS = new Set(['password', 'passwordhash', 'mfasecret', 'token', 'authorization', 'cookie']);
+
+/** Redact secrets before an event leaves the process (#1379 B3). Exported for test. */
+export function scrubEvent<T extends Record<string, any>>(event: T): T {
+  const headers = event?.request?.headers;
+  if (headers) {
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization' || k.toLowerCase() === 'cookie') headers[k] = '[redacted]';
+    }
+  }
+  const extra = event?.extra;
+  if (extra) {
+    for (const k of Object.keys(extra)) {
+      const v = extra[k];
+      if (SENSITIVE_KEYS.has(k.toLowerCase()) || (typeof v === 'string' && v.startsWith('brz_'))) {
+        extra[k] = '[redacted]';
+      }
+    }
+  }
+  return event;
+}
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -45,7 +67,9 @@ export function initSentry(): void {
     // hand-maintained and went stale on the droplets (pinned at 0.64.1 while the
     // fleet ran 0.69.0), mistagging every event — so we no longer read it.
     release: API_VERSION,
-    tracesSampleRate
+    tracesSampleRate,
+    profilesSampleRate: parseSampleRate(process.env.SENTRY_PROFILES_SAMPLE_RATE),
+    beforeSend: (event) => scrubEvent(event)
   });
 
   initialized = true;
@@ -104,6 +128,62 @@ export function captureMessage(
     scope.setLevel(level);
     scope.setExtras(extra ?? {});
     Sentry.captureMessage(message);
+  });
+}
+
+/**
+ * Attach the authenticated tenant/user to the active Sentry isolation scope
+ * (#1379 B2). Every event captured later in the same scope — route throws,
+ * contextless-write warnings, RLS-deny tags — inherits these, so triage on a
+ * multi-tenant RMM stops being guesswork. Only non-secret identifiers are
+ * tagged (no token, no password, no mfaSecret).
+ *
+ * IMPORTANT: these module-level setters write to whatever isolation scope is
+ * currently active. Call this function only from INSIDE a
+ * `withSentryRequestScope` callback so the writes are confined to that
+ * request's scope rather than the global scope. Calling it at module level
+ * or outside an isolation scope can mis-attribute tags across concurrent
+ * requests.
+ */
+export function setSentryRequestContext(ctx: {
+  userId: string;
+  scope: 'system' | 'partner' | 'organization';
+  orgId: string | null;
+  partnerId: string | null;
+}): void {
+  if (!initialized) {
+    return;
+  }
+  Sentry.setUser({ id: ctx.userId });
+  Sentry.setTag('scope', ctx.scope);
+  Sentry.setTag('orgId', ctx.orgId ?? 'none');
+  Sentry.setTag('partnerId', ctx.partnerId ?? 'none');
+}
+
+/**
+ * Run the rest of a request inside a dedicated Sentry isolation scope, tagged
+ * with the tenant (#1379 B2). Using an EXPLICIT isolation scope (rather than
+ * relying on httpIntegration to fork one per request) guarantees the tags set
+ * by setSentryRequestContext stay confined to THIS request even under
+ * concurrency — Sentry.init() installs the AsyncLocalStorage async-context
+ * strategy that makes withIsolationScope request-local. Passthrough (no scope)
+ * when Sentry is disabled.
+ */
+export function withSentryRequestScope<T>(
+  ctx: {
+    userId: string;
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    partnerId: string | null;
+  },
+  run: () => T
+): T {
+  if (!initialized) {
+    return run();
+  }
+  return Sentry.withIsolationScope(() => {
+    setSentryRequestContext(ctx);
+    return run();
   });
 }
 

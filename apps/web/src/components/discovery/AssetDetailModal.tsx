@@ -32,6 +32,8 @@ function snmpFieldLabel(key: string): string {
 type AssetDetailModalProps = {
   open: boolean;
   asset?: AssetDetail | null;
+  /** While the detail is being fetched (topology click / deep link). */
+  loading?: boolean;
   devices?: { id: string; name: string }[];
   onClose: () => void;
   onLinked?: (assetId: string) => void;
@@ -42,6 +44,7 @@ type AssetDetailModalProps = {
 export default function AssetDetailModal({
   open,
   asset,
+  loading = false,
   devices = [],
   onClose,
   onLinked,
@@ -238,7 +241,42 @@ export default function AssetDetailModal({
     }
   }, [asset, selectedProxyPort]);
 
-  if (!asset) return null;
+  // No asset record yet: never render nothing while open, or a node click looks
+  // like it did nothing. Show a loading state, then a graceful not-found state
+  // with a retry path (#1728).
+  if (!asset) {
+    if (!open) return null;
+    return (
+      <Dialog open={open} onClose={onClose} title="Device details" maxWidth="md">
+        <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+          {loading ? (
+            <>
+              <div className="h-7 w-7 animate-spin rounded-full border-[3px] border-primary border-t-transparent" />
+              <p className="text-sm text-muted-foreground">Loading device details…</p>
+            </>
+          ) : (
+            <>
+              <Globe className="h-7 w-7 text-muted-foreground/60" aria-hidden />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-foreground">Details unavailable</p>
+                <p className="text-sm text-muted-foreground">
+                  We couldn’t load this device’s record. It may have been removed or you may not
+                  have access to it.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="mt-1 rounded-md border px-3 py-1.5 text-sm font-medium text-foreground transition hover:bg-muted"
+              >
+                Close
+              </button>
+            </>
+          )}
+        </div>
+      </Dialog>
+    );
+  }
 
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';

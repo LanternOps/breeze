@@ -688,11 +688,12 @@ export const portalApi = {
 
   acceptQuote: async (
     id: string,
+    signerName?: string,
     config: ApiRequestConfig = {}
   ): Promise<ApiResponse<{ data: { invoiceId: string; status: string } }>> => {
     return apiPost<{ data: { invoiceId: string; status: string } }>(
       `/portal/quotes/${id}/accept`,
-      {},
+      signerName ? { signerName } : {},
       config
     );
   },

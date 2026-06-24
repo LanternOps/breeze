@@ -23,6 +23,11 @@ export const M365_ENABLED = envFlag('M365_ENABLED', false);
 // the M365_ENABLED gating style.
 export const CLIENT_AI_ENTRA_CLIENT_ID = process.env.CLIENT_AI_ENTRA_CLIENT_ID?.trim() ?? '';
 
+export const QBO_CLIENT_ID = process.env.QBO_CLIENT_ID?.trim() ?? '';
+export const QBO_CLIENT_SECRET = process.env.QBO_CLIENT_SECRET?.trim() ?? '';
+export const QBO_REDIRECT_URI = process.env.QBO_REDIRECT_URI?.trim() ?? '';
+export const QBO_ENVIRONMENT = process.env.QBO_ENVIRONMENT?.trim() ?? '';
+
 // Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
 export function isHosted(): boolean {
   return envFlag('IS_HOSTED');

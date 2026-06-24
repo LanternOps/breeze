@@ -118,6 +118,42 @@ Remote desktop sessions can optionally stream system audio from the device to th
 
 Breeze can capture the Windows secure desktop (Ctrl+Alt+Del screen, UAC prompts, lock screen). This is possible because the helper process runs as SYSTEM with `GENERIC_ALL` access to the input desktop. Secure desktop capture is automatic — no additional configuration is required.
 
+### Session Consent & End-User Notification
+
+By default, when a technician starts a remote desktop session the person sitting at the device is told about it. You can tune this per [Configuration Policy](/features/configuration-policies/) on the **Remote Access** feature, choosing one of three session-prompt modes:
+
+| Mode | What the end user experiences |
+|------|-------------------------------|
+| **Off** | Nothing is shown. The session starts silently. |
+| **Notify** *(default)* | A desktop notification appears — "*Jordan Lee connected to your computer*" — and the session begins immediately. No approval is required. |
+| **Consent** | A dialog asks the user to **Allow** or **Deny** before the technician can see the screen. The technician's view does not start until the user allows it. |
+
+When a session is active, a small indicator ("*Jordan Lee is connected*" with a live timer) is shown at the top of the user's screen for the duration of the session, and a "*Remote session ended*" notice appears when the technician disconnects. Both can be turned off per policy.
+
+**What the end user sees in Consent mode**
+
+The consent dialog asks the user to allow or deny the remote session, with **Deny selected by default** — a privacy prompt never grants access on a stray keypress. If the user doesn't respond before the prompt times out, Breeze applies the policy's fallback (see below).
+
+**Settings (per Configuration Policy → Remote Access)**
+
+| Setting | Options | Default | Effect |
+|---------|---------|---------|--------|
+| Session prompt mode | Off / Notify / Consent | **Notify** | Whether the user is notified and/or must consent. |
+| When consent can't be asked | Proceed / Block | **Proceed** | What happens on an **unattended** machine, with no Helper installed, or when the user doesn't respond in time. **Proceed** connects anyway; **Block** refuses the session. An explicit **Deny** always blocks regardless of this setting. |
+| Notify on session end | On / Off | **On** | Whether the "session ended" notice is shown. |
+| Show active-session indicator | On / Off | **On** | Whether the top-of-screen indicator appears during the session. |
+| Technician identity shown | Name & email / Name only / Generic | **Name & email** | How much of the technician's identity is revealed to the end user. **Generic** shows "*A technician*" with no name or email. |
+
+<Aside>
+  These surfaces are drawn by the **Breeze Helper** running in the signed-in user's desktop session. On an unattended machine (no user logged in, or the Helper not installed), there is no one to notify or ask — in **Consent** mode, Breeze then applies the *"When consent can't be asked"* fallback. With **Proceed** (the default), unattended and headless machines are never locked out.
+</Aside>
+
+<Aside type="note">
+  **Upgrade behavior:** Because the default prompt mode is **Notify**, devices with the Breeze Helper installed begin showing a start notice for remote sessions after upgrade. To restore silent behavior, set the **Remote Access** feature on a Configuration Policy to prompt mode **Off**.
+</Aside>
+
+Every consent outcome is audit logged — granted, denied, or bypassed (with the reason, for example no user logged in).
+
 ### GPU-Accelerated Streaming
 
 Remote desktop uses hardware GPU encoding when available for better performance. The agent supports both NVIDIA (NVENC) and AMD (AMF) GPUs and auto-selects the best encoder based on the device's hardware.
@@ -340,7 +376,7 @@ The default maximum file size per transfer is **500 MB** (configurable via `MAX_
 All session types follow the same state machine:
 
 ```
-pending → connecting → active → disconnected / failed
+pending → connecting → active → disconnected / failed / denied
 ```
 
 | State | Description |
@@ -350,6 +386,7 @@ pending → connecting → active → disconnected / failed
 | `active` | WebRTC P2P connection established; data flowing between browser and device |
 | `disconnected` | Session ended normally — user closed it or the agent reported a clean disconnect |
 | `failed` | Connection could not be established, or an active connection dropped unexpectedly |
+| `denied` | The end user declined the connection at the consent prompt (or the policy's *"When consent can't be asked"* fallback was set to **Block**). The technician sees that the user denied the remote connection. |
 
 When a session ends (`disconnected` or `failed`), the platform records `durationSeconds` (calculated from start time). The `bytesTransferred` field is available but must be supplied by the caller when ending the session via `POST /remote/sessions/:id/end`.
 
@@ -386,6 +423,8 @@ To free session capacity, close active sessions from the Active Sessions list on
 **Server is a signaling relay for WebRTC.** The Breeze server brokers WebRTC negotiation (SDP offer/answer and ICE candidates). Once the P2P connection is established, device data does not transit the server. If the WebSocket fallback is active, frame data is relayed through the server but is not persisted.
 
 **All sessions are audit logged.** Every session creation, state transition, and termination is recorded with the actor identity, device identifier, start time, end time, duration in seconds, and bytes transferred. Audit records are immutable.
+
+**Consent is audit logged.** When session consent or notification is enabled by policy, each session records whether the end user granted, denied, or had consent bypassed (with the reason — for example, no user logged in), alongside the technician identity disclosed.
 
 **Remote access requires the `remote:access` permission.** This permission is not granted by default on all roles. Navigate to **Settings → Roles** if a user receives "Access denied" when creating a session.
 

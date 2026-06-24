@@ -74,6 +74,22 @@ func TestQuerySNMPV3CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestCollectFdbForDevice_NoCredsReturnsEmpty(t *testing.T) {
+	// An unreachable target with no usable community must degrade to an empty
+	// slice (graceful per-device degradation) without panicking — there is no
+	// live SNMP server in CI.
+	entries := collectFdbForDevice("203.0.113.250", nil, 50*time.Millisecond)
+	if len(entries) != 0 {
+		t.Fatalf("collectFdbForDevice on unreachable target should return empty, got %d entries", len(entries))
+	}
+
+	// Blank community list must also degrade cleanly.
+	entries = collectFdbForDevice("203.0.113.250", []string{"", "  "}, 50*time.Millisecond)
+	if len(entries) != 0 {
+		t.Fatalf("collectFdbForDevice with blank communities should return empty, got %d entries", len(entries))
+	}
+}
+
 func TestSnmpToString(t *testing.T) {
 	tests := []struct {
 		name string

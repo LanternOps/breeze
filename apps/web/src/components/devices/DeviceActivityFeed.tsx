@@ -29,6 +29,13 @@ type ActivityEvent = {
 type DeviceActivityFeedProps = {
   deviceId: string;
   timezone?: string;
+  // 'rail' is the right-column card (default). 'strip' is the full-width
+  // placement used when the parent collapses the rail; its empty state is a
+  // single compact line rather than the stacked heading/paragraph/link.
+  layout?: 'rail' | 'strip';
+  // Reports whether the pane has anything worth showing (events or active
+  // alerts) so the parent can collapse the rail when it's empty.
+  onHasContentChange?: (hasContent: boolean) => void;
 };
 
 // "Deliberate actions taken on this endpoint." An event is shown only if its
@@ -46,17 +53,34 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: 'device.decommission', icon: Trash2 },
   { prefix: 'device.permanent_delete', icon: Trash2 },
   { prefix: 'device.restore', icon: RotateCcw },
+  // Automated agent-dispatched commands (scheduled patches, automations). Listed
+  // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
+  // from ACTION_PREFIXES below. The server surfaces these solely via the
+  // actor-scoped includeAutomated predicate (system actors, no manual twin);
+  // sending them as plain action prefixes would re-admit the manual
+  // (actor_type='user') twin rows and double-list them.
+  { prefix: 'agent.command.install_patches', icon: Download },
+  { prefix: 'agent.command.rollback_patches', icon: RotateCcw },
+  { prefix: 'agent.command.script', icon: Terminal },
+  { prefix: 'agent.command.software_uninstall', icon: Package },
+  { prefix: 'agent.command.software_update', icon: Package },
 ];
+
+const AUTOMATED_ACTION_PREFIX = 'agent.command.';
 
 function ruleFor(action?: string) {
   if (!action) return undefined;
   return ACTION_RULES.find((r) => action.startsWith(r.prefix));
 }
 
-// The same prefix set, sent to the API so the "deliberate action" filter runs
+// The deliberate-action prefix set, sent to the API so the filter runs
 // server-side (index-backed) instead of over-fetching raw rows and discarding
-// most of them client-side (issue #1726).
-const ACTION_PREFIXES = ACTION_RULES.map((r) => r.prefix).join(',');
+// most of them client-side (issue #1726). The agent.command.* rules are
+// excluded — those rows arrive only through the actor-scoped includeAutomated
+// predicate, never as plain prefix matches (see the comment above).
+const ACTION_PREFIXES = ACTION_RULES.filter((r) => !r.prefix.startsWith(AUTOMATED_ACTION_PREFIX))
+  .map((r) => r.prefix)
+  .join(',');
 
 // How many filtered rows to request per page. Small fixed window for a fast,
 // predictable first paint; "Load more" pulls the next page on demand.
@@ -93,7 +117,12 @@ function absoluteTime(value?: string, timezone?: string): string | undefined {
   return formatDateTime(d, timezone ? { timeZone: timezone } : undefined);
 }
 
-export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivityFeedProps) {
+export default function DeviceActivityFeed({
+  deviceId,
+  timezone,
+  layout = 'rail',
+  onHasContentChange,
+}: DeviceActivityFeedProps) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [activeAlerts, setActiveAlerts] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -133,7 +162,7 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
         setLoadMoreError(false);
       }
       try {
-        const eventsUrl = `/devices/${deviceId}/events?limit=${PAGE_SIZE}&page=${page}&actions=${encodeURIComponent(
+        const eventsUrl = `/devices/${deviceId}/events?limit=${PAGE_SIZE}&page=${page}&includeAutomated=true&actions=${encodeURIComponent(
           ACTION_PREFIXES
         )}`;
         // The active-alert count is only needed on the initial load.
@@ -186,6 +215,15 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
     void loadPage(1, controller.signal);
     return () => controller.abort();
   }, [loadPage]);
+
+  // Report whether the pane has anything worth showing so the parent can collapse
+  // the rail when it's empty. Skip while loading OR errored: an error is not
+  // "no content", and collapsing on error would shove the "Couldn't load /
+  // Retry" pane into a narrow strip. On error the parent keeps its prior layout.
+  useEffect(() => {
+    if (loading || error) return;
+    onHasContentChange?.(events.length > 0 || activeAlerts > 0);
+  }, [loading, error, events.length, activeAlerts, onHasContentChange]);
 
   // Retry the whole pane from page 1 on a fresh controller (the mount effect's
   // controller is aborted once its cleanup runs).
@@ -254,14 +292,34 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
             </button>
           </p>
         ) : visible.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent actions on this device.</p>
+          layout === 'strip' ? (
+            <div
+              data-testid="activity-empty-strip"
+              className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground"
+            >
+              <span>No recent actions on this device.</span>
+              <a href="#activities" className="font-medium text-primary hover:underline">
+                View all activity →
+              </a>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No recent actions on this device.</p>
+          )
         ) : (
           <ul className="space-y-3">
             {visible.map((e) => {
               const Icon = ruleFor(e.action)?.icon ?? Activity;
               const initiator = e.initiatedBy ? INITIATOR_LABELS[e.initiatedBy] : undefined;
-              const who = e.actor?.name && e.actor.name !== 'System' ? e.actor.name : initiator ?? e.actor?.name;
               const failed = e.result === 'failure' || e.result === 'denied';
+              // Tag the automated-dispatch rows (the agent.command.* family the
+              // server returns only for non-user actors) as "Automated". Keyed on
+              // the action, not actor.type, so other system-actor rows aren't
+              // mislabeled — and an explicit initiatedBy label still wins.
+              const automated = !initiator && (e.action ?? '').startsWith(AUTOMATED_ACTION_PREFIX);
+              const namedActor = e.actor?.name && e.actor.name !== 'System' ? e.actor.name : undefined;
+              // For automated rows the "Automated" chip already conveys the actor,
+              // so drop the generic "System" label and keep only a real name.
+              const who = automated ? namedActor : namedActor ?? initiator ?? e.actor?.name;
               return (
                 <li key={e.id} className="flex gap-3">
                   <div
@@ -281,6 +339,11 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
                       {initiator && who !== initiator && (
                         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                           {initiator}
+                        </span>
+                      )}
+                      {automated && (
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          Automated
                         </span>
                       )}
                       {who && <span aria-hidden="true">·</span>}
@@ -311,7 +374,7 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
         )}
       </div>
 
-      {!loading && !error && (
+      {!loading && !error && !(layout === 'strip' && visible.length === 0) && (
         <a
           href="#activities"
           className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"

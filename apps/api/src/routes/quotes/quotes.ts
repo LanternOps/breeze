@@ -15,10 +15,8 @@ import {
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
 import { quoteImages } from '../../db/schema/quotes';
-import { partners } from '../../db/schema/orgs';
-import { portalBranding } from '../../db/schema/portal';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
-import { buildSellerSnapshot } from '../../services/sellerSnapshot';
+import { resolveQuoteBranding } from '../../services/quoteBranding';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -46,8 +44,14 @@ quoteCrudRoutes.post('/', scopes, writePerm, zValidator('json', createQuoteSchem
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await getQuote(c.req.valid('param').id, quoteActorFrom(c)) }); }
-  catch (err) { return handleServiceError(c, err); }
+  try {
+    const detail = await getQuote(c.req.valid('param').id, quoteActorFrom(c));
+    // Branding lets the in-app Preview render the customer-facing document
+    // (logo, accent, seller, footer) without a second round-trip — same object
+    // the PDF route builds, so the preview matches what the customer receives.
+    const branding = await resolveQuoteBranding(detail.quote);
+    return c.json({ data: { ...detail, branding } });
+  } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {
   try { return c.json({ data: await updateQuote(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c)) }); }
@@ -94,26 +98,13 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
   try {
     const { quote, blocks, lines } = await getQuote(id, quoteActorFrom(c));
 
-    const [partner] = await db
-      .select()
-      .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
-    const [brand] = await db
-      .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText })
-      .from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
-
-    const branding = {
-      partnerName: partner?.name ?? 'Proposal',
-      logoUrl: brand?.logoUrl ?? null,
-      primaryColor: brand?.primaryColor ?? null,
-      footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
-      currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
-    };
+    const branding = await resolveQuoteBranding(quote);
 
     const quoteForRender = {
       ...quote,
-      // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
-      // the From block still renders (issued docs use the frozen column).
-      sellerSnapshot: quote.sellerSnapshot ?? (partner ? buildSellerSnapshot(partner) : null),
+      // Legacy/draft docs have no frozen snapshot; resolveQuoteBranding synthesizes
+      // one from the live partner so the From block still renders.
+      sellerSnapshot: branding.seller,
     };
 
     // Real image loader: pull bytes from quote_images, constrained to BOTH the

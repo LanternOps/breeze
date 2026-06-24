@@ -443,6 +443,23 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * Thrown by `fetchWithAuth` when the store claims to be authenticated but the
+ * refresh cookie can no longer mint an access token, so there is no Bearer to
+ * attach. Rather than fire a knowingly-unauthenticated request (which the API
+ * answers with a confusing "Missing or invalid authorization header" 401),
+ * `fetchWithAuth` clears the session, redirects to /login, and throws this so
+ * callers can short-circuit. Callers that already special-case auth failures
+ * can `instanceof`-check it; most callers can ignore it (the page is navigating
+ * away to /login anyway).
+ */
+export class AuthSessionExpiredError extends Error {
+  constructor(message = 'Session expired') {
+    super(message);
+    this.name = 'AuthSessionExpiredError';
+  }
+}
+
 export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
@@ -458,11 +475,40 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
 
   // During app bootstrap we can have a persisted authenticated user but no in-memory access token yet.
   // Recover from refresh cookie first to avoid firing unauthenticated API calls.
+  //
+  // This is the ONLY token-recovery point for pages rendered outside the
+  // dashboard shell — most importantly the forced-MFA enrollment page
+  // (`/auth/mfa/setup`, AuthLayout), which has no AuthGuard/DashboardWrapper to
+  // proactively call restoreAccessTokenFromCookie() on mount. That page is
+  // always reached via a full-page navigation (`window.location.href`), so the
+  // in-memory access token is always gone and enrollment depends entirely on
+  // this refresh succeeding here.
   if (!tokens?.accessToken && isAuthenticated) {
     const restoredTokens = await requestTokenRefreshShared();
     if (restoredTokens) {
       setTokens(restoredTokens);
       tokens = restoredTokens;
+    } else {
+      // The session claims to be authenticated but the refresh cookie can no
+      // longer mint an access token (rotated/revoked/expired, or — as seen in
+      // the 0.83.0 forced-MFA enrollment regression — the rotated cookie failed
+      // to round-trip so every subsequent /auth/refresh replays a revoked jti
+      // and 401s). Falling through here would fire the request with NO
+      // Authorization header, and the API answers 401 "Missing or invalid
+      // authorization header" — a confusing dead end that strands the user on
+      // the forced-MFA page (its only recovery is a clean re-login).
+      //
+      // Fail closed instead: clear the dead session and bounce to /login so the
+      // user re-authenticates and re-enters the flow with a fresh token. This
+      // does NOT weaken auth — protected endpoints (including /auth/mfa/setup)
+      // still require a valid Bearer; we simply refuse to send a request we know
+      // can't carry one.
+      logout();
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+        const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/login?returnTo=${returnTo}`;
+      }
+      throw new AuthSessionExpiredError();
     }
   }
 

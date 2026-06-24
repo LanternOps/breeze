@@ -637,7 +637,7 @@ describe('DeviceList — pending reboot badge', () => {
     render(<DeviceList devices={[device]} />);
 
     const badge = screen.getByTestId(`device-${device.id}-pending-reboot-badge`);
-    expect(badge.textContent).toMatch(/Reboot pending/i);
+    expect(badge).toHaveAttribute('aria-label', 'Reboot pending');
   });
 
   it('renders no badge when pendingReboot is false or absent', () => {

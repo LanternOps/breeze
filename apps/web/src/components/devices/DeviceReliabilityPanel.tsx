@@ -8,6 +8,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useClickOutside } from '../../hooks/useClickOutside';
 import { useAiStore } from '../../stores/aiStore';
+import HelpTooltip from '../shared/HelpTooltip';
 
 type ReliabilityTopIssue = {
   type: 'crashes' | 'hangs' | 'services' | 'hardware' | 'uptime';
@@ -86,6 +87,16 @@ function scoreBandLabel(score: number): string {
   if (score <= 70) return 'poor';
   if (score <= 85) return 'fair';
   return 'good';
+}
+
+// The factor most responsible for dragging the score down — the first driver
+// (already ordered by lost points) or, when no drivers exist, the first top
+// issue. Used by the "At risk" explainer tooltip.
+function topDragLabel(snapshot: ReliabilitySnapshot): string | null {
+  const driver = (snapshot.drivers ?? [])[0];
+  if (driver) return driver.label;
+  const issue = snapshot.topIssues[0];
+  return issue ? issueLabels[issue.type] : null;
 }
 
 function buildReliabilitySeedPrompt(snapshot: ReliabilitySnapshot, drivers: ReliabilityDriver[]): string {
@@ -270,15 +281,29 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
             <h3 className="text-base font-semibold">Reliability</h3>
             {snapshot.reliabilityScore <= 70 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                At risk
+              <span className="inline-flex items-center gap-1" data-testid="reliability-atrisk-help">
+                <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  At risk
+                </span>
+                <HelpTooltip
+                  text={
+                    topDragLabel(snapshot)
+                      ? `Shown when the reliability score is ≤ 70. Biggest drag: ${topDragLabel(snapshot)}.`
+                      : 'Shown when the reliability score is ≤ 70.'
+                  }
+                />
               </span>
             )}
           </div>
           <div className="mt-3 flex flex-wrap items-end gap-x-5 gap-y-2">
             <div>
-              <div className="text-xs text-muted-foreground">Score</div>
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                Score
+                <HelpTooltip
+                  text={`Reliability score ${snapshot.reliabilityScore}/100 — ${scoreBandLabel(snapshot.reliabilityScore)}. Bands: ≤50 critical, ≤70 poor, ≤85 fair, else good.`}
+                />
+              </div>
               <div className={`text-3xl font-semibold tabular-nums ${scoreClass(snapshot.reliabilityScore)}`}>
                 {snapshot.reliabilityScore}
               </div>
@@ -371,7 +396,14 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                 <p className="truncate text-sm font-medium">{driver.label}</p>
                 <p className="text-xs text-muted-foreground">{driver.weight}% weight</p>
               </div>
-              <span className={`text-sm font-semibold tabular-nums ${scoreClass(driver.score)}`}>{driver.score}</span>
+              <span className="flex items-center gap-1">
+                <span className={`text-sm font-semibold tabular-nums ${scoreClass(driver.score)}`}>
+                  Health {driver.score}/100
+                </span>
+                <HelpTooltip
+                  text={`Factor health 0–100; 100 = no issues detected. Counts to ${driver.weight}% of the overall reliability score. The raw counts are listed below.`}
+                />
+              </span>
             </div>
             <div className="mt-3 space-y-1 text-xs text-muted-foreground">
               {Object.entries(driver.evidence).slice(0, 3).map(([key, value]) => (

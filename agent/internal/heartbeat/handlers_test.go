@@ -206,3 +206,25 @@ func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 		t.Fatalf("displayIndex = %d, want 2", gotDisplayIndex)
 	}
 }
+
+// TestNetworkDiscoveryResultIncludesAdjacencyKey asserts the network_discovery
+// result payload always carries an "adjacency" key (issue #1728, Phase 1).
+// CommandResult marshals the payload map into Stdout as JSON (there is no
+// Result field), so the key presence is asserted via the unmarshalled object.
+func TestNetworkDiscoveryResultIncludesAdjacencyKey(t *testing.T) {
+	cmd := Command{
+		Type:    tools.CmdNetworkDiscovery,
+		Payload: map[string]any{"jobId": "job-1", "subnets": []any{"127.0.0.1/32"}, "methods": []any{"ping"}, "timeout": float64(1)},
+	}
+	res := handleNetworkDiscovery(nil, cmd)
+	if res.Status != "completed" {
+		t.Fatalf("expected completed, got %s (%s)", res.Status, res.Error)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(res.Stdout), &data); err != nil {
+		t.Fatalf("result.Stdout not valid JSON: %v (stdout=%q)", err, res.Stdout)
+	}
+	if _, present := data["adjacency"]; !present {
+		t.Fatalf("expected 'adjacency' key in discovery result payload, got keys: %v", data)
+	}
+}

@@ -118,3 +118,86 @@ describe('SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 });
+
+describe('vulnerability risk-acceptance RBAC', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines vulnerabilities:accept_risk in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some(
+        (p) => p.resource === 'vulnerabilities' && p.action === 'accept_risk',
+      ),
+    ).toBe(true);
+  });
+
+  it('grants vulnerabilities:accept_risk to Org Admin', () => {
+    expect(byName('Org Admin')?.permissions).toContain('vulnerabilities:accept_risk');
+  });
+
+  it('does NOT grant vulnerabilities:accept_risk to Org Technician', () => {
+    expect(byName('Org Technician')?.permissions).not.toContain('vulnerabilities:accept_risk');
+  });
+
+  it('does NOT grant vulnerabilities:accept_risk to Org Viewer', () => {
+    expect(byName('Org Viewer')?.permissions).not.toContain('vulnerabilities:accept_risk');
+  });
+
+  it('seeds an org-scope Security Approver role with minimal perms', () => {
+    const role = byName('Security Approver');
+    expect(role?.scope).toBe('organization');
+    expect(role?.permissions).toEqual(['devices:read', 'vulnerabilities:accept_risk']);
+  });
+
+  it('seeds a partner-scope Partner Security Approver role with minimal perms', () => {
+    const role = byName('Partner Security Approver');
+    expect(role?.scope).toBe('partner');
+    expect(role?.permissions).toEqual([
+      'devices:read',
+      'organizations:read',
+      'vulnerabilities:accept_risk',
+    ]);
+  });
+});
+
+describe('topology:write permission (issue #1728)', () => {
+  it('topology:write is a seeded permission', () => {
+    const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
+    expect(keys).toContain('topology:write');
+  });
+
+  it('topology:read is a seeded permission', () => {
+    const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
+    expect(keys).toContain('topology:read');
+  });
+
+  // SYSTEM_ROLES must grant the SAME topology permissions as the role-grant
+  // migration 2026-06-29-b-topology-write-permission.sql so fresh-seeded and
+  // migrated DBs converge. Reconciled set: read+write to Org Admin / Org
+  // Technician / Partner Admin; read to Org Viewer / Partner Technician.
+  it('Org Admin carries topology read+write', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Org Admin');
+    expect(role?.permissions).toEqual(expect.arrayContaining(['topology:read', 'topology:write']));
+  });
+
+  it('Org Technician carries topology read+write (matches the migration)', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Org Technician');
+    expect(role?.permissions).toEqual(expect.arrayContaining(['topology:read', 'topology:write']));
+  });
+
+  it('Org Viewer carries topology:read only (matches the migration)', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Org Viewer');
+    expect(role?.permissions).toContain('topology:read');
+    expect(role?.permissions).not.toContain('topology:write');
+  });
+
+  it('Partner Technician carries topology:read only (matches the migration)', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Partner Technician');
+    expect(role?.permissions).toContain('topology:read');
+    expect(role?.permissions).not.toContain('topology:write');
+  });
+
+  it('Partner Admin covers topology via the wildcard grant', () => {
+    const role = SYSTEM_ROLES.find((r) => r.name === 'Partner Admin');
+    expect(role?.permissions).toContain('*:*');
+  });
+});

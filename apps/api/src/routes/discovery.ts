@@ -10,6 +10,9 @@ import {
   discoveryJobs,
   discoveredAssets,
   networkTopology,
+  topologyLayout,
+  topologyManualNodes,
+  sites,
   networkMonitors,
   snmpDevices,
   snmpAlertThresholds,
@@ -43,6 +46,14 @@ const requireDiscoveryWrite = requirePermission(
 const requireDiscoveryExecute = requirePermission(
   PERMISSIONS.DEVICES_EXECUTE.resource,
   PERMISSIONS.DEVICES_EXECUTE.action,
+);
+const requireTopologyRead = requirePermission(
+  PERMISSIONS.TOPOLOGY_READ.resource,
+  PERMISSIONS.TOPOLOGY_READ.action,
+);
+const requireTopologyWrite = requirePermission(
+  PERMISSIONS.TOPOLOGY_WRITE.resource,
+  PERMISSIONS.TOPOLOGY_WRITE.action,
 );
 
 // --- Helpers ---
@@ -273,6 +284,45 @@ const linkAssetSchema = z.object({
 
 const topologyQuerySchema = z.object({
   orgId: z.string().guid().optional()
+});
+
+// LOCKED body contract for the drag-to-save layout upsert (#1728). `siteId`
+// scopes the upsert key (rows are unique per site_id/node_type/node_id) and is
+// validated against the caller's site access; `orgId` is server-derived via
+// resolveOrgId. Each accepted position becomes an upsert with pinned=true.
+const layoutPatchSchema = z.object({
+  siteId: z.string().guid(),
+  orgId: z.string().guid().optional(),
+  positions: z.array(z.object({
+    nodeType: z.enum(['discovered_asset', 'manual_node']),
+    nodeId: z.string().guid(),
+    x: z.number().finite(),
+    y: z.number().finite(),
+  })).min(1).max(2000),
+});
+
+// Manual topology placeholder node (#1728 phase 4). `orgId` is server-derived via
+// resolveOrgId; `siteId` is validated against the resolved org + caller site access.
+const manualNodeRoleSchema = z.enum(['switch', 'router', 'ap', 'firewall', 'patch_panel', 'other']);
+const createManualNodeSchema = z.object({
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid(),
+  label: z.string().trim().min(1).max(255),
+  role: manualNodeRoleSchema,
+  notes: z.string().trim().max(2000).optional(),
+});
+
+// Manual topology edge (#1728 phase 4). Each endpoint is an asset/manual-node in
+// the resolved (org, site); `orgId` is server-derived via resolveOrgId.
+const manualEdgeEndpointSchema = z.object({
+  type: z.enum(['discovered_asset', 'manual_node']),
+  id: z.string().guid(),
+});
+const createManualEdgeSchema = z.object({
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid(),
+  source: manualEdgeEndpointSchema,
+  target: manualEdgeEndpointSchema,
 });
 
 const bulkApproveSchema = z.object({
@@ -916,6 +966,104 @@ discoveryRoutes.get(
   }
 );
 
+// GET /assets/:id — single discovered asset detail (topology node click + the
+// `?asset=` deep link both fetch by id). Mirrors the list serialization for one
+// row, scoped by resolveOrgIdForAsset so partner/system callers resolve the org
+// from the asset when no orgId is supplied. The sibling bulk routes are POST, so
+// this GET never shadows them. (#1728)
+discoveryRoutes.get(
+  '/assets/:id',
+  requireScope('organization', 'partner', 'system'),
+  requireDiscoveryRead,
+  zValidator('query', z.object({ orgId: z.string().guid().optional() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const assetId = c.req.param('id')!;
+    const { orgId: requestedOrgId } = c.req.valid('query');
+
+    const orgResult = await resolveOrgIdForAsset(auth, assetId, requestedOrgId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [row] = await db
+      .select({
+        asset: discoveredAssets,
+        snmpMonitoringEnabled: sql<boolean>`exists (
+          select 1
+          from ${snmpDevices}
+          where ${snmpDevices.assetId} = ${discoveredAssets.id}
+            and ${snmpDevices.orgId} = ${discoveredAssets.orgId}
+            and ${snmpDevices.isActive} = true
+        )`,
+        networkMonitoringEnabled: sql<boolean>`exists (
+          select 1
+          from ${networkMonitors}
+          where ${networkMonitors.assetId} = ${discoveredAssets.id}
+            and ${networkMonitors.orgId} = ${discoveredAssets.orgId}
+            and ${networkMonitors.isActive} = true
+        )`,
+        linkedDeviceHostname: devices.hostname,
+        linkedDeviceDisplayName: devices.displayName,
+        profileId: discoveryProfiles.id,
+        profileName: discoveryProfiles.name,
+        profileSubnets: discoveryProfiles.subnets
+      })
+      .from(discoveredAssets)
+      .leftJoin(devices, eq(discoveredAssets.linkedDeviceId, devices.id))
+      .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
+      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!row) return c.json({ error: 'Asset not found' }, 404);
+
+    // Site-scope is an app-layer-only authz axis; RLS does not defend it.
+    if (perms?.allowedSiteIds && typeof row.asset.siteId === 'string' && !canAccessSite(perms, row.asset.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const a = row.asset;
+    return c.json({
+      data: {
+        id: a.id,
+        orgId: a.orgId,
+        siteId: a.siteId,
+        assetType: a.assetType,
+        approvalStatus: a.approvalStatus,
+        isOnline: a.isOnline,
+        hostname: a.hostname,
+        label: a.label,
+        ipAddress: a.ipAddress,
+        macAddress: a.macAddress,
+        manufacturer: a.manufacturer,
+        model: a.model,
+        openPorts: a.openPorts,
+        osFingerprint: a.osFingerprint,
+        snmpData: a.snmpData,
+        responseTimeMs: a.responseTimeMs,
+        linkedDeviceId: a.linkedDeviceId,
+        linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
+        snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
+        networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
+        monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
+        discoveryMethods: a.discoveryMethods,
+        profileId: row.profileId ?? null,
+        profileName: row.profileName ?? null,
+        profileSubnets: row.profileSubnets ?? null,
+        notes: a.notes,
+        tags: a.tags,
+        firstSeenAt: a.firstSeenAt.toISOString(),
+        lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
+        createdAt: a.createdAt.toISOString(),
+        updatedAt: a.updatedAt.toISOString()
+      }
+    });
+  }
+);
+
 // POST /assets/bulk-approve — MUST be before /assets/:id routes
 discoveryRoutes.post(
   '/assets/bulk-approve',
@@ -1207,6 +1355,14 @@ discoveryRoutes.delete(
         .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, existing.orgId)));
       await tx.delete(networkMonitors)
         .where(and(eq(networkMonitors.assetId, assetId), eq(networkMonitors.orgId, existing.orgId)));
+      // Remove any saved topology layout positions for this asset (#1728).
+      await tx.delete(topologyLayout).where(
+        and(
+          eq(topologyLayout.orgId, existing.orgId),
+          eq(topologyLayout.nodeType, 'discovered_asset'),
+          eq(topologyLayout.nodeId, assetId),
+        ),
+      );
       await tx.delete(discoveredAssets).where(eq(discoveredAssets.id, assetId));
     });
 
@@ -1229,7 +1385,7 @@ discoveryRoutes.delete(
 discoveryRoutes.get(
   '/topology',
   requireScope('organization', 'partner', 'system'),
-  requireDiscoveryRead,
+  requireTopologyRead,
   zValidator('query', topologyQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1260,19 +1416,53 @@ discoveryRoutes.get(
       )
     );
 
-    const nodes = assets.map((a) => ({
-      id: a.id,
-      type: a.assetType,
-      label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
-      status: a.isOnline ? 'online' : 'offline',
-      approvalStatus: a.approvalStatus,
-      ipAddress: a.ipAddress,
-      macAddress: a.macAddress
-    }));
+    // Saved Cytoscape node positions (#1728). Org-scoped, mirroring the edges query.
+    const layoutRows = orgResult.orgId
+      ? await db.select().from(topologyLayout).where(eq(topologyLayout.orgId, orgResult.orgId))
+      : await db.select().from(topologyLayout);
+
+    // Hand-mapped placeholder nodes (#1728 phase 4). Org-scoped like the rest;
+    // never touched by scan reconciliation. Surfaced alongside discovered nodes.
+    const manualNodes = orgResult.orgId
+      ? await db
+          .select()
+          .from(topologyManualNodes)
+          .where(eq(topologyManualNodes.orgId, orgResult.orgId))
+      : await db.select().from(topologyManualNodes);
+
+    const nodes = [
+      ...assets.map((a) => ({
+        id: a.id,
+        type: a.assetType,
+        label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
+        status: a.isOnline ? 'online' : 'offline',
+        approvalStatus: a.approvalStatus,
+        ipAddress: a.ipAddress,
+        macAddress: a.macAddress,
+        // Each node carries its own siteId so the client can scope the
+        // layout PATCH per (site_id, node_type, node_id) (#1728).
+        siteId: a.siteId,
+        kind: 'discovered' as const,
+      })),
+      ...manualNodes.map((m) => ({
+        id: m.id,
+        type: m.role,
+        label: m.label,
+        siteId: m.siteId,
+        kind: 'manual' as const,
+      })),
+    ];
 
     return c.json({
       nodes,
       subnets,
+      layout: layoutRows.map((l) => ({
+        nodeType: l.nodeType as 'discovered_asset' | 'manual_node',
+        nodeId: l.nodeId,
+        x: l.x,
+        y: l.y,
+        pinned: l.pinned,
+      })),
       edges: edges.map((e) => ({
         id: e.id,
         source: e.sourceId,
@@ -1283,11 +1473,388 @@ discoveryRoutes.get(
         bandwidth: e.bandwidth,
         latency: e.latency,
         observedAt: e.lastVerifiedAt?.toISOString() ?? null,
+        method: e.method ?? null,
+        confidence: e.confidence ?? null,
+        interfaceName: e.interfaceName ?? null,
+        vlan: e.vlan ?? null,
+        createdBy: e.createdBy ?? null,
         inferred:
           e.sourceType === 'discovered_asset' &&
           e.targetType === 'discovered_asset' &&
           (e.connectionType === 'ethernet' || e.connectionType === 'routed')
       }))
     });
+  }
+);
+
+// PATCH /discovery/topology/layout — batch upsert saved node positions
+// (drag-to-save, #1728). Runs on the request `db` so writes are RLS-scoped to the
+// caller (org/site server-derived); never a bare/system pool (silent 0-row class).
+discoveryRoutes.patch(
+  '/topology/layout',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  zValidator('json', layoutPatchSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    // fetchWithAuth auto-injects orgId as a query param; accept it as a fallback so
+    // partner users spanning multiple orgs don't hit "orgId is required" on
+    // drag-to-save (the body carries no orgId).
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    // The site axis is app-layer only (RLS scopes by org, not site), so without
+    // this check a partner caller could persist layout rows against another org's
+    // site — a silent cross-tenant 0-row "success" under the wrong key. Confirm
+    // the site belongs to the resolved org before touching topology_layout.
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.id, body.siteId), eq(sites.orgId, orgResult.orgId!)))
+      .limit(1);
+    if (!site) return c.json({ error: 'Site not found' }, 404);
+
+    if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    let upserted = 0;
+    await db.transaction(async (tx) => {
+      for (const p of body.positions) {
+        // Upsert keyed on (site_id, node_type, node_id) — onConflictDoUpdate
+        // resolves the unique-key collision in-statement so a re-save is a clean
+        // update, never a duplicate-key 500.
+        await tx
+          .insert(topologyLayout)
+          .values({
+            orgId: orgResult.orgId!,
+            siteId: body.siteId,
+            nodeType: p.nodeType,
+            nodeId: p.nodeId,
+            x: p.x,
+            y: p.y,
+            pinned: true,
+            updatedBy: auth.user?.id ?? null,
+          })
+          .onConflictDoUpdate({
+            target: [topologyLayout.siteId, topologyLayout.nodeType, topologyLayout.nodeId],
+            set: { x: p.x, y: p.y, pinned: true, updatedBy: auth.user?.id ?? null, updatedAt: new Date() },
+          });
+        upserted += 1;
+      }
+    });
+
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId ?? undefined,
+      action: 'discovery.topology.layout.upsert',
+      resourceType: 'topology_layout',
+      resourceId: body.siteId,
+      details: { siteId: body.siteId, count: upserted },
+    });
+
+    return c.json({ upserted });
+  }
+);
+
+// POST /discovery/topology/manual-node — create a hand-mapped placeholder node
+// (#1728 phase 4). Runs on the request `db` so the INSERT is RLS-scoped to the
+// caller (org/site server-derived); never a bare/system pool (silent 0-row class).
+discoveryRoutes.post(
+  '/topology/manual-node',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  zValidator('json', createManualNodeSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    // Site must belong to the resolved org (RLS doesn't defend the site axis).
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.id, body.siteId), eq(sites.orgId, orgResult.orgId!)))
+      .limit(1);
+    if (!site) return c.json({ error: 'Site not found' }, 404);
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const [node] = await db
+      .insert(topologyManualNodes)
+      .values({
+        orgId: orgResult.orgId!,
+        siteId: body.siteId,
+        label: body.label,
+        role: body.role,
+        notes: body.notes ?? null,
+        createdBy: auth.user?.id ?? null,
+      })
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId ?? undefined,
+      action: 'discovery.topology.manual_node.create',
+      resourceType: 'topology_manual_node',
+      resourceId: node?.id,
+      resourceName: node?.label,
+    });
+
+    return c.json(node, 201);
+  }
+);
+
+// Resolve a manual-edge endpoint to confirm it is an asset/manual-node in (org, site).
+// The site axis is app-layer only (RLS does not defend it), so each endpoint is
+// pinned to both the resolved org and the request site.
+async function manualEdgeEndpointExists(
+  endpoint: { type: 'discovered_asset' | 'manual_node'; id: string },
+  orgId: string,
+  siteId: string,
+): Promise<boolean> {
+  if (endpoint.type === 'discovered_asset') {
+    const [r] = await db
+      .select({ id: discoveredAssets.id })
+      .from(discoveredAssets)
+      .where(
+        and(
+          eq(discoveredAssets.id, endpoint.id),
+          eq(discoveredAssets.orgId, orgId),
+          eq(discoveredAssets.siteId, siteId),
+        ),
+      )
+      .limit(1);
+    return !!r;
+  }
+  const [r] = await db
+    .select({ id: topologyManualNodes.id })
+    .from(topologyManualNodes)
+    .where(
+      and(
+        eq(topologyManualNodes.id, endpoint.id),
+        eq(topologyManualNodes.orgId, orgId),
+        eq(topologyManualNodes.siteId, siteId),
+      ),
+    )
+    .limit(1);
+  return !!r;
+}
+
+// POST /discovery/topology/manual-edge — draw a hand-asserted edge between two
+// endpoints (#1728 phase 4). Manual edges live in network_topology with
+// method='manual'/confidence='asserted'; they are scan-immune (reconcile filters
+// the measured method set) and the provenance unique index keeps a manual + a
+// measured edge distinct on the same pair. Runs on the request `db` (RLS-scoped).
+discoveryRoutes.post(
+  '/topology/manual-edge',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  zValidator('json', createManualEdgeSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'), true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    if (body.source.type === body.target.type && body.source.id === body.target.id) {
+      return c.json({ error: 'An edge cannot connect a node to itself' }, 400);
+    }
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const [srcOk, tgtOk] = await Promise.all([
+      manualEdgeEndpointExists(body.source, orgResult.orgId!, body.siteId),
+      manualEdgeEndpointExists(body.target, orgResult.orgId!, body.siteId),
+    ]);
+    if (!srcOk || !tgtOk) {
+      return c.json({ error: 'Edge endpoint not found in this site' }, 404);
+    }
+
+    // Pre-check the provenance unique key (org, site, src, tgt, method='manual').
+    // A raw duplicate insert would trip the unique index 23505 — but the whole
+    // request runs inside a single withDbAccessContext transaction, so an
+    // in-statement error poisons that transaction and the COMMIT then 500s.
+    // Checking first keeps the transaction clean and lets us return a 409.
+    const [dupe] = await db
+      .select({ id: networkTopology.id })
+      .from(networkTopology)
+      .where(
+        and(
+          eq(networkTopology.orgId, orgResult.orgId!),
+          eq(networkTopology.siteId, body.siteId),
+          eq(networkTopology.sourceType, body.source.type),
+          eq(networkTopology.sourceId, body.source.id),
+          eq(networkTopology.targetType, body.target.type),
+          eq(networkTopology.targetId, body.target.id),
+          eq(networkTopology.method, 'manual'),
+        ),
+      )
+      .limit(1);
+    if (dupe) {
+      return c.json({ error: 'A manual edge already connects these two nodes' }, 409);
+    }
+
+    const [edge] = await db
+      .insert(networkTopology)
+      .values({
+        orgId: orgResult.orgId!,
+        siteId: body.siteId,
+        sourceType: body.source.type,
+        sourceId: body.source.id,
+        targetType: body.target.type,
+        targetId: body.target.id,
+        connectionType: 'manual',
+        method: 'manual',
+        confidence: 'asserted',
+        createdBy: auth.user?.id ?? null,
+      })
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId ?? undefined,
+      action: 'discovery.topology.manual_edge.create',
+      resourceType: 'topology_manual_edge',
+      resourceId: edge?.id,
+    });
+
+    return c.json(edge, 201);
+  }
+);
+
+// DELETE /discovery/topology/manual-edge/:id — remove a hand-asserted edge
+// (#1728 phase 4). Only deletes rows with method='manual'; measured edges are
+// scan-owned and read-only. Runs on the request `db` (RLS-scoped); 404 when no
+// manual edge with that id is visible.
+discoveryRoutes.delete(
+  '/topology/manual-edge/:id',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id')!;
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conds = [eq(networkTopology.id, id), eq(networkTopology.method, 'manual')];
+    if (orgResult.orgId) conds.push(eq(networkTopology.orgId, orgResult.orgId));
+
+    const [existing] = await db
+      .select({
+        id: networkTopology.id,
+        orgId: networkTopology.orgId,
+        siteId: networkTopology.siteId,
+      })
+      .from(networkTopology)
+      .where(and(...conds))
+      .limit(1);
+    if (!existing) return c.json({ error: 'Manual edge not found' }, 404);
+
+    // Site axis is app-layer only (RLS scopes by org, not site). Without this a
+    // site-restricted caller could delete a manual edge in a site they cannot
+    // access — a cross-site IDOR. Mirror the create-route site gate. 404 (not
+    // 403) so an out-of-scope id is indistinguishable from a non-existent one.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, existing.siteId)) {
+      return c.json({ error: 'Manual edge not found' }, 404);
+    }
+
+    await db.delete(networkTopology).where(eq(networkTopology.id, existing.id));
+
+    writeRouteAudit(c, {
+      orgId: existing.orgId ?? undefined,
+      action: 'discovery.topology.manual_edge.delete',
+      resourceType: 'topology_manual_edge',
+      resourceId: existing.id,
+    });
+
+    return c.json({ success: true });
+  }
+);
+
+// DELETE /discovery/topology/manual-node/:id — remove a hand-mapped placeholder
+// node and everything it owns (#1728 phase 4). In ONE transaction: delete its
+// method='manual' edges in network_topology where it is the source OR the target,
+// delete its topology_layout row, then delete the node. Measured edges never
+// reference a manual_node, so they are untouched. Runs on the request `db`
+// (RLS-scoped); 404 when the node is not visible to the caller.
+discoveryRoutes.delete(
+  '/topology/manual-node/:id',
+  requireScope('organization', 'partner', 'system'),
+  requireTopologyWrite,
+  async (c) => {
+    const auth = c.get('auth');
+    const id = c.req.param('id')!;
+    const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conds = [eq(topologyManualNodes.id, id)];
+    if (orgResult.orgId) conds.push(eq(topologyManualNodes.orgId, orgResult.orgId));
+
+    const [node] = await db
+      .select({
+        id: topologyManualNodes.id,
+        orgId: topologyManualNodes.orgId,
+        siteId: topologyManualNodes.siteId,
+        label: topologyManualNodes.label,
+      })
+      .from(topologyManualNodes)
+      .where(and(...conds))
+      .limit(1);
+    if (!node) return c.json({ error: 'Manual node not found' }, 404);
+
+    // Site axis is app-layer only (RLS scopes by org, not site). Without this a
+    // site-restricted caller could delete a manual node (and cascade its edges)
+    // in a site they cannot access — a cross-site IDOR. Mirror the create-route
+    // site gate. 404 (not 403) so an out-of-scope id reads as non-existent.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && !canAccessSite(perms, node.siteId)) {
+      return c.json({ error: 'Manual node not found' }, 404);
+    }
+
+    await db.transaction(async (tx) => {
+      // Manual edges that reference this placeholder as source. Only method='manual'
+      // rows are removed — measured edges never carry a manual_node endpoint.
+      await tx.delete(networkTopology).where(
+        and(
+          eq(networkTopology.method, 'manual'),
+          eq(networkTopology.sourceType, 'manual_node'),
+          eq(networkTopology.sourceId, node.id),
+        ),
+      );
+      // ...and as target.
+      await tx.delete(networkTopology).where(
+        and(
+          eq(networkTopology.method, 'manual'),
+          eq(networkTopology.targetType, 'manual_node'),
+          eq(networkTopology.targetId, node.id),
+        ),
+      );
+      // Its saved Cytoscape position.
+      await tx.delete(topologyLayout).where(
+        and(
+          eq(topologyLayout.nodeType, 'manual_node'),
+          eq(topologyLayout.nodeId, node.id),
+        ),
+      );
+      await tx.delete(topologyManualNodes).where(eq(topologyManualNodes.id, node.id));
+    });
+
+    writeRouteAudit(c, {
+      orgId: node.orgId ?? undefined,
+      action: 'discovery.topology.manual_node.delete',
+      resourceType: 'topology_manual_node',
+      resourceId: node.id,
+      resourceName: node.label,
+    });
+
+    return c.json({ success: true });
   }
 );

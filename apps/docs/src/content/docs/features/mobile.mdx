@@ -144,6 +144,8 @@ The Settings screen in the app also provides local toggles for "Push Notificatio
 
 The mobile app acts as a **trusted-device approval surface** for sensitive actions. When an AI assistant or an MCP client (for example, Claude Desktop) requests a high-risk operation, Breeze can require an out-of-band approval from the user's phone before the action proceeds — a second factor for sensitive automation, similar in spirit to a push-based authenticator app.
 
+The same approval surface also receives **Windows UAC elevation requests** from [Privileged Access Management](/features/pam/): when a managed device intercepts a UAC prompt that needs a human decision, the request is pushed to the phones of every technician eligible to approve it. The first technician to approve or deny on mobile decides it, and the request clears from the other approvers' inboxes.
+
 ### Risk Tiers and Statuses
 
 Every approval request carries a **risk tier** that reflects how sensitive the requested action is:
@@ -169,7 +171,7 @@ A request moves through one of the following **statuses**:
 
 <Steps>
 
-1. A client (AI assistant, MCP client, or the Breeze helper) initiates an action that requires approval. Breeze creates a pending approval request and pushes a notification to the user's trusted devices.
+1. A client — an AI assistant, MCP client, the Breeze Helper, or the Breeze agent intercepting a Windows UAC prompt — initiates an action that requires approval. Breeze creates a pending approval request and pushes a notification to the user's trusted devices. (For a UAC elevation, the request shows the agent as the requesting client and the device hostname as the requesting machine.)
 
 2. The user opens the notification. The approval screen shows the requesting client, the requesting machine (when known), a plain-language description of the action, and the risk tier.
 

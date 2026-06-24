@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
+import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
 import { getBinarySource, getGithubViewerUrl, VIEWER_FILENAMES } from '../../services/binarySource';
 
 export const viewerDownloadRoutes = new Hono();
@@ -35,10 +35,14 @@ viewerDownloadRoutes.get('/download/:platform', async (c) => {
       const url = await getPresignedUrl(s3Key);
       return c.redirect(url, 302);
     } catch (err) {
-      const errName = (err as { name?: string }).name;
-      const isNotFound = errName === 'NotFound' || errName === 'NoSuchKey';
-      const level = isNotFound ? 'warn' : 'error';
-      console[level](`[viewer-download] S3 presign failed for ${filename}, falling back to disk:`, err);
+      if (!isS3NotFound(err)) {
+        // Real S3 transport/auth fault — surface it instead of masking it as a
+        // disk-fallback 404. The viewer may well exist in S3; we just couldn't
+        // reach it (#1808).
+        console.error(`[viewer-download] S3 presign failed for ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to retrieve viewer file' }, 500);
+      }
+      console.warn(`[viewer-download] S3 object missing for ${filename}, falling back to disk:`, err);
     }
   }
 

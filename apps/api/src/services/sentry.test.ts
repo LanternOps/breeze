@@ -8,6 +8,8 @@ const initMock = vi.fn();
 const captureMock = vi.fn();
 const flushMock = vi.fn().mockResolvedValue(true);
 const setTagMock = vi.fn();
+const setUserMock = vi.fn();
+const moduleSetTagMock = vi.fn();
 const withScopeMock = vi.fn((cb: (scope: unknown) => void) =>
   cb({ setTag: setTagMock, setContext: vi.fn() }),
 );
@@ -17,6 +19,8 @@ vi.mock('@sentry/node', () => ({
   captureException: (...args: unknown[]) => captureMock(...args),
   flush: (...args: unknown[]) => flushMock(...args),
   withScope: (cb: (scope: unknown) => void) => withScopeMock(cb),
+  setUser: (...args: unknown[]) => setUserMock(...args),
+  setTag: (...args: unknown[]) => moduleSetTagMock(...args),
 }));
 
 const ORIGINAL_ENV = { ...process.env };
@@ -130,6 +134,82 @@ describe('sentry service', () => {
     expect(setTagMock).not.toHaveBeenCalledWith('pg_code', expect.anything());
     expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', expect.anything());
     expect(captureMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setSentryRequestContext', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    setUserMock.mockClear();
+    moduleSetTagMock.mockClear();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('is a no-op when Sentry is not initialized', async () => {
+    // Ensure no DSN so initSentry does NOT mark initialized.
+    delete process.env.SENTRY_DSN;
+    const { setSentryRequestContext } = await import('./sentry');
+    setSentryRequestContext({ userId: 'u-1', scope: 'organization', orgId: 'o-1', partnerId: 'p-1' });
+    expect(setUserMock).not.toHaveBeenCalled();
+    expect(moduleSetTagMock).not.toHaveBeenCalled();
+  });
+
+  it('sets user id + tenant tags when initialized', async () => {
+    process.env.SENTRY_DSN = 'https://example@o0.ingest.sentry.io/0';
+    const { initSentry, setSentryRequestContext } = await import('./sentry');
+    initSentry();
+    setSentryRequestContext({ userId: 'u-1', scope: 'organization', orgId: 'o-1', partnerId: 'p-1' });
+    expect(setUserMock).toHaveBeenCalledWith({ id: 'u-1' });
+    expect(moduleSetTagMock).toHaveBeenCalledWith('scope', 'organization');
+    expect(moduleSetTagMock).toHaveBeenCalledWith('orgId', 'o-1');
+    expect(moduleSetTagMock).toHaveBeenCalledWith('partnerId', 'p-1');
+  });
+
+  it('maps null orgId and partnerId to "none"', async () => {
+    process.env.SENTRY_DSN = 'https://example@o0.ingest.sentry.io/0';
+    const { initSentry, setSentryRequestContext } = await import('./sentry');
+    initSentry();
+    setSentryRequestContext({ userId: 'u-2', scope: 'system', orgId: null, partnerId: null });
+    expect(moduleSetTagMock).toHaveBeenCalledWith('orgId', 'none');
+    expect(moduleSetTagMock).toHaveBeenCalledWith('partnerId', 'none');
+  });
+});
+
+describe('scrubEvent', () => {
+  it('redacts authorization and cookie headers', async () => {
+    const { scrubEvent } = await import('./sentry');
+    const out = scrubEvent({
+      request: { headers: { authorization: 'Bearer brz_secret', cookie: 'session=abc', 'user-agent': 'x' } },
+    } as any);
+    expect(out.request.headers.authorization).toBe('[redacted]');
+    expect(out.request.headers.cookie).toBe('[redacted]');
+    expect(out.request.headers['user-agent']).toBe('x');
+  });
+
+  it('redacts password and mfaSecret in extra', async () => {
+    const { scrubEvent } = await import('./sentry');
+    const out = scrubEvent({ extra: { password: 'p', mfaSecret: 's', orgId: 'o-1' } } as any);
+    expect(out.extra.password).toBe('[redacted]');
+    expect(out.extra.mfaSecret).toBe('[redacted]');
+    expect(out.extra.orgId).toBe('o-1');
+  });
+
+  it('redacts extra values starting with brz_', async () => {
+    const { scrubEvent } = await import('./sentry');
+    const out = scrubEvent({ extra: { apiKey: 'brz_abc123', orgId: 'o-1' } } as any);
+    expect(out.extra.apiKey).toBe('[redacted]');
+    expect(out.extra.orgId).toBe('o-1');
+  });
+
+  it('does not throw on events missing request/headers/extra', async () => {
+    const { scrubEvent } = await import('./sentry');
+    expect(() => scrubEvent({} as any)).not.toThrow();
+    expect(() => scrubEvent({ request: {} } as any)).not.toThrow();
+    expect(() => scrubEvent({ request: { headers: {} } } as any)).not.toThrow();
   });
 });
 

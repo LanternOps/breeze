@@ -20,6 +20,7 @@ vi.mock('./GoogleWorkspaceIntegration', () => ({ default: () => <div data-testid
 vi.mock('./M365Integration', () => ({ default: () => <div data-testid="stub-m365" /> }));
 vi.mock('./Pax8Integration', () => ({ default: () => <div data-testid="stub-pax8" /> }));
 vi.mock('../settings/TdSynnexCatalogPanel', () => ({ default: () => <div data-testid="stub-tdsynnex" /> }));
+vi.mock('../settings/TdSynnexEcExpressPanel', () => ({ default: () => <div data-testid="stub-tdsynnex-ec" /> }));
 
 import IntegrationsPage from './IntegrationsPage';
 
@@ -33,16 +34,21 @@ describe('IntegrationsPage — Distributors tab', () => {
     expect(screen.getByRole('button', { name: /Distributors/i })).toBeTruthy();
   });
 
-  it('renders Pax8 by default and TD SYNNEX when the sub-tab is selected (partner scope)', () => {
+  it('renders Pax8 by default and TD SYNNEX Pricing when the sub-tab is selected (partner scope)', () => {
     render(<IntegrationsPage />);
     fireEvent.click(screen.getByRole('button', { name: /Distributors/i }));
 
     // pax8 is the default sub-tab
     expect(screen.getByTestId('stub-pax8')).toBeTruthy();
+    expect(screen.queryByTestId('stub-tdsynnex-ec')).toBeNull();
+
+    // The legacy Digital Bridge "TD SYNNEX" tab is hidden; EC Express
+    // "TD SYNNEX Pricing" is the surfaced TD SYNNEX connector.
+    expect(screen.queryByRole('button', { name: 'TD SYNNEX' })).toBeNull();
     expect(screen.queryByTestId('stub-tdsynnex')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'TD SYNNEX' }));
-    expect(screen.getByTestId('stub-tdsynnex')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'TD SYNNEX Pricing' }));
+    expect(screen.getByTestId('stub-tdsynnex-ec')).toBeTruthy();
     expect(screen.queryByTestId('stub-pax8')).toBeNull();
   });
 

@@ -402,6 +402,15 @@ const envSchema = z
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
 
+    // Controlled agent-fleet rollout (decouple registration from promotion).
+    // When false, binarySync registers new binaries WITHOUT touching
+    // agent_versions.isLatest — the fleet upgrade target only changes via
+    // POST /agent-versions/promote. Defaults TRUE (preserve current behavior:
+    // sync = instant fleet upgrade target). Read at runtime by
+    // getAgentAutoPromote(); validated here only for boolean format so a typo
+    // is caught at boot instead of silently parsing to a surprising default.
+    AGENT_AUTO_PROMOTE: z.string().optional(),
+
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
     // self-hosted operator may deliberately run 2FA-off).
@@ -444,6 +453,14 @@ const envSchema = z
     // (legacy) inbound webhook signature check.
     STRIPE_SECRET_KEY: z.string().optional(),
     STRIPE_WEBHOOK_SECRET: z.string().optional(),
+
+    // QuickBooks Online accounting connection foundation. These are optional
+    // at boot because Phase A validates them lazily when a partner starts the
+    // OAuth connect flow; missing values should not disable unrelated API use.
+    QBO_CLIENT_ID: z.string().optional(),
+    QBO_CLIENT_SECRET: z.string().optional(),
+    QBO_REDIRECT_URI: z.string().optional(),
+    QBO_ENVIRONMENT: z.string().optional(),
 
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),
@@ -1102,6 +1119,23 @@ const envSchema = z
           });
         }
       }
+    }
+
+    // AGENT_AUTO_PROMOTE (controlled fleet rollout). Independent of NODE_ENV —
+    // the value silently governs whether a sync promotes the fleet, so a typo
+    // (e.g. AGENT_AUTO_PROMOTE=falze, which parses as truthy → still
+    // auto-promotes) must be caught at boot rather than surprising an operator
+    // who believed they had disabled auto-promotion. Empty/unset is allowed
+    // (defaults to true). Mirrors getAgentAutoPromote() in binarySource.ts.
+    const autoPromoteRaw = (data.AGENT_AUTO_PROMOTE ?? '').trim().toLowerCase();
+    const boolValues = new Set(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']);
+    if (autoPromoteRaw && !boolValues.has(autoPromoteRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AGENT_AUTO_PROMOTE'],
+        message:
+          'AGENT_AUTO_PROMOTE must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (sync immediately becomes the fleet upgrade target). Set false to require explicit promotion via POST /agent-versions/promote.',
+      });
     }
   });
 

@@ -203,17 +203,17 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       const right = doc.page.width - doc.page.margins.right;
       const contentWidth = right - left;
 
-      // Header: partner name + INVOICE title.
-      doc.fillColor(primary).fontSize(20).font('Helvetica-Bold').text(branding.partnerName, left, 50, { width: contentWidth * 0.6 });
-      doc.fillColor('#111827').fontSize(18).font('Helvetica-Bold').text('INVOICE', left, 52, { width: contentWidth, align: 'right' });
-      doc.fillColor('#6b7280').fontSize(10).font('Helvetica').text(invoice.invoiceNumber ?? 'DRAFT', left, 74, { width: contentWidth, align: 'right' });
-      doc.moveTo(left, 96).lineTo(right, 96).lineWidth(2).strokeColor(primary).stroke();
+      // Header: partner wordmark (left) + accent INVOICE eyebrow + number (right).
+      doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(branding.partnerName, left, 50, { width: contentWidth * 0.55 });
+      doc.fillColor(primary).fontSize(10).font('Helvetica-Bold').text('INVOICE', left, 52, { width: contentWidth, align: 'right', characterSpacing: 1.5 });
+      doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(invoice.invoiceNumber ?? 'Draft', left, 66, { width: contentWidth, align: 'right' });
+      doc.moveTo(left, 100).lineTo(right, 100).lineWidth(2).strokeColor(primary).stroke();
 
       // From (seller) — left column; Bill To — right column; dates under Bill To.
       const seller = (invoice.sellerSnapshot as SellerSnapshot | null) ?? null;
       const rightX = left + contentWidth * 0.55;
       const rightW = contentWidth * 0.45;
-      let y = 112;
+      let y = 120;
 
       doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('FROM', left, y);
       doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? branding.partnerName, left, y + 12, { width: contentWidth * 0.5 });
@@ -242,12 +242,14 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       const colDescW = contentWidth * 0.60;
       const colNumW = contentWidth * 0.18;
 
-      doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold');
+      doc.save();
+      doc.rect(left - 6, y - 5, contentWidth + 12, 22).fill('#f8fafc');
+      doc.restore();
+      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
       doc.text('DESCRIPTION', left, y);
       doc.text('QTY', colQtyX, y, { width: colNumW, align: 'right' });
       doc.text('AMOUNT', colAmtX, y, { width: colNumW, align: 'right' });
-      y += 14;
-      doc.moveTo(left, y).lineTo(right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
+      y += 18;
       y += 6;
 
       for (const group of groupVisibleLinesByTicket(lines)) {
@@ -271,18 +273,22 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       y += 8;
       const labelX = colQtyX;
       const labelW = colAmtX - colQtyX - 4;
-      const drawTotal = (label: string, amount: string | number, bold = false) => {
-        doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(bold ? 12 : 10).fillColor(bold ? '#111827' : '#6b7280');
+      const drawTotal = (label: string, amount: string | number, opts: { bold?: boolean; emphasis?: boolean } = {}) => {
+        const { bold = false, emphasis = false } = opts;
+        const strong = bold || emphasis;
+        doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(emphasis ? 14 : strong ? 12 : 10).fillColor(strong ? '#111827' : '#6b7280');
         doc.text(label, labelX, y, { width: labelW, align: 'left' });
-        doc.fillColor(bold ? '#111827' : '#1f2937').text(formatMoney(amount, currency), colAmtX, y, { width: colNumW, align: 'right' });
-        y += bold ? 18 : 14;
+        doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(formatMoney(amount, currency), colAmtX, y, { width: colNumW, align: 'right' });
+        y += emphasis ? 20 : strong ? 18 : 14;
       };
       drawTotal('Subtotal', invoice.subtotal);
       drawTotal(`Tax${invoice.taxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}`, invoice.taxTotal);
-      drawTotal('Total', invoice.total, true);
       if (Number(invoice.amountPaid) > 0) {
+        drawTotal('Total', invoice.total, { bold: true });
         drawTotal('Paid', invoice.amountPaid);
-        drawTotal('Balance due', invoice.balance, true);
+        drawTotal('Balance due', invoice.balance, { emphasis: true });
+      } else {
+        drawTotal('Total', invoice.total, { emphasis: true });
       }
 
       // Notes (memo) + Terms & Conditions + footer/terms.

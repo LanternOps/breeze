@@ -256,7 +256,19 @@ export async function cleanupDatabase() {
     'role_permissions',
     'roles',
     'audit_logs',
-    'users'
+    'users',
+    // BE-16 vulnerability management. The four global tables are not reached by
+    // the `devices` CASCADE, so reset them per-test to avoid cross-run
+    // accumulation. TRUNCATE ... CASCADE on `vulnerabilities` clears its
+    // dependents (software_vulnerabilities, device_vulnerabilities); the rest
+    // are listed explicitly for clarity. (try/catch ignores them on branches
+    // without the migration.)
+    'device_vulnerabilities',
+    'os_vulnerabilities',
+    'software_vulnerabilities',
+    'software_products',
+    'vulnerabilities',
+    'vulnerability_sources'
   ];
 
   for (const table of tables) {

@@ -38,6 +38,15 @@ export function isS3Configured(): boolean {
   return !!(process.env.S3_BUCKET && process.env.S3_ACCESS_KEY && process.env.S3_SECRET_KEY);
 }
 
+// Distinguishes a genuine "object not present" from a transport/auth fault.
+// Only NotFound/NoSuchKey mean the key is absent; anything else (timeouts,
+// AccessDenied, DNS, 5xx) is a real fault that callers must surface instead of
+// masking as a 404 / silent disk fallback (#1807, #1808).
+export function isS3NotFound(err: unknown): boolean {
+  const errName = (err as { name?: string }).name;
+  return errName === 'NotFound' || errName === 'NoSuchKey';
+}
+
 async function computeFileChecksum(filePath: string): Promise<string> {
   const hash = createHash('sha256');
   const stream = createReadStream(filePath);

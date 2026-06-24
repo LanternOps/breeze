@@ -9,35 +9,35 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/0xrawsec/golang-etw/etw"
+	"golang.org/x/sys/windows"
 )
 
-// providerGUID is the Microsoft-Windows-LUA ETW provider. Documented in
-// the Windows SDK (microsoft-windows-lua.manifest) and stable since
-// Windows 7. We pin the literal GUID here rather than name-resolving via
-// TdhEnumerateProviders — the GUID will never change and resolution adds
-// a runtime dependency we don't want.
+// providerGUID is the Microsoft-Windows-LUA ETW provider (lives in
+// appinfo.dll). Stable since Windows 7; we pin the literal GUID rather
+// than name-resolving via TdhEnumerateProviders.
 const providerGUID = "{93c05d69-51a3-485e-877f-1806a8731346}"
 
-// consentEventIDs are the ETW event IDs raised when the consent UI is
-// shown for elevation. Sourced from the Windows-Internals reference for
-// the LUA provider: 4100/4101/4102 cover the "consent prompted" /
-// "consent granted" / "consent denied" tuple. We watch all three so a
-// denied prompt also produces a discovery event (Tracks 4-6 will use
-// the denial signal to drive policy tuning).
-var consentEventIDs = map[uint16]string{
-	4100: "consent_prompted",
-	4101: "consent_granted",
-	4102: "consent_denied",
-}
+// consentRequestEventID is the Microsoft-Windows-LUA event that carries the
+// elevation-request detail (the target executable path + command line) when
+// AppInfo raises a UAC consent. Verified empirically on Windows 11 (build
+// 26200) against a live trace, and via the provider manifest
+// (`wevtutil gp Microsoft-Windows-LUA /ge`): the LUA provider defines events
+// in the 15001-16002 range on the `ConsentUI/Diagnostic` channel. It does
+// NOT define 4100/4101/4102 — the values this code previously watched, which
+// matched nothing, so UAC discovery captured zero events on the entire
+// Windows fleet. Event 15028 is the request detail; 16001 (shown) and 16002
+// (result) bracket it but carry only a correlation id + the exe basename /
+// result code, so 15028 is the one self-contained event with the target.
+const consentRequestEventID uint16 = 15028
 
 // etwSession wraps a golang-etw Consumer for the Microsoft-Windows-LUA
-// provider. The session runs in its own goroutine started by Subscribe;
-// Stop signals the consumer to abort and waits for the goroutine to exit.
+// provider. The session runs in its own goroutine started by run(); Stop
+// signals the consumer to abort and waits for the goroutine to exit.
 type etwSession struct {
 	consumer *etw.Consumer
 	session  *etw.RealTimeSession
@@ -47,11 +47,10 @@ type etwSession struct {
 }
 
 // NewETWSubscriber creates a live subscription to the Microsoft-Windows-LUA
-// provider. Returns ErrNotPrivileged if the caller is not SYSTEM/Admin
-// (the ETW session call would fail with ERROR_ACCESS_DENIED anyway, but
-// we surface the cause clearly).
+// provider. Returns an error if the caller is not SYSTEM/Admin (the ETW
+// session call fails with ERROR_ACCESS_DENIED).
 //
-// The returned Subscriber owns one TraceLogging RealTime session named
+// The returned Subscriber owns one RealTime session named
 // "Breeze-LUA-Discovery". Two callers on the same machine would conflict;
 // we assume only one agent process per host (enforced elsewhere).
 func NewETWSubscriber() (Subscriber, error) {
@@ -66,12 +65,8 @@ func NewETWSubscriber() (Subscriber, error) {
 		return nil, fmt.Errorf("etwlua: enable LUA provider: %w", err)
 	}
 
-	// NewRealTimeConsumer derives its context via context.WithCancel(parent)
-	// and PANICS on a nil parent ("cannot create context from nil parent"),
-	// which crashed the agent on startup on every Windows host running as
-	// SYSTEM. The consumer is explicitly torn down by etwSession.Stop()
-	// (consumer.Stop()), invoked from etwlua.Start's `defer sub.Stop()` on
-	// ctx.Done(), so context.Background() here is sufficient and leak-free.
+	// NewRealTimeConsumer PANICS on a nil parent context; Background() is
+	// torn down via consumer.Stop() in etwSession.Stop().
 	consumer := etw.NewRealTimeConsumer(context.Background()).FromSessions(session)
 
 	s := &etwSession{
@@ -85,38 +80,54 @@ func NewETWSubscriber() (Subscriber, error) {
 	return s, nil
 }
 
-// run pumps events from the consumer's channel through decode() into
-// s.events until Stop closes the consumer. Exits when the consumer's
-// channel is closed.
+// run installs the low-level EventRecordHelper callback and starts the
+// consumer. We use the raw EventRecord path (not the high-level
+// consumer.Events channel) because the target executable path lives in
+// event 15028's UserData blob, which TDH does not surface as a named
+// property — the high-level parser only exposes an opaque "Parameters"
+// field. We read the raw UserData bytes directly and scan them.
 func (s *etwSession) run() {
 	defer close(s.doneCh)
 	defer close(s.events)
+
+	s.consumer.EventRecordHelperCallback = func(h *etw.EventRecordHelper) error {
+		if h.EventID() != consentRequestEventID {
+			h.Skip()
+			return nil
+		}
+		er := h.EventRec
+		n := int(er.UserDataLength)
+		if er.UserData == 0 || n <= 0 {
+			h.Skip()
+			return nil
+		}
+		// UserData is only valid for the lifetime of this callback; decode
+		// copies the strings out before we return, so no use-after-free.
+		raw := unsafe.Slice((*byte)(unsafe.Pointer(er.UserData)), n)
+		ev, ok := decodeConsentRequest(raw)
+		h.Skip()
+		if !ok {
+			return nil
+		}
+		select {
+		case s.events <- ev:
+		default:
+			// Buffer full — drop rather than block the ETW callback.
+			log.Warn("etwlua: event channel full, dropping event",
+				"path", ev.TargetExecutablePath,
+			)
+		}
+		return nil
+	}
 
 	if err := s.consumer.Start(); err != nil {
 		log.Error("etwlua: consumer start failed", "error", err.Error())
 		return
 	}
-
-	for ee := range s.consumer.Events {
-		// Filter by event ID before doing any expensive decode work.
-		if _, ok := consentEventIDs[ee.System.EventID]; !ok {
-			continue
-		}
-		ev, ok := decodeConsentEvent(ee)
-		if !ok {
-			continue
-		}
-		select {
-		case s.events <- ev:
-		default:
-			// Buffer full — drop the event rather than block ETW. ETW
-			// real-time sessions tolerate slow consumers but a blocked
-			// reader will eventually start losing kernel events, which
-			// is worse than losing one user-mode UAC event here.
-			log.Warn("etwlua: event channel full, dropping event",
-				"path", ev.TargetExecutablePath,
-			)
-		}
+	// The callback above does all the work and Skip()s every event, so
+	// nothing is pushed to consumer.Events. Ranging it blocks until Stop
+	// closes the channel, which is how this goroutine exits.
+	for range s.consumer.Events {
 	}
 }
 
@@ -136,86 +147,94 @@ func (s *etwSession) Stop() {
 	})
 }
 
-// decodeConsentEvent extracts the fields we care about from a parsed ETW
-// event. Returns ok=false if required fields are missing — better to drop
-// than emit a half-decoded event.
+// decodeConsentRequest extracts the target executable path + command line
+// from event 15028's raw UserData. The payload is a header (request id,
+// session token, string-offset table) followed by UTF-16LE strings: the
+// full target path (twice) and the quoted command line. Rather than parse
+// the version-specific offset table, we scan the blob for UTF-16 strings
+// and pick the one that looks like a drive-rooted path (target) and the one
+// that starts with a quote (command line). Verified against two live Win11
+// samples (`"C:\…\app.exe" version` and `"C:\Windows\System32\notepad.exe" `).
 //
-// The LUA provider's ConsentUI events expose these properties (names
-// stable across Windows 10/11):
-//
-//	SubjectUserName / SubjectUserSid  — who raised the prompt
-//	ApplicationName                   — target executable path
-//	CommandLine                       — full command line (may be empty)
-//	ProcessId / ParentProcessName     — process metadata
-//
-// We hash the target file at observation time. The hash is best-effort:
-// on a fast machine the file is already paged in, but if it's on a slow
-// mount or has been deleted between the prompt and our read, the hash
-// is empty (server accepts nullable).
-func decodeConsentEvent(ee *etw.Event) (Event, bool) {
-	props := ee.EventData
-	if props == nil {
-		// Some LUA events use UserData instead of EventData.
-		props = ee.UserData
-	}
-	if props == nil {
+// Returns ok=false if no path is found or the requesting user can't be
+// resolved — the server requires a non-empty subject_username, so an event
+// without one would be rejected on POST anyway.
+func decodeConsentRequest(raw []byte) (Event, bool) {
+	targetPath, commandLine := parseConsentPayload(raw)
+	if targetPath == "" {
 		return Event{}, false
 	}
 
-	exePath := stringProp(props, "ApplicationName")
-	user := stringProp(props, "SubjectUserName")
-	if exePath == "" || user == "" {
+	user := resolveConsentUser()
+	if user == "" {
+		// No interactive console user to attribute the prompt to; the server
+		// requires a subject, so drop rather than post a half record.
 		return Event{}, false
 	}
 
 	ev := Event{
 		SubjectUsername:      user,
-		TargetExecutablePath: exePath,
-		CommandLine:          stringProp(props, "CommandLine"),
-		ParentImage:          stringProp(props, "ParentProcessName"),
+		TargetExecutablePath: targetPath,
+		CommandLine:          commandLine,
 		ObservedAt:           time.Now().UTC(),
 	}
-
-	if pidStr := stringProp(props, "ProcessId"); pidStr != "" {
-		var pid uint32
-		if _, err := fmt.Sscanf(pidStr, "%d", &pid); err == nil {
-			ev.PID = pid
-		}
-	}
-
-	if hash, err := hashFile(exePath); err == nil {
+	if hash, err := hashFile(targetPath); err == nil {
 		ev.TargetExecutableHash = hash
 	}
-
-	// Authenticode signer extraction would require WinTrust/CryptoAPI
-	// (golang-x/sys/windows.WinVerifyTrust) — significant code surface
-	// and a tested-on-Windows-only path. Track 3 leaves this empty;
-	// signer is a "best-effort" field and the server schema accepts
-	// NULL. A follow-up PR can wire it in once we have a Windows CI
-	// runner to validate.
-
+	// Authenticode signer extraction is deferred (WinTrust/CryptoAPI) — see
+	// #1776. The server schema accepts a NULL signer.
 	return ev, true
 }
 
-// stringProp pulls a string value from an ETW property bag, tolerating
-// either map[string]any or map[string]string shapes that golang-etw may
-// emit depending on event manifest types.
-func stringProp(props map[string]any, key string) string {
-	v, ok := props[key]
-	if !ok {
-		return ""
+// consentUser caches the active console-session user; resolving it is a
+// syscall we don't want to run per consent event, and the console user
+// rarely changes.
+var (
+	consentUserMu    sync.Mutex
+	consentUserCache string
+	consentUserAt    time.Time
+)
+
+// resolveConsentUser returns the active console session's user as
+// "DOMAIN\\user". A UAC consent prompt is, by construction, raised in the
+// interactive session, so the console user is the requester in the common
+// case. Empty if there is no interactive session or the lookup fails.
+func resolveConsentUser() string {
+	consentUserMu.Lock()
+	defer consentUserMu.Unlock()
+	if consentUserCache != "" && time.Since(consentUserAt) < 60*time.Second {
+		return consentUserCache
 	}
-	switch s := v.(type) {
-	case string:
-		return strings.TrimSpace(s)
-	case fmt.Stringer:
-		return strings.TrimSpace(s.String())
+	if u := lookupConsoleUser(); u != "" {
+		consentUserCache = u
+		consentUserAt = time.Now()
+		return u
 	}
-	return strings.TrimSpace(fmt.Sprintf("%v", v))
+	return ""
 }
 
-// hashFile returns the SHA-256 of the file at path as hex. Returns an
-// error if the file cannot be opened or read.
+func lookupConsoleUser() string {
+	sid := windows.WTSGetActiveConsoleSessionId()
+	if sid == 0xFFFFFFFF { // no active console session
+		return ""
+	}
+	var token windows.Token
+	if err := windows.WTSQueryUserToken(sid, &token); err != nil {
+		return ""
+	}
+	defer token.Close()
+	tokenUser, err := token.GetTokenUser()
+	if err != nil {
+		return ""
+	}
+	account, domain, _, err := tokenUser.User.Sid.LookupAccount("")
+	if err != nil {
+		return ""
+	}
+	return domain + `\` + account
+}
+
+// hashFile returns the SHA-256 of the file at path as hex.
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

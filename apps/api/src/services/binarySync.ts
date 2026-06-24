@@ -7,7 +7,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import { isS3Configured, syncDirectory } from "./s3Storage";
-import { getBinarySource } from "./binarySource";
+import { getBinarySource, getAgentAutoPromote } from "./binarySource";
 import {
   isReleaseArtifactManifestVerificationConfigured,
   verifyReleaseArtifactManifestAsset,
@@ -300,6 +300,15 @@ async function registerLocalBinaries(args: {
 }): Promise<void> {
   const { binaries, component, version, keyId, downloadUrlFor } = args;
 
+  // Controlled fleet rollout (AGENT_AUTO_PROMOTE=false): register the binary
+  // but never promote it to the fleet upgrade target. Skip the demote UPDATE,
+  // insert with isLatest:false, and OMIT isLatest from the conflict `set` so
+  // re-registering an already-promoted version never demotes it. When
+  // auto-promote is on (default) behavior is byte-for-byte unchanged. Mirrors
+  // the GitHub-source path (upsertVersion) so both registration paths behave
+  // identically regardless of component.
+  const autoPromote = getAgentAutoPromote();
+
   await db.transaction(async (tx) => {
     for (const bin of binaries) {
       const osParam = bin.platform === "macos" ? "darwin" : bin.platform;
@@ -318,17 +327,19 @@ async function registerLocalBinaries(args: {
       const manifestSignature = await signManifest(releaseManifest);
 
       // Demote existing "isLatest" entries for this platform/arch/component.
-      await tx
-        .update(agentVersions)
-        .set({ isLatest: false })
-        .where(
-          and(
-            eq(agentVersions.platform, bin.platform),
-            eq(agentVersions.architecture, bin.architecture),
-            eq(agentVersions.component, component),
-            eq(agentVersions.isLatest, true),
-          ),
-        );
+      if (autoPromote) {
+        await tx
+          .update(agentVersions)
+          .set({ isLatest: false })
+          .where(
+            and(
+              eq(agentVersions.platform, bin.platform),
+              eq(agentVersions.architecture, bin.architecture),
+              eq(agentVersions.component, component),
+              eq(agentVersions.isLatest, true),
+            ),
+          );
+      }
 
       // Upsert the new version
       await tx
@@ -341,7 +352,7 @@ async function registerLocalBinaries(args: {
           downloadUrl,
           checksum: bin.checksum,
           fileSize: bin.fileSize,
-          isLatest: true,
+          isLatest: autoPromote,
           releaseManifest,
           manifestSignature,
           signingKeyId: keyId,
@@ -359,10 +370,10 @@ async function registerLocalBinaries(args: {
             downloadUrl,
             checksum: bin.checksum,
             fileSize: bin.fileSize,
-            isLatest: true,
             releaseManifest,
             manifestSignature,
             signingKeyId: keyId,
+            ...(autoPromote ? { isLatest: true } : {}),
           },
         });
     }
@@ -823,18 +834,25 @@ async function upsertVersion(
   },
   releaseNotes?: string | null,
 ) {
+  // Controlled fleet rollout (AGENT_AUTO_PROMOTE=false): register but do not
+  // promote. Skip the demote UPDATE, insert isLatest:false, and OMIT isLatest
+  // from the conflict `set` so an existing promoted row keeps its target.
+  // When auto-promote is on (default) behavior is byte-for-byte unchanged.
+  const autoPromote = getAgentAutoPromote();
   await db.transaction(async (tx) => {
-    await tx
-      .update(agentVersions)
-      .set({ isLatest: false })
-      .where(
-        and(
-          eq(agentVersions.platform, platform),
-          eq(agentVersions.architecture, arch),
-          eq(agentVersions.component, component),
-          eq(agentVersions.isLatest, true),
-        ),
-      );
+    if (autoPromote) {
+      await tx
+        .update(agentVersions)
+        .set({ isLatest: false })
+        .where(
+          and(
+            eq(agentVersions.platform, platform),
+            eq(agentVersions.architecture, arch),
+            eq(agentVersions.component, component),
+            eq(agentVersions.isLatest, true),
+          ),
+        );
+    }
 
     await tx
       .insert(agentVersions)
@@ -849,7 +867,7 @@ async function upsertVersion(
         signingKeyId: metadata.signingKeyId,
         fileSize: BigInt(metadata.size),
         releaseNotes: releaseNotes ?? null,
-        isLatest: true,
+        isLatest: autoPromote,
         component,
       })
       .onConflictDoUpdate({
@@ -867,7 +885,7 @@ async function upsertVersion(
           signingKeyId: metadata.signingKeyId,
           fileSize: BigInt(metadata.size),
           releaseNotes: releaseNotes ?? null,
-          isLatest: true,
+          ...(autoPromote ? { isLatest: true } : {}),
         },
       });
   });

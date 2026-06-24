@@ -38,9 +38,21 @@ The workbench shows everything you need to resolve a ticket without leaving the 
 - **Status** -- move the ticket between New, Open, Pending, On hold, Resolved, and Closed. Resolving always asks for a **resolution note**, which is visible to the requester, so the customer sees what was done.
 - **Priority** -- change between Low, Normal, High, and Urgent.
 - **Assignee** -- assign or unassign the ticket. Press `a` to grab the selected ticket for yourself.
+- **Subject and description** -- click the subject to rename the ticket in place; the description has an **Edit** (or **Add description**) control. Changes save instantly and are recorded in the ticket's activity.
+- **Category, due date, and tags** -- set the category from a dropdown (including **No category**), pick or clear a due date, and add or remove tags directly on the ticket. Every change is logged in the activity feed.
 - **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, and any **linked alerts** with one-click navigation to the alert itself.
 
 Click the expand icon (or press `Enter`) to open the ticket as a full page when you need more room.
+
+### Moving a ticket to another organization
+
+If a ticket landed under the wrong customer, use **Move to another org…** in the ticket header to reassign it to a different organization. Pick the target from the dropdown and click **Move**. The ticket — along with its time entries, parts, and linked alerts — follows to the new organization, and the move is recorded in the activity feed and the audit log.
+
+Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee, category, and SLA carry over unchanged.
+
+<Aside>
+  Tickets can only be moved between organizations of the **same partner**. This is a high-privilege action: it requires ticket and organization edit permissions plus MFA confirmation, and isn't available to site-restricted technicians.
+</Aside>
 
 ## Replies and Internal Notes
 
@@ -52,6 +64,12 @@ The composer at the bottom of every ticket has two modes:
 Portal users only ever see public replies. Internal notes, status changes, and assignment history stay inside the dashboard.
 
 Press `Cmd+Enter` (or `Ctrl+Enter`) to send without leaving the keyboard.
+
+### Editing and deleting your replies
+
+Each reply and internal note you wrote has **Edit** and **Delete** controls in its header. Editing opens the text inline with **Save** and **Cancel**; an edited entry is marked **edited** in the feed. Deleting asks you to confirm and leaves a small "deleted" placeholder in its place rather than removing the entry outright, so the conversation history stays intact.
+
+You can edit or delete your **own** comments; technicians with ticket management permission can edit or delete anyone's. System entries — status changes, assignments, and time logs — can't be edited or deleted, and comments that came in from the customer portal aren't editable from the workbench. Editing or deleting a reply does **not** re-notify the customer.
 
 ## Keyboard Shortcuts
 

@@ -100,9 +100,12 @@ quoteRoutes.get('/quotes/:id/images/:imageId', zValidator('param', imageParam), 
   return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
 });
 
-// POST /quotes/:id/accept — signer identity = the authenticated portal user.
+// POST /quotes/:id/accept — signer types their full name (electronic signature)
+// in the portal's signature panel; we record it as signerName. Falls back to the
+// authenticated identity if the body omits it (older clients).
 quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator('json', acceptQuoteSchema.partial()), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
+  const signerName = c.req.valid('json').signerName?.trim() || auth.user.name || auth.user.email;
   const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   try {
@@ -114,7 +117,7 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
     // Org ownership is already verified by the org-scoped lookup above. The
     // public path (quotesPublic.ts) wraps acceptQuote the same way.
     const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
-      quoteId: id, signerName: auth.user.name || auth.user.email, signerEmail: auth.user.email,
+      quoteId: id, signerName, signerEmail: auth.user.email,
       ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null, actorUserId: null,
     })));
     // Post-commit (outside the DB context): emit invoice.issued + enqueue the PDF

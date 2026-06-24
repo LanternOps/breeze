@@ -4,6 +4,45 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## BE-16 Enhancement P1 — Risk-acceptance RBAC (`vulnerabilities:accept_risk`) — unit tests + type-check — 2026-06-24
+
+**Branch:** `feat/be16-vuln-phase1` · **Tested by:** Claude · **Result:** PASS (unit/web suites + astro check); browser wt-stack spot-check **pending Todd's manual UI verification**.
+
+**What was added (Tasks 1–4):**
+- New permission `vulnerabilities:accept_risk` (`VULN_RISK_ACCEPT`) registered in `apps/api/src/services/permissions.ts` and seeded for Org Admin, "Security Approver" (org), and "Partner Security Approver" (partner) roles.
+- Migration `2026-06-29-vuln-risk-accept-permission.sql`: inserts the permission row + the two new stock roles + their grants. Idempotent.
+- API gate change: `POST /vulnerabilities/:id/accept-risk` and `POST /vulnerabilities/:id/reopen` now require `vulnerabilities:accept_risk` (previously plain `devices:write`). `POST /vulnerabilities/:id/mitigate` unchanged (`devices:write`).
+- Web gate: **Accept risk** button and **Reopen** button in `DeviceVulnerabilitiesTab` are hidden/disabled when `can('vulnerabilities','accept_risk')` is false.
+
+**Verification runs (2026-06-24):**
+- API suites (`seed.test.ts`, `permissions.test.ts`, `vulnerabilities.test.ts`, `autoMigrate.test.ts`): **4 files, 183 tests — all PASS**.
+- Web suites (`DeviceVulnerabilitiesTab.test.tsx`, `permissions.test.ts`): **2 files, 30 tests — all PASS**.
+- `astro check` (1075 files): **0 errors, 0 warnings** (202 pre-existing hints, none in vuln/permission code).
+- `db:check-drift`: **not cleanly runnable** — shared local DB (main-branch ledger) has not had the 11 branch-specific migrations applied; script reports them as "not in ledger". This is expected for a feature-branch worktree; it is not a Drizzle schema/code mismatch. Run against a fresh DB after branch migrations are applied to confirm clean drift.
+
+**Browser wt-stack spot-check:** DEFERRED — manual UI verification by Todd (confirm Accept risk + Reopen visible for Partner Admin `*:*`, hidden for a user lacking `vulnerabilities:accept_risk`, and that accept-risk succeeds end-to-end).
+
+## Vulnerability Management (BE-16 Phase 1) — wt-stack + Playwright — 2026-06-23
+
+**Branch:** `feat/be16-vuln-phase1` · **Tested by:** Claude · **Result:** PASS, no bugs.
+
+Verified end-to-end (seeded synthetic findings across all severities + an accepted state): fleet dashboard (risk-sorted, severity/KEV/CVSS, server-side severity filter, open-only default), per-device tab, and all four workflows — accept-risk (server rejects past dates → error toast; persists + audit), mitigate (persists + audit), remediate (no-patch → `{success:false}` correctly surfaces a failure toast, row stays open), reopen. Migrations + persistence + audit rows confirmed via psql. Only console error is a pre-existing `404 /api/v1/reliability/:id` (not vuln). MFA gate on `/remediate` no-ops here only because `ENABLE_2FA` is off (enforces in prod; same wiring as patch-install).
+
+**Improvements shipped this session** (all verified live in-browser):
+- Accept-risk date `min` guard (blocks past dates client-side).
+- Per-device status filter (Open/Accepted/Mitigated/**Patched**/All) + Status badges.
+- **Reopen** action + gated/audited `POST /vulnerabilities/:id/reopen`; `status=all` on the list endpoint.
+- **Deterministic per-device sort** — `listVulnerabilities` had no `ORDER BY`; now risk_score DESC, cveId ASC tie-break.
+- **Server-side fleet aggregation** — `GET /vulnerabilities` now returns one aggregated row per CVE (`{id,cveId,cvssScore,severity,knownExploited,epssScore,riskScore,deviceCount}`) instead of every per-(device,CVE) row; removes the unbounded client-side collapse.
+- **Reopen/expiry consistency** — the `vuln-accept-expiry` sweep (`expireAcceptedRisks`) now clears the same five fields as manual reopen (was leaving `mitigationNote`/`resolvedAt`) AND writes a per-finding `vulnerability.reopen` audit row (`trigger: waiver_expired`) via the background-safe `createAuditLogAsync` — auto-reopens were previously unaudited.
+- **Remediate patch-awareness** — items now carry `patchAvailable`; UI shows a "Patch available" badge and disables Remediate + bulk-select when no patch (was a guaranteed-fail click).
+- **Bulk remediate** — multi-select checkboxes + "Remediate selected (N)" send one `deviceVulnerabilityIds[]` call (verified: 2 ids in one POST).
+
+**Still open (deferred, with reason):**
+1. **Risk-acceptance is gated by plain `DEVICES_WRITE`** — accepting a critical/KEV risk is a security exception; consider the existing Authenticator step-up or a dedicated permission. **Needs a product decision**, not implemented.
+2. **Fleet CVE-row drill-through** — no CVE-detail view / CVE→devices endpoint exists; it's a small feature (new view+endpoint), not a quick fix.
+3. **Fleet aggregation is still in-handler, not SQL** — the API→browser payload is now bounded, but the DB→API fetch still reads all matching per-device rows; a true SQL `GROUP BY` is a further optimization if that fetch becomes a bottleneck.
+
 ## ML feature UI surfaces (User Risk / Anomalies / Correlations+RCA / Capacity Forecast) — local Docker + Playwright — 2026-06-19
 
 **Branch:** `main`

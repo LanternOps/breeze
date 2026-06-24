@@ -144,7 +144,7 @@ cd e2e-tests && pnpm test
 
 ## Codex Delegation
 
-This project uses OpenAI Codex CLI for isolated, well-scoped tasks (file operations, utility generation, CRUD endpoints, code analysis). Keep with Claude: multi-tenant isolation, auth/authz, cross-module refactoring, and task coordination. For commands, reasoning levels, and the full delegation matrix, use the **`delegating-to-codex`** skill.
+This project uses OpenAI Codex CLI for **read-only analysis (bug-hunting, security review, design-from-plan — its strongest uses) and well-scoped single-file edits** (utilities, co-located tests, CRUD endpoints, mechanical renames). Keep with Claude: repo-wide sweeps/enumeration, cross-module refactors (codex misses existing canonical code), UI work, and the *architecture* of multi-tenant/auth changes — though codex may *execute* an RLS migration once Claude hands it the tenancy contract. Default to `high`; reserve `xhigh` for open-ended design. For commands, reasoning levels, and the benchmarked delegation matrix, use the **`delegating-to-codex`** skill.
 
 ---
 

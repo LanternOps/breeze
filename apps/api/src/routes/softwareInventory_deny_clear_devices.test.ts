@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { inArray } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -397,7 +398,11 @@ describe('software inventory routes', () => {
       expect(body.data).toHaveLength(0);
     });
 
-    it('returns 400 when no org context', async () => {
+    // "All Orgs": a partner/multi-org caller with no orgId now drills down across
+    // every accessible org (via auth.orgCondition) instead of 400ing — matching
+    // the aggregate list. The old #620 "Organization context required" contract
+    // no longer applies to this read endpoint.
+    it('aggregates across accessible orgs when no orgId is provided (All Orgs)', async () => {
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('auth', {
@@ -405,17 +410,24 @@ describe('software inventory routes', () => {
           scope: 'partner',
           orgId: null,
           accessibleOrgIds: ['org-a', 'org-b'],
+          // Real partner orgCondition narrows to the accessible orgs (not undefined,
+          // which would exercise the system-scope path instead).
+          orgCondition: (col: any) => inArray(col, ['org-a', 'org-b']),
           canAccessOrg: () => true,
         });
         return next();
       });
+
+      mockSelectFromInnerJoinWhere([{ count: 0 }]);
+      mockSelectFromInnerJoinWhereOrderByLimitOffset([]);
 
       const res = await app.request('/software-inventory/TestApp/devices', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
+      expect((await res.json()).pagination.total).toBe(0);
     });
   });
 

@@ -17,6 +17,15 @@ Partner          (lowest priority)
                     └── Device  (highest priority — always wins)
 ```
 
+### Policy ownership: organization vs. partner-wide
+
+A policy is owned at one of two scopes:
+
+- **Organization** — the policy belongs to a single customer organization and can only be assigned within that org's hierarchy. This is the default.
+- **Partner-wide (all orgs)** — the policy belongs to your partner account and can apply across **every** organization you manage. Use this for fleet-wide standards you want enforced everywhere without recreating the policy per customer.
+
+You choose the ownership scope when creating the policy. Partner-wide policies can only be created and managed while your scope selector is set to **All orgs**; organization users see them in their effective configuration but cannot edit them.
+
 ## Feature types
 
 A policy can bundle multiple feature types:
@@ -58,9 +67,11 @@ Compliance rules support three enforcement levels:
 
 3. Enter a **Name** and optional **Description**.
 
-4. Set **Status** to **Active**. Inactive and archived policies are not evaluated by the scheduler.
+4. Choose the **Ownership scope**: **Organization** (applies within one customer) or **Partner-wide (all orgs)** (applies across every organization you manage). Partner-wide is available only when your scope selector is set to **All orgs**.
 
-5. Click **Save** to open the policy detail editor.
+5. Set **Status** to **Active**. Inactive and archived policies are not evaluated by the scheduler.
+
+6. Click **Save** to open the policy detail editor.
 
 </Steps>
 
@@ -148,9 +159,9 @@ Configure security policy settings for **Security**; check intervals and targets
 
 1. Open the policy detail editor → **Assignments** tab.
 
-2. Choose a **Target type**: Partner, Organization, Site, Device Group, or Device.
+2. Choose a **Level**: Partner-Wide (All Orgs), Organization, Site, Device Group, or Device.
 
-3. Select the specific target from the dropdown.
+3. For Organization, Site, Device Group, or Device, select the specific target from the dropdown. For **Partner-Wide (All Orgs)** there is no target to pick — the assignment automatically covers every organization in your partner account.
 
 4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`).
 
@@ -159,7 +170,7 @@ Configure security policy settings for **Security**; check intervals and targets
 </Steps>
 
 <Aside>
-  A device-level assignment always takes precedence over all group, site, organization, and partner assignments — regardless of priority number.
+  A device-level assignment always takes precedence over all group, site, organization, and partner assignments — regardless of priority number. A **Partner-Wide (All Orgs)** assignment is the broadest scope and is overridden by any more-specific assignment.
 </Aside>
 
 ## Viewing effective configuration
@@ -235,6 +246,8 @@ All paths are relative to `/api/v1`.
 | POST | `/configuration-policies/:id/patch-job` | Create patch deployment job |
 | GET | `/configuration-policies/:id/patch-settings` | Get patch settings for a policy |
 | GET | `/configuration-policies/:id/resolve-patch-config/:deviceId` | Resolve patch config for a specific device |
+
+When creating a policy, set `ownerScope` to `organization` (the default) or `partner`. With `ownerScope: "partner"` the policy is owned partner-wide and any supplied `orgId` is ignored — the partner is always derived from the caller's own token, never trusted from the request body. Creating a partner-wide policy requires partner scope (a `403` is returned otherwise). When assigning a partner-wide policy, use `level: "partner"`; the target is resolved from the caller's own partner, so no `targetId` is required.
 
 When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`, `pam`.
 

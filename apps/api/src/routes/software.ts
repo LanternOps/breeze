@@ -14,7 +14,7 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
-import { uploadBinary, getPresignedUrl, isS3Configured } from '../services/s3Storage';
+import { uploadBinary, getPresignedUrl, isS3Configured, isS3NotFound } from '../services/s3Storage';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import {
   parseStreamingMultipart,
@@ -1028,7 +1028,14 @@ softwareRoutes.post(
       if (versionRecord.s3Key && isS3Configured()) {
         try {
           downloadUrl = await getPresignedUrl(versionRecord.s3Key, 3600);
-        } catch { /* S3 may not be available */ }
+        } catch (err) {
+          // Don't swallow: a transport/auth fault must be visible even though we
+          // still fall back to the stored downloadUrl below (#1808).
+          console[isS3NotFound(err) ? 'warn' : 'error'](
+            `[software-deploy] S3 presign failed for ${versionRecord.s3Key}, falling back to stored downloadUrl:`,
+            err,
+          );
+        }
       }
       downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
 
@@ -1176,7 +1183,16 @@ softwareRoutes.post(
       if (scheduleType === 'immediate') {
         let downloadUrl: string | null = null;
         if (versionRecord.s3Key && isS3Configured()) {
-          try { downloadUrl = await getPresignedUrl(versionRecord.s3Key, 3600); } catch { /* */ }
+          try {
+            downloadUrl = await getPresignedUrl(versionRecord.s3Key, 3600);
+          } catch (err) {
+            // Don't swallow: surface transport/auth faults even though we still
+            // fall back to the stored downloadUrl below (#1808).
+            console[isS3NotFound(err) ? 'warn' : 'error'](
+              `[software-deploy] S3 presign failed for ${versionRecord.s3Key}, falling back to stored downloadUrl:`,
+              err,
+            );
+          }
         }
         downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
 
