@@ -8,7 +8,7 @@ import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecuti
 import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { handleTunnelDataFromAgent, isTunnelOwnedByAgent, registerTunnelOwnership } from './tunnelWs';
-import { enqueueDiscoveryResults, type DiscoveredHostResult } from '../jobs/discoveryWorker';
+import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
@@ -159,6 +159,7 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
       hosts?: DiscoveredHostResult[];
       hostsScanned?: number;
       hostsDiscovered?: number;
+      adjacency?: DeviceAdjacency[];
     } | undefined;
 
     if (discoveryData?.hosts) {
@@ -188,6 +189,7 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
           discoveryData.hostsScanned ?? 0,
           discoveryData.hostsDiscovered ?? 0,
           undefined,
+          discoveryData.adjacency ?? [],
           {
             actorType: 'agent',
             actorId: agentId,
@@ -1137,6 +1139,7 @@ export async function processOrphanedCommandResult(
         hosts?: DiscoveredHostResult[];
         hostsScanned?: number;
         hostsDiscovered?: number;
+        adjacency?: DeviceAdjacency[];
       } | undefined;
 
       if (result.status !== 'completed' || !discoveryData?.hosts) {
@@ -1163,6 +1166,7 @@ export async function processOrphanedCommandResult(
           discoveryData.hostsScanned ?? 0,
           discoveryData.hostsDiscovered ?? 0,
           undefined,
+          discoveryData.adjacency ?? [],
           {
             actorType: 'agent',
             actorId: agentId,

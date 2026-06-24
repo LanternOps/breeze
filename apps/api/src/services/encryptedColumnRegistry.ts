@@ -64,6 +64,10 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'pax8_integrations', column: 'client_secret_encrypted', kind: 'text', description: 'Pax8 OAuth client secret' },
   { table: 'pax8_integrations', column: 'access_token_encrypted', kind: 'text', description: 'Pax8 OAuth access token cache' },
   { table: 'pax8_integrations', column: 'webhook_secret_encrypted', kind: 'text', description: 'Pax8 webhook secret' },
+  { table: 'accounting_connections', column: 'realm_id_encrypted', kind: 'text', description: 'QBO realmId / Xero tenantId' },
+  { table: 'accounting_connections', column: 'access_token_encrypted', kind: 'text', description: 'Accounting provider OAuth access token' },
+  { table: 'accounting_connections', column: 'refresh_token_encrypted', kind: 'text', description: 'Accounting provider OAuth refresh token (rotates)' },
+  { table: 'accounting_connections', column: 'webhook_verifier_token_encrypted', kind: 'text', description: 'QBO webhook verifier token' },
   { table: 's1_integrations', column: 'api_token_encrypted', kind: 'text', description: 'SentinelOne API token' },
   { table: 'dns_filter_integrations', column: 'api_key', kind: 'text', description: 'DNS filter API key' },
   { table: 'dns_filter_integrations', column: 'api_secret', kind: 'text', description: 'DNS filter API secret' },
@@ -72,6 +76,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'partners', column: 'settings', kind: 'json', description: 'partner settings with encrypted remote-access launcher passwords (#716)' },
   { table: 'sites', column: 'settings', kind: 'json', description: 'site-level settings with encrypted overrides' },
   { table: 'td_synnex_digital_bridge_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX Digital Bridge API credentials' },
+  { table: 'td_synnex_ec_express_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX EC Express API credentials' },
 ];
 
 const SECRET_JSON_KEYS = new Set([

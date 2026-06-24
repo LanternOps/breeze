@@ -5,12 +5,14 @@ description: Control patch rollout velocity with staged deployment rings, deferr
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Update Rings let you stage patch deployments across your fleet by grouping devices into ordered rings with different deferral periods, approval policies, and deadlines. Instead of pushing every patch to every device on the same day, you can let a small pilot group receive patches first, observe the results, and then widen the rollout to the rest of your organization. This is the standard approach for managing Patch Tuesday updates and reduces the blast radius of a bad patch.
+Update Rings let you stage patch deployments across your fleet by grouping devices into ordered rings with different deferral periods, approval policies, and deadlines. Instead of pushing every patch to every device on the same day, you can let a small pilot group receive patches first, observe the results, and then widen the rollout to the rest of your fleet. This is the standard approach for managing Patch Tuesday updates and reduces the blast radius of a bad patch.
+
+Update rings are defined once at the **partner (MSP) level** and apply across every organization you manage, so you build a staged-rollout strategy a single time rather than re-creating it for each customer.
 
 Rings are built on top of the patch policy system. Patches flow through rings in order: Ring 0 (Default) receives patches immediately, Ring 1 defers for a few days, Ring 2 defers longer, and so on. Each ring can auto-approve certain categories and severities, or require manual approval before patches are deployed.
 
-<Aside type="tip" title="Default ring is created automatically">
-  The first time anyone lists update rings for an organization, Breeze automatically creates a **Default** ring at order 0 with no deferral period and manual approval required for all patches. You do not need to create it yourself. If the Default ring does not appear, verify that the user has organization-scoped access and that the correct organization is selected.
+<Aside>
+  Update rings live at the partner level. A partner or system administrator manages them once for the whole MSP — creating, editing, and deleting rings requires partner-level or system access (write actions also require MFA). Organization-scoped users cannot create or edit rings; they only see the rings their partner has defined.
 </Aside>
 
 ---
@@ -33,7 +35,7 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 </Steps>
 
 <Aside>
-  A single device can be covered by multiple configuration policies. If a device matches assignments for more than one ring, the ring with the lowest `ringOrder` takes priority.
+  A single device can be covered by multiple configuration policies. If a device matches assignments for more than one ring, the ring with the lowest `ringOrder` takes priority. Because a ring belongs to the partner, the same ring can be assigned to devices in any of your organizations through their configuration policies.
 </Aside>
 
 ### Ring Configuration Fields
@@ -89,9 +91,9 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 
 <Steps>
 
-1. **Verify the Default ring exists.** Navigate to **Patching > Update Rings**. The Default ring is created automatically on first access (see the note at the top of this page).
+1. **Open Update Rings.** With your scope set to **All orgs**, navigate to **Patching > Update Rings**. Rings are managed at the partner level, so you set them up once for every customer you manage. (Org-scoped users see a read-only view.)
 
-2. **Click Create Ring.** Enter a name (e.g., "Pilot"), ring order, and configure the deferral period, grace period, and deadline for the ring.
+2. **Click Create Ring.** Enter a name (e.g., "Pilot"), ring order, and configure the deferral period, grace period, and deadline for the ring. Creating, editing, and deleting rings requires partner-level or system access and MFA.
 
 3. **Repeat for additional rings.** Create an "Early Adopters" ring with a 3-day deferral and a "Production" ring with a 7-day deferral. Set ring order values to control the deployment sequence.
 
@@ -207,7 +209,7 @@ Category rules let you set per-category auto-approval behavior within a ring. Th
 
 ## Ring Compliance
 
-Each ring provides a compliance summary showing how many approved patches have been successfully installed across the organization's devices.
+Each ring provides a compliance summary showing how many approved patches have been successfully installed across all devices assigned to the ring, spanning every organization it covers.
 
 ```bash
 curl /api/v1/update-rings/:id/compliance \
@@ -297,7 +299,7 @@ Each patch in the response includes an `approvalStatus` field showing its status
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/update-rings` | List all enabled rings for the organization, sorted by ring order |
+| `GET` | `/api/v1/update-rings` | List all enabled rings for the partner, sorted by ring order. Partner and system scope only; system callers may pass an optional `partnerId` query parameter (omit it to see all partners). |
 | `POST` | `/api/v1/update-rings` | Create a new update ring |
 | `GET` | `/api/v1/update-rings/:id` | Get ring detail with approval summary and recent jobs |
 | `PATCH` | `/api/v1/update-rings/:id` | Update ring configuration |

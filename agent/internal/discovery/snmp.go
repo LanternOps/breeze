@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/snmppoll"
 	"github.com/gosnmp/gosnmp"
 )
 
@@ -159,6 +160,47 @@ func querySNMPv3(target, username string, timeout time.Duration) *SNMPInfo {
 		return nil
 	}
 	return info
+}
+
+// collectFdbForDevice walks the bridge-FDB tables for a single SNMP device and
+// returns the assembled MAC→port adjacency entries. It tries each community in
+// turn and returns nil on any SNMP error so a failing device degrades to no
+// adjacency without aborting the scan (mirroring querySNMP's nil-on-failure
+// pattern). No live SNMP server is contacted in tests — unreachable targets
+// degrade to an empty slice.
+func collectFdbForDevice(target string, communities []string, timeout time.Duration) []snmppoll.FdbEntry {
+	if len(communities) == 0 {
+		communities = []string{"public"}
+	}
+	for _, community := range communities {
+		community = strings.TrimSpace(community)
+		if community == "" {
+			continue
+		}
+		cfg := snmppoll.SNMPClientConfig{Target: target, Timeout: timeout}
+		if strings.HasPrefix(strings.ToLower(community), "v3:") {
+			cfg.Version = gosnmp.Version3
+			cfg.Auth = snmppoll.SNMPAuth{Username: strings.TrimPrefix(community, "v3:")}
+		} else {
+			cfg.Version = gosnmp.Version2c
+			cfg.Auth = snmppoll.SNMPAuth{Community: community}
+		}
+		client, err := snmppoll.NewClient(cfg)
+		if err != nil {
+			continue
+		}
+		fdbPort, err := client.BulkWalk("1.3.6.1.2.1.17.4.3.1.2")
+		if err != nil {
+			client.Close()
+			continue
+		}
+		basePort, _ := client.BulkWalk("1.3.6.1.2.1.17.1.4.1.2")
+		ifNames, _ := client.BulkWalk("1.3.6.1.2.1.31.1.1.1.1")
+		qBridge, _ := client.BulkWalk("1.3.6.1.2.1.17.7.1.2.2.1.2")
+		client.Close()
+		return snmppoll.AssembleFdbEntries(fdbPort, basePort, ifNames, qBridge)
+	}
+	return nil
 }
 
 func snmpToString(variable gosnmp.SnmpPDU) string {

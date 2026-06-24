@@ -115,6 +115,10 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'devices', action: 'delete', description: 'Delete/decommission devices' },
   { resource: 'devices', action: 'execute', description: 'Execute commands on devices' },
 
+  // Network topology (discovery topology view + saved layout)
+  { resource: 'topology', action: 'read', description: 'View network topology and saved layout' },
+  { resource: 'topology', action: 'write', description: 'Persist topology node layout (drag-to-save)' },
+
   // Scripts
   { resource: 'scripts', action: 'read', description: 'View scripts' },
   { resource: 'scripts', action: 'write', description: 'Create and edit scripts' },
@@ -184,6 +188,10 @@ export const DEFAULT_PERMISSIONS = [
   // Billing
   { resource: 'billing', action: 'manage', description: 'Manage partner billing and billing portal access' },
 
+  // Vulnerability management (BE-16)
+  { resource: 'vulnerabilities', action: 'accept_risk',
+    description: 'Waive (accept risk) and reopen vulnerability findings' },
+
   // Admin
   { resource: '*', action: '*', description: 'Full administrative access' }
 ];
@@ -209,6 +217,7 @@ export const SYSTEM_ROLES = [
       'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
+      'topology:read',
       'organizations:read'
     ]
   },
@@ -261,8 +270,10 @@ export const SYSTEM_ROLES = [
       'reports:read', 'reports:write', 'reports:delete', 'reports:export',
       'users:read', 'users:write', 'users:delete', 'users:invite',
       'sites:read', 'sites:write', 'sites:delete',
+      'topology:read', 'topology:write',
       'remote:access',
-      'audit:read'
+      'audit:read',
+      'vulnerabilities:accept_risk'
     ]
   },
   {
@@ -276,6 +287,7 @@ export const SYSTEM_ROLES = [
       'tickets:read',
       'reports:read', 'reports:write',
       'sites:read',
+      'topology:read', 'topology:write',
       'remote:access'
     ]
   },
@@ -289,7 +301,27 @@ export const SYSTEM_ROLES = [
       'alerts:read',
       'tickets:read',
       'reports:read',
-      'sites:read'
+      'sites:read',
+      'topology:read'
+    ]
+  },
+  {
+    name: 'Security Approver',
+    scope: 'organization' as const,
+    description: 'Review and waive (accept risk) / reopen vulnerability findings',
+    permissions: [
+      'devices:read',
+      'vulnerabilities:accept_risk'
+    ]
+  },
+  {
+    name: 'Partner Security Approver',
+    scope: 'partner' as const,
+    description: 'Review and waive (accept risk) / reopen vulnerability findings across assigned organizations',
+    permissions: [
+      'devices:read',
+      'organizations:read',
+      'vulnerabilities:accept_risk'
     ]
   }
 ];

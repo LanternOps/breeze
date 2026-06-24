@@ -100,7 +100,12 @@ vi.mock('../db', () => ({
     })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve())
+        // `.where()` is awaitable (resolves undefined) for callers that don't
+        // chain, and exposes `.returning()` for the last_login_at write added
+        // in #1825 (dbWriteExpectingRows expects a non-empty row set back).
+        where: vi.fn(() => Object.assign(Promise.resolve(), {
+          returning: vi.fn(() => Promise.resolve([{ id: 'user-1' }]))
+        }))
       }))
     }))
   },
@@ -136,7 +141,12 @@ vi.mock('../db/schema', () => ({
   refreshTokenFamilies: {
     familyId: 'refreshTokenFamilies.familyId',
     userId: 'refreshTokenFamilies.userId'
-  }
+  },
+  // Referenced by best-effort log-and-swallow paths in the login handler
+  // (audit write, OAuth artifact revocation). Present here so a missing-export
+  // warning doesn't masquerade as the real failure.
+  auditLogs: {},
+  oauthRefreshTokens: {}
 }));
 
 vi.mock('../services/tenantStatus', () => ({
@@ -434,7 +444,9 @@ describe('auth routes', () => {
       } as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
         })
       } as any);
 
@@ -921,7 +933,9 @@ describe('auth routes', () => {
       } as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
         })
       } as any);
 
@@ -1678,7 +1692,9 @@ describe('auth routes', () => {
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
         })
       } as any);
 
@@ -1778,7 +1794,9 @@ describe('auth routes', () => {
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
         })
       } as any);
 
@@ -1813,7 +1831,9 @@ describe('auth routes', () => {
       } as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
         })
       } as any);
 
@@ -1889,7 +1909,9 @@ describe('auth routes', () => {
         } as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
         })
       } as any);
 
@@ -2020,7 +2042,9 @@ describe('auth routes', () => {
         } as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
         })
       } as any);
 

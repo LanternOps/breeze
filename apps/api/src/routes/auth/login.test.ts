@@ -176,7 +176,9 @@ function selectChain(rows: unknown[]) {
 function updateChain() {
   return {
     set: vi.fn().mockReturnValue({
-      where: vi.fn(async () => undefined),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'user-1' }]),
+      }),
     }),
   };
 }

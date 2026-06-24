@@ -10,8 +10,10 @@ const USER_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
+  gte: (left: unknown, right: unknown) => ({ op: 'gte', left, right }),
   inArray: (left: unknown, right: unknown) => ({ op: 'inArray', left, right }),
-  desc: (value: unknown) => ({ op: 'desc', value })
+  desc: (value: unknown) => ({ op: 'desc', value }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values })
 }));
 
 vi.mock('../../db', () => ({
@@ -30,6 +32,7 @@ vi.mock('../../db/schema', () => ({
     id: 'patches.id',
     source: 'patches.source',
     externalId: 'patches.externalId',
+    packageId: 'patches.packageId',
     title: 'patches.title',
     description: 'patches.description',
     severity: 'patches.severity',
@@ -51,6 +54,21 @@ vi.mock('../../db/schema', () => ({
     partnerId: 'patchApprovals.partnerId',
     patchId: 'patchApprovals.patchId',
     status: 'patchApprovals.status'
+  },
+  deviceCommands: {
+    id: 'deviceCommands.id',
+    deviceId: 'deviceCommands.deviceId',
+    type: 'deviceCommands.type',
+    payload: 'deviceCommands.payload',
+    status: 'deviceCommands.status',
+    createdAt: 'deviceCommands.createdAt',
+    completedAt: 'deviceCommands.completedAt',
+    result: 'deviceCommands.result',
+    createdBy: 'deviceCommands.createdBy'
+  },
+  users: {
+    id: 'users.id',
+    email: 'users.email'
   }
 }));
 
@@ -121,6 +139,34 @@ function selectWhereLimitResult(rows: unknown[]) {
   };
 }
 
+function selectWhereOrderLimitResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    })
+  };
+}
+
+function selectPatchHistoryRowsResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              offset: vi.fn().mockResolvedValue(rows)
+            })
+          })
+        })
+      })
+    })
+  };
+}
+
 describe('device patch routes', () => {
   let app: Hono;
 
@@ -186,6 +232,13 @@ describe('device patch routes', () => {
         requiresReboot: false
       }
       ]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([
+        {
+          status: 'completed',
+          createdAt: '2026-02-09T09:59:00.000Z',
+          completedAt: '2026-02-09T10:00:00.000Z'
+        }
+      ]) as any)
       .mockReturnValueOnce(selectWhereResult([
         { patchId: '11111111-1111-4111-8111-111111111111' }
       ]) as any);
@@ -211,13 +264,151 @@ describe('device patch routes', () => {
 
     expect(body.data.installed).toHaveLength(1);
     expect(body.data.compliancePercent).toBe(50);
+    expect(body.data.lastPatchScanAt).toBe('2026-02-09T10:00:00.000Z');
+    expect(body.data.lastPatchScanStatus).toBe('completed');
+  });
+
+  it('excludes Linux installed package inventory from patch compliance', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([
+        {
+          id: 'dp-linux-pending',
+          patchId: '11111111-1111-4111-8111-111111111111',
+          status: 'pending',
+          installedAt: null,
+          lastCheckedAt: '2026-02-09T10:00:00.000Z',
+          failureCount: 0,
+          lastError: null,
+          externalId: 'apt:openssl@3.0.2-0ubuntu1.20',
+          packageId: 'apt:openssl',
+          title: 'openssl',
+          description: null,
+          severity: 'unknown',
+          category: 'system',
+          source: 'linux',
+          releaseDate: null,
+          requiresReboot: false
+        },
+        {
+          id: 'dp-linux-installed',
+          patchId: '22222222-2222-4222-8222-222222222222',
+          status: 'installed',
+          installedAt: null,
+          lastCheckedAt: '2026-02-09T10:00:00.000Z',
+          failureCount: 0,
+          lastError: null,
+          externalId: 'apt:zlib1g',
+          packageId: 'apt:zlib1g',
+          title: 'zlib1g',
+          description: null,
+          severity: 'unknown',
+          category: 'system',
+          source: 'linux',
+          releaseDate: null,
+          requiresReboot: false
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.data.pending).toHaveLength(1);
+    expect(body.data.pending[0].externalId).toBe('apt:openssl@3.0.2-0ubuntu1.20');
+    expect(body.data.installed).toHaveLength(0);
+    expect(body.data.compliancePercent).toBe(0);
+    expect(body.data.lastPatchScanAt).toBeNull();
+    expect(body.data.lastPatchScanStatus).toBeNull();
+  });
+
+  it('includes successful Linux software updates in install patch history', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: DEVICE_ID,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      osType: 'linux'
+    } as any);
+    const countWhere = vi.fn().mockResolvedValue([{ count: 1 }]);
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: countWhere
+        })
+      } as any)
+      .mockReturnValueOnce(selectPatchHistoryRowsResult([
+        {
+          id: 'cmd-software-1',
+          type: 'software_update',
+          payload: { name: 'netbird', source: 'device_software_tab' },
+          status: 'completed',
+          createdAt: '2026-06-22T02:45:00.000Z',
+          completedAt: '2026-06-22T02:46:00.000Z',
+          result: {
+            status: 'completed',
+            exitCode: 0,
+            stdout: JSON.stringify({
+              name: 'netbird',
+              version: '',
+              packageId: '',
+              action: 'update',
+              success: true
+            })
+          },
+          createdBy: USER_ID,
+          createdByEmail: 'test@example.com'
+        }
+      ]) as any);
+
+    const completedAfter = '2026-06-15T00:00:00.000Z';
+    const params = new URLSearchParams({
+      type: 'install',
+      status: 'completed',
+      completedAfter
+    });
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/history?${params.toString()}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const whereClause = JSON.stringify(countWhere.mock.calls[0]?.[0]);
+    expect(whereClause).toContain('software_update');
+    expect(whereClause).toContain('"op":"gte"');
+    expect(whereClause).toContain(completedAfter);
+    expect(body.total).toBe(1);
+    expect(body.history).toHaveLength(1);
+    expect(body.history[0].type).toBe('software_update');
+    expect(body.history[0].result).toMatchObject({
+      installedCount: 1,
+      failedCount: 0,
+      success: true,
+      results: [
+        {
+          id: 'netbird',
+          installId: 'netbird',
+          name: 'netbird',
+          title: 'netbird',
+          source: 'linux',
+          externalId: 'netbird',
+          status: 'installed'
+        }
+      ]
+    });
   });
 
   it('queues install_patches command with patch metadata', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereResult([
-        { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
+        { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl@3.0.2-0ubuntu1.20', packageId: 'apt:openssl', title: 'OpenSSL' }
       ]) as any)
       .mockReturnValueOnce(selectWhereResult([
         { patchId: PATCH_ID }
@@ -248,7 +439,13 @@ describe('device patch routes', () => {
       'install_patches',
       {
         patchIds: [PATCH_ID],
-        patches: [{ id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }]
+        patches: [{
+          id: PATCH_ID,
+          source: 'linux',
+          externalId: 'apt:openssl@3.0.2-0ubuntu1.20',
+          packageId: 'apt:openssl',
+          title: 'OpenSSL'
+        }]
       },
       { userId: USER_ID, preferHeartbeat: false }
     );
@@ -337,8 +534,10 @@ describe('device patch routes', () => {
   it('does not issue the approvals query when a device has no patches', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     // Device-patch list resolves to an empty array → patchIds is empty →
-    // getApprovedPatchIdsForPartner short-circuits without a second db.select call.
-    vi.mocked(db.select).mockReturnValueOnce(selectPatchStatusResult([]) as any);
+    // getApprovedPatchIdsForPartner short-circuits without an approvals query.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
       method: 'GET',
@@ -352,8 +551,9 @@ describe('device patch routes', () => {
     expect(body.data.missing).toEqual([]);
     expect(body.data.installed).toEqual([]);
     expect(body.data.compliancePercent).toBe(100);
-    // Only the device-patch list query ran; the approvals query was skipped.
-    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(body.data.lastPatchScanAt).toBeNull();
+    // Only the device-patch list and last-scan queries ran; the approvals query was skipped.
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 
   it('queues rollback_patches command for a device patch', async () => {

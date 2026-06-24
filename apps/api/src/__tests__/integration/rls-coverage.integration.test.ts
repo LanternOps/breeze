@@ -58,6 +58,11 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
+  'vulnerability_sources', // Global vulnerability-source sync metadata. Forced RLS, no tenant policies → only system context.
+  'vulnerabilities', // Global vulnerability catalog. Forced RLS, no tenant policies → only system context.
+  'software_products', // Global normalized software dimension. Forced RLS, no tenant policies → only system context.
+  'software_vulnerabilities', // Global software-to-vulnerability match facts. Forced RLS, no tenant policies → only system context.
+  'os_vulnerabilities', // Global OS-to-vulnerability match facts. Forced RLS, no tenant policies → only system context.
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
 ]);
@@ -133,6 +138,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['pax8_subscription_snapshots', 'partner_id'],
   ['pax8_product_mappings', 'partner_id'],
   ['pax8_contract_line_links', 'partner_id'],
+  ['accounting_connections', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
   ['script_tags', 'partner_id'],
@@ -146,6 +152,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['catalog_items', 'partner_id'],
   ['catalog_bundle_components', 'partner_id'],
   ['td_synnex_digital_bridge_integrations', 'partner_id'],
+  ['td_synnex_ec_express_integrations', 'partner_id'],
   // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
   // ticket_email_inbound (only system scope may write null-partner rows);
   // NOT NULL on partner_inbound_domains. Policy:

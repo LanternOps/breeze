@@ -30,6 +30,7 @@ DECLARE
   v_patch_critical UUID;
   v_patch_important UUID;
   v_patch_moderate UUID;
+  v_vuln_critical UUID;
 BEGIN
   SELECT id INTO v_org_id FROM organizations LIMIT 1;
   IF v_org_id IS NULL THEN
@@ -199,6 +200,28 @@ BEGIN
   INSERT INTO device_patches (org_id, device_id, patch_id, status, last_checked_at)
   SELECT v_org_id, v_macos_device_id, v_patch_moderate, 'pending', NOW()
   WHERE NOT EXISTS (SELECT 1 FROM device_patches WHERE device_id = v_macos_device_id AND patch_id = v_patch_moderate);
+
+  -- Vulnerability management (BE-16): one open, KEV-flagged CVE on the Windows
+  -- device so the fleet dashboard + per-device tab render a row and the
+  -- accept-risk flow has something to act on. Idempotent like the rest.
+  SELECT id INTO v_vuln_critical FROM vulnerabilities WHERE cve_id = 'CVE-2025-E2E-0001' LIMIT 1;
+  IF v_vuln_critical IS NULL THEN
+    INSERT INTO vulnerabilities (cve_id, source, description, severity, cvss_version, cvss_score, known_exploited, patch_available, raw_payload)
+    VALUES ('CVE-2025-E2E-0001', 'nvd', 'E2E synthetic critical vulnerability', 'critical', '3.1', 9.8, true, true, '{"e2e": true}'::jsonb)
+    RETURNING id INTO v_vuln_critical;
+  END IF;
+
+  INSERT INTO device_vulnerabilities (org_id, device_id, vulnerability_id, status, risk_score, detected_at)
+  SELECT v_org_id, v_windows_device_id, v_vuln_critical, 'open', 100.00, NOW()
+  WHERE NOT EXISTS (
+    SELECT 1 FROM device_vulnerabilities WHERE device_id = v_windows_device_id AND vulnerability_id = v_vuln_critical
+  );
+
+  -- Reset to OPEN on every seed run so the accept-risk e2e (which mutates this
+  -- row to 'accepted') is re-runnable without a fresh DB.
+  UPDATE device_vulnerabilities
+    SET status = 'open', accepted_by = NULL, accepted_until = NULL, resolved_at = NULL, mitigation_note = NULL
+    WHERE device_id = v_windows_device_id AND vulnerability_id = v_vuln_critical;
 
   RAISE NOTICE 'E2E fixtures seeded for org %', v_org_id;
 END $$;

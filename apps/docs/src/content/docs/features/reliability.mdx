@@ -42,11 +42,22 @@ The Breeze agent collects reliability telemetry from platform-specific event sou
 
 The reliability score is a weighted composite of five sub-scores, each calculated from the device's event history over rolling time windows (7, 30, and 90 days).
 
+### Device-type-aware weighting
+
+Not every device should be judged the same way. A server or network device is *expected* to stay powered on, so its uptime is a meaningful reliability signal. A laptop or desktop workstation is *expected* to sleep and shut down every day — penalizing it for that would produce a misleadingly low score.
+
+Breeze therefore uses two weighting profiles based on device type:
+
+- **Servers, NAS, and network gear (and other always-on roles)** — uptime counts for 30% of the score, as in the table below.
+- **Workstations (laptops and desktops)** — uptime is **not** counted at all. The weight that uptime would have carried is redistributed across the fault factors that actually indicate a problem (crashes, hangs, service failures, hardware errors).
+
+The practical effect: a laptop that is shut down overnight but otherwise crash-free scores near 100, instead of being dragged down for normal power-off behavior. The factor weights in the next table apply to servers and infrastructure; workstation-class devices carry no uptime weight and proportionally higher fault weights.
+
 ### Factor Weights
 
 | Factor | Weight | Description |
 |--------|--------|-------------|
-| Uptime | 30% | Based on the 90-day uptime percentage. Score 100 at 100% uptime, linearly down to 0 at 90% or below |
+| Uptime | 30% (servers/infrastructure) / 0% (workstations) | Based on the uptime percentage since the device was enrolled, up to a 90-day window. Score 100 at 100% uptime, linearly down to 0 at 90% or below. Not counted for laptops and desktop workstations (see [Device-type-aware weighting](#device-type-aware-weighting)) |
 | Crashes | 25% | Penalizes crash events. Recent crashes (7-day) are weighted more heavily than 30-day crashes |
 | Hangs | 15% | Penalizes application hangs, with extra penalty for unresolved hangs |
 | Service Failures | 15% | Penalizes service failures, with partial credit for auto-recovered services |
@@ -68,7 +79,7 @@ reliabilityScore = clamp(0, 100,
 
 Each sub-score starts at 100 and is reduced by event counts with specific penalty multipliers:
 
-- **Uptime Score**: If uptime is &ge; 100%, score is 100. If &le; 90%, score is 0. Linear interpolation between 90% and 100%.
+- **Uptime Score**: If uptime is &ge; 100%, score is 100. If &le; 90%, score is 0. Linear interpolation between 90% and 100%. The measurement window starts at the device's enrollment time, so a recently enrolled device is measured only over the time it has actually existed in Breeze — newly enrolled devices no longer show artificially low uptime.
 - **Crash Score**: `100 - (crashCount30d + crashCount7d * 0.5) * 20`
 - **Hang Score**: `100 - hangCount30d * 10 - unresolvedHangCount30d * 20`
 - **Service Failure Score**: `100 - serviceFailureCount30d * 15 + recoveredServiceCount30d * 5`
@@ -197,6 +208,17 @@ Hardware errors are further classified by severity:
 ---
 
 ## Viewing Reliability Data
+
+### In the device list
+
+The **Devices** list includes a sortable **Reliability** column. Each device shows a colored score badge (0–100) with a trend arrow — improving, stable, or degrading — colored by band. Click the column header to sort the fleet worst-first or best-first. Devices that don't have a score yet (newly enrolled, or network devices) show a dash.
+
+### On the device detail page
+
+Open a device and find the **Reliability** card. It shows the current score, trend, uptime, mean time between failures (MTBF), and the top factors dragging the score down. Two actions are available:
+
+- **Ask AI about reliability** — hands the device's reliability snapshot to the Breeze AI assistant for a plain-language diagnosis and suggested next steps.
+- **Mark outcome** — record what actually happened with the device so the reliability model learns from it. The options are **Device failed**, **Device replaced**, and **False alarm**. Marking an outcome trains the reliability model; it does not change the device itself.
 
 ### Fleet Overview
 
@@ -343,6 +365,9 @@ Reliability data appears after the agent has submitted at least one telemetry pa
 
 **Reliability score seems too low despite no visible issues.**
 The score is a composite of five factors with different weights. A device can have a low score due to a single factor being severely penalized. Use `GET /reliability/:deviceId` to inspect the individual sub-scores (`uptimeScore`, `crashScore`, `hangScore`, `serviceFailureScore`, `hardwareErrorScore`) and identify which factor is dragging the score down. For example, a 90% uptime over 90 days produces an uptime sub-score of 0, which alone would reduce the overall score by up to 30 points.
+
+**A laptop's reliability score looks fine even though it's powered off a lot.**
+This is expected. Laptops and desktop workstations are not scored on uptime — they're expected to sleep and shut down — so normal power-off behavior does not lower their reliability score. Only servers and infrastructure are scored on uptime.
 
 **Trend direction shows `stable` with low confidence.**
 Trend computation requires at least 3 days of data and achieves full confidence at 14+ days. If the device was recently enrolled or has sparse telemetry, the trend will default to `stable` with `trendConfidence: 0`. Allow the device to accumulate more history before relying on trend data.

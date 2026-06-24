@@ -19,6 +19,16 @@ export default defineConfig({
       // (manifestSigning.integration.test.ts is intentionally NOT excluded: it is
       // a mocked unit test despite its name and belongs to this unit runner.)
       'src/services/inboundEmail/**/*.integration.test.ts',
+      // BE-16 vulnerability management: co-located real-DB integration tests that
+      // import `__tests__/integration/setup` (real postgres pool + autoMigrate in
+      // its beforeAll). They belong to vitest.integration.config.ts; in the unit
+      // runner (no DB) the setup connection fails the suite. Same rationale as the
+      // inboundEmail exclusion above.
+      'src/services/vulnerability*.integration.test.ts',
+      'src/services/aiToolsVulnerability.integration.test.ts',
+      'src/services/cpeMap.integration.test.ts',
+      'src/services/exploitFeeds.integration.test.ts',
+      'src/jobs/vulnerability*.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

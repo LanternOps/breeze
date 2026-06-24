@@ -36,11 +36,16 @@ func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
+	adjacency := scanner.CollectAdjacency(hosts)
+	if adjacency == nil {
+		adjacency = []discovery.DeviceAdjacency{}
+	}
 	return tools.NewSuccessResult(map[string]any{
 		"jobId":           tools.GetPayloadString(cmd.Payload, "jobId", ""),
 		"hosts":           hosts,
 		"hostsScanned":    targetCount,
 		"hostsDiscovered": len(hosts),
+		"adjacency":       adjacency,
 	}, time.Since(start).Milliseconds())
 }
 

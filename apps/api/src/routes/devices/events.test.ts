@@ -78,7 +78,7 @@ vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
-import { eventsRoutes, likePrefixPattern } from './events';
+import { eventsRoutes, likePrefixPattern, formatActionMessage } from './events';
 
 describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
   it('appends a trailing wildcard for a clean dotted prefix', () => {
@@ -94,6 +94,29 @@ describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
 
   it('escapes all metacharacters in a single value', () => {
     expect(likePrefixPattern('a_b%c\\d')).toBe('a\\_b\\%c\\\\d%');
+  });
+});
+
+describe('formatActionMessage (automated command labels)', () => {
+  it('labels automated patch installs', () => {
+    expect(formatActionMessage('agent.command.install_patches', 'host-1', 'success'))
+      .toBe('Patches installed — host-1');
+  });
+
+  it('labels automated script runs', () => {
+    expect(formatActionMessage('agent.command.script', null, 'success'))
+      .toBe('Script ran');
+  });
+
+  it('marks a failed automated patch install', () => {
+    expect(formatActionMessage('agent.command.install_patches', 'host-1', 'failure'))
+      .toBe('Patches installed — host-1 (failed)');
+  });
+
+  it('labels rollback, uninstall, and update', () => {
+    expect(formatActionMessage('agent.command.rollback_patches', null, 'success')).toBe('Patches rolled back');
+    expect(formatActionMessage('agent.command.software_uninstall', null, 'success')).toBe('Software uninstalled');
+    expect(formatActionMessage('agent.command.software_update', null, 'success')).toBe('Software updated');
   });
 });
 
@@ -164,6 +187,30 @@ describe('GET /devices/:id/events validation', () => {
       );
       expect(res.status).toBe(200);
     }
+  });
+
+  it('accepts includeAutomated=true', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?includeAutomated=true',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts includeAutomated=false', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?includeAutomated=false',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an invalid includeAutomated value with 400', async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events?includeAutomated=maybe',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(400);
   });
 
   it('rejects an actions value over 500 chars with 400', async () => {

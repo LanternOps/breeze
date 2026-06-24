@@ -100,7 +100,7 @@ One row per partner (`UNIQUE(partner_id)`).
 | `credentials` | jsonb NOT NULL | **encrypted** fields `{ email, password, customerNo }` (see §6) |
 | `settings` | jsonb NOT NULL | `{ defaultWarehouse: 'ANY', hideZeroInv: false, defaultMarkupPercent?: number }` |
 | `enabled` | boolean NOT NULL | default `false` |
-| `last_test_status` | varchar(16) | `ok` / `error` / null |
+| `last_test_status` | varchar(16) | `success` / `failed` / null |
 | `last_test_at` | timestamptz | |
 | `last_test_error` | text | |
 | `created_by` | uuid | FK → users (nullable, like Digital Bridge) |

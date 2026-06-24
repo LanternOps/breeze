@@ -5,7 +5,11 @@ import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
 
-type ConditionType = 'metric' | 'status' | 'custom';
+// `offline` is the type understood by the API condition evaluator. The legacy
+// editor emitted `status` with a `duration` field; we normalize those on load
+// (see normalizeConditions) and always emit the `offline`/`durationMinutes`
+// shape on save so rules actually evaluate (issue #1857).
+type ConditionType = 'metric' | 'offline' | 'custom';
 type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 type Condition = {
@@ -13,7 +17,7 @@ type Condition = {
   metric?: string;
   operator?: string;
   value?: number;
-  duration?: number;
+  durationMinutes?: number;
   field?: string;
   customCondition?: string;
 };
@@ -42,11 +46,15 @@ const severityOptions: { value: AlertSeverity; label: string; color: string }[] 
   { value: 'info', label: 'Info', color: 'bg-gray-500' },
 ];
 
+// Only metrics with a percentage column in device_metrics that the API
+// threshold evaluator (METRIC_NAME_MAP) understands. "Network Usage" was
+// removed: there is no network-usage percentage column to compare against,
+// so the option never fired (issue #1857). Bandwidth alerting has its own
+// dedicated condition type and is not exposed via this simple % dropdown.
 const metricOptions = [
   { value: 'cpu', label: 'CPU Usage' },
   { value: 'ram', label: 'Memory Usage' },
   { value: 'disk', label: 'Disk Usage' },
-  { value: 'network', label: 'Network Usage' },
 ];
 
 const operatorOptions = [
@@ -60,15 +68,28 @@ const operatorOptions = [
 
 const conditionTypeOptions = [
   { value: 'metric', label: 'Metric' },
-  { value: 'status', label: 'Status' },
+  { value: 'offline', label: 'Device Offline' },
   { value: 'custom', label: 'Custom' },
 ];
+
+// Migrate a single condition from the legacy `{type:'status', duration}` shape
+// to the canonical `{type:'offline', durationMinutes}` shape the evaluator reads.
+// Legacy persisted shape, before the `status`→`offline` / `duration`→`durationMinutes` rename.
+type RawCondition = Omit<Condition, 'type'> & { type: ConditionType | 'status'; duration?: number };
+
+function normalizeCondition(condition: Condition): Condition {
+  const { type, durationMinutes, duration, ...rest } = condition as RawCondition;
+  if (type === 'status' || type === 'offline') {
+    return { ...rest, type: 'offline', durationMinutes: durationMinutes ?? duration ?? 5 };
+  }
+  return { ...rest, type } as Condition;
+}
 
 function normalizeConditions(item: AlertItem): AlertItem {
   if (!Array.isArray(item.conditions)) {
     return { ...item, conditions: [...defaultItem.conditions] };
   }
-  return item;
+  return { ...item, conditions: item.conditions.map(normalizeCondition) };
 }
 
 function loadItems(existingLink: FeatureTabProps['existingLink']): AlertItem[] {
@@ -372,14 +393,14 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                                 </>
                               )}
 
-                              {condition.type === 'status' && (
+                              {condition.type === 'offline' && (
                                 <div className="sm:col-span-3">
                                   <label className="text-xs font-medium text-muted-foreground">Offline Duration (min)</label>
                                   <input
                                     type="number"
                                     min={1}
-                                    value={condition.duration ?? 5}
-                                    onChange={(e) => updateCondition(index, ci, { duration: Number(e.target.value) })}
+                                    value={condition.durationMinutes ?? 5}
+                                    onChange={(e) => updateCondition(index, ci, { durationMinutes: Number(e.target.value) })}
                                     className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                   />
                                 </div>

@@ -454,6 +454,14 @@ const envSchema = z
     STRIPE_SECRET_KEY: z.string().optional(),
     STRIPE_WEBHOOK_SECRET: z.string().optional(),
 
+    // QuickBooks Online accounting connection foundation. These are optional
+    // at boot because Phase A validates them lazily when a partner starts the
+    // OAuth connect flow; missing values should not disable unrelated API use.
+    QBO_CLIENT_ID: z.string().optional(),
+    QBO_CLIENT_SECRET: z.string().optional(),
+    QBO_REDIRECT_URI: z.string().optional(),
+    QBO_ENVIRONMENT: z.string().optional(),
+
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),
     S3_ACCESS_KEY: z.string().optional(),

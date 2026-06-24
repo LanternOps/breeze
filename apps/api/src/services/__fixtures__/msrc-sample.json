@@ -1,0 +1,541 @@
+{
+  "DocumentTitle": {
+    "Value": "August 2025 Security Updates"
+  },
+  "ProductTree": {
+    "FullProductName": [
+      {
+        "ProductID": "11569",
+        "CPE": "cpe:2.3:o:microsoft:windows_10_1809:10.0.17763.7678:*:*:*:*:*:x64:*",
+        "Value": "Windows 10 Version 1809 for x64-based Systems"
+      },
+      {
+        "ProductID": "11571",
+        "CPE": "cpe:2.3:o:microsoft:windows_server_2019:10.0.17763.7678:*:*:*:*:*:*:*",
+        "Value": "Windows Server 2019"
+      },
+      {
+        "ProductID": "11572",
+        "CPE": "cpe:2.3:o:microsoft:windows_server_2019:10.0.17763.7678:*:*:*:*:*:*:*",
+        "Value": "Windows Server 2019 (Server Core installation)"
+      },
+      {
+        "ProductID": "11923",
+        "CPE": "cpe:2.3:o:microsoft:windows_server_2022:10.0.20348.4052:*:*:*:*:*:*:*",
+        "Value": "Windows Server 2022"
+      },
+      {
+        "ProductID": "11924",
+        "CPE": "cpe:2.3:o:microsoft:windows_server_2022:10.0.20348.4052:*:*:*:*:*:*:*",
+        "Value": "Windows Server 2022 (Server Core installation)"
+      }
+    ]
+  },
+  "Vulnerability": [
+    {
+      "CVE": "CVE-2025-49751",
+      "CVSSScoreSets": [
+        {
+          "BaseScore": 6.8,
+          "TemporalScore": 5.9,
+          "EnvironmentalScore": 0,
+          "Vector": "CVSS:3.1/AV:A/AC:L/PR:L/UI:N/S:C/C:N/I:N/A:H/E:U/RL:O/RC:C",
+          "ProductID": [
+            "11569"
+          ],
+          "IsTemporalScoreFieldSpecified": false
+        }
+      ],
+      "Threats": [
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "11569"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "11571"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "11572"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "11923"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "11924"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "11931"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12085"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12086"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12097"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12437"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12242"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12243"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12244"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12389"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12390"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "12436"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "10853"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "10816"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Denial of Service"
+          },
+          "ProductID": [
+            "10855"
+          ],
+          "Type": 0,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "11569"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "11571"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "11572"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "11923"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "11924"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "11931"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12085"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12086"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12097"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12437"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12242"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12243"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12244"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12389"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12390"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "12436"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "10853"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "10816"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Important"
+          },
+          "ProductID": [
+            "10855"
+          ],
+          "Type": 3,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        },
+        {
+          "Description": {
+            "Value": "Publicly Disclosed:No;Exploited:No;Latest Software Release:Exploitation Less Likely"
+          },
+          "Type": 1,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false
+        }
+      ],
+      "Remediations": [
+        {
+          "Description": {
+            "Value": "5063877"
+          },
+          "URL": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5063877",
+          "Supercedence": "5062557",
+          "ProductID": [
+            "11569",
+            "11571",
+            "11572"
+          ],
+          "Type": 2,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false,
+          "AffectedFiles": [],
+          "RestartRequired": {
+            "Value": "Yes"
+          },
+          "SubType": "Security Update",
+          "FixedBuild": "10.0.17763.7678"
+        },
+        {
+          "Description": {
+            "Value": "5063880"
+          },
+          "URL": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5063880",
+          "Supercedence": "5062572",
+          "ProductID": [
+            "11923",
+            "11924"
+          ],
+          "Type": 2,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false,
+          "AffectedFiles": [],
+          "RestartRequired": {
+            "Value": "Yes"
+          },
+          "SubType": "Security Update",
+          "FixedBuild": "10.0.20348.4052"
+        },
+        {
+          "Description": {
+            "Value": "5063812"
+          },
+          "URL": "https://catalog.update.microsoft.com/v7/site/Search.aspx?q=KB5063812",
+          "ProductID": [
+            "11923",
+            "11924"
+          ],
+          "Type": 2,
+          "Date": "0001-01-01T00:00:00",
+          "DateSpecified": false,
+          "AffectedFiles": [],
+          "RestartRequired": {
+            "Value": "Yes"
+          },
+          "SubType": "SecurityHotpatchUpdate",
+          "FixedBuild": "10.0.20348.3989"
+        }
+      ]
+    }
+  ]
+}

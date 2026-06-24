@@ -6,6 +6,13 @@ type FeatureTabShellProps = {
   description: string;
   icon: ReactNode;
   isConfigured: boolean;
+  /**
+   * When the tab is configured (a feature link exists) but the feature is not
+   * actually being deployed/enabled, pass true so the badge reflects "saved but
+   * inactive" instead of a green "Configured". Optional; does not affect the
+   * Remove control, which still keys off isConfigured (#1863).
+   */
+  configuredButInactive?: boolean;
   saving: boolean;
   error?: string;
   onSave: () => void;
@@ -24,6 +31,7 @@ export default function FeatureTabShell({
   description,
   icon,
   isConfigured,
+  configuredButInactive,
   saving,
   error,
   onSave,
@@ -33,17 +41,23 @@ export default function FeatureTabShell({
   onRevert,
   children,
 }: FeatureTabShellProps) {
+  const savedInactive = !isInherited && isConfigured && !!configuredButInactive;
+
   const badgeText = isInherited
     ? 'Configured (inherited)'
-    : isConfigured
-      ? 'Configured'
-      : 'Not configured';
+    : savedInactive
+      ? 'Saved (not deployed)'
+      : isConfigured
+        ? 'Configured'
+        : 'Not configured';
 
   const badgeClass = isInherited
     ? 'border-blue-500/40 bg-blue-500/20 text-blue-700'
-    : isConfigured
-      ? 'border-green-500/40 bg-green-500/20 text-green-700'
-      : 'border-muted bg-muted/50 text-muted-foreground';
+    : savedInactive
+      ? 'border-amber-500/40 bg-amber-500/20 text-amber-700'
+      : isConfigured
+        ? 'border-green-500/40 bg-green-500/20 text-green-700'
+        : 'border-muted bg-muted/50 text-muted-foreground';
 
   return (
     <div className="space-y-6">

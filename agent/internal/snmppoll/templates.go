@@ -45,3 +45,21 @@ func GetTemplate(deviceType string) []string {
 
 	return template
 }
+
+// LLDP (IEEE 802.1AB) lldpRemTable columns under 1.0.8802.1.1.2.1.4.1.1.
+const (
+	LldpRemChassisIDOID = "1.0.8802.1.1.2.1.4.1.1.5" // lldpRemChassisId
+	LldpRemPortIDOID    = "1.0.8802.1.1.2.1.4.1.1.7" // lldpRemPortId
+	LldpRemSysNameOID   = "1.0.8802.1.1.2.1.4.1.1.9" // lldpRemSysName
+	LldpLocPortIDOID    = "1.0.8802.1.1.2.1.3.7.1.3" // lldpLocPortId
+)
+
+// Cisco CDP cdpCacheTable columns under 1.3.6.1.4.1.9.9.23.1.2.1.1.
+const (
+	CdpCacheDeviceIDOID   = "1.3.6.1.4.1.9.9.23.1.2.1.1.6" // cdpCacheDeviceId
+	CdpCacheDevicePortOID = "1.3.6.1.4.1.9.9.23.1.2.1.1.7" // cdpCacheDevicePort
+	CdpCacheAddressOID    = "1.3.6.1.4.1.9.9.23.1.2.1.1.4" // cdpCacheAddress
+)
+
+// IfNameOID is ifName (ifXTable), used to resolve a local ifIndex to a port name.
+const IfNameOID = "1.3.6.1.2.1.31.1.1.1.1"
