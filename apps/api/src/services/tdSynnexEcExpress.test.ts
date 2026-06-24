@@ -35,6 +35,8 @@ import {
   parsePnaResponse,
   importEcExpressCatalogItem,
   testEcExpressConnection,
+  lookupEcExpressProducts,
+  redactProviderError,
 } from './tdSynnexEcExpress';
 import { createCatalogItem } from './catalogService';
 
@@ -242,8 +244,10 @@ describe('tdSynnexEcExpress service', () => {
       });
     });
 
-    it('rejects unsupported regions', async () => {
-      await expect(saveEcExpressConfig({ region: 'INVALID', enabled: true }, actor))
+    it('rejects unsupported regions (defense-in-depth past the route enum)', async () => {
+      // The route validates region against the enum, but the service keeps its own
+      // guard. Cast past the typed input to exercise it.
+      await expect(saveEcExpressConfig({ region: 'INVALID' as never, enabled: true }, actor))
         .rejects.toMatchObject({ code: 'EC_UNSUPPORTED_REGION', status: 400 });
     });
 
@@ -322,11 +326,12 @@ describe('tdSynnexEcExpress service', () => {
       mocks.db.update.mockReturnValueOnce(updateChainMock);
 
       await expect(testEcExpressConnection(actor))
-        .rejects.toMatchObject({ code: 'EC_AUTH_FAILED', status: 401 });
+        .rejects.toMatchObject({ code: 'EC_AUTH_FAILED', status: 422 });
 
       const setArg = updateChainMock.set.mock.calls[0]![0];
       expect(setArg.lastTestStatus).toBe('failed');
-      expect(setArg.lastTestError).toMatch(/login failed/i);
+      // Generic auth message — never echoes provider auth text.
+      expect(setArg.lastTestError).toBe('TD SYNNEX authentication failed');
     });
 
     it('throws EC_NOT_CONFIGURED when no integration row exists', async () => {
@@ -342,7 +347,7 @@ describe('tdSynnexEcExpress service', () => {
     it('carries the correct HTTP status for each error code', () => {
       expect(new TdSynnexEcExpressError('', 'EC_PARTNER_REQUIRED').status).toBe(400);
       expect(new TdSynnexEcExpressError('', 'EC_NOT_CONFIGURED').status).toBe(404);
-      expect(new TdSynnexEcExpressError('', 'EC_AUTH_FAILED').status).toBe(401);
+      expect(new TdSynnexEcExpressError('', 'EC_AUTH_FAILED').status).toBe(422);
       expect(new TdSynnexEcExpressError('', 'EC_PROVIDER_ERROR').status).toBe(502);
       expect(new TdSynnexEcExpressError('', 'EC_DUPLICATE_SKU').status).toBe(409);
     });
@@ -357,7 +362,7 @@ describe('tdSynnexEcExpress service', () => {
 
 it('builds a WS-Security envelope with semicolon-joined username and escaped values', () => {
   const xml = buildSoapEnvelope({ email: 'a@b.co', password: 'p<w&d', customerNo: '654906' },
-    [{ kind: 'sku', value: '8938995' }], { defaultWarehouse: 'ANY', hideZeroInv: false });
+    [{ kind: 'sku', synnexSku: '8938995' }], { defaultWarehouse: 'ANY', hideZeroInv: false });
   expect(xml).toContain('<wsse:Username>a@b.co;654906</wsse:Username>');
   expect(xml).toContain('<wsse:Password>p&lt;w&amp;d</wsse:Password>');
   expect(xml).toContain('<synnexSku>8938995</synnexSku>');
@@ -368,16 +373,18 @@ it('parses a real multi-SKU PA response into products', () => {
   const xml = readFileSync(join(__dirname, '__fixtures__/ec-express-pna-response.xml'), 'utf8');
   const products = parsePnaResponse(xml);
   expect(products).toHaveLength(2);
-  expect(products[0]!).toMatchObject({ synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', cost: '381.35', msrp: '549.99', totalQty: 1437, parcelShippable: 'Y' });
+  expect(products[0]!).toMatchObject({ synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', cost: 381.35, msrp: 549.99, totalQty: 1437, parcelShippable: 'Y' });
   expect(products[0]!.warehouses).toHaveLength(2);
   expect(products[1]!.discount).toBeNull(); // missing <discount> tolerated
+  expect(products[1]!.warehouses).toHaveLength(1); // single <stock> coerced to a one-element array
 });
 
-it('maps soap:Fault "user login failed" to EC_AUTH_FAILED', () => {
+it('maps soap:Fault "user login failed" to EC_AUTH_FAILED with a generic message', () => {
   const fault = '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultcode>soap:000000</faultcode><faultstring>user login failed</faultstring></soap:Fault></soap:Body></soap:Envelope>';
-  expect(() => parsePnaResponse(fault)).toThrow(/login failed/i);
+  // Provider auth text is never echoed — a generic message is surfaced instead.
+  expect(() => parsePnaResponse(fault)).toThrow('TD SYNNEX authentication failed');
   expect(() => parsePnaResponse(fault)).toThrow(
-    expect.objectContaining({ code: 'EC_AUTH_FAILED', status: 401 })
+    expect.objectContaining({ code: 'EC_AUTH_FAILED', status: 422 })
   );
 });
 
@@ -386,7 +393,7 @@ it('handles single (non-array) priceAvail in response', () => {
   const products = parsePnaResponse(xml);
   expect(products).toHaveLength(1);
   expect(products[0]!.synnexSku).toBe('1234567');
-  expect(products[0]!.cost).toBe('99.99');
+  expect(products[0]!.cost).toBe(99.99);
 });
 
 it('maps msrp === "0" to null', () => {
@@ -397,10 +404,115 @@ it('maps msrp === "0" to null', () => {
 
 it('imports a product into the catalog with a distributor snapshot', async () => {
   const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item1' } as any);
-  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'Dell U2724D', description: 'Dell U2724D', currency: 'USD', cost: '381.35', msrp: '549.99', discount: null, totalQty: 1437, warehouses: [], weight: '20.50', parcelShippable: 'Y', raw: {} };
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'Dell U2724D', description: 'Dell U2724D', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1437, warehouses: [], weight: 20.50, parcelShippable: 'Y', raw: {} };
   await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35, taxable: true } }, actor);
   const arg = createSpy.mock.calls[0]![0];
   expect(arg).toMatchObject({ itemType: 'hardware', name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35 });
   expect((arg.attributes as any).distributor.source).toBe('td_synnex_ec_express');
   expect((arg.attributes as any).distributor.synnexSku).toBe('8938995');
+});
+
+it('maps a one-p <parcelShipable> tag to parcelShippable', () => {
+  const xml = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return><priceAvail><synnexSku>5550000</synnexSku><price>10.00</price><parcelShipable>N</parcelShipable></priceAvail></return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>`;
+  const products = parsePnaResponse(xml);
+  expect(products[0]!.parcelShippable).toBe('N');
+});
+
+it('maps a generic non-auth soap:Fault to EC_PROVIDER_ERROR', () => {
+  const fault = '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultcode>soap:Server</faultcode><faultstring>internal server error</faultstring></soap:Fault></soap:Body></soap:Envelope>';
+  expect(() => parsePnaResponse(fault)).toThrow(
+    expect.objectContaining({ code: 'EC_PROVIDER_ERROR', status: 502 })
+  );
+});
+
+it('maps a <return><errorMessage> to EC_PROVIDER_ERROR', () => {
+  const xml = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return><errorMessage>invalid request</errorMessage></return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>`;
+  expect(() => parsePnaResponse(xml)).toThrow(
+    expect.objectContaining({ code: 'EC_PROVIDER_ERROR', status: 502 })
+  );
+});
+
+it('redacts credentials from provider error text', () => {
+  const creds = { email: 'buyer@msp.test', password: 'sup3rsecret', customerNo: '654906' };
+  const fault = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultcode>soap:Server</faultcode><faultstring>request from buyer@msp.test;654906 with sup3rsecret rejected</faultstring></soap:Fault></soap:Body></soap:Envelope>`;
+  try {
+    parsePnaResponse(fault, creds);
+    throw new Error('expected parsePnaResponse to throw');
+  } catch (err) {
+    const msg = (err as Error).message;
+    expect(msg).not.toContain('buyer@msp.test');
+    expect(msg).not.toContain('sup3rsecret');
+    expect(msg).not.toContain('654906');
+    expect(msg).toContain('[redacted]');
+  }
+});
+
+it('redactProviderError strips the combined username, email, customerNo, and password', () => {
+  const out = redactProviderError(
+    'auth for a@b.co;123 with pw failed (a@b.co / 123)',
+    { email: 'a@b.co', password: 'pw', customerNo: '123' }
+  );
+  expect(out).not.toContain('a@b.co');
+  expect(out).not.toContain('pw');
+  expect(out).not.toContain('123');
+});
+
+describe('lookupEcExpressProducts', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function activeRow() {
+    return { ...fullRow };
+  }
+
+  it('builds a sku-kind lookup for an all-digit query (synnexSku in envelope)', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([activeRow()]));
+    let sentBody = '';
+    mocks.safeFetch.mockImplementationOnce(async (_url: string, init: { body: string }) => {
+      sentBody = init.body;
+      return xmlResponse(
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+        + '<ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return>'
+        + '<priceAvail><synnexSku>8938995</synnexSku><status>ACTIVE</status><price>1.00</price></priceAvail>'
+        + '</return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>'
+      );
+    });
+
+    const products = await lookupEcExpressProducts('8938995', actor);
+    expect(products).toHaveLength(1);
+    expect(sentBody).toContain('<synnexSku>8938995</synnexSku>');
+    expect(sentBody).not.toContain('<mfgPartNo>');
+  });
+
+  it('builds an mpn-kind lookup for an alphanumeric query (mfgPartNo in envelope)', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([activeRow()]));
+    let sentBody = '';
+    mocks.safeFetch.mockImplementationOnce(async (_url: string, init: { body: string }) => {
+      sentBody = init.body;
+      return xmlResponse(
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+        + '<ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return>'
+        + '<priceAvail><synnexSku>1</synnexSku><mfgPartNo>DELL-U2724D</mfgPartNo><status>ACTIVE</status><price>1.00</price></priceAvail>'
+        + '</return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>'
+      );
+    });
+
+    const products = await lookupEcExpressProducts('DELL-U2724D', actor);
+    expect(products).toHaveLength(1);
+    expect(sentBody).toContain('<mfgPartNo>DELL-U2724D</mfgPartNo>');
+    expect(sentBody).not.toContain('<synnexSku>DELL-U2724D</synnexSku>');
+  });
+
+  it('throws EC_DISABLED when the integration is configured but disabled', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([{ ...fullRow, enabled: false }]));
+    await expect(lookupEcExpressProducts('8938995', actor))
+      .rejects.toMatchObject({ code: 'EC_DISABLED', status: 400 });
+    expect(mocks.safeFetch).not.toHaveBeenCalled();
+  });
+
+  it('throws EC_NO_RESULTS when every result is NOTFOUND', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([activeRow()]));
+    mocks.safeFetch.mockResolvedValueOnce(xmlResponse(PA_NOTFOUND_XML));
+    await expect(lookupEcExpressProducts('8938995', actor))
+      .rejects.toMatchObject({ code: 'EC_NO_RESULTS', status: 404 });
+  });
 });

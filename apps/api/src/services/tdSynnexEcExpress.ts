@@ -11,9 +11,11 @@ const TABLE = 'td_synnex_ec_express_integrations';
 const CREDENTIALS_COLUMN = 'credentials';
 export const EC_MASKED_SECRET = '********';
 
-const REGION_ENDPOINTS: Record<string, string> = {
+export const REGION_ENDPOINTS = {
   US: 'https://ws.synnex.com/webservice/pnaserviceV05',
-};
+} as const;
+
+export type EcRegion = keyof typeof REGION_ENDPOINTS;
 
 // Single source of truth for the HTTP status each error code maps to.
 const EC_ERROR_STATUS = {
@@ -21,7 +23,7 @@ const EC_ERROR_STATUS = {
   EC_NOT_CONFIGURED: 404,
   EC_DISABLED: 400,
   EC_CREDENTIALS_INVALID: 400,
-  EC_AUTH_FAILED: 401,
+  EC_AUTH_FAILED: 422,
   EC_PROVIDER_ERROR: 502,
   EC_NO_RESULTS: 404,
   EC_DUPLICATE_SKU: 409,
@@ -55,10 +57,18 @@ export interface TdSynnexEcExpressSettings {
 }
 
 export interface TdSynnexEcExpressConfigInput {
-  region: string;
+  region: EcRegion;
   enabled: boolean;
   credentials?: TdSynnexEcExpressCredentials;
   settings?: TdSynnexEcExpressSettings;
+}
+
+export interface EcWarehouseStock {
+  code: string | null;
+  available: number;
+  onOrder: number;
+  bo: number;
+  eta: string | null;
 }
 
 export interface TdSynnexEcProduct {
@@ -69,12 +79,12 @@ export interface TdSynnexEcProduct {
   name: string;
   description: string | null;
   currency: string | null;
-  cost: string | null;       // <price> = reseller cost
-  msrp: string | null;
-  discount: string | null;
+  cost: number | null;       // <price> = reseller cost
+  msrp: number | null;
+  discount: number | null;
   totalQty: number | null;
-  warehouses: Array<{ code: string | null; available: number; onOrder: number; bo: number; eta: string | null }>;
-  weight: string | null;
+  warehouses: EcWarehouseStock[];
+  weight: number | null;
   parcelShippable: string | null;
   raw: Record<string, unknown>;
 }
@@ -214,7 +224,7 @@ export async function saveEcExpressConfig(input: TdSynnexEcExpressConfigInput, a
 // price-availability call (lookup + connection test) and config validation.
 
 export function endpointForRegion(region: string): string {
-  const url = REGION_ENDPOINTS[region];
+  const url = (REGION_ENDPOINTS as Record<string, string>)[region];
   if (!url) {
     throw new TdSynnexEcExpressError(`Unsupported region: ${region}`, 'EC_UNSUPPORTED_REGION');
   }
@@ -244,7 +254,31 @@ const WSSE = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity
 const PNA_NS = 'http://pnaV05.model.ws.synnex.com/';
 const REQUEST_TIMEOUT_MS = 15_000;
 
-export type LookupItem = { kind: 'sku' | 'mpn'; value: string };
+export type LookupItem =
+  | { kind: 'sku'; synnexSku: string }
+  | { kind: 'mpn'; mfgPartNo: string };
+
+// Strip any occurrence of partner credentials from provider-originated fault /
+// error text before it is thrown, persisted (last_test_error), or returned to
+// the client. The PNA WS-Security username is `${email};${customerNo}` — redact
+// that combined form too, not just the parts.
+export function redactProviderError(
+  msg: string,
+  creds?: { email?: string | null; password?: string | null; customerNo?: string | null }
+): string {
+  if (!creds) return msg;
+  const secrets = [
+    creds.email && creds.customerNo ? `${creds.email};${creds.customerNo}` : null,
+    creds.email,
+    creds.customerNo,
+    creds.password,
+  ].filter((s): s is string => typeof s === 'string' && s.length > 0);
+  let out = msg;
+  for (const secret of secrets) {
+    out = out.split(secret).join('[redacted]');
+  }
+  return out;
+}
 
 function xmlEscape(v: string): string {
   return v.replace(/[<>&'"]/g, (ch) =>
@@ -264,8 +298,8 @@ export function buildSoapEnvelope(
   const skuXml = items
     .map((it) =>
       it.kind === 'sku'
-        ? `<skuList><synnexSku>${xmlEscape(it.value)}</synnexSku></skuList>`
-        : `<skuList><mfgPartNo>${xmlEscape(it.value)}</mfgPartNo></skuList>`
+        ? `<skuList><synnexSku>${xmlEscape(it.synnexSku)}</synnexSku></skuList>`
+        : `<skuList><mfgPartNo>${xmlEscape(it.mfgPartNo)}</mfgPartNo></skuList>`
     )
     .join('');
   return (
@@ -291,13 +325,21 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Parse a provider value into a finite number, or null. An absent / empty /
+// non-numeric value (including NaN / Infinity) collapses to null.
+function numOrNull(v: unknown): number | null {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function str(v: unknown): string | null {
   return v === undefined || v === null || v === '' ? null : String(v);
 }
 
 function normalizeDetail(d: Record<string, unknown>): TdSynnexEcProduct {
   const rawStock = d.stock === undefined ? [] : Array.isArray(d.stock) ? d.stock : [d.stock];
-  const warehouses = (rawStock as Record<string, unknown>[]).map((s) => ({
+  const warehouses: EcWarehouseStock[] = (rawStock as Record<string, unknown>[]).map((s) => ({
     code: str(s['@_code']),
     available: num(s.available) ?? 0,
     onOrder: num(s.onOrder) ?? 0,
@@ -306,7 +348,7 @@ function normalizeDetail(d: Record<string, unknown>): TdSynnexEcProduct {
   }));
   // live response spells it parcelShippable (two p's); WSDL says parcelShipable — accept both.
   const parcel = str(d.parcelShippable) ?? str(d.parcelShipable);
-  const msrp = str(d.msrp);
+  const msrp = numOrNull(d.msrp);
   return {
     source: 'td_synnex_ec_express',
     synnexSku: String(d.synnexSku ?? ''),
@@ -315,29 +357,38 @@ function normalizeDetail(d: Record<string, unknown>): TdSynnexEcProduct {
     name: str(d.description) ?? String(d.synnexSku ?? ''),
     description: str(d.description),
     currency: str(d.currency),
-    cost: str(d.price),
-    msrp: msrp === '0' ? null : msrp,
-    discount: str(d.discount),
+    cost: numOrNull(d.price),
+    msrp: msrp === 0 ? null : msrp,
+    discount: numOrNull(d.discount),
     totalQty: num(d.totalQty),
     warehouses,
-    weight: str(d.weight),
+    weight: numOrNull(d.weight),
     parcelShippable: parcel,
     raw: d,
   };
 }
 
-export function parsePnaResponse(xml: string): TdSynnexEcProduct[] {
+export function parsePnaResponse(
+  xml: string,
+  creds?: { email?: string | null; password?: string | null; customerNo?: string | null }
+): TdSynnexEcProduct[] {
   const doc = pnaParser.parse(xml) as Record<string, any>;
   const body = doc?.Envelope?.Body;
   if (!body) throw new TdSynnexEcExpressError('Malformed TD SYNNEX response', 'EC_PROVIDER_ERROR');
   const fault = body.Fault;
   if (fault) {
-    const msg = String(fault.faultstring ?? 'TD SYNNEX PA fault');
-    if (/login failed/i.test(msg)) throw new TdSynnexEcExpressError(msg, 'EC_AUTH_FAILED');
-    throw new TdSynnexEcExpressError(msg, 'EC_PROVIDER_ERROR');
+    const raw = String(fault.faultstring ?? 'TD SYNNEX PA fault');
+    // Auth faults surface a generic message — never echo provider auth text,
+    // which may embed or reflect the submitted credentials.
+    if (/login failed/i.test(raw)) {
+      throw new TdSynnexEcExpressError('TD SYNNEX authentication failed', 'EC_AUTH_FAILED');
+    }
+    throw new TdSynnexEcExpressError(redactProviderError(raw, creds), 'EC_PROVIDER_ERROR');
   }
   const ret = body.getPriceAvailabilityResponse?.return;
-  if (ret?.errorMessage) throw new TdSynnexEcExpressError(String(ret.errorMessage), 'EC_PROVIDER_ERROR');
+  if (ret?.errorMessage) {
+    throw new TdSynnexEcExpressError(redactProviderError(String(ret.errorMessage), creds), 'EC_PROVIDER_ERROR');
+  }
   if (!ret?.priceAvail) return [];
   const details = Array.isArray(ret.priceAvail) ? ret.priceAvail : [ret.priceAvail];
   return (details as Record<string, unknown>[]).map(normalizeDetail);
@@ -374,7 +425,7 @@ async function callPna(
     throw new TdSynnexEcExpressError('Could not reach TD SYNNEX', 'EC_PROVIDER_ERROR');
   }
   const text = await res.text();
-  return parsePnaResponse(text); // parse handles soap:Fault even on HTTP 500
+  return parsePnaResponse(text, creds); // parse handles soap:Fault even on HTTP 500
 }
 
 export async function lookupEcExpressProducts(
@@ -385,8 +436,8 @@ export async function lookupEcExpressProducts(
   const token = query.trim();
   if (!token) throw new TdSynnexEcExpressError('Provide a SYNNEX SKU or mfg part #', 'EC_NO_RESULTS');
   const item: LookupItem = /^\d+$/.test(token)
-    ? { kind: 'sku', value: token }
-    : { kind: 'mpn', value: token };
+    ? { kind: 'sku', synnexSku: token }
+    : { kind: 'mpn', mfgPartNo: token };
   const products = await callPna(row, [item]);
   const found = products.filter((p) => p.status !== 'NOTFOUND');
   if (found.length === 0) throw new TdSynnexEcExpressError('No results for that SKU/part #', 'EC_NO_RESULTS');
@@ -407,7 +458,7 @@ export async function testEcExpressConnection(actor: CatalogActor) {
   if (!row) throw new TdSynnexEcExpressError('EC Express is not configured', 'EC_NOT_CONFIGURED');
   try {
     // Any non-fault PA response (including NOTFOUND) means credentials authenticated.
-    await callPna(row, [{ kind: 'sku', value: '1' }]);
+    await callPna(row, [{ kind: 'sku', synnexSku: '1' }]);
     const [updated] = await db
       .update(tdSynnexEcExpressIntegrations)
       .set({ lastTestStatus: 'success', lastTestAt: new Date(), lastTestError: null, updatedAt: new Date() })
@@ -452,7 +503,9 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
     description: item.description ?? product.description ?? undefined,
     billingType: 'one_time',
     unitPrice: item.unitPrice,
-    costBasis: item.costBasis ?? (product.cost ? Number(product.cost) : undefined),
+    // product.cost is numeric (numOrNull) — but guard a non-finite value out of
+    // the catalog payload so it can never reach createCatalogItem as NaN.
+    costBasis: item.costBasis ?? (Number.isFinite(product.cost as number) ? (product.cost as number) : undefined),
     markupPercent: item.markupPercent ?? undefined,
     unitOfMeasure: 'each',
     taxable: item.taxable ?? true,

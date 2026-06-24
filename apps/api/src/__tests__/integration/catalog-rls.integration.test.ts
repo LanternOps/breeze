@@ -413,4 +413,33 @@ describe('catalog RLS isolation (breeze_app)', () => {
     );
     expect(surviving).toEqual([{ id: tdSynnexA.id, enabled: true }]);
   });
+
+  runDb('partner B context UPDATE/DELETE on partner A EC Express integration affects 0 rows; row survives', async () => {
+    const { ecExpressA, partnerBContext } = await seedFixture();
+
+    const updateRows = await withDbAccessContext(partnerBContext, () =>
+      db
+        .update(tdSynnexEcExpressIntegrations)
+        .set({ enabled: false, updatedAt: new Date() })
+        .where(eq(tdSynnexEcExpressIntegrations.id, ecExpressA.id))
+        .returning({ id: tdSynnexEcExpressIntegrations.id })
+    );
+    expect(updateRows).toHaveLength(0);
+
+    const deleteRows = await withDbAccessContext(partnerBContext, () =>
+      db
+        .delete(tdSynnexEcExpressIntegrations)
+        .where(eq(tdSynnexEcExpressIntegrations.id, ecExpressA.id))
+        .returning({ id: tdSynnexEcExpressIntegrations.id })
+    );
+    expect(deleteRows).toHaveLength(0);
+
+    const surviving = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: tdSynnexEcExpressIntegrations.id, enabled: tdSynnexEcExpressIntegrations.enabled })
+        .from(tdSynnexEcExpressIntegrations)
+        .where(eq(tdSynnexEcExpressIntegrations.id, ecExpressA.id))
+    );
+    expect(surviving).toEqual([{ id: ecExpressA.id, enabled: true }]);
+  });
 });

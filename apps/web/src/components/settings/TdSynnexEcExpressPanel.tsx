@@ -21,6 +21,14 @@ interface EcStatus {
   lastTestError?: string | null;
 }
 
+interface EcWarehouseStock {
+  code: string | null;
+  available: number;
+  onOrder: number;
+  bo: number;
+  eta: string | null;
+}
+
 interface EcProduct {
   source: 'td_synnex_ec_express';
   synnexSku: string;
@@ -29,12 +37,12 @@ interface EcProduct {
   name: string;
   description: string | null;
   currency: string | null;
-  cost: string | null;
-  msrp: string | null;
-  discount: string | null;
+  cost: number | null;
+  msrp: number | null;
+  discount: number | null;
   totalQty: number | null;
-  warehouses: Array<{ code: string | null; available: number; onOrder: number; bo: number; eta: string | null }>;
-  weight: string | null;
+  warehouses: EcWarehouseStock[];
+  weight: number | null;
   parcelShippable: string | null;
   raw: Record<string, unknown>;
 }
@@ -73,7 +81,8 @@ function toMoney(value: string): number | null {
 }
 
 function sellPriceDefault(product: EcProduct): string {
-  return product.msrp ?? product.cost ?? '';
+  const value = product.msrp ?? product.cost;
+  return value === null || value === undefined ? '' : value.toFixed(2);
 }
 
 function TdSynnexEcExpressPanel() {
@@ -96,13 +105,19 @@ function TdSynnexEcExpressPanel() {
         UNAUTHORIZED();
         return;
       }
-      if (!res.ok) throw new Error('failed');
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(errBody?.error ?? 'TD SYNNEX Pricing settings failed to load.');
+      }
       const body = (await res.json()) as { data: EcStatus };
       setStatus(body.data);
       setConfig(configFromStatus(body.data));
     } catch (err) {
       console.error('[td-synnex-ec] status load failed', err);
-      showToast({ message: 'TD SYNNEX Pricing settings failed to load.', type: 'error' });
+      showToast({
+        message: err instanceof Error ? err.message : 'TD SYNNEX Pricing settings failed to load.',
+        type: 'error',
+      });
     } finally {
       setLoading(false);
     }
@@ -177,6 +192,11 @@ function TdSynnexEcExpressPanel() {
         return;
       }
       const body = await res.json().catch(() => null) as { data?: EcProduct[]; error?: string } | null;
+      // A null body means the response wasn't valid JSON — treat that as a failure
+      // rather than silently rendering an empty result set.
+      if (body === null) {
+        throw new Error('TD SYNNEX Pricing lookup failed (invalid response).');
+      }
       // Honor the runAction failure contract: a non-2xx status OR an HTTP-200
       // { success:false } body both count as failures (CLAUDE.md no-silent-mutations).
       if (isApiFailure(body, res.status)) {
@@ -210,7 +230,9 @@ function TdSynnexEcExpressPanel() {
               sku: product.synnexSku || product.mfgPartNo || null,
               description: product.description ?? null,
               unitPrice: sellPrice,
-              costBasis: toMoney(product.cost ?? ''),
+              costBasis: product.cost !== null && Number.isFinite(product.cost)
+                ? Number(product.cost.toFixed(2))
+                : null,
             },
           }),
         }),
@@ -375,11 +397,11 @@ function TdSynnexEcExpressPanel() {
                 <div className="grid gap-2 text-sm sm:grid-cols-3">
                   <div>
                     <div className="text-xs text-muted-foreground">Your cost</div>
-                    <div>{product.cost ? `${product.currency ?? 'USD'} ${product.cost}` : 'N/A'}</div>
+                    <div>{product.cost !== null ? `${product.currency ?? 'USD'} ${product.cost.toFixed(2)}` : 'N/A'}</div>
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">MSRP</div>
-                    <div>{product.msrp ? `${product.currency ?? 'USD'} ${product.msrp}` : 'N/A'}</div>
+                    <div>{product.msrp !== null ? `${product.currency ?? 'USD'} ${product.msrp.toFixed(2)}` : 'N/A'}</div>
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Total available</div>

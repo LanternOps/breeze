@@ -28,6 +28,7 @@ vi.mock('../../services/tdSynnexDigitalBridge', () => ({
 }));
 
 vi.mock('../../services/tdSynnexEcExpress', () => ({
+  REGION_ENDPOINTS: { US: 'https://ws.synnex.com/webservice/pnaserviceV05' },
   getEcExpressStatus: vi.fn(),
   saveEcExpressConfig: vi.fn(),
   testEcExpressConnection: vi.fn(),
@@ -38,7 +39,7 @@ vi.mock('../../services/tdSynnexEcExpress', () => ({
     constructor(msg: string, public code = 'EC_PROVIDER_ERROR') {
       super(msg);
       const statusMap: Record<string, number> = {
-        EC_AUTH_FAILED: 401,
+        EC_AUTH_FAILED: 422,
         EC_NOT_CONFIGURED: 404,
         EC_NO_RESULTS: 404,
         EC_DUPLICATE_SKU: 409,
@@ -455,29 +456,47 @@ describe('catalog EC Express distributor routes', () => {
     expect(ecSvc.testEcExpressConnection).toHaveBeenCalledOnce();
   });
 
-  it('PUT /distributors/td-synnex-ec/config rejects an unknown region with 400 (Zod length)', async () => {
+  it('PUT /distributors/td-synnex-ec/config rejects an invalid region enum value with 400', async () => {
     const res = await app().request('/distributors/td-synnex-ec/config', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ region: 'TOOLONGREGION', enabled: true })
+      body: JSON.stringify({ region: 'XX', enabled: true })
     });
     expect(res.status).toBe(400);
     expect(ecSvc.saveEcExpressConfig).not.toHaveBeenCalled();
   });
 
-  it('GET /distributors/td-synnex-ec/lookup surfaces EC_AUTH_FAILED as 401', async () => {
+  it('GET /distributors/td-synnex-ec/lookup surfaces EC_AUTH_FAILED as 422', async () => {
     (ecSvc.lookupEcExpressProducts as any).mockRejectedValue(
-      new (ecSvc as any).TdSynnexEcExpressError('user login failed', 'EC_AUTH_FAILED')
+      new (ecSvc as any).TdSynnexEcExpressError('TD SYNNEX authentication failed', 'EC_AUTH_FAILED')
     );
     const res = await app().request('/distributors/td-synnex-ec/lookup?q=8938995', { method: 'GET' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.code).toBe('EC_AUTH_FAILED');
   });
 
+  const validEcProduct = {
+    source: 'td_synnex_ec_express',
+    synnexSku: '8938995',
+    mfgPartNo: 'DOCK-1',
+    status: 'ACTIVE',
+    name: 'TD Dock',
+    description: 'A dock',
+    currency: 'USD',
+    cost: 100.0,
+    msrp: 125.0,
+    discount: null,
+    totalQty: 5,
+    weight: 1.2,
+    parcelShippable: 'Y',
+    warehouses: [],
+    raw: {},
+  };
+
   it('POST /distributors/td-synnex-ec/import creates a catalog item from EC product', async () => {
     (ecSvc.importEcExpressCatalogItem as any).mockResolvedValue({ id: 'catalog-ec-1', name: 'TD Dock' });
-    const product = { synnexSKU: '8938995', mfgPartNumber: 'DOCK-1', description: 'A dock', unitPrice: 100.00 };
+    const product = validEcProduct;
     const res = await app().request('/distributors/td-synnex-ec/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -509,7 +528,7 @@ describe('catalog EC Express distributor routes', () => {
     (ecSvc.importEcExpressCatalogItem as any).mockRejectedValue(
       new (svc as any).CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU')
     );
-    const product = { synnexSKU: '8938995', name: 'TD Dock' };
+    const product = validEcProduct;
     const res = await app().request('/distributors/td-synnex-ec/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

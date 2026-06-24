@@ -21,7 +21,8 @@ import {
   lookupEcExpressProducts,
   importEcExpressCatalogItem,
   TdSynnexEcExpressError,
-  type TdSynnexEcProduct,
+  REGION_ENDPOINTS,
+  type EcRegion,
 } from '../../services/tdSynnexEcExpress';
 
 export const catalogDistributorRoutes = new Hono();
@@ -203,7 +204,7 @@ catalogDistributorRoutes.post(
 // ─── TD SYNNEX EC Express ─────────────────────────────────────────────────────
 
 const ecConfigSchema = z.object({
-  region: z.string().min(1).max(8).default('US'),
+  region: z.enum(Object.keys(REGION_ENDPOINTS) as [EcRegion, ...EcRegion[]]).default('US'),
   enabled: z.boolean().default(false),
   credentials: z.object({
     email: z.string().max(320).nullable().optional(),
@@ -219,8 +220,40 @@ const ecConfigSchema = z.object({
 
 const ecLookupSchema = z.object({ q: z.string().min(1).max(40) });
 
+// Typed, bounded mirror of TdSynnexEcProduct — mirrors the Digital Bridge
+// productSchema above. Replaces the prior `z.record(z.string(), z.unknown())`
+// so the import endpoint validates shape and bounds the inbound payload size.
+const ecProductSchema = z.object({
+  source: z.literal('td_synnex_ec_express'),
+  synnexSku: z.string().min(1).max(64),
+  mfgPartNo: z.string().max(255).nullable(),
+  status: z.string().max(64).nullable(),
+  name: z.string().min(1).max(500),
+  description: z.string().max(10_000).nullable(),
+  currency: z.string().max(10).nullable(),
+  cost: z.number().nullable(),
+  msrp: z.number().nullable(),
+  discount: z.number().nullable(),
+  totalQty: z.number().nullable(),
+  weight: z.number().nullable(),
+  parcelShippable: z.string().max(16).nullable(),
+  warehouses: z.array(z.object({
+    code: z.string().max(64).nullable(),
+    available: z.number(),
+    onOrder: z.number(),
+    bo: z.number(),
+    eta: z.string().max(64).nullable(),
+  })).max(200),
+  // Provider passthrough — not persisted as-is, but bound the inbound size so a
+  // partner can't post a multi-MB blob through the import endpoint.
+  raw: z.record(z.string(), z.unknown()).refine(
+    (v) => JSON.stringify(v).length <= 200_000,
+    { message: 'raw payload too large' }
+  ),
+});
+
 const ecImportSchema = z.object({
-  product: z.record(z.string(), z.unknown()),
+  product: ecProductSchema,
   item: z.object({
     name: z.string().min(1).max(255),
     sku: z.string().max(100).nullable().optional(),
@@ -255,10 +288,10 @@ catalogDistributorRoutes.get('/distributors/td-synnex-ec/lookup', scopes, readPe
   try { return c.json({ data: await lookupEcExpressProducts(c.req.valid('query').q, catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
 });
 
-catalogDistributorRoutes.post('/distributors/td-synnex-ec/import', scopes, writePerm, zValidator('json', ecImportSchema), async (c) => {
+catalogDistributorRoutes.post('/distributors/td-synnex-ec/import', scopes, writePerm, requireMfa(), zValidator('json', ecImportSchema), async (c) => {
   try {
     const body = c.req.valid('json');
-    const data = await importEcExpressCatalogItem({ product: body.product as unknown as TdSynnexEcProduct, item: body.item }, catalogActorFrom(c));
+    const data = await importEcExpressCatalogItem({ product: body.product, item: body.item }, catalogActorFrom(c));
     return c.json({ data });
   } catch (err) { return handleEcError(c, err); }
 });

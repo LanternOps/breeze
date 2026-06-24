@@ -38,8 +38,8 @@ const product = {
   name: 'ThinkPad Dock',
   description: 'USB-C dock',
   currency: 'USD',
-  cost: '100.00',
-  msrp: '150.00',
+  cost: 100,
+  msrp: 150,
   discount: null,
   totalQty: 7,
   warehouses: [{ code: 'CA', available: 5, onOrder: 2, bo: 0, eta: '2026-07-01' }],
@@ -123,6 +123,44 @@ describe('TdSynnexEcExpressPanel', () => {
     // Form/credentials are NOT blanked out by the response mapping.
     expect((screen.getByTestId('td-synnex-ec-customer-no') as HTMLInputElement).value).toBe('CUST-1');
     expect((screen.getByTestId('td-synnex-ec-password') as HTMLInputElement).value).toBe('********');
+  });
+
+  it('renders the failure error state after a failed test without blanking the form', async () => {
+    const failedResult = {
+      data: {
+        configured: true,
+        enabled: true,
+        region: 'US',
+        credentials: { email: '********', password: '********', customerNo: 'CUST-1' },
+        settings: { defaultWarehouse: '', hideZeroInv: false, defaultMarkupPercent: 0 },
+        lastTestStatus: 'failed',
+        lastTestAt: '2026-06-23T00:00:00.000Z',
+        lastTestError: 'TD SYNNEX authentication failed',
+      },
+    };
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonResponse(statusPayload)) // initial status load
+      .mockResolvedValueOnce(jsonResponse({ error: 'TD SYNNEX authentication failed', code: 'EC_AUTH_FAILED' }, 422)) // POST /test fails
+      .mockResolvedValueOnce(jsonResponse(failedResult)); // loadStatus reload after the failed test
+
+    render(<TdSynnexEcExpressPanel />);
+    await screen.findByTestId('td-synnex-ec-panel');
+
+    fireEvent.click(screen.getByTestId('td-synnex-ec-test'));
+
+    await waitFor(() => {
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        '/catalog/distributors/td-synnex-ec/test',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    // The failure error state renders (status reload surfaces lastTestStatus 'failed').
+    const errorEl = await screen.findByTestId('td-synnex-ec-test-error');
+    expect(errorEl.textContent).toMatch(/authentication failed/i);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    // Form/credentials are not blanked out.
+    expect((screen.getByTestId('td-synnex-ec-customer-no') as HTMLInputElement).value).toBe('CUST-1');
   });
 
   it('looks up a SKU and renders pricing, availability, and warehouse stock', async () => {
