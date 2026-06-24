@@ -91,7 +91,7 @@ describe('resolveComponentUpdateDecision', () => {
         orgId: 'org-1',
         osType: 'linux',
         architecture: 'amd64',
-        agentVersion: '0.83.1',
+        agentVersion: '0.83.2',
         watchdogVersion: 'agent-watchdog-update-bbce5c5dab306bf0df72989a134441f104173945',
       },
       component: 'watchdog',
@@ -112,37 +112,7 @@ describe('resolveComponentUpdateDecision', () => {
     });
   });
 
-  it('flags 0.83.0 release agents for the legacy heartbeat upgrade path', async () => {
-    dbMocks.limit.mockResolvedValueOnce([{ version: '0.83.1' }]);
-
-    const decision = await resolveComponentUpdateDecision({
-      device: {
-        id: 'device-1',
-        orgId: 'org-1',
-        osType: 'linux',
-        architecture: 'amd64',
-        agentVersion: '0.83.0',
-        watchdogVersion: '0.83.0',
-      },
-      component: 'agent',
-      settings: normalizeAgentUpdateSettings({
-        agentUpdateMode: 'manual',
-      }),
-    });
-
-    expect(decision).toMatchObject({
-      available: true,
-      currentVersion: '0.83.0',
-      targetVersion: '0.83.1',
-      mode: 'manual',
-      autoInstall: false,
-      pinned: false,
-      action: 'legacy-agent-update',
-      reason: 'legacy-agent',
-    });
-  });
-
-  it('treats 0.83.1 as component-update capable', async () => {
+  it('flags 0.83.1 release agents for the legacy heartbeat upgrade path', async () => {
     dbMocks.limit.mockResolvedValueOnce([{ version: '0.83.2' }]);
 
     const decision = await resolveComponentUpdateDecision({
@@ -167,13 +137,13 @@ describe('resolveComponentUpdateDecision', () => {
       mode: 'manual',
       autoInstall: false,
       pinned: false,
-      action: 'component-update',
-      reason: 'manual',
+      action: 'legacy-agent-update',
+      reason: 'legacy-agent',
     });
   });
 
-  it('blocks watchdog repair/update while the main agent is too old to execute it', async () => {
-    dbMocks.limit.mockResolvedValueOnce([{ version: '0.83.1' }]);
+  it('treats 0.83.2 as component-update capable', async () => {
+    dbMocks.limit.mockResolvedValueOnce([{ version: '0.83.3' }]);
 
     const decision = await resolveComponentUpdateDecision({
       device: {
@@ -181,7 +151,37 @@ describe('resolveComponentUpdateDecision', () => {
         orgId: 'org-1',
         osType: 'linux',
         architecture: 'amd64',
-        agentVersion: '0.83.0',
+        agentVersion: '0.83.2',
+        watchdogVersion: '0.83.2',
+      },
+      component: 'agent',
+      settings: normalizeAgentUpdateSettings({
+        agentUpdateMode: 'manual',
+      }),
+    });
+
+    expect(decision).toMatchObject({
+      available: true,
+      currentVersion: '0.83.2',
+      targetVersion: '0.83.3',
+      mode: 'manual',
+      autoInstall: false,
+      pinned: false,
+      action: 'component-update',
+      reason: 'manual',
+    });
+  });
+
+  it('blocks watchdog repair/update while the main agent is too old to execute it', async () => {
+    dbMocks.limit.mockResolvedValueOnce([{ version: '0.83.2' }]);
+
+    const decision = await resolveComponentUpdateDecision({
+      device: {
+        id: 'device-1',
+        orgId: 'org-1',
+        osType: 'linux',
+        architecture: 'amd64',
+        agentVersion: '0.83.1',
         watchdogVersion: null,
       },
       component: 'watchdog',
@@ -193,7 +193,7 @@ describe('resolveComponentUpdateDecision', () => {
     expect(decision).toMatchObject({
       available: true,
       currentVersion: null,
-      targetVersion: '0.83.1',
+      targetVersion: '0.83.2',
       mode: 'manual',
       autoInstall: false,
       pinned: false,
@@ -204,7 +204,7 @@ describe('resolveComponentUpdateDecision', () => {
   });
 
   it('blocks main-agent component updates while the watchdog cannot poll healthy commands', async () => {
-    dbMocks.limit.mockResolvedValueOnce([{ version: '0.83.2' }]);
+    dbMocks.limit.mockResolvedValueOnce([{ version: '0.83.3' }]);
 
     const decision = await resolveComponentUpdateDecision({
       device: {
@@ -212,8 +212,8 @@ describe('resolveComponentUpdateDecision', () => {
         orgId: 'org-1',
         osType: 'linux',
         architecture: 'amd64',
-        agentVersion: '0.83.1',
-        watchdogVersion: '0.83.0',
+        agentVersion: '0.83.2',
+        watchdogVersion: '0.83.1',
       },
       component: 'agent',
       settings: normalizeAgentUpdateSettings({
@@ -223,8 +223,8 @@ describe('resolveComponentUpdateDecision', () => {
 
     expect(decision).toMatchObject({
       available: true,
-      currentVersion: '0.83.1',
-      targetVersion: '0.83.2',
+      currentVersion: '0.83.2',
+      targetVersion: '0.83.3',
       autoInstall: false,
       blockedBy: 'legacy-watchdog',
       reason: 'legacy-watchdog',
@@ -234,7 +234,7 @@ describe('resolveComponentUpdateDecision', () => {
   it('rejects normal manual component updates for legacy agents', async () => {
     dbMocks.limit
       .mockResolvedValueOnce([{ settings: { defaults: { agentUpdateMode: 'manual' } } }])
-      .mockResolvedValueOnce([{ version: '0.83.1' }]);
+      .mockResolvedValueOnce([{ version: '0.83.2' }]);
 
     const result = await resolveManualComponentTarget({
       device: {
@@ -242,8 +242,8 @@ describe('resolveComponentUpdateDecision', () => {
         orgId: 'org-1',
         osType: 'linux',
         architecture: 'amd64',
-        agentVersion: '0.83.0',
-        watchdogVersion: '0.83.0',
+        agentVersion: '0.83.1',
+        watchdogVersion: '0.83.1',
       },
       component: 'agent',
     });

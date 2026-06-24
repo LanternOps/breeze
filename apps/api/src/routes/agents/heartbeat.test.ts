@@ -1442,7 +1442,7 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
   // gated version-to-version branch rather than the ungated bootstrap branch.
   const deviceWithWatchdog = {
     id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
-    architecture: 'amd64', agentVersion: '0.83.1', watchdogVersion: '0.65.0',
+    architecture: 'amd64', agentVersion: '0.83.2', watchdogVersion: '0.65.0',
     lastSeenAt: new Date(), mainAgentSilentSince: null,
   };
   // Fresh device missing both helper and watchdog — both take the bootstrap
