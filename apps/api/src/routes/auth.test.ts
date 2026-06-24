@@ -100,7 +100,14 @@ vi.mock('../db', () => ({
     })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve())
+        where: vi.fn(() => ({
+          // login.ts wraps the last_login_at write in dbWriteExpectingRows,
+          // which calls .returning() (#1379 A2). Bare `.where()` is also
+          // awaited directly by routes that don't use .returning(), so keep
+          // the object thenable for those paths too.
+          returning: vi.fn(() => Promise.resolve([{ id: 'user-1' }])),
+          then: (resolve: (v: unknown) => unknown) => resolve(undefined)
+        }))
       }))
     }))
   },
