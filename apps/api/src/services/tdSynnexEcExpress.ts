@@ -1,7 +1,9 @@
 import { eq } from 'drizzle-orm';
+import { XMLParser } from 'fast-xml-parser';
 import { db } from '../db';
 import { tdSynnexEcExpressIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
+import { safeFetch } from './urlSafety';
 import type { CatalogActor } from './catalogService';
 
 const TABLE = 'td_synnex_ec_express_integrations';
@@ -231,4 +233,197 @@ export function decryptCredentials(
     );
   }
   return { email, password, customerNo };
+}
+
+// --- Task 3: SOAP envelope build, response parse, product lookup, connection test ---
+
+const WSSE = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd';
+const PNA_NS = 'http://pnaV05.model.ws.synnex.com/';
+const REQUEST_TIMEOUT_MS = 15_000;
+
+export type LookupItem = { kind: 'sku' | 'mpn'; value: string };
+
+function xmlEscape(v: string): string {
+  return v.replace(/[<>&'"]/g, (ch) =>
+    ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : ch === '&' ? '&amp;' : ch === "'" ? '&apos;' : '&quot;'
+  );
+}
+
+export function buildSoapEnvelope(
+  creds: { email: string; password: string; customerNo: string },
+  items: LookupItem[],
+  settings: TdSynnexEcExpressSettings
+): string {
+  const username = xmlEscape(`${creds.email};${creds.customerNo}`);
+  const password = xmlEscape(creds.password);
+  const warehouse = xmlEscape(settings.defaultWarehouse ?? 'ANY');
+  const hideZeroInv = settings.hideZeroInv ? 'true' : 'false';
+  const skuXml = items
+    .map((it) =>
+      it.kind === 'sku'
+        ? `<skuList><synnexSku>${xmlEscape(it.value)}</synnexSku></skuList>`
+        : `<skuList><mfgPartNo>${xmlEscape(it.value)}</mfgPartNo></skuList>`
+    )
+    .join('');
+  return (
+    `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:pna="${PNA_NS}">`
+    + `<soapenv:Header><wsse:Security xmlns:wsse="${WSSE}"><wsse:UsernameToken>`
+    + `<wsse:Username>${username}</wsse:Username><wsse:Password>${password}</wsse:Password>`
+    + `</wsse:UsernameToken></wsse:Security></soapenv:Header>`
+    + `<soapenv:Body><pna:getPriceAvailability><arg0>${skuXml}`
+    + `<warehouse>${warehouse}</warehouse><hideZeroInv>${hideZeroInv}</hideZeroInv>`
+    + `</arg0></pna:getPriceAvailability></soapenv:Body></soapenv:Envelope>`
+  );
+}
+
+const pnaParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  removeNSPrefix: true,
+  parseTagValue: false,
+});
+
+function num(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function str(v: unknown): string | null {
+  return v === undefined || v === null || v === '' ? null : String(v);
+}
+
+function normalizeDetail(d: Record<string, unknown>): TdSynnexEcProduct {
+  const rawStock = d.stock === undefined ? [] : Array.isArray(d.stock) ? d.stock : [d.stock];
+  const warehouses = (rawStock as Record<string, unknown>[]).map((s) => ({
+    code: str(s['@_code']),
+    available: num(s.available) ?? 0,
+    onOrder: num(s.onOrder) ?? 0,
+    bo: num(s.bo) ?? 0,
+    eta: str(s.eta),
+  }));
+  // live response spells it parcelShippable (two p's); WSDL says parcelShipable — accept both.
+  const parcel = str(d.parcelShippable) ?? str(d.parcelShipable);
+  const msrp = str(d.msrp);
+  return {
+    source: 'td_synnex_ec_express',
+    synnexSku: String(d.synnexSku ?? ''),
+    mfgPartNo: str(d.mfgPartNo),
+    status: str(d.status),
+    name: str(d.description) ?? String(d.synnexSku ?? ''),
+    description: str(d.description),
+    currency: str(d.currency),
+    cost: str(d.price),
+    msrp: msrp === '0' ? null : msrp,
+    discount: str(d.discount),
+    totalQty: num(d.totalQty),
+    warehouses,
+    weight: str(d.weight),
+    parcelShippable: parcel,
+    raw: d,
+  };
+}
+
+export function parsePnaResponse(xml: string): TdSynnexEcProduct[] {
+  const doc = pnaParser.parse(xml) as Record<string, any>;
+  const body = doc?.Envelope?.Body;
+  if (!body) throw new TdSynnexEcExpressError('Malformed TD SYNNEX response', 'EC_PROVIDER_ERROR');
+  const fault = body.Fault;
+  if (fault) {
+    const msg = String(fault.faultstring ?? 'TD SYNNEX PA fault');
+    if (/login failed/i.test(msg)) throw new TdSynnexEcExpressError(msg, 'EC_AUTH_FAILED');
+    throw new TdSynnexEcExpressError(msg, 'EC_PROVIDER_ERROR');
+  }
+  const ret = body.getPriceAvailabilityResponse?.return;
+  if (ret?.errorMessage) throw new TdSynnexEcExpressError(String(ret.errorMessage), 'EC_PROVIDER_ERROR');
+  if (!ret?.priceAvail) return [];
+  const details = Array.isArray(ret.priceAvail) ? ret.priceAvail : [ret.priceAvail];
+  return (details as Record<string, unknown>[]).map(normalizeDetail);
+}
+
+async function getActiveIntegration(actor: CatalogActor) {
+  const partnerId = requirePartner(actor);
+  const [row] = await db
+    .select()
+    .from(tdSynnexEcExpressIntegrations)
+    .where(eq(tdSynnexEcExpressIntegrations.partnerId, partnerId))
+    .limit(1);
+  if (!row) throw new TdSynnexEcExpressError('EC Express is not configured', 'EC_NOT_CONFIGURED');
+  if (!row.enabled) throw new TdSynnexEcExpressError('EC Express is disabled', 'EC_DISABLED');
+  return row;
+}
+
+async function callPna(
+  row: typeof tdSynnexEcExpressIntegrations.$inferSelect,
+  items: LookupItem[]
+): Promise<TdSynnexEcProduct[]> {
+  const creds = decryptCredentials(row);
+  const url = endpointForRegion(row.region);
+  const envelope = buildSoapEnvelope(creds, items, asRecord(row.settings) as TdSynnexEcExpressSettings);
+  let res: Response;
+  try {
+    res = await safeFetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'text/xml; charset=utf-8', SOAPAction: '""' },
+      body: envelope,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    });
+  } catch {
+    throw new TdSynnexEcExpressError('Could not reach TD SYNNEX', 'EC_PROVIDER_ERROR');
+  }
+  const text = await res.text();
+  return parsePnaResponse(text); // parse handles soap:Fault even on HTTP 500
+}
+
+export async function lookupEcExpressProducts(
+  query: string,
+  actor: CatalogActor
+): Promise<TdSynnexEcProduct[]> {
+  const row = await getActiveIntegration(actor);
+  const token = query.trim();
+  if (!token) throw new TdSynnexEcExpressError('Provide a SYNNEX SKU or mfg part #', 'EC_NO_RESULTS');
+  const item: LookupItem = /^\d+$/.test(token)
+    ? { kind: 'sku', value: token }
+    : { kind: 'mpn', value: token };
+  const products = await callPna(row, [item]);
+  const found = products.filter((p) => p.status !== 'NOTFOUND');
+  if (found.length === 0) throw new TdSynnexEcExpressError('No results for that SKU/part #', 'EC_NO_RESULTS');
+  return found;
+}
+
+export async function testEcExpressConnection(
+  actor: CatalogActor
+): Promise<{ ok: boolean; error?: string }> {
+  const partnerId = requirePartner(actor);
+  const [row] = await db
+    .select()
+    .from(tdSynnexEcExpressIntegrations)
+    .where(eq(tdSynnexEcExpressIntegrations.partnerId, partnerId))
+    .limit(1);
+  if (!row) throw new TdSynnexEcExpressError('EC Express is not configured', 'EC_NOT_CONFIGURED');
+  const finish = async (status: 'ok' | 'error', error?: string) => {
+    await db
+      .update(tdSynnexEcExpressIntegrations)
+      .set({ lastTestStatus: status, lastTestAt: new Date(), lastTestError: error ?? null, updatedAt: new Date() })
+      .where(eq(tdSynnexEcExpressIntegrations.partnerId, partnerId));
+  };
+  try {
+    await callPna(row, [{ kind: 'sku', value: '1' }]); // any non-fault response = auth OK (NOTFOUND is fine)
+    await finish('ok');
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof TdSynnexEcExpressError ? err.message : 'Connection failed';
+    if (err instanceof TdSynnexEcExpressError && err.code === 'EC_AUTH_FAILED') {
+      await finish('error', msg);
+      return { ok: false, error: msg };
+    }
+    if (
+      err instanceof TdSynnexEcExpressError
+      && (err.code === 'EC_NO_RESULTS' || err.code === 'EC_PROVIDER_ERROR')
+    ) {
+      await finish('ok');
+      return { ok: true };
+    }
+    await finish('error', msg);
+    return { ok: false, error: msg };
+  }
 }

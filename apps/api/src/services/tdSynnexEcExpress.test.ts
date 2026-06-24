@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
@@ -26,6 +28,8 @@ import {
   TdSynnexEcExpressError,
   endpointForRegion,
   decryptCredentials,
+  buildSoapEnvelope,
+  parsePnaResponse,
 } from './tdSynnexEcExpress';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
@@ -272,4 +276,41 @@ describe('tdSynnexEcExpress service', () => {
       expect(err.status).toBe(502);
     });
   });
+});
+
+it('builds a WS-Security envelope with semicolon-joined username and escaped values', () => {
+  const xml = buildSoapEnvelope({ email: 'a@b.co', password: 'p<w&d', customerNo: '654906' },
+    [{ kind: 'sku', value: '8938995' }], { defaultWarehouse: 'ANY', hideZeroInv: false });
+  expect(xml).toContain('<wsse:Username>a@b.co;654906</wsse:Username>');
+  expect(xml).toContain('<wsse:Password>p&lt;w&amp;d</wsse:Password>');
+  expect(xml).toContain('<synnexSku>8938995</synnexSku>');
+  expect(xml).toContain('<warehouse>ANY</warehouse>');
+});
+
+it('parses a real multi-SKU PA response into products', () => {
+  const xml = readFileSync(join(__dirname, '__fixtures__/ec-express-pna-response.xml'), 'utf8');
+  const products = parsePnaResponse(xml);
+  expect(products).toHaveLength(2);
+  expect(products[0]!).toMatchObject({ synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', cost: '381.35', msrp: '549.99', totalQty: 1437, parcelShippable: 'Y' });
+  expect(products[0]!.warehouses).toHaveLength(2);
+  expect(products[1]!.discount).toBeNull(); // missing <discount> tolerated
+});
+
+it('maps soap:Fault "user login failed" to EC_AUTH_FAILED', () => {
+  const fault = '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultcode>soap:000000</faultcode><faultstring>user login failed</faultstring></soap:Fault></soap:Body></soap:Envelope>';
+  expect(() => parsePnaResponse(fault)).toThrow(/login failed/i);
+});
+
+it('handles single (non-array) priceAvail in response', () => {
+  const xml = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return><priceAvail><synnexSku>1234567</synnexSku><mfgPartNo>ABC-123</mfgPartNo><status>ACTIVE</status><price>99.99</price><msrp>129.99</msrp><totalQty>5</totalQty></priceAvail></return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>`;
+  const products = parsePnaResponse(xml);
+  expect(products).toHaveLength(1);
+  expect(products[0]!.synnexSku).toBe('1234567');
+  expect(products[0]!.cost).toBe('99.99');
+});
+
+it('maps msrp === "0" to null', () => {
+  const xml = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return><priceAvail><synnexSku>9999999</synnexSku><price>50.00</price><msrp>0</msrp><totalQty>10</totalQty></priceAvail></return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>`;
+  const products = parsePnaResponse(xml);
+  expect(products[0]!.msrp).toBeNull();
 });
