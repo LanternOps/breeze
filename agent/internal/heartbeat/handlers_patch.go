@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -32,19 +33,39 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 		log.Error("patch scan failed", "source", source, "error", err.Error())
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
+	if source != "" {
+		pendingItems = filterPatchInventoryItemsBySource(pendingItems, source)
+		installedItems = filterPatchInventoryItemsBySource(installedItems, source)
+	}
+	installedItems = installedPatchStateItems(installedItems)
 
-	h.sendInventoryData("patches", map[string]any{
-		"patches":   pendingItems,
-		"installed": installedItems,
-	}, fmt.Sprintf("patches (%d pending, %d installed)", len(pendingItems), len(installedItems)))
-
-	if err != nil {
-		log.Warn("patch scan completed with warning",
+	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, source, source == "")
+	if pendingErr != nil {
+		err = fmt.Errorf("pending patch inventory send failed: %w", pendingErr)
+		log.Error("patch scan inventory send failed",
 			"source", source,
 			"pendingCount", len(pendingItems),
 			"installedCount", len(installedItems),
 			"error", err.Error(),
 		)
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	if err != nil || installedErr != nil {
+		warning := errorString(err)
+		if installedErr != nil {
+			if warning != "" {
+				warning += "; "
+			}
+			warning += "installed patch inventory send failed: " + installedErr.Error()
+		}
+		log.Warn("patch scan completed with warning",
+			"source", source,
+			"pendingCount", len(pendingItems),
+			"installedCount", len(installedItems),
+			"error", warning,
+		)
+		err = errors.New(warning)
 	} else {
 		log.Info("patch scan completed",
 			"source", source,
@@ -58,6 +79,16 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 		"installedCount": len(installedItems),
 		"warning":        errorString(err),
 	}, time.Since(start).Milliseconds())
+}
+
+func filterPatchInventoryItemsBySource(items []map[string]any, source string) []map[string]any {
+	filtered := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if itemSource, ok := item["source"].(string); ok && itemSource == source {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func handleInstallPatches(h *Heartbeat, cmd Command) tools.CommandResult {

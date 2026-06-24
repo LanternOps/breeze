@@ -57,6 +57,7 @@ import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDe
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
+import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -491,10 +492,13 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // the bug that froze last_login_at platform-wide (#1375). System scope
   // satisfies RLS the same way the pre-auth user lookup above does.
   await withSystemDbAccessContext(() =>
-    db
-      .update(users)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(users.id, user.id))
+    dbWriteExpectingRows('users.last_login_at', () =>
+      db
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.id, user.id))
+        .returning({ id: users.id })
+    )
   );
 
   // Task 10: clear the per-account failure counter on successful login so

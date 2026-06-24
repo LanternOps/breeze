@@ -15,6 +15,21 @@ export function getBinarySource(): BinarySource {
   return 'github';
 }
 
+/**
+ * Controls whether binarySync auto-promotes a newly-registered binary to the
+ * fleet upgrade target (agent_versions.isLatest=true). Defaults TRUE so existing
+ * self-host behavior is unchanged: publishing/syncing a release immediately
+ * becomes the upgrade target. Set AGENT_AUTO_PROMOTE=false to decouple
+ * registration from promotion — new binaries become downloadable but the fleet
+ * upgrade target only changes via the explicit POST /agent-versions/promote
+ * endpoint. See docs/superpowers/specs/2026-06-23-controlled-agent-fleet-rollout.md.
+ */
+export function getAgentAutoPromote(): boolean {
+  const raw = process.env.AGENT_AUTO_PROMOTE?.trim().toLowerCase();
+  if (raw === undefined || raw === '') return true; // default: preserve current behavior
+  return !['false', '0', 'no', 'off'].includes(raw);
+}
+
 export function getGithubReleaseVersion(): string {
   return process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'latest';
 }

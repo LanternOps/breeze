@@ -12,6 +12,7 @@ vi.mock("../db", () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    transaction: vi.fn(),
   },
 }));
 
@@ -28,6 +29,22 @@ vi.mock("../services/auditEvents", () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+// Platform-admin gate for the promote/list routes. Toggle `platformAdminAllow`
+// per-test: when false the middleware throws a 403 HTTPException exactly like
+// the real one does for a non-platform-admin caller.
+const platformAdminState = vi.hoisted(() => ({ allow: true }));
+vi.mock("../middleware/platformAdmin", () => ({
+  platformAdminMiddleware: vi.fn(async (_c: any, next: any) => {
+    if (!platformAdminState.allow) {
+      const { HTTPException } = await import("hono/http-exception");
+      throw new HTTPException(403, {
+        message: "platform admin access required",
+      });
+    }
+    await next();
+  }),
+}));
+
 vi.mock("../middleware/auth", () => ({
   authMiddleware: vi.fn(async (_c: any, next: any) => next()),
   requireScope: () => vi.fn(async (_c: any, next: any) => next()),
@@ -42,6 +59,7 @@ import {
 } from "./agentVersions";
 import { db } from "../db";
 import * as manifestSigning from "../services/manifestSigning";
+import { writeRouteAudit } from "../services/auditEvents";
 
 function makeSignedReleaseManifest(overrides: Record<string, unknown> = {}) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -104,6 +122,7 @@ describe("agentVersions routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    platformAdminState.allow = true;
     delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
     delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
     delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
@@ -119,6 +138,219 @@ describe("agentVersions routes", () => {
       await next();
     });
     app.route("/agent-versions", agentVersionRoutes);
+  });
+
+  // Helper: build a db.select chain that resolves to `rows` for a single
+  // .from().where() lookup, and a configurable one for the promote endpoint's
+  // multiple sequential selects.
+  function selectResolving(rows: unknown[]) {
+    // `where()` must be awaitable on its own (the promote target-rows query has
+    // no .limit()) AND expose .limit() (the in-tx "current isLatest" lookup).
+    const whereResult: any = Promise.resolve(rows);
+    whereResult.limit = vi.fn().mockResolvedValue(rows);
+    return {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue(whereResult),
+        orderBy: vi.fn().mockResolvedValue(rows),
+      }),
+    };
+  }
+
+  describe("GET /agent-versions (platform-admin list)", () => {
+    it("non-platform-admin → 403", async () => {
+      platformAdminState.allow = false;
+      const res = await app.request("/agent-versions");
+      expect(res.status).toBe(403);
+    });
+
+    it("lists registered versions and the promoted set", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          {
+            id: "v1",
+            version: "0.70.0",
+            platform: "linux",
+            architecture: "amd64",
+            component: "agent",
+            isLatest: true,
+            fileSize: BigInt(100),
+            releaseNotes: null,
+            createdAt: new Date("2026-06-20"),
+          },
+          {
+            id: "v2",
+            version: "0.71.0",
+            platform: "linux",
+            architecture: "amd64",
+            component: "agent",
+            isLatest: false,
+            fileSize: BigInt(200),
+            releaseNotes: null,
+            createdAt: new Date("2026-06-22"),
+          },
+        ]) as any,
+      );
+
+      const res = await app.request("/agent-versions");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.versions).toHaveLength(2);
+      // fileSize serialized to number.
+      expect(body.versions[0].fileSize).toBe(100);
+      // promoted map only includes the isLatest row.
+      expect(body.promoted).toEqual([
+        {
+          component: "agent",
+          platform: "linux",
+          architecture: "amd64",
+          version: "0.70.0",
+        },
+      ]);
+    });
+  });
+
+  describe("POST /agent-versions/promote", () => {
+    // Build a fake transaction whose tx.select/tx.update record calls so we can
+    // assert demote-then-promote happened. `priorByTuple` controls what the
+    // "current isLatest" lookup returns inside the tx.
+    function makeTx(prior: { version: string } | undefined) {
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      const txUpdate = vi.fn().mockReturnValue({ set: updateSet });
+      const txSelect = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(prior ? [prior] : []),
+          }),
+        }),
+      });
+      return { tx: { update: txUpdate, select: txSelect }, updateSet, txUpdate };
+    }
+
+    it("non-platform-admin → 403", async () => {
+      platformAdminState.allow = false;
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0" }),
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it("404 when the version has no registered rows", async () => {
+      vi.mocked(db.select).mockReturnValue(selectResolving([]) as any);
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "9.9.9" }),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("promotes all components of a version atomically (demote old + promote new) and audits", async () => {
+      // The pre-tx target-rows lookup: two components on the same platform/arch.
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { component: "agent", platform: "linux", architecture: "amd64" },
+          { component: "watchdog", platform: "linux", architecture: "amd64" },
+        ]) as any,
+      );
+
+      const { tx, txUpdate } = makeTx({ version: "0.70.0" });
+      vi.mocked(db.transaction).mockImplementation(
+        async (fn: any) => fn(tx) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Promoted both tuples.
+      expect(body.promoted).toEqual(
+        expect.arrayContaining([
+          {
+            component: "agent",
+            platform: "linux",
+            architecture: "amd64",
+            version: "0.71.0",
+          },
+          {
+            component: "watchdog",
+            platform: "linux",
+            architecture: "amd64",
+            version: "0.71.0",
+          },
+        ]),
+      );
+      // Prior target recorded as demoted.
+      expect(body.demoted).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ component: "agent", version: "0.70.0" }),
+          expect.objectContaining({ component: "watchdog", version: "0.70.0" }),
+        ]),
+      );
+
+      // Each tuple ran a demote UPDATE (isLatest:false) AND a promote UPDATE
+      // (isLatest:true) → 2 tuples × 2 updates = 4 update calls.
+      expect(txUpdate).toHaveBeenCalledTimes(4);
+
+      // Audit row written for the promotion.
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "agent_version.promote",
+          resourceName: "0.71.0",
+          details: expect.objectContaining({
+            version: "0.71.0",
+            component: "all",
+          }),
+        }),
+      );
+    });
+
+    it("promotes only the requested single component", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { component: "agent", platform: "linux", architecture: "amd64" },
+        ]) as any,
+      );
+
+      const { tx, txUpdate } = makeTx({ version: "0.70.0" });
+      vi.mocked(db.transaction).mockImplementation(
+        async (fn: any) => fn(tx) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0", component: "agent" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.promoted).toEqual([
+        {
+          component: "agent",
+          platform: "linux",
+          architecture: "amd64",
+          version: "0.71.0",
+        },
+      ]);
+      // One tuple → demote + promote = 2 update calls.
+      expect(txUpdate).toHaveBeenCalledTimes(2);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({ component: "agent" }),
+        }),
+      );
+    });
   });
 
   describe("GET /agent-versions/latest", () => {

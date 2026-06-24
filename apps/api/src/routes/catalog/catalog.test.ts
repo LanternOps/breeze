@@ -27,6 +27,33 @@ vi.mock('../../services/tdSynnexDigitalBridge', () => ({
   }
 }));
 
+vi.mock('../../services/tdSynnexEcExpress', () => ({
+  REGION_ENDPOINTS: { US: 'https://ws.synnex.com/webservice/pnaserviceV05' },
+  getEcExpressStatus: vi.fn(),
+  saveEcExpressConfig: vi.fn(),
+  testEcExpressConnection: vi.fn(),
+  lookupEcExpressProducts: vi.fn(),
+  importEcExpressCatalogItem: vi.fn(),
+  TdSynnexEcExpressError: class TdSynnexEcExpressError extends Error {
+    public readonly status: number;
+    constructor(msg: string, public code = 'EC_PROVIDER_ERROR') {
+      super(msg);
+      const statusMap: Record<string, number> = {
+        EC_AUTH_FAILED: 422,
+        EC_NOT_CONFIGURED: 404,
+        EC_NO_RESULTS: 404,
+        EC_DUPLICATE_SKU: 409,
+        EC_PROVIDER_ERROR: 502,
+        EC_PARTNER_REQUIRED: 400,
+        EC_DISABLED: 400,
+        EC_CREDENTIALS_INVALID: 400,
+        EC_UNSUPPORTED_REGION: 400,
+      };
+      this.status = statusMap[code] ?? 400;
+    }
+  }
+}));
+
 // Mock auth middleware to inject a partner-scoped actor with catalog perms.
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
@@ -41,6 +68,7 @@ vi.mock('../../middleware/auth', () => ({
 import { catalogRoutes } from './index';
 import * as svc from '../../services/catalogService';
 import * as tdSvc from '../../services/tdSynnexDigitalBridge';
+import * as ecSvc from '../../services/tdSynnexEcExpress';
 
 function app() {
   // catalogRoutes already applies authMiddleware internally
@@ -396,5 +424,121 @@ describe('catalog bundle routes', () => {
     const res = await app().request(`/${ITEM_ID}/economics?orgId=not-a-uuid`, { method: 'GET' });
     expect(res.status).toBe(400);
     expect(svc.computeBundleEconomics).not.toHaveBeenCalled();
+  });
+});
+
+describe('catalog EC Express distributor routes', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('GET /distributors/td-synnex-ec/status returns masked status', async () => {
+    (ecSvc.getEcExpressStatus as any).mockResolvedValue({ configured: true, enabled: true });
+    const res = await app().request('/distributors/td-synnex-ec/status', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.configured).toBe(true);
+    expect(ecSvc.getEcExpressStatus).toHaveBeenCalledOnce();
+  });
+
+  it('POST /distributors/td-synnex-ec/test returns 200 with the masked status', async () => {
+    (ecSvc.testEcExpressConnection as any).mockResolvedValue({
+      configured: true,
+      enabled: true,
+      region: 'US',
+      credentials: { email: '********', password: '********', customerNo: '********' },
+      lastTestStatus: 'success',
+      lastTestAt: new Date().toISOString(),
+      lastTestError: null,
+    });
+    const res = await app().request('/distributors/td-synnex-ec/test', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.lastTestStatus).toBe('success');
+    expect(ecSvc.testEcExpressConnection).toHaveBeenCalledOnce();
+  });
+
+  it('PUT /distributors/td-synnex-ec/config rejects an invalid region enum value with 400', async () => {
+    const res = await app().request('/distributors/td-synnex-ec/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ region: 'XX', enabled: true })
+    });
+    expect(res.status).toBe(400);
+    expect(ecSvc.saveEcExpressConfig).not.toHaveBeenCalled();
+  });
+
+  it('GET /distributors/td-synnex-ec/lookup surfaces EC_AUTH_FAILED as 422', async () => {
+    (ecSvc.lookupEcExpressProducts as any).mockRejectedValue(
+      new (ecSvc as any).TdSynnexEcExpressError('TD SYNNEX authentication failed', 'EC_AUTH_FAILED')
+    );
+    const res = await app().request('/distributors/td-synnex-ec/lookup?q=8938995', { method: 'GET' });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe('EC_AUTH_FAILED');
+  });
+
+  const validEcProduct = {
+    source: 'td_synnex_ec_express',
+    synnexSku: '8938995',
+    mfgPartNo: 'DOCK-1',
+    status: 'ACTIVE',
+    name: 'TD Dock',
+    description: 'A dock',
+    currency: 'USD',
+    cost: 100.0,
+    msrp: 125.0,
+    discount: null,
+    totalQty: 5,
+    weight: 1.2,
+    parcelShippable: 'Y',
+    warehouses: [],
+    raw: {},
+  };
+
+  it('POST /distributors/td-synnex-ec/import creates a catalog item from EC product', async () => {
+    (ecSvc.importEcExpressCatalogItem as any).mockResolvedValue({ id: 'catalog-ec-1', name: 'TD Dock' });
+    const product = validEcProduct;
+    const res = await app().request('/distributors/td-synnex-ec/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        product,
+        item: { name: 'TD Dock', sku: '8938995', unitPrice: 125.00, costBasis: 100.00, taxable: true }
+      })
+    });
+    expect(res.status).toBe(200);
+    expect(ecSvc.importEcExpressCatalogItem).toHaveBeenCalledOnce();
+    const body = await res.json();
+    expect(body.data.id).toBe('catalog-ec-1');
+  });
+
+  it('POST /distributors/td-synnex-ec/import rejects invalid item (missing name) with 400', async () => {
+    const res = await app().request('/distributors/td-synnex-ec/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        product: { synnexSKU: '8938995' },
+        item: { unitPrice: 125.00 }
+      })
+    });
+    expect(res.status).toBe(400);
+    expect(ecSvc.importEcExpressCatalogItem).not.toHaveBeenCalled();
+  });
+
+  it('maps EC_DUPLICATE_SKU CatalogServiceError from import to 409', async () => {
+    (ecSvc.importEcExpressCatalogItem as any).mockRejectedValue(
+      new (svc as any).CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU')
+    );
+    const product = validEcProduct;
+    const res = await app().request('/distributors/td-synnex-ec/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        product,
+        item: { name: 'TD Dock', sku: '8938995', unitPrice: 125.00, taxable: true }
+      })
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('DUPLICATE_SKU');
   });
 });

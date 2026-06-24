@@ -3,8 +3,8 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
 import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
 import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
-import { sellerLines } from '@/lib/sellerLines';
 import { cn } from '@/lib/utils';
+import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 
 // Invoice statuses that can be paid online (mirrors the API's PAYABLE set).
 const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially_paid', 'overdue']);
@@ -90,8 +90,11 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   const currency = invoice.currencyCode;
   const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0;
 
-  const seller = invoice.sellerSnapshot ?? null;
-  const sellerAddressLines = sellerLines(seller?.address ?? null);
+  const seller = (invoice.sellerSnapshot ?? null) as DocSeller | null;
+  const headerDates = [
+    { label: 'Issued', value: shortDate(invoice.issueDate) },
+    { label: 'Due', value: shortDate(invoice.dueDate) },
+  ];
 
   const payInvoice = async () => {
     if (paying) return;
@@ -142,24 +145,12 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   };
 
   return (
-    <div className="space-y-6">
-      <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
-        <ArrowLeft className="h-4 w-4" />
-        Back to invoices
-      </a>
-
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">{invoice.invoiceNumber ?? 'Invoice'}</h1>
-          <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
-            <span className={cn('inline-flex rounded-full px-2 py-1 text-xs font-medium', statusColor(invoice.status))}>
-              {STATUS_LABELS[invoice.status]}
-            </span>
-            <span>Issued {shortDate(invoice.issueDate)}</span>
-            <span>·</span>
-            <span>Due {shortDate(invoice.dueDate)}</span>
-          </div>
-        </div>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <a href={withBase("/invoices")} className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+          <ArrowLeft className="h-4 w-4" />
+          Back to invoices
+        </a>
         <div className="flex flex-wrap items-center gap-2">
           {canPay && (
             <button
@@ -207,70 +198,63 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{downloadError}</div>
       )}
 
-      <div className="flex flex-wrap gap-4">
-        {invoice.billToName && (
-          <div className="flex-1 rounded-lg border p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bill to</p>
-            <p className="mt-1 text-sm">{invoice.billToName}</p>
+      <DocumentPaper testId="invoice-document">
+        <DocumentHeader
+          seller={seller}
+          eyebrow="Invoice"
+          title={invoice.invoiceNumber ?? 'Invoice'}
+          statusLabel={STATUS_LABELS[invoice.status]}
+          statusClass={statusColor(invoice.status)}
+          dates={headerDates}
+          preparedForLabel="Bill to"
+          preparedForName={invoice.billToName ?? undefined}
+        />
+
+        <div className="overflow-hidden rounded-lg border bg-card">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[28rem] text-sm">
+              <thead>
+                <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
+                  <th className="px-2 py-2.5 text-right font-medium">Qty</th>
+                  <th className="px-2 py-2.5 text-right font-medium">Price</th>
+                  <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l) => (
+                  <tr key={l.id} className="border-b align-top last:border-0">
+                    <td className="px-4 py-3 text-foreground sm:px-5">{l.description}</td>
+                    <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
+                    <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        )}
+        </div>
 
-        {seller?.name && (
-          <div className="flex-1 rounded-lg border p-4" data-testid="invoice-from">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">From</p>
-            <p className="mt-1 text-sm font-medium">{seller.name}</p>
-            {sellerAddressLines.map((l, i) => <p key={i} className="text-sm text-muted-foreground">{l}</p>)}
-            {seller.phone && <p className="text-sm text-muted-foreground">{seller.phone}</p>}
-            {seller.email && <p className="text-sm text-muted-foreground">{seller.email}</p>}
-            {seller.website && <p className="text-sm text-muted-foreground">{seller.website}</p>}
+        <section className="flex justify-end">
+          <div className="w-full max-w-xs space-y-2.5">
+            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span className="tabular-nums text-foreground">{money(invoice.subtotal, currency)}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Tax</span><span className="tabular-nums text-foreground">{money(invoice.taxTotal, currency)}</span></div>
+            <div className="flex justify-between border-t pt-2.5 text-sm"><span className="font-medium text-foreground">Total</span><span className="font-medium tabular-nums text-foreground">{money(invoice.total, currency)}</span></div>
+            {Number(invoice.amountPaid) > 0 && (
+              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="tabular-nums text-foreground">−{money(invoice.amountPaid, currency)}</span></div>
+            )}
+            <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }}>
+              <span className="text-sm font-semibold text-foreground">Balance due</span>
+              <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }} data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
+            </div>
           </div>
+        </section>
+
+        {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
+        {invoice.termsAndConditions && (
+          <DocumentTerms label="Terms & Conditions" testId="invoice-terms-conditions">{invoice.termsAndConditions}</DocumentTerms>
         )}
-      </div>
-
-      <div className="overflow-hidden rounded-lg border">
-        <table className="w-full">
-          <thead className="bg-muted/50">
-            <tr>
-              <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Description</th>
-              <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">Qty</th>
-              <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">Price</th>
-              <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">Total</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {lines.map((l) => (
-              <tr key={l.id}>
-                <td className="px-4 py-3 text-sm">{l.description}</td>
-                <td className="px-4 py-3 text-right text-sm">{l.quantity}</td>
-                <td className="px-4 py-3 text-right text-sm">{money(l.unitPrice, currency)}</td>
-                <td className="px-4 py-3 text-right text-sm">{money(l.lineTotal, currency)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="ml-auto max-w-xs space-y-1 text-sm">
-        <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{money(invoice.subtotal, currency)}</span></div>
-        <div className="flex justify-between"><span className="text-muted-foreground">Tax</span><span>{money(invoice.taxTotal, currency)}</span></div>
-        <div className="flex justify-between border-t pt-1 font-semibold"><span>Total</span><span>{money(invoice.total, currency)}</span></div>
-        <div className="flex justify-between"><span className="text-muted-foreground">Paid</span><span>{money(invoice.amountPaid, currency)}</span></div>
-        <div className="flex justify-between border-t pt-1 font-semibold"><span>Balance due</span><span>{money(invoice.balance, currency)}</span></div>
-      </div>
-
-      {invoice.notes && (
-        <div className="rounded-lg border p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Notes</p>
-          <p className="mt-1 whitespace-pre-wrap text-sm">{invoice.notes}</p>
-        </div>
-      )}
-
-      {invoice.termsAndConditions && (
-        <div className="rounded-lg border p-4" data-testid="invoice-terms-conditions">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terms &amp; Conditions</p>
-          <p className="mt-1 whitespace-pre-wrap text-sm">{invoice.termsAndConditions}</p>
-        </div>
-      )}
+      </DocumentPaper>
     </div>
   );
 }

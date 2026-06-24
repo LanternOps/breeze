@@ -14,6 +14,16 @@ import {
   testTdSynnexDigitalBridgeConnection,
   TdSynnexDigitalBridgeError,
 } from '../../services/tdSynnexDigitalBridge';
+import {
+  getEcExpressStatus,
+  saveEcExpressConfig,
+  testEcExpressConnection,
+  lookupEcExpressProducts,
+  importEcExpressCatalogItem,
+  TdSynnexEcExpressError,
+  REGION_ENDPOINTS,
+  type EcRegion,
+} from '../../services/tdSynnexEcExpress';
 
 export const catalogDistributorRoutes = new Hono();
 
@@ -190,3 +200,98 @@ catalogDistributorRoutes.post(
     }
   }
 );
+
+// ─── TD SYNNEX EC Express ─────────────────────────────────────────────────────
+
+const ecConfigSchema = z.object({
+  region: z.enum(Object.keys(REGION_ENDPOINTS) as [EcRegion, ...EcRegion[]]).default('US'),
+  enabled: z.boolean().default(false),
+  credentials: z.object({
+    email: z.string().max(320).nullable().optional(),
+    password: z.string().max(1000).nullable().optional(),
+    customerNo: z.string().max(64).nullable().optional(),
+  }).optional(),
+  settings: z.object({
+    defaultWarehouse: z.string().max(16).optional(),
+    hideZeroInv: z.boolean().optional(),
+    defaultMarkupPercent: z.number().min(0).max(9999.99).optional(),
+  }).optional(),
+});
+
+const ecLookupSchema = z.object({ q: z.string().min(1).max(40) });
+
+// Typed, bounded mirror of TdSynnexEcProduct — mirrors the Digital Bridge
+// productSchema above. Replaces the prior `z.record(z.string(), z.unknown())`
+// so the import endpoint validates shape and bounds the inbound payload size.
+const ecProductSchema = z.object({
+  source: z.literal('td_synnex_ec_express'),
+  synnexSku: z.string().min(1).max(64),
+  mfgPartNo: z.string().max(255).nullable(),
+  status: z.string().max(64).nullable(),
+  name: z.string().min(1).max(500),
+  description: z.string().max(10_000).nullable(),
+  currency: z.string().max(10).nullable(),
+  cost: z.number().nullable(),
+  msrp: z.number().nullable(),
+  discount: z.number().nullable(),
+  totalQty: z.number().nullable(),
+  weight: z.number().nullable(),
+  parcelShippable: z.string().max(16).nullable(),
+  warehouses: z.array(z.object({
+    code: z.string().max(64).nullable(),
+    available: z.number(),
+    onOrder: z.number(),
+    bo: z.number(),
+    eta: z.string().max(64).nullable(),
+  })).max(200),
+  // Provider passthrough — not persisted as-is, but bound the inbound size so a
+  // partner can't post a multi-MB blob through the import endpoint.
+  raw: z.record(z.string(), z.unknown()).refine(
+    (v) => JSON.stringify(v).length <= 200_000,
+    { message: 'raw payload too large' }
+  ),
+});
+
+const ecImportSchema = z.object({
+  product: ecProductSchema,
+  item: z.object({
+    name: z.string().min(1).max(255),
+    sku: z.string().max(100).nullable().optional(),
+    description: z.string().max(10_000).nullable().optional(),
+    unitPrice: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01),
+    costBasis: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01).nullable().optional(),
+    markupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
+    taxable: z.boolean().optional(),
+  }),
+});
+
+function handleEcError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  if (err instanceof TdSynnexEcExpressError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  console.error('[td-synnex-ec] unexpected error', err);
+  throw err;
+}
+
+catalogDistributorRoutes.get('/distributors/td-synnex-ec/status', scopes, readPerm, async (c) => {
+  try { return c.json({ data: await getEcExpressStatus(catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
+});
+
+catalogDistributorRoutes.put('/distributors/td-synnex-ec/config', scopes, writePerm, requireMfa(), zValidator('json', ecConfigSchema), async (c) => {
+  try { return c.json({ data: await saveEcExpressConfig(c.req.valid('json'), catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
+});
+
+catalogDistributorRoutes.post('/distributors/td-synnex-ec/test', scopes, writePerm, requireMfa(), async (c) => {
+  try { return c.json({ data: await testEcExpressConnection(catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
+});
+
+catalogDistributorRoutes.get('/distributors/td-synnex-ec/lookup', scopes, readPerm, zValidator('query', ecLookupSchema), async (c) => {
+  try { return c.json({ data: await lookupEcExpressProducts(c.req.valid('query').q, catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
+});
+
+catalogDistributorRoutes.post('/distributors/td-synnex-ec/import', scopes, writePerm, requireMfa(), zValidator('json', ecImportSchema), async (c) => {
+  try {
+    const body = c.req.valid('json');
+    const data = await importEcExpressCatalogItem({ product: body.product, item: body.item }, catalogActorFrom(c));
+    return c.json({ data });
+  } catch (err) { return handleEcError(c, err); }
+});
