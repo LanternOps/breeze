@@ -105,14 +105,14 @@ describe('triggerOfflineAlerts — config policy wiring (issue #1857)', () => {
     expect(created).toBe(false);
   });
 
-  it('does not abort the legacy path if config-policy evaluation throws', async () => {
-    evaluateFromPolicyMock.mockRejectedValue(new Error('boom'));
+  it('runs the legacy path then re-throws an unexpected config-policy error (job fails + retries)', async () => {
+    const boom = new Error('boom');
+    evaluateFromPolicyMock.mockRejectedValue(boom);
 
-    // Should swallow the config-policy error and fall through to legacy (no rules → false).
-    const created = await triggerOfflineAlerts(device);
-
-    expect(created).toBe(false);
-    expect(selectMock).toHaveBeenCalled(); // legacy query still ran
+    // The legacy query must still run, but the unexpected error must surface so
+    // BullMQ marks the job failed and retries it — not silently swallowed (#1857).
+    await expect(triggerOfflineAlerts(device)).rejects.toThrow('boom');
+    expect(selectMock).toHaveBeenCalled(); // legacy query still ran first
   });
 
   it('skips config-policy evaluation gracefully when tables are missing (42P01)', async () => {

@@ -253,28 +253,38 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
  * non-offline rules are no-ops for an offline device since their metric/status
  * conditions won't trip.
  *
- * @returns true if at least one config-policy alert was created
+ * Errors are reported via the returned `fatalError` rather than thrown inline,
+ * so the caller can still run the legacy standalone-rule path before surfacing
+ * the failure. The `42P01` "tables not migrated yet" case is treated as a
+ * benign warn-once-and-skip (matching alertWorker); any other error is a fatal
+ * error the caller MUST re-throw so the BullMQ job fails and retries — silently
+ * swallowing it would re-open the exact "offline alerts never fire" symptom of
+ * issue #1857 with no retry and no failed-job signal.
+ *
+ * @returns `created` (true if ≥1 config-policy alert was created) and, on an
+ *   unexpected error, `fatalError` for the caller to re-throw.
  */
 async function triggerConfigPolicyOfflineAlerts(
   device: typeof devices.$inferSelect
-): Promise<boolean> {
+): Promise<{ created: boolean; fatalError?: unknown }> {
   try {
     const createdIds = await evaluateDeviceAlertsFromPolicy(device.id);
     if (createdIds.length > 0) {
       console.log(`[OfflineDetector] Created ${createdIds.length} config-policy alert(s) for device ${device.id}`);
     }
-    return createdIds.length > 0;
+    return { created: createdIds.length > 0 };
   } catch (error) {
     if (isRelationNotFoundError(error)) {
       if (!_configPolicyTableWarningLogged) {
         _configPolicyTableWarningLogged = true;
         console.warn('[OfflineDetector] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping config policy offline alert evaluation.');
       }
-      return false;
+      return { created: false };
     }
-    // Don't let a config-policy evaluation failure abort the legacy path.
+    // Unexpected error — log here for context, but return it so the caller can
+    // run the legacy path first and then re-throw (job fails + retries).
     console.error(`[OfflineDetector] Error evaluating config policy offline alerts for device ${device.id}:`, error);
-    return false;
+    return { created: false, fatalError: error };
   }
 }
 
@@ -293,7 +303,8 @@ async function triggerConfigPolicyOfflineAlerts(
 export async function triggerOfflineAlerts(
   device: typeof devices.$inferSelect
 ): Promise<boolean> {
-  let alertCreated = await triggerConfigPolicyOfflineAlerts(device);
+  const configPolicyResult = await triggerConfigPolicyOfflineAlerts(device);
+  let alertCreated = configPolicyResult.created;
 
   // Find legacy standalone alert rules that have offline conditions
   // We need to find rules where the template conditions include type: 'offline'
@@ -316,6 +327,9 @@ export async function triggerOfflineAlerts(
     );
 
   if (rules.length === 0) {
+    // No legacy rules — surface any config-policy failure before returning so
+    // the BullMQ job fails and retries (consistent with alertWorker).
+    if (configPolicyResult.fatalError) throw configPolicyResult.fatalError;
     return alertCreated;
   }
 
@@ -376,6 +390,10 @@ export async function triggerOfflineAlerts(
       console.log(`[OfflineDetector] Created offline alert ${alertId} for device ${device.id}`);
     }
   }
+
+  // Legacy path ran successfully; now surface any config-policy failure so the
+  // BullMQ job fails and retries (consistent with alertWorker).
+  if (configPolicyResult.fatalError) throw configPolicyResult.fatalError;
 
   return alertCreated;
 }

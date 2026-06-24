@@ -101,6 +101,33 @@ describe('offlineHandler', () => {
     expect(result.description).toBe('Device offline for 5min');
   });
 
+  it('prefers durationMinutes over a legacy duration when both are present', async () => {
+    // 12 min stale. durationMinutes:10 (used) → offline; duration:99 (ignored) would be online.
+    getDeviceMock.mockResolvedValue(
+      makeDevice({ status: 'online', lastSeenAt: new Date('2026-06-24T11:48:00.000Z') })
+    );
+
+    const result = await offlineHandler.evaluate(
+      { type: 'offline', durationMinutes: 10, duration: 99 },
+      DEVICE_ID
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.description).toBe('Device offline for 10min');
+  });
+
+  it('falls back to the 5-minute default for non-positive durations', async () => {
+    // 6 min stale. durationMinutes:0 is invalid → default 5 → offline.
+    getDeviceMock.mockResolvedValue(
+      makeDevice({ status: 'online', lastSeenAt: new Date('2026-06-24T11:54:00.000Z') })
+    );
+
+    const result = await offlineHandler.evaluate({ type: 'offline', durationMinutes: 0 }, DEVICE_ID);
+
+    expect(result.passed).toBe(true);
+    expect(result.description).toBe('Device offline for 5min');
+  });
+
   it('returns "Device not found" when the device does not exist', async () => {
     getDeviceMock.mockResolvedValue(null);
 
