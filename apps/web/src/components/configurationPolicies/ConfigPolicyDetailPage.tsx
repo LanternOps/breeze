@@ -19,6 +19,7 @@ import {
   Activity,
   LifeBuoy,
   Monitor,
+  ListChecks,
 } from 'lucide-react';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { cn } from '@/lib/utils';
@@ -44,8 +45,9 @@ import WarrantyTab from './featureTabs/WarrantyTab';
 import HelperTab from './featureTabs/HelperTab';
 import RemoteAccessTab from './featureTabs/RemoteAccessTab';
 import PamTab from './featureTabs/PamTab';
+import ComplianceStatusTab from './ComplianceStatusTab';
 
-type Tab = 'overview' | FeatureType | 'assignments';
+type Tab = 'overview' | FeatureType | 'assignments' | 'compliance_status';
 
 type PolicyDetail = {
   id: string;
@@ -243,6 +245,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       icon: featureTabIcons[ft],
       dot: !!linkFor(ft) || !!parentLinkFor(ft),
     })),
+    { id: 'compliance_status', label: 'Compliance Status', icon: <ListChecks className="h-4 w-4" /> },
     { id: 'assignments', label: 'Assignments', icon: <Target className="h-4 w-4" /> },
   ];
 
@@ -414,6 +417,11 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
       {/* Feature Tabs */}
       {FEATURE_TYPES.includes(activeTab as FeatureType) && renderFeatureTab(activeTab as FeatureType)}
+
+      {/* Compliance Status Tab (read-only results; the `compliance` feature tab is the rule editor) */}
+      {activeTab === 'compliance_status' && policyId && (
+        <ComplianceStatusTab policyId={policyId} />
+      )}
 
       {/* Assignments Tab */}
       {activeTab === 'assignments' && policyId && policy && (
