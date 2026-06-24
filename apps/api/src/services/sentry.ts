@@ -107,6 +107,62 @@ export function captureMessage(
   });
 }
 
+/**
+ * Attach the authenticated tenant/user to the active Sentry isolation scope
+ * (#1379 B2). Every event captured later in the same scope — route throws,
+ * contextless-write warnings, RLS-deny tags — inherits these, so triage on a
+ * multi-tenant RMM stops being guesswork. Only non-secret identifiers are
+ * tagged (no token, no password, no mfaSecret).
+ *
+ * IMPORTANT: these module-level setters write to whatever isolation scope is
+ * currently active. Call this function only from INSIDE a
+ * `withSentryRequestScope` callback so the writes are confined to that
+ * request's scope rather than the global scope. Calling it at module level
+ * or outside an isolation scope can mis-attribute tags across concurrent
+ * requests.
+ */
+export function setSentryRequestContext(ctx: {
+  userId: string;
+  scope: 'system' | 'partner' | 'organization';
+  orgId: string | null;
+  partnerId: string | null;
+}): void {
+  if (!initialized) {
+    return;
+  }
+  Sentry.setUser({ id: ctx.userId });
+  Sentry.setTag('scope', ctx.scope);
+  Sentry.setTag('orgId', ctx.orgId ?? 'none');
+  Sentry.setTag('partnerId', ctx.partnerId ?? 'none');
+}
+
+/**
+ * Run the rest of a request inside a dedicated Sentry isolation scope, tagged
+ * with the tenant (#1379 B2). Using an EXPLICIT isolation scope (rather than
+ * relying on httpIntegration to fork one per request) guarantees the tags set
+ * by setSentryRequestContext stay confined to THIS request even under
+ * concurrency — Sentry.init() installs the AsyncLocalStorage async-context
+ * strategy that makes withIsolationScope request-local. Passthrough (no scope)
+ * when Sentry is disabled.
+ */
+export function withSentryRequestScope<T>(
+  ctx: {
+    userId: string;
+    scope: 'system' | 'partner' | 'organization';
+    orgId: string | null;
+    partnerId: string | null;
+  },
+  run: () => T
+): T {
+  if (!initialized) {
+    return run();
+  }
+  return Sentry.withIsolationScope(() => {
+    setSentryRequestContext(ctx);
+    return run();
+  });
+}
+
 export async function flushSentry(timeoutMs = 2000): Promise<void> {
   if (!initialized) {
     return;
