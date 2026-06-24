@@ -225,6 +225,24 @@ describe('createConfigPolicyAutomationRun', () => {
     );
   });
 
+  it('throws a domain error when the feature link cannot be resolved (#1855)', async () => {
+    // resolveConfigPolicyId returns null (orphaned/missing feature link). The
+    // function must fail loudly rather than write a null config_policy_id (which
+    // the RLS WITH CHECK would reject with an opaque error).
+    mockResolveConfigPolicyId(null);
+    const valuesMock = mockInsertCapturingValues([{ id: 'run-1' }]);
+
+    await expect(
+      createConfigPolicyAutomationRun({
+        automation: makeConfigPolicyAutomation({ featureLinkId: 'fl-orphan' }),
+        targetDeviceIds: ['dev-1'],
+        triggeredBy: 'scheduler',
+      })
+    ).rejects.toThrow('Could not resolve configurationPolicies.id');
+    // The insert must never be attempted when resolution fails.
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
   it('throws when DB insert returns empty', async () => {
     mockResolveConfigPolicyId('cp-1');
     mockInsertReturning([]);

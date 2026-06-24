@@ -184,6 +184,31 @@ describe('config policy automation run RLS visibility (#1855)', () => {
     expect(systemView).toHaveLength(0);
   });
 
+  it('fails loudly (no row written) when the feature link cannot be resolved (#1855)', async () => {
+    // An automation row whose featureLinkId points at no config_policy_feature_links
+    // row (orphaned/deleted link). createConfigPolicyAutomationRun must throw a
+    // domain error before inserting — never write a null/invisible run.
+    const orphan = { ...automationRow, featureLinkId: crypto.randomUUID() };
+
+    await expect(
+      withSystemDbAccessContext(() =>
+        createConfigPolicyAutomationRun({
+          automation: orphan,
+          targetDeviceIds: ['dev-1'],
+          triggeredBy: 'scheduler',
+        }),
+      ),
+    ).rejects.toThrow('Could not resolve configurationPolicies.id');
+
+    // No automation_runs row was created for this orphan automation.
+    const tdb = getTestDb();
+    const rows = await tdb
+      .select({ id: automationRuns.id })
+      .from(automationRuns)
+      .where(eq(automationRuns.configItemName, orphan.name));
+    expect(rows).toHaveLength(0);
+  });
+
   it('a foreign org cannot SELECT another org\'s config policy run', async () => {
     const run = await withSystemDbAccessContext(() =>
       createConfigPolicyAutomationRun({

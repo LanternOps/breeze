@@ -1623,6 +1623,17 @@ export async function createConfigPolicyAutomationRun(options: {
   details?: Record<string, unknown>;
 }): Promise<AutomationRunRow> {
   const configPolicyId = await resolveConfigPolicyId(options.automation.featureLinkId);
+  if (!configPolicyId) {
+    // The feature link is missing/orphaned, so we can't key the run to a real
+    // configuration_policies.id. Fail loudly with a domain message rather than
+    // writing a null config_policy_id, which the automation_runs RLS WITH CHECK
+    // would reject with an opaque "violates row-level security policy" error
+    // (and, if it didn't, would re-create the RLS-invisible run this fix
+    // removes). Symmetric to the orgId guard in executeConfigPolicyAutomationRun.
+    throw new Error(
+      `Could not resolve configurationPolicies.id for config policy automation ${options.automation.id} (featureLinkId=${options.automation.featureLinkId})`,
+    );
+  }
 
   const [run] = await db
     .insert(automationRuns)
