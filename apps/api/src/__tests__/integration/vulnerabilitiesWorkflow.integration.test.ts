@@ -93,6 +93,75 @@ async function getDeviceVuln(dvId: string) {
   return row;
 }
 
+describe('vulnerability reopen', () => {
+  runDb('reopens a mitigated finding — clears all resolution fields', async () => {
+    const { env, dvId } = await seedOpenDeviceVuln();
+
+    // First mitigate it.
+    const mitigateRes = await buildApp().request(`/api/v1/vulnerabilities/${dvId}/mitigate`, {
+      method: 'POST',
+      headers: authHeaders(env),
+      body: JSON.stringify({ note: 'isolated the affected service' }),
+    });
+    expect(mitigateRes.status).toBe(200);
+    const mitigatedRow = await getDeviceVuln(dvId);
+    expect(mitigatedRow.status).toBe('mitigated');
+    expect(mitigatedRow.resolvedAt).not.toBeNull();
+
+    // Now reopen — no body.
+    const reopenRes = await buildApp().request(`/api/v1/vulnerabilities/${dvId}/reopen`, {
+      method: 'POST',
+      headers: authHeaders(env),
+    });
+    expect(reopenRes.status).toBe(200);
+    expect(await reopenRes.json()).toEqual({ success: true });
+
+    const reopenedRow = await getDeviceVuln(dvId);
+    expect(reopenedRow.status).toBe('open');
+    expect(reopenedRow.resolvedAt).toBeNull();
+    expect(reopenedRow.mitigationNote).toBeNull();
+    expect(reopenedRow.acceptedBy).toBeNull();
+    expect(reopenedRow.acceptedUntil).toBeNull();
+  });
+
+  runDb('reopens an accepted-risk finding — clears all resolution fields', async () => {
+    const { env, dvId, userId } = await seedOpenDeviceVuln();
+
+    // First accept-risk.
+    await buildApp().request(`/api/v1/vulnerabilities/${dvId}/accept-risk`, {
+      method: 'POST',
+      headers: authHeaders(env),
+      body: JSON.stringify({ reason: 'compensating control', acceptedUntil: '2030-01-01T00:00:00Z' }),
+    });
+    const acceptedRow = await getDeviceVuln(dvId);
+    expect(acceptedRow.status).toBe('accepted');
+    expect(acceptedRow.acceptedBy).toBe(userId);
+
+    // Reopen.
+    const reopenRes = await buildApp().request(`/api/v1/vulnerabilities/${dvId}/reopen`, {
+      method: 'POST',
+      headers: authHeaders(env),
+    });
+    expect(reopenRes.status).toBe(200);
+
+    const reopenedRow = await getDeviceVuln(dvId);
+    expect(reopenedRow.status).toBe('open');
+    expect(reopenedRow.acceptedBy).toBeNull();
+    expect(reopenedRow.acceptedUntil).toBeNull();
+    expect(reopenedRow.mitigationNote).toBeNull();
+    expect(reopenedRow.resolvedAt).toBeNull();
+  });
+
+  runDb('returns 404 for an unknown finding on reopen', async () => {
+    const { env } = await seedOpenDeviceVuln();
+    const res = await buildApp().request(
+      '/api/v1/vulnerabilities/00000000-0000-0000-0000-000000000000/reopen',
+      { method: 'POST', headers: authHeaders(env) },
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('vulnerability accept-risk + mitigate', () => {
   runDb('accepts a risk with reason + future expiry', async () => {
     const { env, dvId, userId } = await seedOpenDeviceVuln();

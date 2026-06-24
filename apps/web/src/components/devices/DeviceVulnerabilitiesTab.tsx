@@ -7,6 +7,7 @@ import {
   remediateVuln,
   acceptVulnRisk,
   mitigateVuln,
+  reopenVuln,
   type DeviceVulnerabilityItem,
 } from '../../lib/api/vulnerabilities';
 
@@ -16,6 +17,25 @@ const SEVERITY_BADGES: Record<string, { label: string; className: string }> = {
   medium: { label: 'Medium', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
   low: { label: 'Low', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
 };
+
+const STATUS_BADGES: Record<string, { label: string; className: string }> = {
+  open: { label: 'Open', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
+  accepted: { label: 'Accepted', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
+  mitigated: { label: 'Mitigated', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
+  patched: { label: 'Patched', className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300' },
+};
+
+function StatusBadge({ status }: { status: string }) {
+  const badge = STATUS_BADGES[status?.toLowerCase()] ?? {
+    label: status ?? 'Unknown',
+    className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300',
+  };
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badge.className}`}>
+      {badge.label}
+    </span>
+  );
+}
 
 function SeverityBadge({ severity }: { severity: string | null }) {
   const badge = SEVERITY_BADGES[severity?.toLowerCase() ?? ''] ?? {
@@ -47,19 +67,23 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
+  const [statusFilter, setStatusFilter] = useState<string>('open');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchDeviceVulnerabilities(deviceId, { status: 'open' });
+      const res = await fetchDeviceVulnerabilities(deviceId, { status: statusFilter });
       setItems(res.items);
+      setSelectedIds(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load vulnerabilities');
     } finally {
       setLoading(false);
     }
-  }, [deviceId]);
+  }, [deviceId, statusFilter]);
 
   useEffect(() => {
     void load();
@@ -73,6 +97,33 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
       await load();
     } catch (err) {
       handleActionError(err, 'Failed to schedule remediation');
+    } finally {
+      setBusyId(null);
+    }
+  }, [busyId, load]);
+
+  const onBulkRemediate = useCallback(async () => {
+    if (bulkBusy || selectedIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      await remediateVuln([...selectedIds]);
+      setSelectedIds(new Set());
+      await load();
+    } catch (err) {
+      handleActionError(err, 'Failed to schedule remediation');
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulkBusy, selectedIds, load]);
+
+  const onReopen = useCallback(async (id: string) => {
+    if (busyId) return;
+    setBusyId(id);
+    try {
+      await reopenVuln(id);
+      await load();
+    } catch (err) {
+      handleActionError(err, 'Failed to reopen finding');
     } finally {
       setBusyId(null);
     }
@@ -96,48 +147,87 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
     }
   }, [modal, load]);
 
+  const toggleSelect = useCallback((id: string, canSelect: boolean) => {
+    if (!canSelect) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
   const rowActions = useCallback(
-    (v: DeviceVulnerabilityItem) => (
-      <div className="flex flex-wrap justify-end gap-2">
-        <button
-          type="button"
-          data-testid={`remediate-${v.id}`}
-          className={ACTION_BTN}
-          disabled={busyId === v.id}
-          onClick={() => void onRemediate(v.id)}
-        >
-          Remediate
-        </button>
-        <button
-          type="button"
-          data-testid={`accept-${v.id}`}
-          className={ACTION_BTN}
-          disabled={busyId === v.id}
-          onClick={() => setModal({ kind: 'accept', id: v.id, cveId: v.cveId })}
-        >
-          Accept risk
-        </button>
-        <button
-          type="button"
-          data-testid={`mitigate-${v.id}`}
-          className={ACTION_BTN}
-          disabled={busyId === v.id}
-          onClick={() => setModal({ kind: 'mitigate', id: v.id, cveId: v.cveId })}
-        >
-          Mitigate
-        </button>
-      </div>
-    ),
-    [busyId, onRemediate],
+    (v: DeviceVulnerabilityItem) => {
+      const status = v.status?.toLowerCase();
+      if (status === 'accepted' || status === 'mitigated') {
+        return (
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              data-testid={`reopen-${v.id}`}
+              className={ACTION_BTN}
+              disabled={busyId === v.id}
+              onClick={() => void onReopen(v.id)}
+            >
+              Reopen
+            </button>
+          </div>
+        );
+      }
+      if (status === 'patched') {
+        return <div className="flex flex-wrap justify-end gap-2" />;
+      }
+      return (
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            data-testid={`remediate-${v.id}`}
+            className={ACTION_BTN}
+            disabled={busyId === v.id || !v.patchAvailable}
+            title={v.patchAvailable ? undefined : 'No patch available'}
+            onClick={() => void onRemediate(v.id)}
+          >
+            Remediate
+          </button>
+          <button
+            type="button"
+            data-testid={`accept-${v.id}`}
+            className={ACTION_BTN}
+            disabled={busyId === v.id}
+            onClick={() => setModal({ kind: 'accept', id: v.id, cveId: v.cveId })}
+          >
+            Accept risk
+          </button>
+          <button
+            type="button"
+            data-testid={`mitigate-${v.id}`}
+            className={ACTION_BTN}
+            disabled={busyId === v.id}
+            onClick={() => setModal({ kind: 'mitigate', id: v.id, cveId: v.cveId })}
+          >
+            Mitigate
+          </button>
+        </div>
+      );
+    },
+    [busyId, onRemediate, onReopen],
   );
+
+  const isOpenFilter = statusFilter === 'open';
 
   const table = useMemo(
     () => (
       <table className="min-w-full divide-y">
         <thead className="bg-muted/40">
           <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {isOpenFilter && <th className="px-4 py-3" />}
             <th className="px-4 py-3">CVE</th>
             <th className="px-4 py-3">Severity</th>
+            <th className="px-4 py-3">Status</th>
             <th className="px-4 py-3">CVSS</th>
             <th className="px-4 py-3">Risk</th>
             <th className="px-4 py-3">KEV</th>
@@ -145,20 +235,46 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
           </tr>
         </thead>
         <tbody className="divide-y">
-          {items.map((v) => (
-            <tr key={v.id} data-testid={`vulnerability-row-${v.id}`} className="transition hover:bg-muted/40">
-              <td className="px-4 py-3 text-sm font-medium">{v.cveId}</td>
-              <td className="px-4 py-3 text-sm"><SeverityBadge severity={v.severity} /></td>
-              <td className="px-4 py-3 text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</td>
-              <td className="px-4 py-3 text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</td>
-              <td className="px-4 py-3 text-sm">{v.knownExploited ? 'Yes' : '—'}</td>
-              <td className="px-4 py-3 text-right">{rowActions(v)}</td>
-            </tr>
-          ))}
+          {items.map((v) => {
+            const canSelect = isOpenFilter && v.patchAvailable;
+            return (
+              <tr key={v.id} data-testid={`vulnerability-row-${v.id}`} className="transition hover:bg-muted/40">
+                {isOpenFilter && (
+                  <td className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      data-testid={`vuln-select-${v.id}`}
+                      checked={selectedIds.has(v.id)}
+                      disabled={!canSelect}
+                      onChange={() => toggleSelect(v.id, canSelect)}
+                      aria-label={`Select ${v.cveId}`}
+                    />
+                  </td>
+                )}
+                <td className="px-4 py-3 text-sm font-medium">
+                  {v.cveId}
+                  {isOpenFilter && v.patchAvailable && (
+                    <span
+                      data-testid={`patch-available-${v.id}`}
+                      className="ml-2 inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                    >
+                      Patch available
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-sm"><SeverityBadge severity={v.severity} /></td>
+                <td className="px-4 py-3 text-sm"><StatusBadge status={v.status} /></td>
+                <td className="px-4 py-3 text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</td>
+                <td className="px-4 py-3 text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</td>
+                <td className="px-4 py-3 text-sm">{v.knownExploited ? 'Yes' : '—'}</td>
+                <td className="px-4 py-3 text-right">{rowActions(v)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     ),
-    [items, rowActions],
+    [items, rowActions, selectedIds, toggleSelect, isOpenFilter],
   );
 
   const cards = useMemo(
@@ -170,14 +286,18 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
             <SeverityBadge severity={v.severity} />
           </div>
           <div className="mt-3 space-y-2 border-t pt-3">
+            <CardField label="Status"><StatusBadge status={v.status} /></CardField>
             <CardField label="CVSS"><span className="text-sm tabular-nums">{v.cvssScore === null ? '—' : v.cvssScore.toFixed(1)}</span></CardField>
             <CardField label="Risk"><span className="text-sm tabular-nums">{v.riskScore === null ? '—' : Math.round(v.riskScore)}</span></CardField>
             <CardField label="Known exploited"><span className="text-sm">{v.knownExploited ? 'Yes' : 'No'}</span></CardField>
+            {isOpenFilter && v.patchAvailable && (
+              <CardField label="Patch"><span className="text-sm text-green-700 dark:text-green-300">Available</span></CardField>
+            )}
           </div>
           <CardActions className="flex flex-wrap justify-end gap-2">{rowActions(v)}</CardActions>
         </DataCard>
       )),
-    [items, rowActions],
+    [items, rowActions, isOpenFilter],
   );
 
   if (error) {
@@ -190,9 +310,46 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <label htmlFor="vulnerability-device-status-filter" className="text-sm text-muted-foreground">
+          Status
+        </label>
+        <select
+          id="vulnerability-device-status-filter"
+          data-testid="vulnerability-device-status-filter"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-md border bg-background px-2 py-1 text-sm"
+        >
+          <option value="open">Open</option>
+          <option value="accepted">Accepted</option>
+          <option value="mitigated">Mitigated</option>
+          <option value="patched">Patched</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+
+      {isOpenFilter && (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="vuln-bulk-remediate"
+            className={`${ACTION_BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
+            disabled={selectedIds.size === 0 || bulkBusy}
+            onClick={() => void onBulkRemediate()}
+          >
+            Remediate selected ({selectedIds.size})
+          </button>
+        </div>
+      )}
+
       {!loading && items.length === 0 ? (
         <div data-testid="device-vulnerabilities-empty" className="rounded-md border border-dashed px-4 py-12 text-center text-sm text-muted-foreground">
-          No open vulnerabilities detected on this device.
+          {statusFilter === 'open'
+            ? 'No open vulnerabilities detected on this device.'
+            : statusFilter === 'all'
+              ? 'No vulnerabilities detected on this device.'
+              : `No ${statusFilter} vulnerabilities on this device.`}
         </div>
       ) : (
         <ResponsiveTable table={table} cards={cards} />
@@ -250,6 +407,7 @@ function VulnActionModal({
                 type="date"
                 data-testid="vuln-action-until"
                 value={until}
+                min={(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })()}
                 onChange={(e) => setUntil(e.target.value)}
                 className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm"
               />

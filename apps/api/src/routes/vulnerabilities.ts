@@ -24,7 +24,7 @@ const statusSchema = z
   .string()
   .trim()
   .transform((value) => value.toLowerCase())
-  .pipe(z.enum(['open', 'patched', 'mitigated', 'accepted']));
+  .pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']));
 
 const severitySchema = z
   .string()
@@ -65,7 +65,7 @@ const requireVulnerabilityWrite = requirePermission(
 );
 
 type FindingAccess =
-  | { ok: true; row: { id: string; orgId: string; deviceId: string } }
+  | { ok: true; row: { id: string; orgId: string; deviceId: string; status: string } }
   | { ok: false; status: 404 | 403; error: string };
 
 /**
@@ -104,6 +104,7 @@ async function loadFindingForWrite(id: string, auth: AuthContext): Promise<Findi
       id: deviceVulnerabilities.id,
       orgId: deviceVulnerabilities.orgId,
       deviceId: deviceVulnerabilities.deviceId,
+      status: deviceVulnerabilities.status,
     })
     .from(deviceVulnerabilities)
     .where(eq(deviceVulnerabilities.id, id))
@@ -140,6 +141,7 @@ type CatalogRow = {
   severity: string | null;
   knownExploited: boolean | null;
   epssScore: string | null;
+  patchAvailable: boolean | null;
 };
 
 function numericOrNull(value: string | null): number | null {
@@ -177,13 +179,15 @@ function mergeRows(deviceRows: DeviceVulnerabilityRow[], catalogRows: CatalogRow
         severity: catalog.severity,
         knownExploited: catalog.knownExploited ?? false,
         epssScore: numericOrNull(catalog.epssScore),
+        patchAvailable: catalog.patchAvailable ?? false,
       };
     })
     .filter((row): row is NonNullable<typeof row> => row !== null)
     .sort((a, b) => {
-      const cvssOrder = compareScoresDescNullsLast(a.cvssScore, b.cvssScore);
-      if (cvssOrder !== 0) return cvssOrder;
-      return compareScoresDescNullsLast(a.riskScore, b.riskScore);
+      // Per-device sort: riskScore DESC (nulls last), tie-break cveId ASC.
+      const byRisk = compareScoresDescNullsLast(a.riskScore, b.riskScore);
+      if (byRisk !== 0) return byRisk;
+      return a.cveId < b.cveId ? -1 : a.cveId > b.cveId ? 1 : 0;
     });
 }
 
@@ -212,6 +216,7 @@ async function readCatalogRows(
           severity: vulnerabilities.severity,
           knownExploited: vulnerabilities.knownExploited,
           epssScore: vulnerabilities.epssScore,
+          patchAvailable: vulnerabilities.patchAvailable,
         })
         .from(vulnerabilities)
         .where(and(...conditions))
@@ -226,7 +231,12 @@ async function listVulnerabilities(filters: {
   severity?: string;
   cve?: string;
 }) {
-  const conditions: SQL[] = [eq(deviceVulnerabilities.status, filters.status)];
+  const conditions: SQL[] = [];
+  // 'all' means no status filter — return every status. Any other value is
+  // treated as a specific status to match (open | patched | mitigated | accepted).
+  if (filters.status !== 'all') {
+    conditions.push(eq(deviceVulnerabilities.status, filters.status));
+  }
   if (filters.deviceId) {
     conditions.push(eq(deviceVulnerabilities.deviceId, filters.deviceId));
   }
@@ -253,6 +263,58 @@ async function listVulnerabilities(filters: {
   return mergeRows(deviceRows, catalogRows);
 }
 
+type MergedItem = ReturnType<typeof mergeRows>[number];
+
+type FleetRow = {
+  id: string;
+  cveId: string;
+  cvssScore: number | null;
+  severity: string | null;
+  knownExploited: boolean;
+  epssScore: number | null;
+  riskScore: number | null;
+  deviceCount: number;
+};
+
+/**
+ * Collapse per-device findings into one row per CVE for the fleet view.
+ * `id` = vulnerabilityId (stable aggregate key). Risk fields are CVE-constant;
+ * we take the max riskScore across devices to be safe. Sort: riskScore DESC,
+ * knownExploited (true first), epssScore DESC, cvssScore DESC — all nulls last.
+ */
+function aggregateFleet(items: MergedItem[]): FleetRow[] {
+  const byVuln = new Map<string, FleetRow>();
+  for (const item of items) {
+    const existing = byVuln.get(item.vulnerabilityId);
+    if (existing) {
+      existing.deviceCount += 1;
+      if ((item.riskScore ?? -1) > (existing.riskScore ?? -1)) {
+        existing.riskScore = item.riskScore;
+      }
+      continue;
+    }
+    byVuln.set(item.vulnerabilityId, {
+      id: item.vulnerabilityId,
+      cveId: item.cveId,
+      cvssScore: item.cvssScore,
+      severity: item.severity,
+      knownExploited: item.knownExploited,
+      epssScore: item.epssScore,
+      riskScore: item.riskScore,
+      deviceCount: 1,
+    });
+  }
+
+  return Array.from(byVuln.values()).sort((a, b) => {
+    const byRisk = compareScoresDescNullsLast(a.riskScore, b.riskScore);
+    if (byRisk !== 0) return byRisk;
+    if (a.knownExploited !== b.knownExploited) return a.knownExploited ? -1 : 1;
+    const byEpss = compareScoresDescNullsLast(a.epssScore, b.epssScore);
+    if (byEpss !== 0) return byEpss;
+    return compareScoresDescNullsLast(a.cvssScore, b.cvssScore);
+  });
+}
+
 vulnerabilityRoutes.use('*', authMiddleware);
 vulnerabilityRoutes.use('*', requireScope('organization', 'partner', 'system'));
 vulnerabilityRoutes.use('*', requireVulnerabilityRead);
@@ -260,7 +322,7 @@ vulnerabilityRoutes.use('*', requireVulnerabilityRead);
 vulnerabilityRoutes.get('/', zValidator('query', listQuerySchema), async (c) => {
   const query = c.req.valid('query');
   const items = await listVulnerabilities(query);
-  return c.json({ items });
+  return c.json({ items: aggregateFleet(items) });
 });
 
 vulnerabilityRoutes.get(
@@ -381,6 +443,46 @@ vulnerabilityRoutes.post(
       resourceType: 'device_vulnerability',
       resourceId: id,
       details: { note },
+    });
+
+    return c.json({ success: true });
+  },
+);
+
+// POST /:id/reopen — revert an accepted/mitigated finding back to open. Org-scoped
+// state write (DEVICES_WRITE; no MFA/execute — it queues no command). Clears all
+// resolution fields so the finding is treated as newly-open again.
+vulnerabilityRoutes.post(
+  '/:id/reopen',
+  requireVulnerabilityWrite,
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+
+    const access = await loadFindingForWrite(id, auth);
+    if (!access.ok) {
+      return c.json({ success: false, error: access.error }, access.status);
+    }
+    const { row } = access;
+
+    await db
+      .update(deviceVulnerabilities)
+      .set({
+        status: 'open',
+        acceptedBy: null,
+        acceptedUntil: null,
+        mitigationNote: null,
+        resolvedAt: null,
+      })
+      .where(eq(deviceVulnerabilities.id, id));
+
+    writeRouteAudit(c, {
+      orgId: row.orgId,
+      action: 'vulnerability.reopen',
+      resourceType: 'device_vulnerability',
+      resourceId: id,
+      details: { previousStatus: row.status },
     });
 
     return c.json({ success: true });
