@@ -84,6 +84,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
       description={meta.description}
       icon={<LifeBuoy className="h-5 w-5" />}
       isConfigured={!!existingLink || isInherited}
+      configuredButInactive={!!existingLink && !settings.enabled}
       saving={saving}
       error={error}
       onSave={handleSave}
@@ -108,16 +109,30 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
           </button>
         </div>
 
-        {settings.enabled && (
-          <div className="space-y-4">
+        {/*
+          Tray Menu Options stay visible even when deploy is off, in a disabled
+          state, so the available configuration is discoverable rather than
+          appearing as "nothing else to configure" (#1863).
+        */}
+        <div className="space-y-4">
+          <div>
             <h3 className="text-sm font-semibold">Tray Menu Options</h3>
             <p className="text-xs text-muted-foreground">Configure which items appear in the Breeze Assist right-click context menu. Exit is always available.</p>
+            {!settings.enabled && (
+              <p className="mt-1 text-xs italic text-muted-foreground">Enable "Deploy Breeze Assist to devices" above to apply these options.</p>
+            )}
+          </div>
 
+          <div
+            className={`space-y-4 ${settings.enabled ? '' : 'pointer-events-none opacity-50'}`}
+            aria-disabled={!settings.enabled}
+          >
             {/* Open Portal */}
             <label className="flex items-center gap-3 rounded-md border bg-background px-4 py-3 cursor-pointer">
               <input
                 type="checkbox"
                 checked={settings.showOpenPortal}
+                disabled={!settings.enabled}
                 onChange={(e) => update('showOpenPortal', e.target.checked)}
                 className="h-4 w-4 rounded border-border"
               />
@@ -132,6 +147,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
               <input
                 type="checkbox"
                 checked={settings.showDeviceInfo}
+                disabled={!settings.enabled}
                 onChange={(e) => update('showDeviceInfo', e.target.checked)}
                 className="h-4 w-4 rounded border-border"
               />
@@ -146,6 +162,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
               <input
                 type="checkbox"
                 checked={settings.showRequestSupport}
+                disabled={!settings.enabled}
                 onChange={(e) => update('showRequestSupport', e.target.checked)}
                 className="h-4 w-4 rounded border-border"
               />
@@ -161,6 +178,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
               <input
                 type="text"
                 value={settings.portalUrl ?? ''}
+                disabled={!settings.enabled}
                 onChange={(e) => update('portalUrl', e.target.value)}
                 placeholder="https://portal.example.com (defaults to server URL)"
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
@@ -168,7 +186,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
               <p className="mt-1 text-xs text-muted-foreground">Leave blank to use the default Breeze server URL.</p>
             </div>
           </div>
-        )}
+        </div>
       </div>
     </FeatureTabShell>
   );
