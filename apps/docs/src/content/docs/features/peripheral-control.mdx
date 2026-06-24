@@ -257,7 +257,7 @@ The Breeze agent detects peripherals using platform-native APIs and evaluates th
     The agent uses IOKit to enumerate USB and Thunderbolt peripherals from the I/O Registry. Bluetooth devices are detected through the IOBluetooth framework. Vendor and product identifiers are extracted from the device descriptor.
   </TabItem>
   <TabItem label="Linux">
-    Peripheral detection on Linux uses a stub implementation. USB and Bluetooth enumeration is supported through sysfs and udev, but full enforcement requires the kernel-level driver module.
+    Peripheral detection on Linux is currently a stub. Detection (sysfs/udev) and enforcement (USBGuard) are planned; until then, Linux policies are alert-only.
   </TabItem>
 </Tabs>
 
@@ -273,8 +273,12 @@ The Breeze agent detects peripherals using platform-native APIs and evaluates th
 7. The agent submits all peripheral events to the API via `PUT /agents/:id/peripherals/events`.
 </Steps>
 
-<Aside>
-  Block and read-only enforcement currently operates in alert-only mode on all platforms. The agent logs the policy decision and reports it to the server, but kernel-level enforcement (preventing device access or mounting read-only) requires a platform-specific driver that is not yet included. The `details` field on blocked events includes `"enforcement": "alert_only"` to indicate this.
+<Aside title="Enforcement by platform">
+  **Windows:** `block` and `read_only` are enforced — no kernel driver required. Block disables matching connected devices (via Config Manager / `pnputil`) and arms a machine-wide gate (the `USBSTOR` service) so new removable-storage devices are refused on the next insertion; read-only sets the Removable Storage write-deny policy. Exceptions are honored per device. When a block policy contains allow-exceptions, the machine-wide gate is skipped in favor of per-device enforcement (see Limitations). Every action is **probe-verified**: if the OS does not confirm the block, the event is reported with `"enforcement": "alert_only"` rather than falsely claiming success.
+
+  **macOS / Linux:** `block` and `read_only` currently operate in **alert-only** mode. The agent logs the policy decision and reports it to the server but does not yet prevent device access. Robust macOS enforcement requires MDM; Linux enforcement (USBGuard) is planned.
+
+  **Limitations:** Bluetooth and Thunderbolt block actions are alert-only on all platforms. On Windows, a block policy that contains allow-exceptions relies on per-device enforcement re-applied at each policy sync, so a device unplugged and replugged between syncs may be briefly usable until the next scan.
 </Aside>
 
 ### Event Submission
@@ -326,7 +330,7 @@ When a `blocked` event is received, the API publishes a high-priority `periphera
 After creating a policy, it is distributed to agents through BullMQ. If the response includes a `warning` field, the distribution scheduling failed -- verify that Redis and BullMQ workers are running. Agents receive updated policies on their next sync cycle. Check the agent logs for policy sync errors.
 
 **Blocked events showing `"enforcement": "alert_only"` in details.**
-Block and read-only enforcement currently operates in alert-only mode. The agent logs the policy decision and reports it to the API, but does not prevent the peripheral from being used at the kernel level. This is expected behavior in the current release. Full enforcement requires a platform-specific driver.
+On macOS and Linux, `block`/`read_only` operate in alert-only mode (enforcement not yet implemented), so this is expected. On Windows, `alert_only` means the agent attempted enforcement but the post-write **probe could not confirm** it — for example on a Windows build affected by the 2025 Removable Storage Access servicing regression, or where `pnputil` could not disable the device. The agent deliberately reports `alert_only` instead of falsely claiming a block. Check the event `details` (`mechanism`, `probeDetail`) and the agent logs, and confirm the agent is running as SYSTEM.
 
 **Exception rule not working for a specific peripheral.**
 Verify that the exception's vendor, product, or serial number matches the peripheral exactly (matching is case-insensitive). At least one field must match. Check the `expiresAt` field -- if the exception has expired, the agent skips it during evaluation. Review the activity log for the device to see the full peripheral metadata reported by the agent.
