@@ -159,3 +159,92 @@ describe('processPolicyDistribution race handling', () => {
     expect(ids).toEqual(['p1']); // active only; disabled p2 excluded, no throw
   });
 });
+
+describe('processPolicyDistribution race edge cases', () => {
+  it('throws when only SOME changed ids are visible (partial race in a coalesced burst)', async () => {
+    tableResults.set(policiesTable, [activePolicyRow]); // p1 visible, p2 not
+    tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
+
+    await expect(
+      processPolicyDistribution({
+        type: 'policy-distribution',
+        orgId: 'org-1',
+        changedPolicyIds: ['p1', 'p2'],
+        reason: 'policy-created',
+        queuedAt: '2026-06-24T00:00:00.000Z'
+      })
+    ).rejects.toThrow(/p2/);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  it('still throws on the race even when the org has zero devices (ordering locked: race check precedes the empty-devices short-circuit)', async () => {
+    tableResults.set(policiesTable, []);
+    tableResults.set(devicesTable, []);
+
+    await expect(
+      processPolicyDistribution({
+        type: 'policy-distribution',
+        orgId: 'org-1',
+        changedPolicyIds: ['p1'],
+        reason: 'policy-created',
+        queuedAt: '2026-06-24T00:00:00.000Z'
+      })
+    ).rejects.toThrow();
+  });
+
+  it('does NOT throw when there are no changed ids (manual/periodic distribution)', async () => {
+    tableResults.set(policiesTable, []);
+    tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
+    queueCommandForExecution.mockResolvedValue({ command: { id: 'cmd-1' } });
+
+    const result = await processPolicyDistribution({
+      type: 'policy-distribution',
+      orgId: 'org-1',
+      changedPolicyIds: [],
+      reason: 'manual',
+      queuedAt: '2026-06-24T00:00:00.000Z'
+    });
+    expect(result.queued).toBe(1);
+    const payload = queueCommandForExecution.mock.calls[0]![2] as { policies: unknown[] };
+    expect(payload.policies).toHaveLength(0);
+  });
+
+  it('on the FINAL attempt degrades instead of throwing — distributes the current active set, excluding the vanished id', async () => {
+    tableResults.set(policiesTable, [activePolicyRow]); // p1 present; pX gone
+    tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
+    queueCommandForExecution.mockResolvedValue({ command: { id: 'cmd-1' } });
+
+    const result = await processPolicyDistribution(
+      {
+        type: 'policy-distribution',
+        orgId: 'org-1',
+        changedPolicyIds: ['p1', 'pX-deleted'],
+        reason: 'policy-created',
+        queuedAt: '2026-06-24T00:00:00.000Z'
+      },
+      { isFinalAttempt: true }
+    );
+
+    expect(result.queued).toBe(1);
+    const payload = queueCommandForExecution.mock.calls[0]![2] as { policies: Array<{ id: string }> };
+    expect(payload.policies.map((p) => p.id)).toEqual(['p1']);
+  });
+
+  it('throws when EVERY device enqueue fails (no silent drop of a correct payload)', async () => {
+    tableResults.set(policiesTable, [activePolicyRow]);
+    tableResults.set(devicesTable, [{ id: 'd1', status: 'online' }]);
+    queueCommandForExecution.mockResolvedValue({}); // no command -> falls through
+    queueCommand.mockRejectedValue(new Error('redis down'));
+
+    await expect(
+      processPolicyDistribution({
+        type: 'policy-distribution',
+        orgId: 'org-1',
+        changedPolicyIds: ['p1'],
+        reason: 'policy-created',
+        queuedAt: '2026-06-24T00:00:00.000Z'
+      })
+    ).rejects.toThrow(/all 1 device enqueue/i);
+  });
+});
