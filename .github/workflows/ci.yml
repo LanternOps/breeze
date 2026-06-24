@@ -589,11 +589,14 @@ jobs:
             -o "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
             ./cmd/breeze-agent
 
-      # Windows-only: build a GUI-subsystem sibling from the SAME source so the
-      # scheduled task that launches the user-helper at logon does not allocate
-      # a visible console window. Same Go source, only the -H windowsgui linker
-      # flag differs. See agent/Makefile (build-windows-user-helper) for the
-      # local-dev equivalent.
+      # Windows-only: build the GUI-subsystem user-helper so the scheduled task
+      # that launches it at logon does not allocate a visible console window.
+      # cmd/breeze-user-helper is a thin wrapper over the same internal/agentapp
+      # code as breeze-agent; it lives in its own cmd package so it can embed an
+      # asInvoker manifest instead of the agent's requireAdministrator (#949).
+      # See agent/Makefile (build-windows-user-helper) for the local equivalent.
+      # NOTE: this compile check does not run go-winres, so no manifest is
+      # embedded here — the manifest regression guard lives in release.yml.
       - name: Build user-helper (Windows only)
         if: matrix.goos == 'windows'
         working-directory: agent
@@ -605,7 +608,7 @@ jobs:
         run: |
           go build -ldflags="-s -w -X main.version=${BUILD_VERSION} -H windowsgui" \
             -o "breeze-user-helper-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
-            ./cmd/breeze-agent
+            ./cmd/breeze-user-helper
 
       - name: Upload Agent artifact
         uses: actions/upload-artifact@v7
@@ -621,6 +624,46 @@ jobs:
           name: breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
           retention-days: 7
+
+  # PR-gating manifest guard (#949). The compile job above does not run
+  # go-winres, so it embeds no manifest and cannot catch a wrong execution
+  # level. The shipped invariant is also asserted in release.yml, but that runs
+  # only at release time — this job fails the PR instead. It cross-compiles from
+  # Linux (go-winres + the .syso are host-independent) so no Windows runner is
+  # needed. breeze-user-helper MUST be asInvoker (an admin manifest reintroduces
+  # the ERROR_ELEVATION_REQUIRED spawn failure) and breeze-agent MUST stay
+  # requireAdministrator — both directions are checked.
+  agent-windows-manifest-guard:
+    name: Agent Windows manifest guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Assert Windows manifests
+        working-directory: agent
+        run: |
+          set -euo pipefail
+          go install github.com/tc-hib/go-winres@v0.3.3
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          make build-winres VERSION=ci-guard
+          GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o /tmp/breeze-user-helper.exe ./cmd/breeze-user-helper
+          GOOS=windows GOARCH=amd64 go build -o /tmp/breeze-agent.exe ./cmd/breeze-agent
+          uh=$(grep -a -o '<requestedExecutionLevel[^/]*/>' /tmp/breeze-user-helper.exe | head -1 || true)
+          ag=$(grep -a -o '<requestedExecutionLevel[^/]*/>' /tmp/breeze-agent.exe | head -1 || true)
+          echo "user-helper manifest: ${uh:-<none>}"
+          echo "agent manifest:       ${ag:-<none>}"
+          echo "$uh" | grep -q 'asInvoker'          || { echo "::error::breeze-user-helper is not asInvoker — would reintroduce #949 (ERROR_ELEVATION_REQUIRED on filtered-token sessions)"; exit 1; }
+          if echo "$uh" | grep -q 'requireAdministrator'; then echo "::error::breeze-user-helper is requireAdministrator (#949)"; exit 1; fi
+          echo "$ag" | grep -q 'requireAdministrator' || { echo "::error::breeze-agent lost its requireAdministrator manifest"; exit 1; }
+          if echo "$ag" | grep -q 'asInvoker'; then echo "::error::breeze-agent became asInvoker — lost requireAdministrator (#949)"; exit 1; fi
+          echo "Manifest guard OK: user-helper=asInvoker, agent=requireAdministrator"
 
   test-agent:
     name: Test Agent

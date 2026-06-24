@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package agentapp
 
 import (
 	"context"

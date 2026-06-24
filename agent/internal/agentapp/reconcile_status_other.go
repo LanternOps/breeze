@@ -1,6 +1,6 @@
 //go:build !linux
 
-package main
+package agentapp
 
 // startReconcileFailureReporter is a no-op off Linux. The systemd unit
 // auto-heal and its failure-surfacing (issue #1201) are Linux-only;
