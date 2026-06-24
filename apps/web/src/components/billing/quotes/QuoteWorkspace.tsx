@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { handleActionError } from '../../../lib/runAction';
-import { quotePdfUrl } from '../../../lib/api/quotes';
 import QuoteEditor from './QuoteEditor';
 import QuoteDetail from './QuoteDetail';
+import QuoteDocumentPreview from './QuoteDocument';
 import { type QuoteDetail as QuoteDetailData } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -136,70 +135,9 @@ export default function QuoteWorkspace({ id }: Props) {
         )
       )}
 
-      {tab === 'preview' && <QuotePreview id={detail.quote.id} />}
+      {tab === 'preview' && <QuoteDocumentPreview detail={detail} />}
 
       {tab === 'detail' && <QuoteDetail detail={detail} onChanged={() => void load()} />}
     </div>
-  );
-}
-
-// The PDF route requires the auth header, so a bare `<iframe src=...>` (which the
-// browser fetches without our token) would 401. Mirror InvoiceDetail's PDF flow:
-// fetchWithAuth → blob → object URL → iframe. Revoke the URL on unmount/change.
-function QuotePreview({ id }: { id: string }) {
-  const [url, setUrl] = useState<string>();
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-
-  const loadPdf = useCallback(async () => {
-    setLoading(true);
-    setFailed(false);
-    let objectUrl: string | undefined;
-    try {
-      const res = await fetchWithAuth(quotePdfUrl(id));
-      if (res.status === 401) { UNAUTHORIZED(); return; }
-      if (!res.ok) { setFailed(true); handleActionError(new Error('pdf'), 'Could not load the quote preview.'); return; }
-      const blob = await res.blob();
-      objectUrl = window.URL.createObjectURL(blob);
-      setUrl(objectUrl);
-    } catch (err) {
-      setFailed(true);
-      handleActionError(err, 'Could not load the quote preview.');
-    } finally {
-      setLoading(false);
-    }
-    return objectUrl;
-  }, [id]);
-
-  useEffect(() => {
-    let active: string | undefined;
-    void loadPdf().then((u) => { active = u; });
-    return () => { if (active) window.URL.revokeObjectURL(active); };
-  }, [loadPdf]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16" data-testid="quote-preview-loading">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-      </div>
-    );
-  }
-
-  if (failed || !url) {
-    return (
-      <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground" data-testid="quote-preview-error">
-        Could not load the preview.{' '}
-        <button type="button" onClick={() => void loadPdf()} className="underline hover:text-foreground">Retry</button>
-      </div>
-    );
-  }
-
-  return (
-    <iframe
-      src={url}
-      title="Quote PDF preview"
-      data-testid="quote-preview-frame"
-      className="h-[80vh] w-full rounded-lg border bg-card"
-    />
   );
 }

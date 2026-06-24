@@ -2,21 +2,10 @@ import { Hono } from 'hono';
 import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
-import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
+import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
 import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubWatchdogUrl, HELPER_FILENAMES } from '../../services/binarySource';
 
 export const downloadRoutes = new Hono();
-
-// A presigned-URL failure is only "the object isn't there" for NotFound /
-// NoSuchKey — anything else (network, credentials, throttling, DNS) is a real
-// S3 transport/auth fault. Distinguishing them matters because the disk
-// fallback below 404s when the binary isn't on local disk: on hosted infra
-// (S3-only, no binaries on disk) a transport fault would otherwise be masked as
-// a misleading "binary not found" 404 instead of surfacing as a 500 (issue #1802).
-function isS3NotFound(err: unknown): boolean {
-  const errName = (err as { name?: string }).name;
-  return errName === 'NotFound' || errName === 'NoSuchKey';
-}
 
 // ============================================
 // Agent Binary Download (public, no auth)

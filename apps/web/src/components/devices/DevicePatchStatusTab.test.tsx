@@ -238,11 +238,158 @@ describe('DevicePatchStatusTab', () => {
     expect((installThirdPartyButton as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('shows Linux pending updates and recent install history without showing installed package inventory', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.includes('/patches/history?') && url.includes('type=install')) {
+        return makeJsonResponse({
+          history: [
+            {
+              type: 'install_patches',
+              status: 'completed',
+              completedAt: '2026-06-21T22:47:00.000Z',
+              result: {
+                results: [
+                  {
+                    id: 'installed-1',
+                    title: 'bash',
+                    source: 'linux',
+                    externalId: 'apt:bash@5.1-6ubuntu1.1',
+                    packageId: 'apt:bash',
+                    installId: 'apt:bash',
+                    status: 'installed',
+                  },
+                ],
+              },
+            },
+            {
+              type: 'software_update',
+              status: 'completed',
+              completedAt: '2026-06-20T18:30:00.000Z',
+              result: {
+                results: [
+                  {
+                    id: 'installed-2',
+                    title: 'netbird',
+                    source: 'linux',
+                    externalId: 'netbird',
+                    installId: 'netbird',
+                    status: 'installed',
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+      if (url.includes('/patches/history')) {
+        return makeJsonResponse({ history: [], total: 0 });
+      }
+      return makeJsonResponse({
+        data: {
+          compliancePercent: 100,
+          pending: [
+            {
+              id: 'pending-1',
+              title: 'openssl',
+              source: 'linux',
+              externalId: 'apt:openssl@3.0.2-0ubuntu1.20',
+              packageId: 'apt:openssl',
+              category: 'system',
+              status: 'pending',
+            },
+          ],
+          installed: [
+            {
+              id: 'pkg-1',
+              title: 'zlib1g',
+              source: 'linux',
+              externalId: 'apt:zlib1g',
+              packageId: 'apt:zlib1g',
+              category: 'system',
+              status: 'installed',
+            },
+          ],
+        },
+      });
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="linux" />);
+
+    await screen.findByText('Pending Linux Updates');
+    await screen.findByText('openssl');
+    await screen.findByText('Recently Installed Linux Updates');
+    await screen.findByText('bash');
+    await screen.findByText('netbird');
+    expect(screen.queryByText('Installed Linux Updates')).toBeNull();
+    expect(screen.queryByText('zlib1g')).toBeNull();
+    expect(screen.queryByText('0% compliant')).not.toBeNull();
+    const historyUrl = fetchWithAuthMock.mock.calls
+      .map(([url]) => String(url))
+      .find((url) => url.includes('/patches/history?') && url.includes('type=install'));
+    expect(historyUrl).toBeTruthy();
+    const historyParams = new URL(`https://test.local${historyUrl}`).searchParams;
+    expect(historyParams.get('limit')).toBe('100');
+    expect(historyParams.get('completedAfter')).toBeTruthy();
+  });
+
+  it('refreshes recent Linux install history when patch data is refreshed', async () => {
+    let recentHistoryCalls = 0;
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.includes('/patches/history?') && url.includes('type=install')) {
+        recentHistoryCalls += 1;
+        return makeJsonResponse({
+          history: recentHistoryCalls >= 2
+            ? [
+                {
+                  type: 'software_update',
+                  status: 'completed',
+                  completedAt: '2026-06-22T02:46:00.000Z',
+                  result: {
+                    results: [
+                      {
+                        id: 'netbird',
+                        title: 'netbird',
+                        name: 'netbird',
+                        source: 'linux',
+                        externalId: 'netbird',
+                        installId: 'netbird',
+                        status: 'installed',
+                      },
+                    ],
+                  },
+                },
+              ]
+            : [],
+        });
+      }
+      if (url.includes('/patches/history')) {
+        return makeJsonResponse({ history: [], total: 0 });
+      }
+      return makeJsonResponse({
+        data: {
+          compliancePercent: 100,
+          pending: [],
+          installed: [],
+        },
+      });
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="linux" />);
+
+    await screen.findByText('No recent Linux update installs.');
+    fireEvent.click(await screen.findByRole('button', { name: /Refresh patch data/i }));
+
+    await screen.findByText('netbird');
+    expect(recentHistoryCalls).toBeGreaterThanOrEqual(2);
+  });
+
   it('excludes missing records from pending install counts', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({
         data: {
           compliancePercent: 100,
+          lastPatchScanAt: '2026-06-22T06:15:00.000Z',
+          lastPatchScanStatus: 'completed',
           pending: [],
           missing: [
             {
@@ -274,7 +421,11 @@ describe('DevicePatchStatusTab', () => {
 
     expect((installOsButton as HTMLButtonElement).disabled).toBe(true);
     expect((installThirdPartyButton as HTMLButtonElement).disabled).toBe(true);
-    await screen.findByText(/1 stale missing records are excluded from pending install counts\./i);
+    await screen.findByText((_content, node) =>
+      node?.textContent?.startsWith('Last scan:') === true &&
+      node.textContent.includes('Completed')
+    );
+    expect(screen.queryByText(/updates? from earlier scans/i)).not.toBeInTheDocument();
   });
 
   it('sends only approved pending OS patch ids to the install endpoint', async () => {
@@ -297,6 +448,14 @@ describe('DevicePatchStatusTab', () => {
             category: 'security',
             status: 'pending',
             approvalStatus: 'pending'
+          },
+          {
+            id: 'pending-third-party-1',
+            title: 'Google Chrome',
+            source: 'third_party',
+            category: 'application',
+            status: 'pending',
+            approvalStatus: 'pending'
           }
         ],
         installed: []
@@ -315,6 +474,19 @@ describe('DevicePatchStatusTab', () => {
     // Button count reflects only the approved patch, and surfaces the pending one.
     const installButton = await screen.findByRole('button', { name: /Install pending OS patches \(1\)/i });
     expect(installButton.textContent).toMatch(/1 pending approval/i);
+    expect(screen.getByText('Approved')).toBeTruthy();
+    expect(screen.getAllByText('Pending Approval')).toHaveLength(2);
+
+    const approvedRowInstall = screen.getByLabelText('Install 2026-01 Cumulative Update (KB5050001)');
+    expect((approvedRowInstall as HTMLButtonElement).disabled).toBe(false);
+    const unapprovedOsTitle = 'This org has not approved 2026-01 Feature Update (KB5050099). Approve the patch before installing.';
+    expect(screen.getByTitle(unapprovedOsTitle)).toBeTruthy();
+    const unapprovedOsRowInstall = screen.getByLabelText(unapprovedOsTitle);
+    expect((unapprovedOsRowInstall as HTMLButtonElement).disabled).toBe(true);
+    const unapprovedThirdPartyTitle = 'This org has not approved Google Chrome. Approve the patch before installing.';
+    expect(screen.getByTitle(unapprovedThirdPartyTitle)).toBeTruthy();
+    const unapprovedThirdPartyInstall = screen.getByLabelText(unapprovedThirdPartyTitle);
+    expect((unapprovedThirdPartyInstall as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(installButton);
     fireEvent.click(await screen.findByTestId('confirm-install-patches'));

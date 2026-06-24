@@ -1,6 +1,7 @@
 package snmppoll
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -144,6 +145,29 @@ func TestGetTemplate_ExpectedOIDCounts(t *testing.T) {
 		if len(result) != tt.wantCount {
 			t.Errorf("GetTemplate(%q) = %d OIDs, want %d", tt.deviceType, len(result), tt.wantCount)
 		}
+	}
+}
+
+func TestLLDPAndCDPRootOIDs(t *testing.T) {
+	cases := map[string]string{
+		"lldp chassis": LldpRemChassisIDOID,
+		"lldp port":    LldpRemPortIDOID,
+		"lldp sysname": LldpRemSysNameOID,
+		"cdp device":   CdpCacheDeviceIDOID,
+		"cdp port":     CdpCacheDevicePortOID,
+		"cdp address":  CdpCacheAddressOID,
+		"ifName":       IfNameOID,
+	}
+	for name, oid := range cases {
+		if oid == "" {
+			t.Errorf("%s OID is empty", name)
+		}
+	}
+	if !strings.HasPrefix(LldpRemChassisIDOID, "1.0.8802.1.1.2") {
+		t.Errorf("LLDP chassis OID has wrong base: %s", LldpRemChassisIDOID)
+	}
+	if !strings.HasPrefix(CdpCacheDeviceIDOID, "1.3.6.1.4.1.9.9.23") {
+		t.Errorf("CDP device OID has wrong base: %s", CdpCacheDeviceIDOID)
 	}
 }
 

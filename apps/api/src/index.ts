@@ -132,6 +132,7 @@ import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
 import { huntressRoutes } from './routes/huntress';
 import { pax8Routes } from './routes/pax8';
+import { accountingRoutes } from './routes/accounting';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
 import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
@@ -143,6 +144,7 @@ import { adminRoutes } from './routes/admin';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException, flushSentry, initSentry } from './services/sentry';
+import { isBenignRejection } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
 
@@ -881,6 +883,7 @@ api.route('/dns-security', dnsSecurityRoutes);
 api.route('/s1', sentinelOneRoutes);
 api.route('/huntress', huntressRoutes);
 api.route('/pax8', pax8Routes);
+api.route('/accounting', accountingRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
 api.route('/sensitive-data', sensitiveDataRoutes);
 api.route('/peripherals', peripheralControlRoutes);
@@ -1384,16 +1387,27 @@ function installSignalHandlers(): void {
   // the dead subprocess and throws "ProcessTransport is not ready for writing".
   // This is a benign race condition — log it instead of crashing the process.
   process.on('unhandledRejection', (reason) => {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    // Only suppress SDK-specific benign rejections from session cleanup
-    if (message.includes('ProcessTransport is not ready for writing') ||
-        (reason instanceof Error && reason.name === 'AbortError') ||
-        (message.includes('Operation aborted') && message.includes('Transport'))) {
+    if (isBenignRejection(reason)) {
+      const message = reason instanceof Error ? reason.message : String(reason);
       console.warn('[SDK] Suppressed benign unhandled rejection (session already closed):', message);
       return;
     }
     console.error('[FATAL] Unhandled rejection:', reason);
-    captureException(reason instanceof Error ? reason : new Error(message));
+    captureException(reason instanceof Error ? reason : new Error(String(reason)));
+  });
+
+  // #1379 B4 — a synchronous uncaughtException otherwise tears the process
+  // down with no telemetry. Capture + flush before exit; reuse the benign
+  // suppression list so SDK races don't crash us.
+  process.on('uncaughtException', (err) => {
+    if (isBenignRejection(err)) {
+      console.warn('[SDK] Suppressed benign uncaught exception:', err.message);
+      return;
+    }
+    console.error('[FATAL] Uncaught exception:', err);
+    captureException(err);
+    // Best-effort drain, then exit non-zero so the supervisor restarts us.
+    void flushSentry().finally(() => process.exit(1));
   });
 }
 

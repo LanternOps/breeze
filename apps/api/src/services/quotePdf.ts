@@ -164,14 +164,16 @@ function renderLineTable(doc: PDFKit.PDFDocument, lines: QuoteLine[], currency: 
   const c = columnsFor(doc);
   let y = ensureSpace(doc, startY, 60);
 
-  // Header row.
-  doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold');
+  // Header row with a light fill bar.
+  doc.save();
+  doc.rect(c.left - 6, y - 5, c.contentWidth + 12, 22).fill('#f8fafc');
+  doc.restore();
+  doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
   doc.text('QTY', c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
   doc.text('DESCRIPTION', c.colQtyX + c.contentWidth * 0.12, y, { width: c.contentWidth * 0.46, align: 'left' });
   doc.text('UNIT', c.colUnitX, y, { width: c.colNumW, align: 'right' });
   doc.text('TOTAL', c.colAmtX, y, { width: c.colNumW, align: 'right' });
-  y += 14;
-  doc.moveTo(c.left, y).lineTo(c.right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
+  y += 18;
   y += 6;
 
   const descX = c.colQtyX + c.contentWidth * 0.12;
@@ -200,20 +202,30 @@ function renderLineTable(doc: PDFKit.PDFDocument, lines: QuoteLine[], currency: 
 // amount.
 // ---------------------------------------------------------------------------
 
-function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, currency: string, startY: number): number {
+function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, currency: string, primary: string, startY: number): number {
   const c = columnsFor(doc);
   let y = ensureSpace(doc, startY + 6, 90);
 
-  doc.moveTo(c.colUnitX, y).lineTo(c.right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
+  // Wider label column than the line table's so the emphasised "Due on
+  // acceptance" figure (14pt) and the recurring labels never wrap/overlap.
+  const sumX = c.left + c.contentWidth * 0.40;
+  doc.moveTo(sumX, y).lineTo(c.right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
   y += 8;
 
-  const labelX = c.colUnitX;
-  const labelW = c.colAmtX - c.colUnitX - 4;
-  const drawRow = (label: string, amount: string | number | null | undefined, suffix: string, bold = false) => {
-    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(bold ? 12 : 10).fillColor(bold ? '#111827' : '#6b7280');
+  const labelX = sumX;
+  const labelW = c.colAmtX - sumX - 8;
+  const drawRow = (
+    label: string,
+    amount: string | number | null | undefined,
+    suffix: string,
+    opts: { bold?: boolean; emphasis?: boolean } = {},
+  ) => {
+    const { bold = false, emphasis = false } = opts;
+    const strong = bold || emphasis;
+    doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(emphasis ? 14 : strong ? 12 : 10).fillColor(strong ? '#111827' : '#6b7280');
     doc.text(label, labelX, y, { width: labelW, align: 'left' });
-    doc.fillColor(bold ? '#111827' : '#1f2937').text(`${formatMoney(amount, currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
-    y += bold ? 18 : 14;
+    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoney(amount, currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
+    y += emphasis ? 20 : strong ? 18 : 14;
   };
 
   drawRow('One-time', quote.oneTimeTotal, '');
@@ -224,11 +236,11 @@ function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, cur
   }
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
-  // Bold primary figure = what accept invoices now. Fall back to the one-time
+  // Accent primary figure = what accept invoices now. Fall back to the one-time
   // total if the derived field is somehow absent.
-  drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', true);
+  drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', { emphasis: true });
   if (hasRecurring) {
-    drawRow('First-period total (incl. recurring)', quote.total, '');
+    drawRow('First-period total', quote.total, '');
   }
   return y;
 }
@@ -259,14 +271,14 @@ export async function renderQuotePdf(
 
   const c = columnsFor(doc);
 
-  // ---- Header: partner name + PROPOSAL title + quote number ----------------
-  doc.fillColor(primary).fontSize(20).font('Helvetica-Bold').text(partnerName, c.left, 50, { width: c.contentWidth * 0.6 });
-  doc.fillColor('#111827').fontSize(18).font('Helvetica-Bold').text('PROPOSAL', c.left, 52, { width: c.contentWidth, align: 'right' });
-  doc.fillColor('#6b7280').fontSize(10).font('Helvetica').text(quote.quoteNumber ?? 'DRAFT', c.left, 74, { width: c.contentWidth, align: 'right' });
-  doc.moveTo(c.left, 96).lineTo(c.right, 96).lineWidth(2).strokeColor(primary).stroke();
+  // ---- Header: partner wordmark (left) + accent PROPOSAL eyebrow + number ---
+  doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(partnerName, c.left, 50, { width: c.contentWidth * 0.55 });
+  doc.fillColor(primary).fontSize(10).font('Helvetica-Bold').text('PROPOSAL', c.left, 52, { width: c.contentWidth, align: 'right', characterSpacing: 1.5 });
+  doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(quote.quoteNumber ?? 'Draft', c.left, 66, { width: c.contentWidth, align: 'right' });
+  doc.moveTo(c.left, 100).lineTo(c.right, 100).lineWidth(2).strokeColor(primary).stroke();
 
   // ---- From (seller) left column; Prepared For + dates right column ---------
-  let y = 112;
+  let y = 120;
   const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
   const rightX = c.left + c.contentWidth * 0.55;
   const rightW = c.contentWidth * 0.45;
@@ -351,7 +363,17 @@ export async function renderQuotePdf(
       }
     } else if (b.blockType === 'line_items') {
       const blockLines = lines.filter((l) => l.blockId === b.id);
-      if (blockLines.length) y = renderLineTable(doc, blockLines, currency, y);
+      if (blockLines.length) {
+        // Section label above the table (parity with the web document), e.g.
+        // "Recurring services" / "One-time".
+        const label = String((b.content as { label?: string }).label ?? '').trim();
+        if (label) {
+          y = ensureSpace(doc, y, 36);
+          doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
+          y = doc.y + 6;
+        }
+        y = renderLineTable(doc, blockLines, currency, y);
+      }
     }
   }
 
@@ -360,7 +382,7 @@ export async function renderQuotePdf(
   if (orphanLines.length) y = renderLineTable(doc, orphanLines, currency, y);
 
   // ---- Recurring summary footer -------------------------------------------
-  y = renderRecurringSummary(doc, quote, currency, y);
+  y = renderRecurringSummary(doc, quote, currency, primary, y);
 
   // ---- Terms & Conditions --------------------------------------------------
   if (quote.termsAndConditions) {

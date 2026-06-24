@@ -61,6 +61,7 @@ const POLL_INTERVAL_MS = 30000;
 
 const typeConfig: Record<string, { label: string; icon: typeof Download }> = {
   install_patches: { label: 'Install', icon: Download },
+  software_update: { label: 'Install', icon: Download },
   install: { label: 'Install', icon: Download },
   patch_scan: { label: 'Scan', icon: Search },
   scan_patches: { label: 'Scan', icon: Search },

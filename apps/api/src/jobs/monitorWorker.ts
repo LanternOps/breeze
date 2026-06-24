@@ -103,22 +103,28 @@ function createMonitorWorker(): Worker<MonitorJobData> {
   return new Worker<MonitorJobData>(
     MONITOR_QUEUE,
     async (job: Job<MonitorJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const data = parseQueueJobData(MONITOR_QUEUE, job, monitorQueueJobDataSchema);
-        switch (data.type) {
-          case 'monitor-scheduler':
-            assertQueueJobName(MONITOR_QUEUE, job, 'monitor-scheduler');
-            return await processScheduler();
-          case 'check-monitor':
+      const data = parseQueueJobData(MONITOR_QUEUE, job, monitorQueueJobDataSchema);
+      switch (data.type) {
+        case 'monitor-scheduler':
+          assertQueueJobName(MONITOR_QUEUE, job, 'monitor-scheduler');
+          // Self-manages its DB context: reads due monitors in a SHORT context,
+          // then runs the Redis enqueue loop OUTSIDE any transaction. A blanket
+          // wrap here would pin a pooled connection idle-in-transaction for the
+          // whole enqueue loop (~20s on the EU fleet), starving the pool (#1105).
+          return await processScheduler();
+        case 'check-monitor':
+          return await runWithSystemDbAccess(() => {
             assertQueueJobName(MONITOR_QUEUE, job, 'check-monitor');
-            return await processCheckMonitor(data);
-          case 'process-check-result':
+            return processCheckMonitor(data);
+          });
+        case 'process-check-result':
+          return await runWithSystemDbAccess(() => {
             assertQueueJobName(MONITOR_QUEUE, job, 'process-check-result');
-            return await processCheckResult(data);
-          default:
-            throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
-        }
-      });
+            return processCheckResult(data);
+          });
+        default:
+          throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
@@ -444,26 +450,33 @@ async function processCheckResult(data: ProcessCheckResultJobData): Promise<{
   return { resultWritten: true };
 }
 
-async function processScheduler(): Promise<{ enqueued: number }> {
+export async function processScheduler(): Promise<{ enqueued: number }> {
   const now = new Date();
 
-  const dueMonitors = await db
-    .select({
-      id: networkMonitors.id,
-      orgId: networkMonitors.orgId,
-      pollingInterval: networkMonitors.pollingInterval,
-      lastChecked: networkMonitors.lastChecked
-    })
-    .from(networkMonitors)
-    .where(
-      and(
-        eq(networkMonitors.isActive, true),
-        sql`(${networkMonitors.lastChecked} IS NULL OR ${networkMonitors.lastChecked} + make_interval(secs => ${networkMonitors.pollingInterval}) <= ${now.toISOString()})`
+  // Phase 1 — read due monitors inside a short system DB context, then let it
+  // CLOSE. Everything after this is pure Redis/BullMQ work; holding it inside
+  // the context would pin a pooled connection idle-in-transaction for the whole
+  // enqueue loop, starving the connection pool (#1105).
+  const dueMonitors = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: networkMonitors.id,
+        orgId: networkMonitors.orgId,
+        pollingInterval: networkMonitors.pollingInterval,
+        lastChecked: networkMonitors.lastChecked
+      })
+      .from(networkMonitors)
+      .where(
+        and(
+          eq(networkMonitors.isActive, true),
+          sql`(${networkMonitors.lastChecked} IS NULL OR ${networkMonitors.lastChecked} + make_interval(secs => ${networkMonitors.pollingInterval}) <= ${now.toISOString()})`
+        )
       )
-    );
+  );
 
   if (dueMonitors.length === 0) return { enqueued: 0 };
 
+  // Phase 2 — enqueue checks with NO DB context open (pure Redis/BullMQ).
   let enqueued = 0;
   for (const monitor of dueMonitors) {
     try {

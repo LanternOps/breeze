@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import MFASetupForm from './MFASetupForm';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import {
+  AuthSessionExpiredError,
+  fetchWithAuth,
+  restoreAccessTokenFromCookie,
+  useAuthStore,
+} from '../../stores/auth';
 import { extractApiError } from '../../lib/apiError';
 import { navigateTo } from '../../lib/navigation';
 
@@ -24,6 +29,20 @@ export default function ForcedMfaSetupPage() {
     setForced(params.get('forced') === '1');
   }, []);
 
+  // This page renders under AuthLayout (no AuthGuard/DashboardWrapper), and it
+  // is always reached via a full-page navigation, so the in-memory access token
+  // is gone on mount. Proactively trade the refresh cookie for a fresh access
+  // token now — mirroring AuthGuard — so the Bearer is in place before the user
+  // submits their password (rather than discovering a dead session only at
+  // submit time). If recovery fails, fetchWithAuth/AuthSessionExpiredError will
+  // bounce the user to /login on their first action.
+  useEffect(() => {
+    const { isAuthenticated, tokens } = useAuthStore.getState();
+    if (isAuthenticated && !tokens?.accessToken) {
+      void restoreAccessTokenFromCookie();
+    }
+  }, []);
+
   // Step 1: re-prompt for the current password and start TOTP enrollment.
   const handleStart = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -43,7 +62,10 @@ export default function ForcedMfaSetupPage() {
       setQrCodeDataUrl(data.qrCodeDataUrl);
       setRecoveryCodes(data.recoveryCodes);
       setStep('enroll');
-    } catch {
+    } catch (err) {
+      // Session died and fetchWithAuth is already redirecting to /login — don't
+      // flash a misleading "Network error" over the navigation.
+      if (err instanceof AuthSessionExpiredError) return;
       setError('Network error');
     } finally {
       setLoading(false);
@@ -72,7 +94,8 @@ export default function ForcedMfaSetupPage() {
           window.location.href = '/';
         });
       }, 1500);
-    } catch {
+    } catch (err) {
+      if (err instanceof AuthSessionExpiredError) return;
       setError('Network error');
     } finally {
       setLoading(false);

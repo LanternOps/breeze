@@ -1,6 +1,7 @@
 package snmppoll
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -477,5 +478,20 @@ func TestNormalizeClientConfig_V3ExplicitSecurityLevelPreserved(t *testing.T) {
 	})
 	if cfg.Auth.SecurityLevel != gosnmp.AuthNoPriv {
 		t.Errorf("SecurityLevel = %v, want AuthNoPriv (explicit)", cfg.Auth.SecurityLevel)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SNMPClient.Walk — validation
+// ---------------------------------------------------------------------------
+
+func TestWalkRejectsEmptyOID(t *testing.T) {
+	c := &SNMPClient{} // client field nil; guard must fire before use
+	_, err := c.Walk("")
+	if err == nil {
+		t.Fatal("expected error for empty root OID")
+	}
+	if !strings.Contains(err.Error(), "root OID is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

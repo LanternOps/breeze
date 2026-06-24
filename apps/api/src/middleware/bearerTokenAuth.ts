@@ -1,10 +1,10 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
 import { OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { organizations, partnerUsers } from '../db/schema';
+import { oauthClientBlocks, organizations, partnerUsers } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
@@ -18,6 +18,7 @@ interface OAuthApiKeyContext {
   rateLimit: number;
   createdBy: string;
   oauthGrantId?: string;
+  oauthClientId?: string;
 }
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -175,6 +176,27 @@ export async function resolvePartnerAccessibleOrgIds(
 // Exported for unit tests that exercise the partner-scope resolution path.
 export const _resolvePartnerAccessibleOrgIdsForTests = resolvePartnerAccessibleOrgIds;
 
+async function filterBlockedOAuthClientOrgIds(orgIds: string[], clientId: string | undefined): Promise<string[]> {
+  if (!clientId || orgIds.length === 0) return orgIds;
+
+  return withSystemDbAccessContext(async () => {
+    const now = new Date();
+    const rows = await db
+      .select({ orgId: oauthClientBlocks.orgId })
+      .from(oauthClientBlocks)
+      .where(
+        and(
+          eq(oauthClientBlocks.clientId, clientId),
+          inArray(oauthClientBlocks.orgId, orgIds),
+          or(isNull(oauthClientBlocks.blockedUntil), gt(oauthClientBlocks.blockedUntil, now)),
+        ),
+      );
+    if (rows.length === 0) return orgIds;
+    const blocked = new Set(rows.map((row) => row.orgId));
+    return orgIds.filter((orgId) => !blocked.has(orgId));
+  });
+}
+
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (!OAUTH_ISSUER || !OAUTH_RESOURCE_URL) {
     throw new HTTPException(500, { message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set' });
@@ -223,17 +245,20 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (typeof payload.grant_id === 'string' && await isGrantRevoked(payload.grant_id)) {
     throw new HTTPException(401, { message: 'token revoked' });
   }
+  const clientIdClaim = typeof (payload as { client_id?: unknown }).client_id === 'string'
+    ? (payload as { client_id?: string }).client_id
+    : typeof (payload as { azp?: unknown }).azp === 'string'
+      ? (payload as { azp?: string }).azp
+      : undefined;
+
   // Org-wide OAuth client block: covers the "no Cursor in Acme Corp for the
-  // next 30 days" admin lever. Cheap one-row check, only runs when an org
-  // is in scope (org_id claim present). System-context lookup; the table is
-  // org-tenant RLS but this middleware is the authorization point.
-  if (typeof payload.org_id === 'string' && typeof (payload as { client_id?: unknown }).client_id === 'string') {
-    const { isOauthClientBlockedForOrg } = await import('../routes/lifecycle');
-    const blocked = await isOauthClientBlockedForOrg(
-      payload.org_id,
-      (payload as { client_id: string }).client_id
-    );
-    if (blocked) {
+  // next 30 days" admin lever. Org-scoped bearers are rejected outright.
+  // Partner-scoped bearers are filtered below so a block removes only the
+  // blocked org from the partner-wide allowlist while preserving access to
+  // other orgs under the partner.
+  if (typeof payload.org_id === 'string' && clientIdClaim) {
+    const unblocked = await filterBlockedOAuthClientOrgIds([payload.org_id], clientIdClaim);
+    if (unblocked.length === 0) {
       throw new HTTPException(403, { message: 'oauth client blocked for this organization' });
     }
   }
@@ -265,11 +290,6 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   }
 
   const oauthScopes = (payload.scope ?? '').split(' ').filter(Boolean);
-  const clientIdClaim = typeof (payload as { client_id?: unknown }).client_id === 'string'
-    ? (payload as { client_id?: string }).client_id
-    : typeof (payload as { azp?: unknown }).azp === 'string'
-      ? (payload as { azp?: string }).azp
-      : undefined;
   const effectiveScopes = expandOAuthScopes(oauthScopes, clientIdClaim);
 
   (c.set as (key: 'apiKey', value: OAuthApiKeyContext) => void)('apiKey', {
@@ -282,6 +302,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     rateLimit: 1000,
     createdBy: payload.sub,
     ...(typeof payload.grant_id === 'string' ? { oauthGrantId: payload.grant_id } : {}),
+    ...(clientIdClaim ? { oauthClientId: clientIdClaim } : {}),
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);
 
@@ -292,7 +313,10 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   // leaning entirely on RLS. See resolvePartnerAccessibleOrgIds() above.
   const partnerAccessibleOrgIds = payload.org_id
     ? null
-    : await resolvePartnerAccessibleOrgIds(payload.partner_id, payload.sub);
+    : await filterBlockedOAuthClientOrgIds(
+        await resolvePartnerAccessibleOrgIds(payload.partner_id, payload.sub),
+        clientIdClaim,
+      );
 
   await withDbAccessContext(
     payload.org_id

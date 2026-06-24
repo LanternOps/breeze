@@ -86,11 +86,25 @@ export interface QuoteLine {
   createdAt: string;
 }
 
-/** Shape of `GET /quotes/:id` — `{ data: { quote, blocks, lines } }`. */
+/** Document branding resolved server-side (mirrors the PDF renderer) so the
+ *  in-app Preview matches what the customer receives. Optional because test
+ *  fixtures and the list endpoint don't carry it. */
+export interface QuoteBranding {
+  partnerName: string;
+  logoUrl: string | null;
+  /** Partner brand accent (hex); null → fall back to the app's primary accent. */
+  primaryColor: string | null;
+  footer: string | null;
+  currencyCode: string;
+  seller: SellerSnapshot | null;
+}
+
+/** Shape of `GET /quotes/:id` — `{ data: { quote, blocks, lines, branding } }`. */
 export interface QuoteDetail {
   quote: Quote;
   blocks: QuoteBlock[];
   lines: QuoteLine[];
+  branding?: QuoteBranding;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {

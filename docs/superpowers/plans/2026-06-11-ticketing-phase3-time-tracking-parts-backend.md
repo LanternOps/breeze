@@ -1,5 +1,7 @@
 # Ticketing Phase 3 — Time Tracking + Parts Backend (PR 1) Implementation Plan
 
+> **✅ STATUS: COMPLETE — shipped in #1276 (merged 2026-06-11).** All 13 tasks implemented and merged to `main`. `time_entries` + `ticket_parts` tables, RLS, permissions, validators, `timeEntryService`/`timeEntryEvents`, standalone `/time-entries` + per-ticket routes (mounted `apps/api/src/index.ts:729`), billables CSV export, AI tool actions (`aiToolsTicketing.ts`), moveOrg org_id rewrite, and real-driver integration tests all landed. Follow-up fix #1296 (concurrent timer-start 500) merged 2026-06-12. Checkboxes below are retained as a historical record of the build sequence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the Phase 3 backend: `time_entries` + `ticket_parts` tables, `timeEntryService`, technician routes (timers, timesheet, approval, parts, billables CSV), AI tool actions.
@@ -27,7 +29,7 @@
 - Create: `apps/api/migrations/2026-06-12-a-ticketing-time-parts.sql`
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (PARTNER_TENANT_TABLES entry)
 
-- [ ] **Step 1: Create the Drizzle schema file**
+- [x] **Step 1: Create the Drizzle schema file**
 
 Create `apps/api/src/db/schema/timeTracking.ts`:
 
@@ -99,7 +101,7 @@ export const ticketParts = pgTable('ticket_parts', {
 
 Note: move the `import { sql, type SQL } from 'drizzle-orm';` line to the top of the file with the other imports (shown inline above only for reading order). If `pnpm db:check-drift` later complains about the partial-index expression, simplify to defining the unique index ONLY in SQL and keep a plain (non-unique) `index('time_entries_user_idx').on(t.userId)` in Drizzle — drift tolerance for partial indexes varies; the SQL migration is the source of truth.
 
-- [ ] **Step 2: Export from the schema barrel**
+- [x] **Step 2: Export from the schema barrel**
 
 In `apps/api/src/db/schema/index.ts`, after `export * from './tickets';` add:
 
@@ -107,7 +109,7 @@ In `apps/api/src/db/schema/index.ts`, after `export * from './tickets';` add:
 export * from './timeTracking';
 ```
 
-- [ ] **Step 3: Write the migration**
+- [x] **Step 3: Write the migration**
 
 Create `apps/api/migrations/2026-06-12-a-ticketing-time-parts.sql` (idempotent; NO inner BEGIN/COMMIT — autoMigrate wraps the file):
 
@@ -247,7 +249,7 @@ WHERE NOT EXISTS (
 );
 ```
 
-- [ ] **Step 4: Add the RLS-coverage allowlist entry**
+- [x] **Step 4: Add the RLS-coverage allowlist entry**
 
 In `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`, extend `PARTNER_TENANT_TABLES` (around line 87):
 
@@ -258,7 +260,7 @@ In `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`, extend
 
 `ticket_parts` has an `org_id` column and is auto-discovered — no allowlist entry.
 
-- [ ] **Step 5: Apply migration + drift check**
+- [x] **Step 5: Apply migration + drift check**
 
 ```bash
 export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
@@ -273,7 +275,7 @@ PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH pnpm db:check-drift
 
 Expected: no drift. If the partial unique index reports drift, apply the fallback from Step 1 (plain Drizzle index, SQL owns the partial unique).
 
-- [ ] **Step 6: Run the RLS coverage test (real DB required)**
+- [x] **Step 6: Run the RLS coverage test (real DB required)**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run --config vitest.integration.config.ts src/__tests__/integration/rls-coverage.integration.test.ts
@@ -281,7 +283,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run -
 
 Expected: PASS (3 pre-existing `approval_requests` Shape-6 failures are known-unrelated if they appear — see memory; do not fix here).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/api/src/db/schema/timeTracking.ts apps/api/src/db/schema/index.ts apps/api/migrations/2026-06-12-a-ticketing-time-parts.sql apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
@@ -296,7 +298,7 @@ git commit -m "feat(ticketing): time_entries + ticket_parts schema, RLS, permiss
 - Modify: `apps/api/src/services/permissions.ts` (PERMISSIONS object, ~line 263)
 - Modify: `apps/api/src/routes/permissionsCatalog.ts` (RESOURCE_LABELS, ~line 9)
 
-- [ ] **Step 1: Add PERMISSIONS entries**
+- [x] **Step 1: Add PERMISSIONS entries**
 
 In `apps/api/src/services/permissions.ts`, after the Tickets block (`TICKETS_WRITE`):
 
@@ -306,7 +308,7 @@ In `apps/api/src/services/permissions.ts`, after the Tickets block (`TICKETS_WRI
   TIME_ENTRIES_WRITE: { resource: 'time_entries', action: 'write' },
 ```
 
-- [ ] **Step 2: Add the catalog label**
+- [x] **Step 2: Add the catalog label**
 
 In `apps/api/src/routes/permissionsCatalog.ts` RESOURCE_LABELS, after `tickets: 'Tickets',`:
 
@@ -314,7 +316,7 @@ In `apps/api/src/routes/permissionsCatalog.ts` RESOURCE_LABELS, after `tickets: 
   time_entries: 'Time Entries',
 ```
 
-- [ ] **Step 3: Run permission-adjacent tests**
+- [x] **Step 3: Run permission-adjacent tests**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/permissions.test.ts src/routes/permissionsCatalog.test.ts --pool=forks
@@ -322,7 +324,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS (if a catalog test snapshot-counts resources, update it to include the new entry).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/api/src/services/permissions.ts apps/api/src/routes/permissionsCatalog.ts
@@ -338,7 +340,7 @@ git commit -m "feat(ticketing): seed time_entries permission constants + catalog
 - Create: `packages/shared/src/validators/timeEntries.test.ts`
 - Modify: `packages/shared/src/validators/index.ts` (barrel export)
 
-- [ ] **Step 1: Write the failing validator tests**
+- [x] **Step 1: Write the failing validator tests**
 
 Create `packages/shared/src/validators/timeEntries.test.ts`:
 
@@ -432,7 +434,7 @@ describe('billablesExportQuerySchema', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cd packages/shared && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/validators/timeEntries.test.ts
@@ -440,7 +442,7 @@ cd packages/shared && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vites
 
 Expected: FAIL — module `./timeEntries` not found.
 
-- [ ] **Step 3: Implement the validators**
+- [x] **Step 3: Implement the validators**
 
 Create `packages/shared/src/validators/timeEntries.ts`:
 
@@ -539,7 +541,7 @@ export type TicketPartInput = z.infer<typeof ticketPartSchema>;
 
 Note: `z.coerce.boolean()` treats any non-empty string (including `'false'`) as `true`. Query strings come from the API's own web client, which sends `running=true` only when set — acceptable. If `running=false` must work, swap to `z.enum(['true','false']).transform(v => v === 'true').optional()` — check how `listTicketsQuerySchema` handles booleans in `packages/shared/src/validators/tickets.ts` and match it.
 
-- [ ] **Step 4: Barrel export**
+- [x] **Step 4: Barrel export**
 
 In `packages/shared/src/validators/index.ts`, after `export * from './tickets';`:
 
@@ -547,7 +549,7 @@ In `packages/shared/src/validators/index.ts`, after `export * from './tickets';`
 export * from './timeEntries';
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 cd packages/shared && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/validators/timeEntries.test.ts
@@ -555,7 +557,7 @@ cd packages/shared && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vites
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add packages/shared/src/validators/timeEntries.ts packages/shared/src/validators/timeEntries.test.ts packages/shared/src/validators/index.ts
@@ -570,7 +572,7 @@ git commit -m "feat(ticketing): time-entry and parts validators"
 - Create: `apps/api/src/services/timeEntryEvents.ts`
 - Create: `apps/api/src/services/timeEntryEvents.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `apps/api/src/services/timeEntryEvents.test.ts` (mirror `ticketEvents.test.ts`):
 
@@ -629,7 +631,7 @@ describe('emitTimeEntryEvent', () => {
 
 Before writing, confirm the exact mock module paths used by `apps/api/src/services/ticketEvents.test.ts` (the BullMQ connection helper and Sentry import paths) and copy them verbatim — the paths above (`./queue`, `../lib/sentry`) must match whatever `ticketEvents.ts` actually imports.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryEvents.test.ts --pool=forks
@@ -637,7 +639,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `apps/api/src/services/timeEntryEvents.ts` (copy `ticketEvents.ts` imports for Queue/connection/captureException verbatim):
 
@@ -690,7 +692,7 @@ export async function emitTimeEntryEvent(event: TimeEntryEvent): Promise<void> {
 
 No consumer worker ships in this PR (no notifications are spec'd for time entries) — the queue exists so future workflow/billing consumers subscribe without service changes (§8a). If a queue with zero consumers accumulates jobs in Redis, `removeOnComplete`/`removeOnFail` caps bound it; verify how `TICKET_EVENTS_QUEUE` consumers register (jobs/ index) and leave a `// TODO(phase-billing)` comment is NOT needed — this is intentional, document it in the PR body instead.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryEvents.test.ts --pool=forks
@@ -698,7 +700,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryEvents.ts apps/api/src/services/timeEntryEvents.test.ts
@@ -718,7 +720,7 @@ git commit -m "feat(ticketing): time-entry lifecycle events (typed union + BullM
 - `TimeEntryActor.manageAll` is computed in the routes (wildcard-permission check) — the service trusts it.
 - Money/numeric columns: Drizzle `numeric` reads as `string`, writes accept `string`. Validator gives `number` — convert with `.toFixed(2)` at the service boundary.
 
-- [ ] **Step 1: Write the failing tests (create + timers)**
+- [x] **Step 1: Write the failing tests (create + timers)**
 
 Create `apps/api/src/services/timeEntryService.test.ts`:
 
@@ -909,7 +911,7 @@ describe('startTimer / stopTimer', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryService.test.ts --pool=forks
@@ -917,7 +919,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement the service (part 1)**
+- [x] **Step 3: Implement the service (part 1)**
 
 Create `apps/api/src/services/timeEntryService.ts`:
 
@@ -1195,7 +1197,7 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
 
 Implementation caveat for the SQL duration expression in `stopRunningEntry`: verify the generated SQL with the real driver in the Task 13 integration test; if parameter typing fights you, the simpler portable form is to first `select` the running row, then `update` by `id` with `durationMinutes: computeDurationMinutes(row.startedAt, now)` and `where(and(eq(timeEntries.id, row.id), isNull(timeEntries.endedAt)))` (still CAS-safe). Prefer whichever passes the integration test cleanly — both satisfy D3.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryService.test.ts --pool=forks
@@ -1203,7 +1205,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS. (If the mock's update-chain shape doesn't match the select-then-update fallback, adjust the mock — the contract being tested is D2 defaults, D3 stop-then-start, and the error codes.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryService.ts apps/api/src/services/timeEntryService.test.ts
@@ -1218,7 +1220,7 @@ git commit -m "feat(ticketing): timeEntryService — create + timer start/stop w
 - Modify: `apps/api/src/services/timeEntryService.ts`
 - Modify: `apps/api/src/services/timeEntryService.test.ts`
 
-- [ ] **Step 1: Write the failing tests (append to `timeEntryService.test.ts`)**
+- [x] **Step 1: Write the failing tests (append to `timeEntryService.test.ts`)**
 
 ```typescript
 import {
@@ -1322,7 +1324,7 @@ describe('addTicketPart', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify the new tests fail**
+- [x] **Step 2: Run to verify the new tests fail**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryService.test.ts --pool=forks
@@ -1330,7 +1332,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: new tests FAIL (functions not exported); Task 5 tests still PASS.
 
-- [ ] **Step 3: Implement (append to `timeEntryService.ts`)**
+- [x] **Step 3: Implement (append to `timeEntryService.ts`)**
 
 ```typescript
 async function getEntryOr404(id: string) {
@@ -1535,7 +1537,7 @@ Add `inArray` to the drizzle-orm import at the top of the file, and `db.delete` 
 
 (`actor` is unused in `updateTicketPart`/`deleteTicketPart` beyond scoping — parts authz is `tickets:write` at the route layer; keep the parameter for the audit-friendly signature.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryService.test.ts --pool=forks
@@ -1543,7 +1545,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryService.ts apps/api/src/services/timeEntryService.test.ts
@@ -1559,7 +1561,7 @@ git commit -m "feat(ticketing): timeEntryService — update/delete, approval, pa
 
 These are read paths exercised end-to-end by the route tests (Task 8) and integration tests (Task 13) — no separate service unit tests for query-builder plumbing.
 
-- [ ] **Step 1: Implement (append to `timeEntryService.ts`)**
+- [x] **Step 1: Implement (append to `timeEntryService.ts`)**
 
 Add `users` to the schema import, and `asc, desc, gte, lt, lte` to the drizzle-orm import.
 
@@ -1718,7 +1720,7 @@ export async function getTicketBillingSummary(ticketId: string) {
 }
 ```
 
-- [ ] **Step 2: Type-check**
+- [x] **Step 2: Type-check**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx tsc --noEmit
@@ -1726,7 +1728,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx tsc --noEmit
 
 Expected: clean apart from the pre-existing `agents.test.ts` / `apiKeyAuth.test.ts` errors (known, untouched).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryService.ts
@@ -1743,7 +1745,7 @@ git commit -m "feat(ticketing): timeEntryService queries — list, running, time
 - Create: `apps/api/src/routes/timeEntries/timeEntries.test.ts`
 - Modify: `apps/api/src/index.ts` (mount at `/time-entries`, next to the tickets mount — find it with `grep -n "ticketsRoutes" apps/api/src/index.ts`)
 
-- [ ] **Step 1: Write the failing route tests**
+- [x] **Step 1: Write the failing route tests**
 
 Create `apps/api/src/routes/timeEntries/timeEntries.test.ts` (mock pattern copied from `routes/tickets/tickets.test.ts` — import the HUB, not the sub-router):
 
@@ -1897,7 +1899,7 @@ describe('GET /timesheet', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/routes/timeEntries/timeEntries.test.ts --pool=forks
@@ -1905,7 +1907,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement the hub**
+- [x] **Step 3: Implement the hub**
 
 Create `apps/api/src/routes/timeEntries/index.ts`:
 
@@ -1922,7 +1924,7 @@ timeEntriesRoutes.use('*', authMiddleware);
 timeEntriesRoutes.route('/', timeEntriesApiRoutes);
 ```
 
-- [ ] **Step 4: Implement the routes**
+- [x] **Step 4: Implement the routes**
 
 Create `apps/api/src/routes/timeEntries/timeEntries.ts`:
 
@@ -2058,7 +2060,7 @@ timeEntriesApiRoutes.delete('/:id', scopes, writePerm, async (c) => {
 
 (If `UserPermissions` isn't exported from `services/permissions.ts` under that name, check the actual export — `middleware/auth.ts:4` imports it from there.)
 
-- [ ] **Step 5: Mount the hub**
+- [x] **Step 5: Mount the hub**
 
 In `apps/api/src/index.ts`, next to the existing tickets mount (find with `grep -n "tickets" apps/api/src/index.ts`):
 
@@ -2070,7 +2072,7 @@ app.route('/time-entries', timeEntriesRoutes);
 
 Match the exact mounting idiom used for `ticketsRoutes` (path prefix may include `/api` — copy whatever tickets does).
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/routes/timeEntries/timeEntries.test.ts --pool=forks
@@ -2078,7 +2080,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS.
 
-- [ ] **Step 7: Run the route-scan + wiring guards**
+- [x] **Step 7: Run the route-scan + wiring guards**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/__tests__/routeScan.test.ts --pool=forks
@@ -2086,7 +2088,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS — if the site-scope scanner flags the new routes, the time-entries list is intentionally not site-gated (no device axis, partner-internal); add the exemption with a comment pointing at the spec's site-scope paragraph, mirroring how existing exemptions are recorded.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add apps/api/src/routes/timeEntries/ apps/api/src/index.ts
@@ -2104,7 +2106,7 @@ git commit -m "feat(ticketing): /time-entries routes — list, timers, timesheet
 - Modify: `apps/api/src/routes/tickets/index.ts` (mount both BEFORE `ticketsApiRoutes`)
 - Modify: `apps/api/src/services/timeEntryService.ts` (add `listBillables`)
 
-- [ ] **Step 1: Add `listBillables` to the service**
+- [x] **Step 1: Add `listBillables` to the service**
 
 Append to `timeEntryService.ts` (add `organizations` already imported; ensure `lte` imported):
 
@@ -2215,7 +2217,7 @@ export async function listBillables(from: Date, to: Date, orgId?: string): Promi
 
 Note: `cost_basis` is deliberately absent from `BillableRow` — the export is customer-billing-shaped; margin stays MSP-internal in the UI only (spec D4).
 
-- [ ] **Step 2: Write the failing route tests**
+- [x] **Step 2: Write the failing route tests**
 
 Create `apps/api/src/routes/tickets/parts.test.ts`. Copy the auth/db/schema mock block from `routes/tickets/bulk.test.ts` (it already mocks `./tickets` exports — mirror exactly how it mocks `getScopedTicketOr404`/`actorFrom`), then:
 
@@ -2293,7 +2295,7 @@ describe('GET /export/billables.csv', () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify failure**
+- [x] **Step 3: Run to verify failure**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/routes/tickets/parts.test.ts --pool=forks
@@ -2301,7 +2303,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: FAIL — modules not found.
 
-- [ ] **Step 4: Implement `parts.ts`**
+- [x] **Step 4: Implement `parts.ts`**
 
 Create `apps/api/src/routes/tickets/parts.ts`:
 
@@ -2406,7 +2408,7 @@ ticketPartsRoutes.get('/:id/billing-summary', scopes, readPerm, async (c) => {
 
 (`actorFrom` import is unused if `timeActorFrom` covers everything — drop whichever is unused at lint time.)
 
-- [ ] **Step 5: Implement `export.ts`**
+- [x] **Step 5: Implement `export.ts`**
 
 Create `apps/api/src/routes/tickets/export.ts`:
 
@@ -2447,7 +2449,7 @@ ticketExportRoutes.get(
 );
 ```
 
-- [ ] **Step 6: Mount both in the tickets hub**
+- [x] **Step 6: Mount both in the tickets hub**
 
 In `apps/api/src/routes/tickets/index.ts` — literal-path routers BEFORE the `/:id`-bearing routers:
 
@@ -2461,7 +2463,7 @@ ticketsRoutes.route('/', ticketsBulkRoutes);
 ticketsRoutes.route('/', ticketsApiRoutes);
 ```
 
-- [ ] **Step 7: Run tests to verify they pass (including the existing tickets suite)**
+- [x] **Step 7: Run tests to verify they pass (including the existing tickets suite)**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/routes/tickets/ --pool=forks
@@ -2469,7 +2471,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: new tests PASS; existing tickets/bulk tests still PASS. Gotcha from #1251: module-scope Drizzle column derefs in a route file crash OTHER route-test files whose schema mocks omit the table — `parts.ts` only derefs `ticketParts` inside handlers, but if any tickets-suite file fails at COLLECTION, add `ticketParts: {...}` to its schema mock.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add apps/api/src/routes/tickets/parts.ts apps/api/src/routes/tickets/parts.test.ts apps/api/src/routes/tickets/export.ts apps/api/src/routes/tickets/index.ts apps/api/src/services/timeEntryService.ts
@@ -2486,7 +2488,7 @@ git commit -m "feat(ticketing): per-ticket parts/time routes, billing summary, b
 - Modify: `apps/api/src/services/aiGuardrails.ts` (TOOL_PERMISSIONS, ~line 102 — NOT TIER2_ACTIONS)
 - Modify: `apps/api/src/services/aiToolsTicketing.test.ts` (or wherever manage_tickets handler tests live — `grep -rn "manage_tickets" apps/api/src --include="*.test.ts"`)
 
-- [ ] **Step 1: Extend the action schema**
+- [x] **Step 1: Extend the action schema**
 
 In `aiToolSchemas.ts`, `manage_tickets` entry — extend the enum and add fields:
 
@@ -2499,7 +2501,7 @@ In `aiToolSchemas.ts`, `manage_tickets` entry — extend the enum and add fields
   hourlyRate: z.number().nonnegative().optional(),
 ```
 
-- [ ] **Step 2: Add RBAC mappings (fail-closed registry)**
+- [x] **Step 2: Add RBAC mappings (fail-closed registry)**
 
 In `aiGuardrails.ts` `TOOL_PERMISSIONS.manage_tickets`:
 
@@ -2511,7 +2513,7 @@ In `aiGuardrails.ts` `TOOL_PERMISSIONS.manage_tickets`:
 
 Do NOT add these to `TIER2_ACTIONS` — unlisted write actions stay approval-required (tier 3 per spec §4). Verify with a quick read of how `aiGuardrails.ts` tiers unlisted actions before relying on this.
 
-- [ ] **Step 3: Add handler branches + tool description**
+- [x] **Step 3: Add handler branches + tool description**
 
 In `aiToolsTicketing.ts`: extend the `definition.description` and `input_schema.properties.action.enum` to include the three new actions (and document `startedAt`/`endedAt`/`isBillable`/`hourlyRate` properties). Then add branches after `update_status`:
 
@@ -2553,7 +2555,7 @@ Wrap in the file's existing TicketServiceError-style catch if the handler uses o
 
 **Site-scope note:** `log_time_entry`/`start_timer` accept a `ticketId`, not a `deviceId` — the service validates partner ownership; site-gating per-ticket here would need the ticket's device, which the `get` action's `findTicketWithAccess` already implements — reuse it to pre-check `input.ticketId` for these three actions (one-line guard before delegating), keeping parity with the #1261 site-scope fix.
 
-- [ ] **Step 4: Tests**
+- [x] **Step 4: Tests**
 
 In the manage_tickets handler test file, add (adapting to its existing harness):
 
@@ -2571,7 +2573,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS after updates.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/aiToolsTicketing.ts apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiGuardrails.ts apps/api/src/services/aiToolsTicketing.test.ts
@@ -2587,13 +2589,13 @@ git commit -m "feat(ticketing): AI tool actions — log_time_entry, start_timer,
 - Modify: `apps/api/src/routes/devices/moveOrg.ts` (~line 159, next to the `ticket_alert_links` rewrite)
 - Modify: the moveOrg test file (`grep -rn "CUSTOM_ORG_REWRITE_TABLES" apps/api/src --include="*.test.ts"`)
 
-- [ ] **Step 1: Extend the allowlist**
+- [x] **Step 1: Extend the allowlist**
 
 ```typescript
 export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links', 'time_entries', 'ticket_parts'] as const;
 ```
 
-- [ ] **Step 2: Add the rewrite statements**
+- [x] **Step 2: Add the rewrite statements**
 
 In `moveOrg.ts`, immediately after the `ticket_alert_links` UPDATE (same transaction):
 
@@ -2611,7 +2613,7 @@ await tx.execute(
 
 Match the surrounding variable names exactly (`targetOrgId`/`deviceId` — read the existing statement first). Note `time_entries` keeps `partner_id` unchanged — moveOrg is same-partner by definition; if a cross-partner move path exists, the existing tickets handling already governs it.
 
-- [ ] **Step 3: Update the contract/unit test**
+- [x] **Step 3: Update the contract/unit test**
 
 If a test enumerates `CUSTOM_ORG_REWRITE_TABLES` or asserts "every org_id table without device_id is either generic-rewritten or custom-listed", add the two tables to its expectations. Run:
 
@@ -2621,7 +2623,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run s
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/api/src/routes/devices/core.ts apps/api/src/routes/devices/moveOrg.ts
@@ -2637,7 +2639,7 @@ git commit -m "fix(ticketing): rewrite time_entries/ticket_parts org_id on cross
 
 Requires the local Docker Postgres (`docker compose up -d postgres`). Model fixture setup/teardown on `ticket-validation-rls.integration.test.ts` (partner → org → category → ticket seeding, `withDbAccessContext` for scoped calls). Remember `audit_logs` teardown flakiness ([[test-audit-logs-append-only-flakiness]]) — clean only what this file seeds.
 
-- [ ] **Step 1: Write the tests**
+- [x] **Step 1: Write the tests**
 
 ```typescript
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -2741,7 +2743,7 @@ describe('approval flow (D1) — real driver', () => {
 
 The actor fixtures: `techAActor = { userId: techA.id, partnerId: partnerA.id, manageAll: false }`, `adminAActor = { ...techAActor, userId: adminA.id, manageAll: true }`. `partnerAContext`/`orgAContext` are the `DbAccessContext` shapes used by the existing integration tests — copy them.
 
-- [ ] **Step 2: Run the integration suite**
+- [x] **Step 2: Run the integration suite**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run --config vitest.integration.config.ts src/__tests__/integration/time-entries-rls.integration.test.ts
@@ -2749,7 +2751,7 @@ cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run -
 
 Expected: PASS. This is also where the `stopRunningEntry` SQL-duration expression gets validated against the real driver (Task 5 caveat) — if it fails here, switch to the select-then-CAS-update fallback.
 
-- [ ] **Step 3: Verify as breeze_app manually (RLS workflow step 5, CLAUDE.md)**
+- [x] **Step 3: Verify as breeze_app manually (RLS workflow step 5, CLAUDE.md)**
 
 ```bash
 docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "INSERT INTO time_entries (partner_id, user_id, started_at) VALUES ('<partnerB-uuid>', '<techA-uuid>', now());"
@@ -2757,7 +2759,7 @@ docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "INSERT INTO tim
 
 Expected: `new row violates row-level security policy` (no GUC context set → no partner access).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/api/src/__tests__/integration/time-entries-rls.integration.test.ts
@@ -2768,7 +2770,7 @@ git commit -m "test(ticketing): real-driver RLS + timer-race + approval integrat
 
 ### Task 13: Final verification + PR
 
-- [ ] **Step 1: Full affected-area test run (single-fork — [[api-test-suite-parallel-flakiness]])**
+- [x] **Step 1: Full affected-area test run (single-fork — [[api-test-suite-parallel-flakiness]])**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run \
@@ -2781,7 +2783,7 @@ cd ../../packages/shared && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx
 
 Expected: all PASS. Full-suite failures outside these files: prove pre-existing with a stash+base run before touching anything; trust CI.
 
-- [ ] **Step 2: Type-check + drift check**
+- [x] **Step 2: Type-check + drift check**
 
 ```bash
 cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx tsc --noEmit
@@ -2790,11 +2792,11 @@ export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze" && PATH=$
 
 Expected: clean (modulo the two known pre-existing test-file type errors).
 
-- [ ] **Step 3: Self-review against the spec**
+- [x] **Step 3: Self-review against the spec**
 
 Walk `docs/superpowers/specs/2026-06-11-ticketing-phase3-time-tracking-parts-design.md` §2-§4 + §6 and check every requirement has landed (D1-D5 each have a test asserting them). Confirm NO portal/org read path can reach `time_entries`/`ticket_parts` (grep portal routes for the new tables — expect zero hits).
 
-- [ ] **Step 4: Push + PR**
+- [x] **Step 4: Push + PR**
 
 ```bash
 git push -u origin feat/ticketing-time-parts-backend

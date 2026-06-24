@@ -41,9 +41,13 @@ async function insertDevice(
   return row.id;
 }
 
-// Seed a single low-uptime history snapshot: the device was up only ~50% of the
-// last reporting interval, with no crashes/hangs/service/hardware faults — i.e.
-// a "clean but normally-rebooting" device whose only weak factor is uptime.
+// Seed a single low-uptime history snapshot, with no crashes/hangs/service/
+// hardware faults — i.e. a "clean" device whose only weak factor is uptime.
+// Uptime is now real availability (observed up-days / window): a device enrolled
+// 120 days ago with just ONE day of reliability history is treated as offline
+// for the other ~90 days, so availability is a few percent and the uptime factor
+// scores 0. That is what isolates the device-type weighting in the assertions
+// below (the uptime factor matters for the infra profile, not the workstation).
 async function insertLowUptimeHistory(orgId: string, deviceId: string): Promise<void> {
   const collectedAt = new Date(Date.now() - 1 * DAY_MS);
   await getTestDb()
@@ -52,7 +56,6 @@ async function insertLowUptimeHistory(orgId: string, deviceId: string): Promise<
       orgId,
       deviceId,
       collectedAt,
-      // Up for 12h out of a 24h window -> drags the uptime factor toward 0.
       uptimeSeconds: 12 * 3600,
       bootTime: new Date(collectedAt.getTime() - 12 * 3600 * 1000),
     });

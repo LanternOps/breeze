@@ -68,16 +68,15 @@ function addFrameOrigin(sources: Set<string>, rawUrl: string | undefined): void 
  * Always allow the canonical hosted docs origin, plus a self-hosted docs
  * origin when `PUBLIC_DOCS_URL` is configured.
  *
- * `blob:` is allowed so the auth-gated quote PDF preview can be framed. The
- * quote preview fetches the server-generated PDF with a Bearer header
- * (`fetchWithAuth`), turns the response into an in-memory blob, and frames the
- * resulting `blob:` object URL (see `billing/quotes/QuoteWorkspace.tsx`'s
- * `QuotePreview`). A bare `<iframe src>` can't send the auth header, so the
- * blob-URL hop is required; without `blob:` in `frame-src` the browser blocks
- * it (it does not fall back to `img-src`/`worker-src`, which already allow
- * `blob:`). This only permits framing same-origin in-memory blobs the app
- * itself created — the `frame-ancestors` and `object-src` directives are
- * independent and unaffected, so it doesn't open arbitrary external framing.
+ * `blob:` is retained in frame-src as a defensive allowance for framing
+ * same-origin, in-memory blob URLs the app itself creates. It was originally
+ * required by the auth-gated quote PDF preview (`QuotePreview`), which fetched
+ * the PDF with a Bearer header and framed the resulting `blob:` object URL.
+ * That component has been removed — the quote preview now renders the document
+ * as HTML (`QuoteDocumentPreview`) and uses no iframe — so nothing currently
+ * depends on this. It permits only same-origin app-created blobs (the
+ * `frame-ancestors` and `object-src` directives are independent and
+ * unaffected); tighten/remove it when the CSP is next revisited.
  */
 export function resolveFrameSrcDirective(options: { env?: EnvMap }): string {
   const env = options.env ?? process.env;

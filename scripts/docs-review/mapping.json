@@ -254,12 +254,6 @@
       ]
     },
     {
-      "pattern": "apps/api/src/routes/mcpBootstrap*.ts",
-      "docs": [
-        "features/mcp-server.mdx"
-      ]
-    },
-    {
       "pattern": "apps/api/src/routes/publicShortLinks.ts",
       "docs": [
         "agents/enrollment-keys.mdx",
@@ -1109,6 +1103,139 @@
       "pattern": "apps/api/src/services/remediationSuggestions.ts",
       "docs": [
         "features/ml-insights.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/updateRings.ts",
+      "docs": [
+        "features/update-rings.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/updateRingsHelpers.ts",
+      "docs": [
+        "features/update-rings.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/patchApprovalEvaluator.ts",
+      "docs": [
+        "features/patch-management.mdx",
+        "features/update-rings.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/reliabilityScoring.ts",
+      "docs": [
+        "features/reliability.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/reliabilityWorker.ts",
+      "docs": [
+        "features/reliability.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceReliabilityPanel.tsx",
+      "docs": [
+        "features/reliability.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/remote/**",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/remote.ts",
+      "docs": [
+        "features/remote-access.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/helper/src/windows/ConsentDialog.tsx",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/helper/src/windows/SessionBanner.tsx",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quoteToContract.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractRenewal.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractRenewalTemplate.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/contractWorker.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/sentinelOne.ts",
+      "docs": [
+        "features/edr-integrations.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/SecurityIntegration.tsx",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/HuntressIntegration.tsx",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/pamRuleEngine.ts",
+      "docs": [
+        "features/pam.mdx",
+        "reference/pam-api.mdx",
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/pamApprovers.ts",
+      "docs": [
+        "features/pam.mdx",
+        "reference/pam-api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/moveOrg.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/contracts.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/schema.mdx"
       ]
     }
   ]

@@ -88,6 +88,33 @@ export const discoveredHostResultSchema = z.object({
   lastSeen: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
+const lldpNeighborSchema = z.object({
+  localPort: z.string(),
+  localIfName: z.string().optional(),
+  remoteChassisId: z.string(),
+  remotePortId: z.string(),
+  remoteSysName: z.string().optional(),
+}).strict();
+const cdpNeighborSchema = z.object({
+  localPort: z.string(),
+  remoteDeviceId: z.string(),
+  remotePortId: z.string(),
+  remoteAddress: z.string().optional(),
+}).strict();
+export const fdbEntrySchema = z.object({
+  mac: z.string().min(1),
+  bridgePort: z.number().int().nonnegative(),
+  ifName: z.string().min(1).optional(),
+  vlan: z.number().int().positive().optional(),
+}).strict();
+export const deviceAdjacencySchema = z.object({
+  sourceDeviceIp: z.string(),
+  sourceChassisId: z.string().optional(),
+  lldp: z.array(lldpNeighborSchema),
+  cdp: z.array(cdpNeighborSchema),
+  fdb: z.array(fdbEntrySchema).default([]),
+}).strict();
+
 export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('schedule-profiles'),
@@ -111,6 +138,7 @@ export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
     hosts: z.array(discoveredHostResultSchema),
     hostsScanned: z.number().int().nonnegative(),
     hostsDiscovered: z.number().int().nonnegative(),
+    adjacency: z.array(deviceAdjacencySchema).optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
 ]);
@@ -242,6 +270,7 @@ export const vulnSourceSyncSchema = z.object({
 
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
+export type FdbEntry = z.infer<typeof fdbEntrySchema>;
 export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
 export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
 export type AutomationAssignmentLevel = z.infer<typeof automationAssignmentLevelSchema>;

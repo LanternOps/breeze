@@ -1,6 +1,6 @@
 // Shared block/line rendering for the portal proposal views (authed
 // QuoteDetailView + public PublicQuoteView). Mirrors the block walk in the web
-// dashboard's QuoteDetail.tsx and the quote PDF renderer (quotePdf.ts): blocks
+// dashboard's QuoteDocument.tsx (DocBlock) and the quote PDF renderer (quotePdf.ts): blocks
 // are drawn in sortOrder, and a `line_items` block renders its own lines as a
 // pricing table grouped by recurrence (one-time / monthly / annual). Orphan
 // lines (no blockId) fall into a trailing default pricing table — same as the
@@ -24,16 +24,21 @@ export function money(value: string | number, currencyCode: string): string {
 // stripHtml + the web detail view, which also renders rich_text as text) and
 // preserve line breaks with whitespace-pre-wrap. This is the safe sanitization.
 function stripHtml(html: string): string {
-  return html
+  // Output is rendered as a React text node (auto-escaped), so this is display
+  // cleanup. Strip tags to a fixpoint so a split tag can't survive one pass, and
+  // decode `&amp;` LAST so it can't re-introduce an entity a later rule re-decodes.
+  let out = html
     .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n');
+  let prev: string;
+  do { prev = out; out = out.replace(/<[^>]*>/g, ''); } while (out !== prev);
+  return out
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -66,44 +71,47 @@ function PricingTable({
   return (
     <div className="overflow-hidden rounded-lg border bg-card" data-testid={testId}>
       {label && (
-        <h3 className="border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold text-foreground sm:px-5">
           {label}
-        </h3>
+        </div>
       )}
-      <table className="w-full text-sm">
-        <thead className="bg-muted/50">
-          <tr>
-            <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</th>
-            <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Qty</th>
-            <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Unit</th>
-            <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Total</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {grouped.map((g) => (
-            <Fragment key={g.key}>
-              {grouped.length > 1 && (
-                <tr className="bg-muted/30">
-                  <td colSpan={4} className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {g.label}
-                  </td>
-                </tr>
-              )}
-              {g.rows.map((l) => (
-                <tr key={l.id} data-testid={`quote-line-${l.id}`}>
-                  <td className="px-4 py-3">{l.description}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">{Number(l.quantity)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">{money(l.unitPrice, currency)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">
-                    {money(l.lineTotal, currency)}
-                    {g.suffix}
-                  </td>
-                </tr>
-              ))}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[30rem] text-sm">
+          <thead>
+            <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
+              <th className="px-2 py-2.5 text-right font-medium">Qty</th>
+              <th className="px-2 py-2.5 text-right font-medium">Unit price</th>
+              <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {grouped.map((g) => (
+              <Fragment key={g.key}>
+                {grouped.length > 1 && (
+                  <tr className="bg-muted/20">
+                    <td colSpan={4} className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:px-5">
+                      {g.label}
+                    </td>
+                  </tr>
+                )}
+                {g.rows.map((l) => (
+                  <tr key={l.id} data-testid={`quote-line-${l.id}`} className="border-b align-top last:border-0">
+                    <td className="px-4 py-3 text-foreground sm:px-5">{l.description}</td>
+                    <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{Number(l.quantity)}</td>
+                    <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
+                      {money(l.unitPrice, currency)}{g.suffix && <span className="text-xs">{g.suffix}</span>}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">
+                      {money(l.lineTotal, currency)}{g.suffix && <span className="text-xs text-muted-foreground">{g.suffix}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

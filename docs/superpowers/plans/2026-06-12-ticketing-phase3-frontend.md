@@ -1,5 +1,7 @@
 # Ticketing Phase 3 PR 2 — Time Tracking + Parts Frontend Implementation Plan
 
+> **✅ STATUS: COMPLETE — shipped in #1285 (merged 2026-06-12).** All 10 tasks implemented and merged to `main`. `time_entry` feed comments, `timeFormat`/`timerActions` libs, header `TimerWidget` (mounted `Header.tsx:327`), ticket-detail `TicketTimeBilling` + `TicketPartsCard` rail cards (mounted `TicketWorkbench.tsx:432-433`), `time_entry` feed rendering (`TicketFeed.tsx:16`), `/timesheet` week view with approvals, `BillablesExportCard` on settings/ticketing, and `no-silent-mutations` enrollment all landed. Follow-up fix #1296 (feed live-refresh after Log time) merged 2026-06-12. Checkboxes below are retained as a historical record of the build sequence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the technician-facing UI for time tracking + parts (timer widget, /timesheet page, ticket-detail time & parts cards, feed renderer, billables CSV export UI) against the merged #1276 backend, plus the one small backend gap: writing `commentType='time_entry'` feed comments.
@@ -62,7 +64,7 @@ Comments are written when (and only when) the affected entry has a `ticketId`:
 
 `isPublic: false` always — D4: time data never reaches the portal. Mirror the `status_change` insert shape at `apps/api/src/services/ticketService.ts:354`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `apps/api/src/services/timeEntryService.test.ts` (mirror the file's existing mock setup; the db/schema mock there must export `ticketComments` — add it to the mock if missing, otherwise the whole file fails collection — module-scope-deref lesson from #1251/#1276):
 
@@ -105,12 +107,12 @@ describe('time_entry feed comments', () => {
 
 Adapt the arrange/capture mechanics to the file's existing Drizzle mock helpers (it already captures insert values for `timeEntries` — extend the same capture to `ticketComments`).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryService.test.ts`
 Expected: the 4 new tests FAIL (no comment insert happens); pre-existing tests PASS.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `apps/api/src/services/timeEntryService.ts`:
 
@@ -173,12 +175,12 @@ await insertTimeEntryFeedComment(
 
 (`stopRunningEntry` already receives `actor`. `deleteTimeEntry` already loads the row for ownership checks — reuse it; adjust local variable names to what's actually there.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/api && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/services/timeEntryService.test.ts src/routes/timeEntries/timeEntries.test.ts src/routes/tickets/parts.test.ts`
 Expected: PASS (route tests guard against the new `ticketComments` deref breaking their mocks).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/services/timeEntryService.ts apps/api/src/services/timeEntryService.test.ts
@@ -196,7 +198,7 @@ git commit -m "feat(ticketing): write time_entry feed comments for ticket-linked
 
 `timerActions` is the single mutation path for start/stop (used by the widget, ticket rail, and timesheet) so `runAction` enrollment and the `breeze:timer-changed` broadcast live in one place.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `apps/web/src/lib/__tests__/timeFormat.test.ts`:
 
@@ -225,12 +227,12 @@ describe('formatMoney', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/lib/__tests__/timeFormat.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `apps/web/src/lib/timeFormat.ts`:
 
@@ -318,12 +320,12 @@ export async function stopTimerAction(input: { description?: string; isBillable?
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/lib/__tests__/timeFormat.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/lib/timeFormat.ts apps/web/src/lib/timerActions.ts apps/web/src/lib/__tests__/timeFormat.test.ts
@@ -341,7 +343,7 @@ git commit -m "feat(ticketing): time formatting + shared timer action helpers"
 
 Behavior: on mount fetch `/time-entries/running`; if running, show elapsed (1s local tick from `startedAt`) + ticket number linked to `/tickets/<ticketId>`; refetch on `TIMER_CHANGED_EVENT` and on a 60s poll (cross-tab/MPA sync). Stop opens a small popover: description textarea + billable checkbox → `stopTimerAction`. Renders nothing when no timer is running (header stays clean).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `apps/web/src/components/time/TimerWidget.test.tsx` (mirror mock style of `apps/web/src/components/tickets/TicketsPage.test.tsx` — vi.mock `../../stores/auth` for `fetchWithAuth`, fake timers for ticking):
 
@@ -408,12 +410,12 @@ describe('TimerWidget', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/time/TimerWidget.test.tsx`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `TimerWidget.tsx`**
+- [x] **Step 3: Implement `TimerWidget.tsx`**
 
 ```tsx
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -531,12 +533,12 @@ import TimerWidget from '../time/TimerWidget';
 <TimerWidget />
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/time/TimerWidget.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/time/ apps/web/src/components/layout/Header.tsx
@@ -554,7 +556,7 @@ git commit -m "feat(ticketing): running-timer widget in the app header"
 
 Card contents: billing summary (`GET /tickets/:id/billing-summary`), recent entries (`GET /tickets/:id/time-entries?limit=5`), "Start timer" button (`startTimerAction({ticketId})`), and a collapsible quick-add form (minutes + description + billable → `POST /time-entries` with `startedAt = now - minutes`, `endedAt = now`). Refreshes on `TIMER_CHANGED_EVENT` and when its own mutations complete. Money via `formatMoney`, durations via `formatMinutes`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `apps/web/src/components/tickets/TicketTimeBilling.test.tsx` (same mock style as Task 3):
 
@@ -612,12 +614,12 @@ describe('TicketTimeBilling', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/tickets/TicketTimeBilling.test.tsx`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `TicketTimeBilling.tsx`**
+- [x] **Step 3: Implement `TicketTimeBilling.tsx`**
 
 ```tsx
 import { useCallback, useEffect, useState } from 'react';
@@ -741,12 +743,12 @@ import TicketTimeBilling from './TicketTimeBilling';
 <TicketTimeBilling ticketId={ticket.id} />
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/tickets/TicketTimeBilling.test.tsx src/components/tickets/TicketWorkbench.test.tsx`
 Expected: PASS (existing workbench tests must keep passing — the new card fetches are extra network mocks; if the workbench test uses a strict fetch mock, add benign handlers for `/billing-summary` and `/time-entries`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/tickets/TicketTimeBilling.tsx apps/web/src/components/tickets/TicketTimeBilling.test.tsx apps/web/src/components/tickets/TicketWorkbench.tsx apps/web/src/components/tickets/TicketWorkbench.test.tsx
@@ -764,7 +766,7 @@ git commit -m "feat(ticketing): Time & Billing rail card on ticket detail"
 
 Compact rail card: list parts (`description`, `qty × unitPrice`, margin line when `costBasis` present — internal-only UI per D4, fine to show), add via inline form, edit/delete per row. `quantity`/`unitPrice`/`costBasis` are numbers in the request schema; API returns them as numeric strings — parse with `Number()` for display math.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `apps/web/src/components/tickets/TicketPartsCard.test.tsx`:
 
@@ -819,12 +821,12 @@ describe('TicketPartsCard', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/tickets/TicketPartsCard.test.tsx`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `TicketPartsCard.tsx`**
+- [x] **Step 3: Implement `TicketPartsCard.tsx`**
 
 ```tsx
 import { useCallback, useEffect, useState } from 'react';
@@ -962,12 +964,12 @@ import TicketPartsCard from './TicketPartsCard';
 <TicketPartsCard ticketId={ticket.id} />
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/tickets/TicketPartsCard.test.tsx src/components/tickets/TicketWorkbench.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/tickets/TicketPartsCard.tsx apps/web/src/components/tickets/TicketPartsCard.test.tsx apps/web/src/components/tickets/TicketWorkbench.tsx
@@ -984,7 +986,7 @@ git commit -m "feat(ticketing): parts card on ticket detail"
 
 The backend (Task 1) writes human-readable `content`. `systemLine`'s fallback already returns `c.content`, but make the branch explicit so future content-format changes have a seam, and lock behavior with tests.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```tsx
 import { describe, expect, it } from 'vitest';
@@ -1007,12 +1009,12 @@ it('renders time_entry comments as system lines with their content', () => {
 
 (Adjust `base` to satisfy the actual `TicketComment` interface at `apps/web/src/components/tickets/ticketConfig.ts:31`.)
 
-- [ ] **Step 2: Run test to verify it fails or passes-by-fallback**
+- [x] **Step 2: Run test to verify it fails or passes-by-fallback**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/tickets/TicketFeed.test.tsx`
 This may already PASS via the fallback branch — that's fine; the test is the lock. Still add the explicit branch:
 
-- [ ] **Step 3: Make the branch explicit in `systemLine`**
+- [x] **Step 3: Make the branch explicit in `systemLine`**
 
 ```ts
 if (c.commentType === 'time_entry') {
@@ -1020,12 +1022,12 @@ if (c.commentType === 'time_entry') {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/tickets/TicketFeed.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/tickets/TicketFeed.tsx apps/web/src/components/tickets/TicketFeed.test.tsx
@@ -1043,7 +1045,7 @@ git commit -m "feat(ticketing): render time_entry feed lines"
 
 Week view of `GET /time-entries/timesheet?weekStart=YYYY-MM-DD&userId=…`. Week starts **Monday UTC** (service buckets days by UTC date; keep client week math in UTC to match). Hash state per project convention: `#week=YYYY-MM-DD&tech=<uuid>` (no query params). Tech selector loads `/users` (same source as `TicketsPage.tsx:144`) and renders for everyone; a 403 from the timesheet fetch for another user shows a toast-free inline notice and falls back to own timesheet (no client permission store). Approval checkboxes per completed entry + "Approve selected" → `POST /time-entries/bulk-approve`; surface `skippedReasons` in a warning toast (bulk-tickets pattern). Inline edit per entry: description, billable, hourlyRate via `PATCH /time-entries/:id` (runAction; `APPROVED_IMMUTABLE` arrives as a friendly error).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `apps/web/src/components/time/TimesheetPage.test.tsx`:
 
@@ -1123,12 +1125,12 @@ describe('TimesheetPage', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/time/TimesheetPage.test.tsx`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `TimesheetPage.tsx`**
+- [x] **Step 3: Implement `TimesheetPage.tsx`**
 
 Key pieces (full component; trim/adjust styling to the page conventions in `TicketsPage.tsx`):
 
@@ -1385,12 +1387,12 @@ import TimesheetPage from '../components/time/TimesheetPage';
 </DashboardLayout>
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/time/TimesheetPage.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/time/TimesheetPage.tsx apps/web/src/components/time/TimesheetPage.test.tsx apps/web/src/pages/timesheet.astro
@@ -1408,7 +1410,7 @@ git commit -m "feat(ticketing): /timesheet week view with approvals"
 
 Date-range (default: first of current month → today) + optional org select (`/orgs/organizations?limit=100`, same source as `TicketsPage.tsx:161`) + Download. CSV must be fetched with auth headers (`fetchWithAuth`) then saved via a blob anchor — a plain `<a href>` has no Authorization header. GET-only → no `runAction`/no-silent-mutations enrollment needed for this file; errors show a toast manually.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```tsx
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -1452,12 +1454,12 @@ describe('BillablesExportCard', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/settings/BillablesExportCard.test.tsx`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `BillablesExportCard.tsx`**
+- [x] **Step 3: Implement `BillablesExportCard.tsx`**
 
 ```tsx
 import { useEffect, useState } from 'react';
@@ -1544,12 +1546,12 @@ export default function BillablesExportCard() {
 
 In `TicketCategoriesPage.tsx`, render `<BillablesExportCard />` after the category manager's root section (one import + one JSX line).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/components/settings/BillablesExportCard.test.tsx src/components/settings/TicketCategoriesPage.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/settings/BillablesExportCard.tsx apps/web/src/components/settings/BillablesExportCard.test.tsx apps/web/src/components/settings/TicketCategoriesPage.tsx
@@ -1564,7 +1566,7 @@ git commit -m "feat(ticketing): billables CSV export on settings/ticketing"
 - Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:30` (`TARGET_GLOBS`)
 - Modify: `apps/docs/src/content/docs/features/ticketing.mdx` (or wherever `features/ticketing.mdx` lives — locate with `ls apps/docs`; use the update-breeze-docs skill conventions)
 
-- [ ] **Step 1: Enroll new mutation files in no-silent-mutations**
+- [x] **Step 1: Enroll new mutation files in no-silent-mutations**
 
 Append to `TARGET_GLOBS`:
 
@@ -1581,11 +1583,11 @@ If the test asserts a hardcoded file count (lesson from #1251), bump it to match
 Run: `cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run src/lib/__tests__/no-silent-mutations.test.ts`
 Expected: PASS (all mutations in those files go through `runAction`).
 
-- [ ] **Step 2: Docs**
+- [x] **Step 2: Docs**
 
 Add a "Time tracking & parts" section to the ticketing feature doc: timer widget, /timesheet + approvals (admin-only), parts on ticket detail, billables CSV export, internal-only visibility (D4). Match the doc's existing voice; keep it to ~20 lines.
 
-- [ ] **Step 3: Full verification sweep**
+- [x] **Step 3: Full verification sweep**
 
 ```bash
 cd apps/web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx vitest run
@@ -1596,7 +1598,7 @@ cd ../web && PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH npx tsc --noEmit &
 
 Expected: web suite green; api targeted files green (full api suite has known parallel flakiness — verify affected files single-fork, trust CI for the rest); tsc has only the two pre-existing test errors (`agents.test.ts`, `apiKeyAuth.test.ts`) on the api side; lint clean. Reminder: `react-hooks/exhaustive-deps` disable directives FAIL web lint (rule not registered) — don't add any.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/web/src/lib/__tests__/no-silent-mutations.test.ts apps/docs
@@ -1607,9 +1609,9 @@ git commit -m "chore(ticketing): enroll time/parts UI in no-silent-mutations + d
 
 ### Task 10: PR
 
-- [ ] **Step 1:** Push branch, open PR titled `feat(ticketing): Phase 3 frontend — time tracking + parts UI`, body: summary table of surfaces (widget / rail cards / timesheet / export / feed), note the Task 1 backend addition (feed comments — closes the spec §3 gap found during planning), test counts, and the Known-deferred list (Playwright e2e per spec §6; queue-side timer affordances). End body with the standard generated-with footer.
-- [ ] **Step 2:** Run the two-stage review per superpowers:requesting-code-review before merge (project habit: pr-review-toolkit agents).
-- [ ] **Step 3:** Merge with `gh pr merge --squash --admin` once CI is green.
+- [x] **Step 1:** Push branch, open PR titled `feat(ticketing): Phase 3 frontend — time tracking + parts UI`, body: summary table of surfaces (widget / rail cards / timesheet / export / feed), note the Task 1 backend addition (feed comments — closes the spec §3 gap found during planning), test counts, and the Known-deferred list (Playwright e2e per spec §6; queue-side timer affordances). End body with the standard generated-with footer.
+- [x] **Step 2:** Run the two-stage review per superpowers:requesting-code-review before merge (project habit: pr-review-toolkit agents).
+- [x] **Step 3:** Merge with `gh pr merge --squash --admin` once CI is green.
 
 ---
 

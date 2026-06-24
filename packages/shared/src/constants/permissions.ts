@@ -22,6 +22,10 @@ export const PERMISSION_GRANTS = {
   DEVICES_DELETE: { resource: 'devices', action: 'delete' },
   DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
 
+  // Network topology (discovery topology view + saved layout — #1728)
+  TOPOLOGY_READ: { resource: 'topology', action: 'read' },
+  TOPOLOGY_WRITE: { resource: 'topology', action: 'write' },
+
   // Scripts
   SCRIPTS_READ: { resource: 'scripts', action: 'read' },
   SCRIPTS_WRITE: { resource: 'scripts', action: 'write' },

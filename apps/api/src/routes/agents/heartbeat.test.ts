@@ -753,6 +753,84 @@ describe('POST /agents/:id/heartbeat — watchdog-branch agent recovery upgradeT
 });
 
 
+// ---------------------------------------------------------------------
+// Controlled fleet rollout — heartbeat is UNCHANGED but must remain correct
+// under it. The agent-version upgrade query selects WHERE isLatest=true, so a
+// merely-registered-but-un-promoted newer version (isLatest=false) is invisible
+// to heartbeat and yields NO upgradeTo. Only the explicitly-promoted version
+// (isLatest=true) is offered. These tests pin that contract.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — controlled fleet rollout (promotion gates upgradeTo)', () => {
+  const agentDeviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'windows',
+    osVersion: 'Windows 11',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.70.0',
+    deviceRole: 'workstation',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  // device lookup (once), then the agentVersions upgrade lookups resolve to
+  // `promotedRows`. An empty array models "no isLatest=true row" — i.e. the
+  // newer version exists in the table but was never promoted.
+  function prime(promotedRows: unknown[]) {
+    selectMock.mockReturnValueOnce(selectChainResolving([agentDeviceRow]));
+    selectMock.mockReturnValue(selectChainResolving(promotedRows));
+  }
+
+  async function beat() {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, agentVersion: '0.70.0' }),
+    });
+  }
+
+  it('offers upgradeTo for the explicitly-promoted (isLatest=true) version', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1); // promoted > reported
+    prime([{ version: '0.71.0' }]); // a promoted row exists
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBe('0.71.0');
+  });
+
+  it('does NOT offer upgradeTo when the newer version is merely registered but un-promoted (no isLatest=true row)', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    // Even if a comparison WOULD say newer, the isLatest=true query returns no
+    // row, so the handler never reaches the comparison for a target.
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    prime([]); // no promoted row — 0.71.0 is registered with isLatest=false
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { upgradeTo?: string | null };
+    expect(body.upgradeTo).toBeFalsy();
+  });
+});
+
 describe('detectWatchdogStateCollapse (#1121)', () => {
   it('reports a collapse when raw body carried watchdogState but validation dropped it', async () => {
     const { detectWatchdogStateCollapse } = await import('./heartbeat');

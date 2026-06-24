@@ -93,6 +93,23 @@ func TestResolvePatchInstallIDMapsLinuxSourceToApt(t *testing.T) {
 	}
 }
 
+func TestResolvePatchInstallIDUsesPackageIDForVersionedLinuxExternalID(t *testing.T) {
+	h := &Heartbeat{patchMgr: patching.NewPatchManager(&heartbeatMockProvider{id: "apt"})}
+
+	installID, err := h.resolvePatchInstallID(patchCommandRef{
+		ID:         "platform-patch-id",
+		Source:     "linux",
+		ExternalID: "apt:openssl@3.0.2-0ubuntu1.20",
+		PackageID:  "apt:openssl",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if installID != "apt:openssl" {
+		t.Fatalf("expected apt:openssl, got %s", installID)
+	}
+}
+
 func TestExecutePatchInstallCommandReportsPartialFailures(t *testing.T) {
 	provider := &heartbeatMockProvider{id: "apt"}
 	h := &Heartbeat{patchMgr: patching.NewPatchManager(provider)}

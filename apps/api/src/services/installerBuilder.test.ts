@@ -320,4 +320,29 @@ describe('buildWindowsInstallerZip', () => {
     const batScript = await zipInstance.files['install.bat']!.async('string');
     expect(batScript).toContain(`set ENROLLMENT_KEY="${validKey}"`);
   });
+
+  it('gates install.bat on elevation before running msiexec (#1832)', async () => {
+    const zip = await buildWindowsInstallerZip(Buffer.from('msi'), {
+      serverUrl: 'https://breeze.example.com',
+      enrollmentKey: realEnrollmentKey(),
+      enrollmentSecret: 'secret456',
+      siteId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+    const zipInstance = await JSZip.loadAsync(zip);
+    const batScript = await zipInstance.files['install.bat']!.async('string');
+
+    // Admin gate exists and runs before the msiexec install line.
+    expect(batScript).toContain('net session >nul 2>&1');
+    expect(batScript).toMatch(/must be run as Administrator/i);
+    expect(batScript.indexOf('net session')).toBeLessThan(batScript.indexOf('msiexec /i'));
+
+    // Success is no longer printed unconditionally: it must come after the
+    // enroll exit-code guard, and msiexec failures abort the run.
+    expect(batScript).toContain('set "MSI_RC=!errorlevel!"');
+    expect(batScript).toContain('set "ENROLL_RC=!errorlevel!"');
+    const guardIdx = batScript.indexOf('if not "!ENROLL_RC!"=="0"');
+    const successIdx = batScript.indexOf('installed and enrolled successfully');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(successIdx);
+  });
 });
