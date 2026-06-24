@@ -18,12 +18,13 @@ import GoogleWorkspaceIntegration from './GoogleWorkspaceIntegration';
 import M365Integration from './M365Integration';
 import Pax8Integration from './Pax8Integration';
 import TdSynnexCatalogPanel from '../settings/TdSynnexCatalogPanel';
+import TdSynnexEcExpressPanel from '../settings/TdSynnexEcExpressPanel';
 import { getJwtClaims } from '../../lib/authScope';
 
 type TabId = 'webhooks' | 'notifications' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors';
 type SecuritySubTab = 'sentinelone' | 'huntress';
 type IdentitySubTab = 'google' | 'm365';
-type DistributorSubTab = 'pax8' | 'tdsynnex';
+type DistributorSubTab = 'pax8' | 'tdsynnex' | 'tdsynnex-ec';
 
 const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'webhooks', label: 'Webhooks', icon: Webhook },
@@ -48,6 +49,7 @@ const identitySubTabs: { id: IdentitySubTab; label: string }[] = [
 const distributorSubTabs: { id: DistributorSubTab; label: string }[] = [
   { id: 'pax8', label: 'Pax8' },
   { id: 'tdsynnex', label: 'TD SYNNEX' },
+  { id: 'tdsynnex-ec', label: 'TD SYNNEX Pricing' },
 ];
 
 interface IntegrationsPageProps {
@@ -208,6 +210,7 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
       )}
       {activeTab === 'distributors' && !isOrgScoped && distributorSubTab === 'pax8' && <Pax8Integration />}
       {activeTab === 'distributors' && !isOrgScoped && distributorSubTab === 'tdsynnex' && <TdSynnexCatalogPanel />}
+      {activeTab === 'distributors' && !isOrgScoped && distributorSubTab === 'tdsynnex-ec' && <TdSynnexEcExpressPanel />}
     </div>
   );
 }
