@@ -57,6 +57,11 @@ func planEnforcement(results []EvaluationResult, policies []Policy) EnforcementP
 	return plan
 }
 
+// Plan exposes planEnforcement to other packages (the heartbeat handler).
+func Plan(results []EvaluationResult, policies []Policy) EnforcementPlan {
+	return planEnforcement(results, policies)
+}
+
 func hasAllowException(exceptions []ExceptionRule) bool {
 	for i := range exceptions {
 		if exceptions[i].Allow {
