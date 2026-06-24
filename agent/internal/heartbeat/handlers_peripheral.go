@@ -66,6 +66,10 @@ func handlePeripheralPolicySync(h *Heartbeat, cmd Command) tools.CommandResult {
 		"devicesDisabled", len(plan.DisableInstanceIDs),
 		"readOnlyClasses", len(plan.ReadOnlyClasses),
 	)
+	enforcementUnverified := peripheral.CountUnverified(outcome)
+	if enforcementUnverified > 0 {
+		cmdLog.Warn("peripheral enforcement had unverified outcomes", "unverified", enforcementUnverified)
+	}
 
 	events := peripheral.ToEvents(results, outcome)
 
@@ -84,8 +88,9 @@ func handlePeripheralPolicySync(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	return tools.NewSuccessResult(map[string]any{
-		"policiesSaved":   len(payload.Policies),
-		"devicesFound":    len(detected),
-		"eventsSubmitted": len(events),
+		"policiesSaved":         len(payload.Policies),
+		"devicesFound":          len(detected),
+		"eventsSubmitted":       len(events),
+		"enforcementUnverified": enforcementUnverified,
 	}, time.Since(start).Milliseconds())
 }

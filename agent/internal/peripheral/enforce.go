@@ -1,8 +1,17 @@
 package peripheral
 
 // enforceableClasses are the only device classes Tier 1 enforces on Windows.
-// Bluetooth and Thunderbolt block/read_only actions remain alert-only.
-var enforceableClasses = map[string]bool{"storage": true, "all_usb": true}
+// Bluetooth and Thunderbolt block/read_only actions remain alert-only. The
+// Windows durable gate (USBSTOR) covers removable storage only; for all_usb,
+// non-storage USB is handled by per-device disable of connected devices, not a
+// machine-wide gate.
+var enforceableClasses = func() map[string]bool {
+	m := map[string]bool{}
+	for _, c := range EnforceableClasses() {
+		m[c] = true
+	}
+	return m
+}()
 
 // ClassGate describes a class-wide block to apply. HasExceptions disables the
 // machine-wide durable gate (it would over-block the excepted device).
@@ -99,6 +108,32 @@ type EnforcementOutcome struct {
 	GateOutcomes     map[string]EnforceOutcome
 	DeviceOutcomes   []DeviceOutcome
 	ReadOnlyOutcomes map[string]EnforceOutcome
+}
+
+// CountUnverified returns how many gate/read-only/device outcomes were
+// attempted by a real enforcement mechanism but not Verified, so the server
+// can see partial failure. Stub/no-op outcomes (Mechanism empty or
+// "unsupported") are not counted.
+func CountUnverified(o EnforcementOutcome) int {
+	n := 0
+	consider := func(out EnforceOutcome) {
+		if out.Mechanism == "" || out.Mechanism == "unsupported" {
+			return
+		}
+		if !out.Verified {
+			n++
+		}
+	}
+	for _, out := range o.GateOutcomes {
+		consider(out)
+	}
+	for _, out := range o.ReadOnlyOutcomes {
+		consider(out)
+	}
+	for _, d := range o.DeviceOutcomes {
+		consider(d.EnforceOutcome)
+	}
+	return n
 }
 
 // Enforcer abstracts all OS-touching enforcement so the orchestrator is testable.

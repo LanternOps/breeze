@@ -132,12 +132,16 @@ func ToEvents(results []EvaluationResult, outcome EnforcementOutcome) []Peripher
 
 			switch r.Action {
 			case "block":
-				et, enf, dev := classifyBlockOutcome(r, deviceOut, outcome.GateOutcomes)
+				et, enf, dev := classifyBlockOutcome(r, deviceOut)
 				eventType = et
 				details["enforcement"] = enf
 				applyOutcomeDetails(details, dev)
 			case "read_only":
-				ro := outcome.ReadOnlyOutcomes[r.Peripheral.DeviceClass]
+				// Outcomes are keyed by the POLICY's class (what planEnforcement
+				// recorded), not the device class — an all_usb policy can match a
+				// storage device, in which case the applied outcome lives under
+				// "all_usb" while the device class is "storage".
+				ro := outcome.ReadOnlyOutcomes[r.Policy.DeviceClass]
 				if ro.Applied && ro.Verified {
 					eventType = "mounted_read_only"
 					details["enforcement"] = "read_only"
@@ -164,22 +168,20 @@ func ToEvents(results []EvaluationResult, outcome EnforcementOutcome) []Peripher
 }
 
 // classifyBlockOutcome decides the event type/enforcement string for a block.
-// A device counts as truly blocked if EITHER its per-device disable verified OR
-// the class gate verified. Otherwise alert_only.
-func classifyBlockOutcome(r EvaluationResult, deviceOut, gateOut map[string]EnforceOutcome) (eventType, enforcement string, used EnforceOutcome) {
+//
+// Every device in a scan is currently CONNECTED. A connected device is only
+// neutralized by a verified per-device disable. The machine-wide gate
+// (USBSTOR Start=4) only refuses FUTURE insertions — it does NOT block a device
+// that is already plugged in — so it must NOT be used to claim a live device is
+// blocked. (A device that the gate keeps out simply never appears in a later
+// scan.) Reporting must therefore key off the per-device outcome only; anything
+// else is a false "blocked" for a still-usable device.
+func classifyBlockOutcome(r EvaluationResult, deviceOut map[string]EnforceOutcome) (eventType, enforcement string, used EnforceOutcome) {
 	dev := deviceOut[r.Peripheral.DeviceID]
-	gate := gateOut[r.Peripheral.DeviceClass]
 	if dev.Applied && dev.Verified {
 		return "blocked", "blocked", dev
 	}
-	if gate.Applied && gate.Verified {
-		return "blocked", "blocked", gate
-	}
-	// Pick whichever outcome carries a detail to surface; default to device.
-	if dev.Mechanism != "" {
-		return "connected", "alert_only", dev
-	}
-	return "connected", "alert_only", gate
+	return "connected", "alert_only", dev
 }
 
 func applyOutcomeDetails(details map[string]any, o EnforceOutcome) {

@@ -251,7 +251,7 @@ The Breeze agent detects peripherals using platform-native APIs and evaluates th
 
 <Tabs>
   <TabItem label="Windows">
-    The agent enumerates USB and Thunderbolt devices through the Windows Device Manager APIs. Bluetooth devices are detected through the Windows Bluetooth stack. Each detected peripheral is identified by vendor, product, serial number, and device class.
+    The agent enumerates USB devices through the Windows Device Manager APIs. Bluetooth devices are detected through the Windows Bluetooth stack. Thunderbolt-attached devices appear when Windows exposes them as USB. Each detected peripheral is identified by vendor, product, serial number, and device class.
   </TabItem>
   <TabItem label="macOS">
     The agent uses IOKit to enumerate USB and Thunderbolt peripherals from the I/O Registry. Bluetooth devices are detected through the IOBluetooth framework. Vendor and product identifiers are extracted from the device descriptor.
@@ -274,7 +274,7 @@ The Breeze agent detects peripherals using platform-native APIs and evaluates th
 </Steps>
 
 <Aside title="Enforcement by platform">
-  **Windows:** `block` and `read_only` are enforced — no kernel driver required. Block disables matching connected devices (via Config Manager / `pnputil`) and arms a machine-wide gate (the `USBSTOR` service) so new removable-storage devices are refused on the next insertion; read-only sets the Removable Storage write-deny policy. Exceptions are honored per device. When a block policy contains allow-exceptions, the machine-wide gate is skipped in favor of per-device enforcement (see Limitations). Every action is **probe-verified**: if the OS does not confirm the block, the event is reported with `"enforcement": "alert_only"` rather than falsely claiming success.
+  **Windows:** `block` and `read_only` are enforced — no kernel driver required. Block disables matching connected devices (via Config Manager / `pnputil`) and arms a machine-wide gate (the `USBSTOR` service) so new removable-storage devices are refused on the next insertion; this durable gate covers removable storage only, while non-storage USB under an `all_usb` block is handled per-device for currently connected devices. Read-only sets the Removable Storage write-deny policy. Exceptions are honored per device. When a block policy contains allow-exceptions, the machine-wide gate is skipped in favor of per-device enforcement (see Limitations). Every action is **probe-verified**: if the OS does not confirm the block, the event is reported with `"enforcement": "alert_only"` rather than falsely claiming success.
 
   **macOS / Linux:** `block` and `read_only` currently operate in **alert-only** mode. The agent logs the policy decision and reports it to the server but does not yet prevent device access. Robust macOS enforcement requires MDM; Linux enforcement (USBGuard) is planned.
 

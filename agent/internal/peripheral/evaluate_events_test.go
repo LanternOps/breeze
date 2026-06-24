@@ -235,3 +235,67 @@ func TestToEvents_BluetoothBlockStillAlertOnly(t *testing.T) {
 		t.Fatalf("bluetooth block must stay alert_only, got %v", events[0].Details["enforcement"])
 	}
 }
+
+// TestToEvents_ConnectedDeviceGateOnlyNotBlocked locks the fix for the gate
+// false-success: a currently-connected device whose per-device disable did NOT
+// verify must report alert_only even if the machine-wide gate verified — the
+// gate only blocks future insertions, not a live device.
+func TestToEvents_ConnectedDeviceGateOnlyNotBlocked(t *testing.T) {
+	pol := Policy{ID: "p1", Name: "No USB", DeviceClass: "storage", Action: "block"}
+	results := []EvaluationResult{
+		{Peripheral: DetectedPeripheral{PeripheralType: "usb", DeviceClass: "storage", DeviceID: "USBSTOR\\LIVE"}, Policy: &pol, Action: "block"},
+	}
+	outcome := EnforcementOutcome{
+		GateOutcomes: map[string]EnforceOutcome{"storage": {Mechanism: "usbstor-start", Applied: true, Verified: true}},
+		DeviceOutcomes: []DeviceOutcome{
+			{InstanceID: "USBSTOR\\LIVE", EnforceOutcome: EnforceOutcome{Mechanism: "pnputil", Applied: true, Verified: false, Detail: "remove failed"}},
+		},
+	}
+	events := ToEvents(results, outcome)
+	if events[0].EventType != "connected" || events[0].Details["enforcement"] != "alert_only" {
+		t.Fatalf("connected device with failed per-device disable must be alert_only despite verified gate, got type=%q enf=%v",
+			events[0].EventType, events[0].Details["enforcement"])
+	}
+}
+
+// TestToEvents_AllUsbReadOnlyOnStorageDevice locks the fix for the class-key
+// mismatch: an all_usb read_only policy matching a storage device records its
+// outcome under "all_usb" (the policy class), and reporting must look it up by
+// policy class — not the device class "storage" — or it falsely reports alert_only.
+func TestToEvents_AllUsbReadOnlyOnStorageDevice(t *testing.T) {
+	pol := Policy{ID: "p1", Name: "RO USB", DeviceClass: "all_usb", Action: "read_only"}
+	results := []EvaluationResult{
+		{Peripheral: DetectedPeripheral{PeripheralType: "usb", DeviceClass: "storage", DeviceID: "USBSTOR\\C"}, Policy: &pol, Action: "read_only"},
+	}
+	outcome := EnforcementOutcome{
+		ReadOnlyOutcomes: map[string]EnforceOutcome{
+			"all_usb": {Mechanism: "removable-storage-deny-write", Applied: true, Verified: true},
+			"storage": {Mechanism: "removable-storage-deny-write", Applied: false, Verified: true}, // reverted sibling
+		},
+	}
+	events := ToEvents(results, outcome)
+	if events[0].EventType != "mounted_read_only" || events[0].Details["enforcement"] != "read_only" {
+		t.Fatalf("all_usb read_only on storage device must report mounted_read_only, got type=%q enf=%v",
+			events[0].EventType, events[0].Details["enforcement"])
+	}
+}
+
+// TestToEvents_ReadOnlyUnverifiedFallsBackToAlertOnly mirrors the block case:
+// a read_only write-deny that was attempted but not probe-confirmed must report
+// alert_only (e.g. the 2025 Removable Storage Access servicing regression).
+func TestToEvents_ReadOnlyUnverifiedFallsBackToAlertOnly(t *testing.T) {
+	pol := Policy{ID: "p1", Name: "RO", DeviceClass: "storage", Action: "read_only"}
+	results := []EvaluationResult{
+		{Peripheral: DetectedPeripheral{PeripheralType: "usb", DeviceClass: "storage", DeviceID: "USBSTOR\\D"}, Policy: &pol, Action: "read_only"},
+	}
+	outcome := EnforcementOutcome{
+		ReadOnlyOutcomes: map[string]EnforceOutcome{
+			"storage": {Mechanism: "removable-storage-deny-write", Applied: true, Verified: false, Detail: "Deny_Write read-back mismatch"},
+		},
+	}
+	events := ToEvents(results, outcome)
+	if events[0].EventType != "connected" || events[0].Details["enforcement"] != "alert_only" {
+		t.Fatalf("unverified read_only must report alert_only, got type=%q enf=%v",
+			events[0].EventType, events[0].Details["enforcement"])
+	}
+}

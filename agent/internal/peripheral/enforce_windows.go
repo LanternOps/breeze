@@ -3,6 +3,7 @@
 package peripheral
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -38,7 +39,10 @@ func (winEnforcer) ApplyGate(class string, hasExceptions bool) EnforceOutcome {
 	if err := k.SetDWordValue(usbstorValue, usbstorBlock); err != nil {
 		return EnforceOutcome{Mechanism: "usbstor-start", Detail: "set Start: " + err.Error()}
 	}
-	_ = k.SetDWordValue(breezeManaged, 1)
+	if serr := k.SetDWordValue(breezeManaged, 1); serr != nil {
+		return EnforceOutcome{Mechanism: "usbstor-start", Applied: true, Verified: false,
+			Detail: "Start set but BreezeManaged sentinel write failed (revert would refuse): " + serr.Error()}
+	}
 	// Probe-verify.
 	got, _, err := k.GetIntegerValue(usbstorValue)
 	verified := err == nil && got == usbstorBlock
@@ -61,7 +65,10 @@ func (winEnforcer) RevertGate(class string) EnforceOutcome {
 		return EnforceOutcome{Mechanism: "usbstor-start", Detail: "restore Start: " + err.Error()}
 	}
 	_ = k.DeleteValue(breezeManaged)
-	return EnforceOutcome{Mechanism: "usbstor-start", Applied: false, Verified: true}
+	got, _, gerr := k.GetIntegerValue(usbstorValue)
+	verified := gerr == nil && got == uint64(usbstorDefault)
+	return EnforceOutcome{Mechanism: "usbstor-start", Applied: false, Verified: verified,
+		Detail: probeDetail(verified, "USBSTOR Start not confirmed restored after revert")}
 }
 
 func (winEnforcer) DisableDevice(instanceID string) EnforceOutcome {
@@ -78,12 +85,19 @@ func (winEnforcer) DisableDevice(instanceID string) EnforceOutcome {
 	}
 	// Probe: device should no longer enumerate as present (removed) or report disabled.
 	probe := exec.Command("pnputil", "/enum-devices", "/instanceid", instanceID)
-	pout, err := probe.CombinedOutput()
+	pout, perr := probe.CombinedOutput()
 	normalized := strings.Join(strings.Fields(strings.ToLower(string(pout))), " ")
-	verified := err != nil || !(strings.Contains(normalized, "status: started") ||
-		strings.Contains(normalized, "status: running"))
+	var exitErr *exec.ExitError
+	if perr != nil && !errors.As(perr, &exitErr) {
+		return EnforceOutcome{Mechanism: "pnputil", Applied: true, Verified: false,
+			Detail: "post-remove probe could not run (cannot confirm block): " + perr.Error()}
+	}
+	present := strings.Contains(normalized, "status: started") || strings.Contains(normalized, "status: running")
+	absent := strings.Contains(normalized, "no matching devices") || strings.Contains(normalized, "no devices")
+	disabled := strings.Contains(normalized, "status: disabled") || strings.Contains(normalized, "problem")
+	verified := !present && (absent || disabled)
 	return EnforceOutcome{Mechanism: "pnputil", Applied: true, Verified: verified,
-		Detail: probeDetail(verified, "device still reports started after remove")}
+		Detail: probeDetail(verified, "could not confirm device removed (probe inconclusive)")}
 }
 
 func (winEnforcer) ApplyReadOnly(class string) EnforceOutcome {
