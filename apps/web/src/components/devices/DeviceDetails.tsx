@@ -47,6 +47,7 @@ import DeviceIpHistoryTab from './DeviceIpHistoryTab';
 import DeviceBootPerformanceTab from './DeviceBootPerformanceTab';
 import DevicePlaybookHistory from './DevicePlaybookHistory';
 import DevicePeripheralsTab from './DevicePeripheralsTab';
+import DeviceMonitoringTab from './DeviceMonitoringTab';
 import DeviceWarrantyCard from './DeviceWarrantyCard';
 import DeviceUserIdleStat from './DeviceUserIdleStat';
 import MacOSPermissionsBanner from './MacOSPermissionsBanner';
@@ -78,6 +79,7 @@ type Tab =
   | 'boot-performance'
   | 'playbooks'
   | 'peripherals'
+  | 'monitoring'
   | 'backup'
   | 'tickets';
 
@@ -129,7 +131,7 @@ const VALID_TABS: Tab[] = [
   'overview', 'details', 'hardware', 'software', 'patches', 'security',
   'management', 'effective-config', 'alerts', 'scripts', 'performance',
   'anomalies', 'eventlog', 'activities', 'connections', 'filesystem', 'ip-history',
-  'boot-performance', 'playbooks', 'peripherals', 'backup', 'tickets',
+  'boot-performance', 'playbooks', 'peripherals', 'monitoring', 'backup', 'tickets',
 ];
 
 function getTabFromHash(): Tab {
@@ -182,6 +184,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
     { id: 'software', label: 'Software', icon: <Package className="h-4 w-4" /> },
     { id: 'patches', label: 'Patches', icon: <CheckCircle className="h-4 w-4" />, title: 'OS update and patch status' },
     { id: 'peripherals', label: 'Peripherals', icon: <Usb className="h-4 w-4" />, title: 'USB, Bluetooth, and connected devices' },
+    { id: 'monitoring', label: 'Monitoring', icon: <Activity className="h-4 w-4" />, title: 'Service and process monitoring results' },
     // --- Management ---
     { id: 'scripts', label: 'Scripts', icon: <Terminal className="h-4 w-4" />, separator: true, title: 'Script execution history' },
     { id: 'management', label: 'Management', icon: <Server className="h-4 w-4" />, title: 'Agent settings and device management' },
@@ -339,6 +342,10 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
 
       {activeTab === 'peripherals' && (
         <DevicePeripheralsTab deviceId={device.id} timezone={effectiveTimezone} />
+      )}
+
+      {activeTab === 'monitoring' && (
+        <DeviceMonitoringTab deviceId={device.id} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'management' && (
