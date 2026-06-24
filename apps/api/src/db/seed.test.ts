@@ -138,6 +138,10 @@ describe('vulnerability risk-acceptance RBAC', () => {
     expect(byName('Org Technician')?.permissions).not.toContain('vulnerabilities:accept_risk');
   });
 
+  it('does NOT grant vulnerabilities:accept_risk to Org Viewer', () => {
+    expect(byName('Org Viewer')?.permissions).not.toContain('vulnerabilities:accept_risk');
+  });
+
   it('seeds an org-scope Security Approver role with minimal perms', () => {
     const role = byName('Security Approver');
     expect(role?.scope).toBe('organization');
