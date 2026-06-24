@@ -72,6 +72,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'partners', column: 'settings', kind: 'json', description: 'partner settings with encrypted remote-access launcher passwords (#716)' },
   { table: 'sites', column: 'settings', kind: 'json', description: 'site-level settings with encrypted overrides' },
   { table: 'td_synnex_digital_bridge_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX Digital Bridge API credentials' },
+  { table: 'td_synnex_ec_express_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX EC Express API credentials' },
 ];
 
 const SECRET_JSON_KEYS = new Set([

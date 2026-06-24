@@ -50,6 +50,7 @@ import {
   catalogItemOrgPricing,
   catalogBundleComponents,
   tdSynnexDigitalBridgeIntegrations,
+  tdSynnexEcExpressIntegrations,
   organizations,
   partners,
 } from '../../db/schema';
@@ -71,6 +72,7 @@ interface Fixture {
   componentA: { id: string };
   pricingA: { id: string };
   tdSynnexA: { id: string };
+  ecExpressA: { id: string };
   partnerBContext: DbAccessContext;
   orgBContext: DbAccessContext;
 }
@@ -141,6 +143,18 @@ async function seedFixture(): Promise<Fixture> {
       .returning({ id: tdSynnexDigitalBridgeIntegrations.id });
     if (!tdSynnexA) throw new Error('failed to seed TD SYNNEX integration A');
 
+    const [ecExpressA] = await db
+      .insert(tdSynnexEcExpressIntegrations)
+      .values({
+        partnerId: partnerA.id,
+        region: 'US',
+        credentials: {},
+        settings: {},
+        enabled: true,
+      })
+      .returning({ id: tdSynnexEcExpressIntegrations.id });
+    if (!ecExpressA) throw new Error('failed to seed EC Express integration A');
+
     // Partner-scoped context for partner B (mirrors authMiddleware partner scope).
     const partnerBContext: DbAccessContext = {
       scope: 'partner',
@@ -168,6 +182,7 @@ async function seedFixture(): Promise<Fixture> {
       componentA: { id: componentA.id },
       pricingA: { id: pricingA.id },
       tdSynnexA: { id: tdSynnexA.id },
+      ecExpressA: { id: ecExpressA.id },
       partnerBContext,
       orgBContext,
     };
@@ -193,6 +208,9 @@ afterAll(async () => {
     await db
       .delete(catalogItems)
       .where(sql`${catalogItems.partnerId} IN (${partnerList})`);
+    await db
+      .delete(tdSynnexEcExpressIntegrations)
+      .where(sql`${tdSynnexEcExpressIntegrations.partnerId} IN (${partnerList})`);
     await db
       .delete(tdSynnexDigitalBridgeIntegrations)
       .where(sql`${tdSynnexDigitalBridgeIntegrations.partnerId} IN (${partnerList})`);
@@ -340,6 +358,27 @@ describe('catalog RLS isolation (breeze_app)', () => {
           credentials: {},
           settings: {},
           enabled: true,
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  runDb('partner B context cannot read partner A EC Express integration', async () => {
+    const { ecExpressA, partnerBContext } = await seedFixture();
+    const rowsB = await withDbAccessContext(partnerBContext, () =>
+      db.select({ id: tdSynnexEcExpressIntegrations.id })
+        .from(tdSynnexEcExpressIntegrations)
+        .where(eq(tdSynnexEcExpressIntegrations.id, ecExpressA.id))
+    );
+    expect(rowsB).toHaveLength(0);
+  });
+
+  runDb('a forged cross-partner EC Express integration insert is rejected by RLS', async () => {
+    const { partnerA, partnerBContext } = await seedFixture();
+    await expect(
+      withDbAccessContext(partnerBContext, () =>
+        db.insert(tdSynnexEcExpressIntegrations).values({
+          partnerId: partnerA.id, region: 'US', credentials: {}, settings: {}, enabled: true,
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
