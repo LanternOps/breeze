@@ -11,7 +11,7 @@ import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
 import { eq, and, lt, gt, asc, inArray, or } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
-import { createAlert } from '../services/alertService';
+import { createAlert, evaluateDeviceAlertsFromPolicy } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
@@ -31,6 +31,15 @@ let offlineQueue: Queue | null = null;
 
 // Default offline threshold in minutes
 const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 5;
+
+let _configPolicyTableWarningLogged = false;
+
+/** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
+function isRelationNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const cause = (error as { cause?: { code?: string } }).cause;
+  return cause?.code === '42P01';
+}
 
 /**
  * Get or create the offline detection queue
@@ -235,12 +244,58 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
 }
 
 /**
- * Find and trigger offline-type alert rules for a device
+ * Evaluate configuration-policy alert rules for a freshly-offline device.
+ *
+ * Delegates to evaluateDeviceAlertsFromPolicy(), which resolves the device's
+ * config-policy alert rules from the hierarchy, honours maintenance windows and
+ * cooldowns, evaluates each rule's conditions (including offline conditions via
+ * the registry's `offline` handler + `status` alias), and writes alerts. Any
+ * non-offline rules are no-ops for an offline device since their metric/status
+ * conditions won't trip.
+ *
+ * @returns true if at least one config-policy alert was created
  */
-async function triggerOfflineAlerts(
+async function triggerConfigPolicyOfflineAlerts(
   device: typeof devices.$inferSelect
 ): Promise<boolean> {
-  // Find alert rules that have offline conditions
+  try {
+    const createdIds = await evaluateDeviceAlertsFromPolicy(device.id);
+    if (createdIds.length > 0) {
+      console.log(`[OfflineDetector] Created ${createdIds.length} config-policy alert(s) for device ${device.id}`);
+    }
+    return createdIds.length > 0;
+  } catch (error) {
+    if (isRelationNotFoundError(error)) {
+      if (!_configPolicyTableWarningLogged) {
+        _configPolicyTableWarningLogged = true;
+        console.warn('[OfflineDetector] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping config policy offline alert evaluation.');
+      }
+      return false;
+    }
+    // Don't let a config-policy evaluation failure abort the legacy path.
+    console.error(`[OfflineDetector] Error evaluating config policy offline alerts for device ${device.id}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Find and trigger offline-type alert rules for a device.
+ *
+ * Evaluates BOTH rule sources:
+ *  - legacy standalone `alertRules` (template-based) below, and
+ *  - configuration-policy alert rules via evaluateDeviceAlertsFromPolicy().
+ *
+ * Config-policy offline rules must be evaluated here because the periodic
+ * alertWorker sweep only queues devices that are still `online` with a recent
+ * heartbeat (alertWorker.ts), so a device offline long enough to trip an
+ * offline threshold is never evaluated by that path (issue #1857).
+ */
+export async function triggerOfflineAlerts(
+  device: typeof devices.$inferSelect
+): Promise<boolean> {
+  let alertCreated = await triggerConfigPolicyOfflineAlerts(device);
+
+  // Find legacy standalone alert rules that have offline conditions
   // We need to find rules where the template conditions include type: 'offline'
 
   // Get all active rules for this device's org
@@ -261,7 +316,7 @@ async function triggerOfflineAlerts(
     );
 
   if (rules.length === 0) {
-    return false;
+    return alertCreated;
   }
 
   // Get templates for all rules
@@ -272,8 +327,6 @@ async function triggerOfflineAlerts(
     .where(inArray(alertTemplates.id, templateIds));
 
   const templateMap = new Map(templates.map(t => [t.id, t]));
-
-  let alertCreated = false;
 
   for (const rule of rules) {
     const template = templateMap.get(rule.templateId);
