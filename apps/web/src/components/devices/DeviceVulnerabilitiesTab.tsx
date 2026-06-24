@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { handleActionError } from '../../lib/runAction';
+import { usePermissions } from '../../lib/permissions';
 import {
   fetchDeviceVulnerabilities,
   remediateVuln,
@@ -70,6 +71,9 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
   const [statusFilter, setStatusFilter] = useState<string>('open');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  const { can } = usePermissions();
+  const canAcceptRisk = can('vulnerabilities', 'accept_risk');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -166,15 +170,17 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
       if (status === 'accepted' || status === 'mitigated') {
         return (
           <div className="flex flex-wrap justify-end gap-2">
-            <button
-              type="button"
-              data-testid={`reopen-${v.id}`}
-              className={ACTION_BTN}
-              disabled={busyId === v.id}
-              onClick={() => void onReopen(v.id)}
-            >
-              Reopen
-            </button>
+            {canAcceptRisk && (
+              <button
+                type="button"
+                data-testid={`reopen-${v.id}`}
+                className={ACTION_BTN}
+                disabled={busyId === v.id}
+                onClick={() => void onReopen(v.id)}
+              >
+                Reopen
+              </button>
+            )}
           </div>
         );
       }
@@ -193,15 +199,17 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
           >
             Remediate
           </button>
-          <button
-            type="button"
-            data-testid={`accept-${v.id}`}
-            className={ACTION_BTN}
-            disabled={busyId === v.id}
-            onClick={() => setModal({ kind: 'accept', id: v.id, cveId: v.cveId })}
-          >
-            Accept risk
-          </button>
+          {canAcceptRisk && (
+            <button
+              type="button"
+              data-testid={`accept-${v.id}`}
+              className={ACTION_BTN}
+              disabled={busyId === v.id}
+              onClick={() => setModal({ kind: 'accept', id: v.id, cveId: v.cveId })}
+            >
+              Accept risk
+            </button>
+          )}
           <button
             type="button"
             data-testid={`mitigate-${v.id}`}
@@ -214,7 +222,7 @@ export function DeviceVulnerabilitiesTab({ deviceId }: DeviceVulnerabilitiesTabP
         </div>
       );
     },
-    [busyId, onRemediate, onReopen],
+    [busyId, onRemediate, onReopen, canAcceptRisk],
   );
 
   const isOpenFilter = statusFilter === 'open';

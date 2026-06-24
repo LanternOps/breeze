@@ -4,6 +4,20 @@ import { render, screen, within, waitFor, fireEvent } from '@testing-library/rea
 import { DeviceVulnerabilitiesTab } from './DeviceVulnerabilitiesTab';
 import * as api from '../../lib/api/vulnerabilities';
 
+type Perm = { resource: string; action: string };
+// Mutable grant set the mocked auth store reads from. Default = wildcard so the
+// existing (button-present) tests stay green once the component gates on
+// usePermissions; individual tests narrow it to cover the negative branch.
+const authState = vi.hoisted(() => ({ permissions: [{ resource: '*', action: '*' }] as Perm[] }));
+
+vi.mock('../../stores/auth', () => ({
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: Perm[] } }) => unknown) =>
+      selector({ user: { permissions: authState.permissions } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
+
 vi.mock('../../lib/api/vulnerabilities', () => ({
   fetchDeviceVulnerabilities: vi.fn(),
   remediateVuln: vi.fn(),
@@ -43,6 +57,7 @@ const acceptedItem = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authState.permissions = [{ resource: '*', action: '*' }];
   vi.mocked(api.fetchDeviceVulnerabilities).mockResolvedValue({ items: [sampleItem] });
 });
 
@@ -221,5 +236,38 @@ describe('DeviceVulnerabilitiesTab', () => {
     await waitFor(() =>
       expect(api.fetchDeviceVulnerabilities).toHaveBeenCalledWith('d1', { status: 'patched' }),
     );
+  });
+
+  it('hides Accept risk when the user lacks vulnerabilities:accept_risk', async () => {
+    authState.permissions = [
+      { resource: 'devices', action: 'read' },
+      { resource: 'devices', action: 'write' },
+      { resource: 'devices', action: 'execute' },
+    ];
+    render(<DeviceVulnerabilitiesTab deviceId="d1" />);
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    await desktop.findByTestId('vulnerability-row-dv1');
+    expect(desktop.queryByTestId('accept-dv1')).not.toBeInTheDocument();
+    // mitigate stays available on devices:write
+    expect(desktop.getByTestId('mitigate-dv1')).toBeInTheDocument();
+  });
+
+  it('hides Reopen for accepted findings when the user lacks vulnerabilities:accept_risk', async () => {
+    authState.permissions = [{ resource: 'devices', action: 'read' }];
+    vi.mocked(api.fetchDeviceVulnerabilities).mockResolvedValue({ items: [acceptedItem] });
+    render(<DeviceVulnerabilitiesTab deviceId="d1" />);
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    await desktop.findByTestId('vulnerability-row-dv2');
+    expect(desktop.queryByTestId('reopen-dv2')).not.toBeInTheDocument();
+  });
+
+  it('shows Accept risk when the user holds vulnerabilities:accept_risk', async () => {
+    authState.permissions = [
+      { resource: 'devices', action: 'read' },
+      { resource: 'vulnerabilities', action: 'accept_risk' },
+    ];
+    render(<DeviceVulnerabilitiesTab deviceId="d1" />);
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(await desktop.findByTestId('accept-dv1')).toBeInTheDocument();
   });
 });
