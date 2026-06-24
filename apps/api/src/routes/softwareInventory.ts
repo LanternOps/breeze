@@ -136,6 +136,11 @@ async function getPolicyStatusMap(orgFilter: SQL | undefined): Promise<Map<strin
     .from(softwarePolicies)
     .where(and(...conditions));
 
+  // Keyed by name|vendor with no org dimension. In an "All Orgs" aggregate this
+  // collapses policies from every accessible org onto one row; if two orgs hold
+  // conflicting policies for the same software the badge is last-write-wins. This
+  // is a display approximation on an org-collapsed row, never a cross-tenant read
+  // (RLS still scopes the policies query to accessible orgs).
   const statusMap = new Map<string, PolicyStatus>();
 
   for (const policy of policies) {

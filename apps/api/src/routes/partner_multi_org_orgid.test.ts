@@ -7,7 +7,9 @@
  * handlers). Each affected route file is exercised: the resolver should accept
  * the user-supplied orgId, validate it against `accessibleOrgIds`, and forward
  * it through. Foreign orgIds must 403; missing orgId must still 400 with the
- * existing "orgId is required..." message.
+ * existing "orgId is required..." message — EXCEPT the software-inventory READ
+ * endpoints, which now aggregate across all accessible orgs ("All Orgs") on a
+ * missing orgId instead of 400ing (see the software-inventory describe block).
  *
  * #723: GET /orgs/sites must scope by the explicit `organizationId`, not the
  * ambient `orgId` the web client auto-injects (see the #723 describe block).
@@ -319,7 +321,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
 
     // Exception to the #620 "missing orgId => 400" rule: the software-inventory
     // READ endpoints now aggregate across all accessible orgs ("All Orgs") when
-    // no orgId is supplied, rather than 400ing. (The catalog/discovery/huntress
+    // no orgId is supplied, rather than 400ing. (The catalog and discovery
     // routes below still require an explicit orgId.)
     it('GET /software-inventory aggregates across all orgs when orgId is missing', async () => {
       const { softwareInventoryRoutes } = await import('./softwareInventory');

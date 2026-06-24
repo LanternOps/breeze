@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { inArray } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -409,7 +410,9 @@ describe('software inventory routes', () => {
           scope: 'partner',
           orgId: null,
           accessibleOrgIds: ['org-a', 'org-b'],
-          orgCondition: () => undefined,
+          // Real partner orgCondition narrows to the accessible orgs (not undefined,
+          // which would exercise the system-scope path instead).
+          orgCondition: (col: any) => inArray(col, ['org-a', 'org-b']),
           canAccessOrg: () => true,
         });
         return next();
@@ -424,6 +427,7 @@ describe('software inventory routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect((await res.json()).pagination.total).toBe(0);
     });
   });
 
