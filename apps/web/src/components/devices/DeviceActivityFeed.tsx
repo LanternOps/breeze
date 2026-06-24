@@ -46,6 +46,15 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: 'device.decommission', icon: Trash2 },
   { prefix: 'device.permanent_delete', icon: Trash2 },
   { prefix: 'device.restore', icon: RotateCcw },
+  // Automated agent-dispatched commands (scheduled patches, automations). These
+  // are written as `agent.command.<type>` with no route-audit twin; the server
+  // only returns them when includeAutomated=true (and scoped to system/agent
+  // actors), so they don't duplicate the manual route audits above.
+  { prefix: 'agent.command.install_patches', icon: Download },
+  { prefix: 'agent.command.rollback_patches', icon: RotateCcw },
+  { prefix: 'agent.command.script', icon: Terminal },
+  { prefix: 'agent.command.software_uninstall', icon: Package },
+  { prefix: 'agent.command.software_update', icon: Package },
 ];
 
 function ruleFor(action?: string) {
@@ -133,7 +142,7 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
         setLoadMoreError(false);
       }
       try {
-        const eventsUrl = `/devices/${deviceId}/events?limit=${PAGE_SIZE}&page=${page}&actions=${encodeURIComponent(
+        const eventsUrl = `/devices/${deviceId}/events?limit=${PAGE_SIZE}&page=${page}&includeAutomated=true&actions=${encodeURIComponent(
           ACTION_PREFIXES
         )}`;
         // The active-alert count is only needed on the initial load.
@@ -260,8 +269,15 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
             {visible.map((e) => {
               const Icon = ruleFor(e.action)?.icon ?? Activity;
               const initiator = e.initiatedBy ? INITIATOR_LABELS[e.initiatedBy] : undefined;
-              const who = e.actor?.name && e.actor.name !== 'System' ? e.actor.name : initiator ?? e.actor?.name;
               const failed = e.result === 'failure' || e.result === 'denied';
+              // System/agent-dispatched commands carry no initiatedBy; surface them
+              // as "Automated" so an unattended patch run / automation is legible.
+              const automated =
+                !initiator && (e.actor?.type === 'system' || e.actor?.type === 'agent');
+              const namedActor = e.actor?.name && e.actor.name !== 'System' ? e.actor.name : undefined;
+              // For automated rows the "Automated" chip already conveys the actor,
+              // so drop the generic "System"/"Agent" label and keep only a real name.
+              const who = automated ? namedActor : namedActor ?? initiator ?? e.actor?.name;
               return (
                 <li key={e.id} className="flex gap-3">
                   <div
@@ -281,6 +297,11 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
                       {initiator && who !== initiator && (
                         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                           {initiator}
+                        </span>
+                      )}
+                      {automated && (
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          Automated
                         </span>
                       )}
                       {who && <span aria-hidden="true">·</span>}
