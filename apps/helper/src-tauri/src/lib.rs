@@ -210,8 +210,51 @@ fn helper_config_path() -> PathBuf {
     agent_config_path().with_file_name("helper_config.yaml")
 }
 
+/// Extract the value of a `--config <path>` / `--config=<path>` flag from an
+/// argv-style iterator.
+///
+/// The Go agent spawns the helper per user session with
+/// `--config <…/sessions/<key>/helper_config.yaml>` so that per-session policy
+/// values (tray item visibility, portal URL, device info) reach the helper
+/// (`agent/internal/helper/manager.go:447`, `session_state.go:43-49`). The
+/// helper must honor that flag; otherwise it falls back to the fixed path next
+/// to `agent.yaml`, which holds no policy values, and the tray silently shows
+/// the three `HelperConfig::default()` items regardless of policy (issue #1856).
+fn config_path_from_args<I, S>(args: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        let arg = arg.as_ref();
+        if arg == "--config" {
+            // `--config <path>` form — value is the next argument.
+            if let Some(value) = iter.next() {
+                let value = value.as_ref();
+                if !value.is_empty() {
+                    return Some(PathBuf::from(value));
+                }
+            }
+        } else if let Some(value) = arg.strip_prefix("--config=") {
+            // `--config=<path>` form.
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve which helper config file to read: the per-session path supplied via
+/// `--config`, or the legacy fixed path next to `agent.yaml` when no flag is
+/// passed (preserves single-session behavior for older agents).
+fn resolve_helper_config_path() -> PathBuf {
+    config_path_from_args(std::env::args().skip(1)).unwrap_or_else(helper_config_path)
+}
+
 fn load_helper_config() -> HelperConfig {
-    let path = helper_config_path();
+    let path = resolve_helper_config_path();
     match std::fs::read_to_string(&path) {
         Ok(contents) => serde_yaml::from_str(&contents).unwrap_or_default(),
         Err(_) => HelperConfig::default(),
@@ -1075,6 +1118,55 @@ mod tests {
         assert!(value.get("token").is_none());
         assert_eq!(value["api_url"], "https://api.example.test");
         assert_eq!(value["agent_id"], "agent-1");
+    }
+
+    #[test]
+    fn config_path_from_args_parses_space_separated_flag() {
+        let args = vec![
+            "breeze-helper",
+            "--config",
+            "/var/lib/breeze/sessions/s-1/helper_config.yaml",
+        ];
+        assert_eq!(
+            config_path_from_args(args.into_iter().skip(1)),
+            Some(PathBuf::from(
+                "/var/lib/breeze/sessions/s-1/helper_config.yaml"
+            ))
+        );
+    }
+
+    #[test]
+    fn config_path_from_args_parses_equals_form() {
+        let args = vec!["--config=/etc/breeze/sessions/s-2/helper_config.yaml"];
+        assert_eq!(
+            config_path_from_args(args.into_iter()),
+            Some(PathBuf::from(
+                "/etc/breeze/sessions/s-2/helper_config.yaml"
+            ))
+        );
+    }
+
+    #[test]
+    fn config_path_from_args_returns_none_when_flag_absent() {
+        let args = vec!["breeze-helper", "--other", "value"];
+        assert_eq!(config_path_from_args(args.into_iter().skip(1)), None);
+    }
+
+    #[test]
+    fn config_path_from_args_ignores_empty_value() {
+        // `--config` with no following value, and `--config=` with an empty
+        // value, must both fall through to the fixed-path fallback (None here).
+        assert_eq!(config_path_from_args(vec!["--config"].into_iter()), None);
+        assert_eq!(config_path_from_args(vec!["--config="].into_iter()), None);
+    }
+
+    #[test]
+    fn config_path_from_args_takes_first_occurrence() {
+        let args = vec!["--config", "/first.yaml", "--config", "/second.yaml"];
+        assert_eq!(
+            config_path_from_args(args.into_iter()),
+            Some(PathBuf::from("/first.yaml"))
+        );
     }
 
     #[test]
