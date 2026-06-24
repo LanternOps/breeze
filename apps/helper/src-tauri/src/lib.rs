@@ -256,8 +256,32 @@ fn resolve_helper_config_path() -> PathBuf {
 fn load_helper_config() -> HelperConfig {
     let path = resolve_helper_config_path();
     match std::fs::read_to_string(&path) {
-        Ok(contents) => serde_yaml::from_str(&contents).unwrap_or_default(),
-        Err(_) => HelperConfig::default(),
+        Ok(contents) => match serde_yaml::from_str(&contents) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                // A corrupt/partial config silently reverts the tray to the
+                // three default items — the exact #1856 symptom. Log the path
+                // and error so a field verification can tell "fix didn't take"
+                // apart from "config file is malformed".
+                log_helper_error(&format!(
+                    "[helper] failed to parse helper config at {}: {}; using defaults",
+                    path.display(),
+                    e
+                ));
+                HelperConfig::default()
+            }
+        },
+        Err(e) => {
+            // A missing/unreadable per-session config also reverts to defaults.
+            // Logged so it is distinguishable from a successful policy that
+            // simply enables all three items.
+            log_helper_error(&format!(
+                "[helper] could not read helper config at {}: {}; using defaults",
+                path.display(),
+                e
+            ));
+            HelperConfig::default()
+        }
     }
 }
 
