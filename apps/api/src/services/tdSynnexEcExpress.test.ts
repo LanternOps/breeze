@@ -30,7 +30,13 @@ import {
   decryptCredentials,
   buildSoapEnvelope,
   parsePnaResponse,
+  importEcExpressCatalogItem,
 } from './tdSynnexEcExpress';
+import { createCatalogItem } from './catalogService';
+
+vi.mock('./catalogService', () => ({
+  createCatalogItem: vi.fn(),
+}));
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
 
@@ -313,4 +319,14 @@ it('maps msrp === "0" to null', () => {
   const xml = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return><priceAvail><synnexSku>9999999</synnexSku><price>50.00</price><msrp>0</msrp><totalQty>10</totalQty></priceAvail></return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>`;
   const products = parsePnaResponse(xml);
   expect(products[0]!.msrp).toBeNull();
+});
+
+it('imports a product into the catalog with a distributor snapshot', async () => {
+  const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item1' } as any);
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'Dell U2724D', description: 'Dell U2724D', currency: 'USD', cost: '381.35', msrp: '549.99', discount: null, totalQty: 1437, warehouses: [], weight: '20.50', parcelShippable: 'Y', raw: {} };
+  await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35, taxable: true } }, actor);
+  const arg = createSpy.mock.calls[0]![0];
+  expect(arg).toMatchObject({ itemType: 'hardware', name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35 });
+  expect((arg.attributes as any).distributor.source).toBe('td_synnex_ec_express');
+  expect((arg.attributes as any).distributor.synnexSku).toBe('8938995');
 });

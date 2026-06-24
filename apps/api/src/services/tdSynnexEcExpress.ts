@@ -4,7 +4,8 @@ import { db } from '../db';
 import { tdSynnexEcExpressIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { safeFetch } from './urlSafety';
-import type { CatalogActor } from './catalogService';
+import { createCatalogItem, type CatalogActor } from './catalogService';
+import type { CreateCatalogItemInput } from '@breeze/shared';
 
 const TABLE = 'td_synnex_ec_express_integrations';
 const CREDENTIALS_COLUMN = 'credentials';
@@ -426,4 +427,54 @@ export async function testEcExpressConnection(
     await finish('error', msg);
     return { ok: false, error: msg };
   }
+}
+
+// --- Task 4: Import a looked-up product into the partner catalog ---
+
+export interface EcImportInput {
+  product: TdSynnexEcProduct;
+  item: {
+    name: string;
+    sku?: string | null;
+    description?: string | null;
+    unitPrice: number;
+    costBasis?: number | null;
+    markupPercent?: number | null;
+    taxable?: boolean;
+  };
+}
+
+export async function importEcExpressCatalogItem(input: EcImportInput, actor: CatalogActor) {
+  const { product, item } = input;
+  const payload: CreateCatalogItemInput = {
+    itemType: 'hardware',
+    name: item.name,
+    sku: item.sku ?? product.synnexSku,
+    description: item.description ?? product.description ?? undefined,
+    billingType: 'one_time',
+    unitPrice: item.unitPrice,
+    costBasis: item.costBasis ?? (product.cost ? Number(product.cost) : undefined),
+    markupPercent: item.markupPercent ?? undefined,
+    unitOfMeasure: 'each',
+    taxable: item.taxable ?? true,
+    isBundle: false,
+    attributes: {
+      distributor: {
+        source: product.source,
+        synnexSku: product.synnexSku,
+        mfgPartNo: product.mfgPartNo,
+        status: product.status,
+        currency: product.currency,
+        cost: product.cost,
+        msrp: product.msrp,
+        totalQty: product.totalQty,
+        weight: product.weight,
+        parcelShippable: product.parcelShippable,
+        warehouses: product.warehouses,
+        raw: product.raw,
+        importedAt: new Date().toISOString(),
+      },
+    },
+  };
+  return createCatalogItem(payload, actor);
 }
