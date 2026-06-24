@@ -1,8 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 
-const FIXED_SECRET = 'test-fixed-accounting-secret';
+// The route's signingSecret() falls through APP_ENCRYPTION_KEY/SECRET_ENCRYPTION_KEY/
+// SESSION_SECRET to JWT_SECRET, which the api test setup (src/__tests__/setup.ts)
+// sets. Mint state with that same ambient secret — do NOT stub env here, or it
+// perturbs the shared-worker process.env that secretCrypto reads in sibling tests.
+const FIXED_SECRET = 'test-jwt-secret-must-be-at-least-32-characters-long';
 
 function mintState(partnerId: string, userId: string | null): { state: string; cookie: string } {
   const payload = { partnerId, userId, nonce: 'test-nonce', exp: Date.now() + 60_000 };
@@ -93,16 +97,11 @@ describe('accounting routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv('APP_ENCRYPTION_KEY', FIXED_SECRET);
     authState.scope = 'partner';
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
     authState.mfa = true;
     app = new Hono();
     app.route('/accounting', accountingRoutes);
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
