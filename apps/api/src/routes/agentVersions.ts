@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import {
@@ -11,6 +11,7 @@ import {
   requirePermission,
   requireScope,
 } from "../middleware/auth";
+import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
 import { PERMISSIONS } from "../services/permissions";
@@ -73,6 +74,14 @@ const createVersionSchema = z.object({
   releaseNotes: z.string().optional(),
   isLatest: z.boolean().optional().default(false),
   component: componentEnum.optional().default("agent"),
+});
+
+// Controlled fleet rollout: explicitly promote a registered version to the
+// fleet upgrade target. Omitting `component` promotes ALL components of the
+// version. See docs/superpowers/specs/2026-06-23-controlled-agent-fleet-rollout.md.
+const promoteSchema = z.object({
+  version: z.string().min(1).max(20),
+  component: componentEnum.optional(),
 });
 
 type ReleaseManifest = {
@@ -635,5 +644,191 @@ agentVersionRoutes.post(
       const status = msg.includes("GitHub API error") ? 502 : 422;
       return c.json({ error: msg }, status);
     }
+  },
+);
+
+// GET /agent-versions - List registered versions and the currently-promoted
+// fleet target per (component, platform, architecture). Platform-admin only.
+// This is the operator view used to decide what to promote after a release is
+// registered (with AGENT_AUTO_PROMOTE=false). Returns every registered row,
+// newest-first, with an isLatest flag marking the current upgrade target.
+agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
+  const rows = await db
+    .select({
+      id: agentVersions.id,
+      version: agentVersions.version,
+      platform: agentVersions.platform,
+      architecture: agentVersions.architecture,
+      component: agentVersions.component,
+      isLatest: agentVersions.isLatest,
+      fileSize: agentVersions.fileSize,
+      releaseNotes: agentVersions.releaseNotes,
+      createdAt: agentVersions.createdAt,
+    })
+    .from(agentVersions)
+    .orderBy(desc(agentVersions.createdAt));
+
+  return c.json({
+    versions: rows.map((r) => ({
+      ...r,
+      fileSize: r.fileSize != null ? Number(r.fileSize) : null,
+    })),
+    // Convenience map: the version currently promoted (isLatest=true) for each
+    // component/platform/arch tuple, so the UI can show "current target".
+    promoted: rows
+      .filter((r) => r.isLatest)
+      .map((r) => ({
+        component: r.component,
+        platform: r.platform,
+        architecture: r.architecture,
+        version: r.version,
+      })),
+  });
+});
+
+// POST /agent-versions/promote - Explicitly promote a registered version to the
+// fleet upgrade target. Platform-admin only. This is the deliberate lever that
+// AGENT_AUTO_PROMOTE=false hands to operators: registration no longer auto-
+// promotes, so the fleet only moves to a new version when this endpoint runs.
+// Body: { version, component? }. Omitting component promotes every component of
+// the version. Per affected (component, platform, architecture), the current
+// isLatest=true rows are demoted and the target version's rows are promoted —
+// all in a single transaction so heartbeat never observes a split target.
+agentVersionRoutes.post(
+  "/promote",
+  platformAdminMiddleware,
+  requireMfa(),
+  zValidator("json", promoteSchema),
+  async (c) => {
+    const { version, component } = c.req.valid("json");
+
+    // Target rows for this version (optionally narrowed to one component).
+    const targetRows = await db
+      .select({
+        component: agentVersions.component,
+        platform: agentVersions.platform,
+        architecture: agentVersions.architecture,
+      })
+      .from(agentVersions)
+      .where(
+        component
+          ? and(
+              eq(agentVersions.version, version),
+              eq(agentVersions.component, component),
+            )
+          : eq(agentVersions.version, version),
+      );
+
+    if (targetRows.length === 0) {
+      return c.json(
+        {
+          error: component
+            ? `No registered rows for version ${version} (component=${component})`
+            : `No registered rows for version ${version}`,
+        },
+        404,
+      );
+    }
+
+    // Distinct (component, platform, architecture) tuples affected by this
+    // promotion. Each tuple is an independent isLatest "slot".
+    const tuples = Array.from(
+      new Map(
+        targetRows.map((r) => [
+          `${r.component}|${r.platform}|${r.architecture}`,
+          r,
+        ]),
+      ).values(),
+    );
+
+    const result = await db.transaction(async (tx) => {
+      const demoted: Array<{
+        component: string;
+        platform: string;
+        architecture: string;
+        version: string;
+      }> = [];
+
+      for (const t of tuples) {
+        // Capture the version currently promoted in this slot (the prior
+        // target) before demoting it, so the response/audit records what the
+        // fleet was moving FROM.
+        const [prior] = await tx
+          .select({ version: agentVersions.version })
+          .from(agentVersions)
+          .where(
+            and(
+              eq(agentVersions.component, t.component),
+              eq(agentVersions.platform, t.platform),
+              eq(agentVersions.architecture, t.architecture),
+              eq(agentVersions.isLatest, true),
+            ),
+          )
+          .limit(1);
+
+        if (prior && prior.version !== version) {
+          demoted.push({
+            component: t.component,
+            platform: t.platform,
+            architecture: t.architecture,
+            version: prior.version,
+          });
+        }
+
+        // Demote the current target for this slot.
+        await tx
+          .update(agentVersions)
+          .set({ isLatest: false })
+          .where(
+            and(
+              eq(agentVersions.component, t.component),
+              eq(agentVersions.platform, t.platform),
+              eq(agentVersions.architecture, t.architecture),
+              eq(agentVersions.isLatest, true),
+            ),
+          );
+
+        // Promote the requested version for this slot.
+        await tx
+          .update(agentVersions)
+          .set({ isLatest: true })
+          .where(
+            and(
+              eq(agentVersions.version, version),
+              eq(agentVersions.component, t.component),
+              eq(agentVersions.platform, t.platform),
+              eq(agentVersions.architecture, t.architecture),
+            ),
+          );
+      }
+
+      return {
+        promoted: tuples.map((t) => ({
+          component: t.component,
+          platform: t.platform,
+          architecture: t.architecture,
+          version,
+        })),
+        demoted,
+      };
+    });
+
+    const components = Array.from(new Set(tuples.map((t) => t.component)));
+    writeRouteAudit(c, {
+      orgId: null,
+      action: "agent_version.promote",
+      resourceType: "agent_version",
+      resourceId: version,
+      resourceName: version,
+      details: {
+        version,
+        component: component ?? "all",
+        components,
+        promotedCount: result.promoted.length,
+        demotedTargets: result.demoted,
+      },
+    });
+
+    return c.json(result);
   },
 );

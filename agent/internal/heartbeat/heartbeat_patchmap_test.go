@@ -94,6 +94,30 @@ func TestAvailablePatchesToMaps_WindowsUpdateKeepsKB(t *testing.T) {
 	}
 }
 
+func TestAvailablePatchesToMaps_LinuxExternalIdIncludesCandidateVersion(t *testing.T) {
+	h := &Heartbeat{}
+	items := h.availablePatchesToMaps([]patching.AvailablePatch{
+		{
+			ID:       "apt:openssl",
+			Provider: "apt",
+			Title:    "openssl",
+			Version:  "3.0.2-0ubuntu1.20",
+		},
+	})
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	if got := items[0]["externalId"]; got != "apt:openssl@3.0.2-0ubuntu1.20" {
+		t.Errorf("externalId = %v, want apt:openssl@3.0.2-0ubuntu1.20", got)
+	}
+	if got := items[0]["packageId"]; got != "apt:openssl" {
+		t.Errorf("packageId = %v, want apt:openssl", got)
+	}
+	if got := items[0]["source"]; got != "linux" {
+		t.Errorf("source = %v, want linux", got)
+	}
+}
+
 func TestInstalledPatchesToMaps_WingetExternalId(t *testing.T) {
 	h := &Heartbeat{}
 	items := h.installedPatchesToMaps([]patching.InstalledPatch{

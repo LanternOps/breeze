@@ -30,6 +30,18 @@ function generateWindowsInstallScript(enrollmentKey: string): string {
   return `@echo off
 setlocal EnableDelayedExpansion
 
+REM This installer runs msiexec, which requires elevation. Run unelevated it
+REM silently fails, the agent binary never lands in %ProgramFiles%\\Breeze, and
+REM the enroll step below then errors with a confusing "path not found" -- yet
+REM the script used to still print "installed successfully" (#1832). Fail fast
+REM with a clear message instead.
+net session >nul 2>&1
+if errorlevel 1 (
+    echo Error: this installer must be run as Administrator.
+    echo Right-click install.bat and choose "Run as administrator", or run it from an elevated command prompt.
+    exit /b 1
+)
+
 set "SCRIPT_DIR=%~dp0"
 set "ENROLLMENT_JSON=%SCRIPT_DIR%enrollment.json"
 set "MSI_PATH=%SCRIPT_DIR%breeze-agent.msi"
@@ -41,6 +53,12 @@ if not exist "%ENROLLMENT_JSON%" (
 
 echo Installing Breeze Agent...
 msiexec /i "%MSI_PATH%" /quiet /norestart
+REM msiexec: 0 = success, 3010 = success but reboot pending; anything else failed.
+set "MSI_RC=!errorlevel!"
+if not "!MSI_RC!"=="0" if not "!MSI_RC!"=="3010" (
+    echo Error: agent installation failed ^(msiexec exit code !MSI_RC!^).
+    exit /b 1
+)
 
 REM Wait for install to complete
 timeout /t 5 /nobreak >nul
@@ -66,9 +84,15 @@ if defined ENROLLMENT_SECRET if not "%ENROLLMENT_SECRET%"=="" (
 
 echo Enrolling agent...
 %ENROLL_CMD%
+set "ENROLL_RC=!errorlevel!"
 
-REM Clean up credentials
+REM Clean up credentials regardless of outcome (they must not be left behind).
 del "%ENROLLMENT_JSON%" 2>nul
+
+if not "!ENROLL_RC!"=="0" (
+    echo Error: agent enrollment failed ^(exit code !ENROLL_RC!^).
+    exit /b 1
+)
 
 echo Breeze agent installed and enrolled successfully.
 `;

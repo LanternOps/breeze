@@ -92,17 +92,19 @@ describe('reliabilityScoringInternals', () => {
     expect(trend.confidence).toBeGreaterThan(0);
   });
 
-  it('computes MTBF from aggregated failures and uptime window', () => {
+  it('computes MTBF from aggregated failures and observed up-days', () => {
     const now = new Date('2026-02-21T00:00:00.000Z');
-    const latest = {
-      collectedAt: now,
-      uptimeSeconds: 90 * 24 * 3600,
-      bootTime: new Date('2025-11-23T00:00:00.000Z'),
-    };
+    // 90 observed up-days (operating hours = 90*24 = 2160) and 9 failures → 240h.
     const buckets = [makeBucket({ date: '2026-02-20', crashCount: 9 })] as any[];
 
-    const mtbfHours = reliabilityScoringInternals.computeMtbfHours(buckets, latest as any, now);
+    const mtbfHours = reliabilityScoringInternals.computeMtbfHours(buckets, 90, now);
     expect(mtbfHours).toBe(240);
+  });
+
+  it('returns null MTBF when there are no observed up-days', () => {
+    const now = new Date('2026-02-21T00:00:00.000Z');
+    const buckets = [makeBucket({ date: '2026-02-20', crashCount: 9 })] as any[];
+    expect(reliabilityScoringInternals.computeMtbfHours(buckets, 0, now)).toBeNull();
   });
 
   it('parses stored aggregate state and prunes out-of-window buckets', () => {
@@ -137,6 +139,7 @@ describe('computeUptimePercent', () => {
   const { computeUptimePercent } = reliabilityScoringInternals;
   const now = new Date('2026-02-20T00:00:00.000Z');
   const DAY = 24 * 60 * 60;
+  const NONE = new Set<string>(); // no observed-online days (no reliability buckets)
 
   function makeLatest(uptimeSeconds: number, bootOffsetSeconds: number) {
     return {
@@ -147,56 +150,82 @@ describe('computeUptimePercent', () => {
     };
   }
 
+  // Day-keys (UTC) for the `now - n*DAY` calendar days, used to build the
+  // "observed online" set for the established-device cases.
+  function dayKeyOffset(daysAgo: number): string {
+    return new Date(now.getTime() - daysAgo * DAY * 1000).toISOString().slice(0, 10);
+  }
+
   it('returns 100 with no history snapshot', () => {
-    expect(computeUptimePercent(null, 90, now)).toBe(100);
-    expect(computeUptimePercent(null, 90, now, new Date(now.getTime() - 2 * DAY * 1000))).toBe(100);
+    expect(computeUptimePercent(null, NONE, 90, now)).toBe(100);
+    expect(computeUptimePercent(null, NONE, 90, now, new Date(now.getTime() - 2 * DAY * 1000))).toBe(100);
   });
 
   it('penalizes a young device against the full window when enrollment is ignored', () => {
-    // Device enrolled 2 days ago, up its whole life, but no enrollment clamp:
-    // 2 days of uptime against a 90-day denominator ≈ 2.2%.
+    // Device booted 2 days ago, no observed history, no enrollment clamp: only
+    // the 3 calendar days covered by the current boot span count as up, against
+    // a 91-day window ≈ 3.3%.
     const latest = makeLatest(2 * DAY, 2 * DAY);
-    expect(computeUptimePercent(latest, 90, now)).toBeCloseTo((2 / 90) * 100, 1);
+    expect(computeUptimePercent(latest, NONE, 90, now)).toBeCloseTo((3 / 91) * 100, 1);
   });
 
   it('clamps the window to enrollment so a 2-day-old all-up device scores 100%', () => {
     // Enrolled 2 days ago, booted at enrollment, up the whole time → 100%.
     const enrolledAt = new Date(now.getTime() - 2 * DAY * 1000);
     const latest = makeLatest(2 * DAY, 2 * DAY);
-    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
-    expect(computeUptimePercent(latest, 30, now, enrolledAt)).toBe(100);
+    expect(computeUptimePercent(latest, NONE, 90, now, enrolledAt)).toBe(100);
+    expect(computeUptimePercent(latest, NONE, 30, now, enrolledAt)).toBe(100);
   });
 
-  it('counts a reboot within a young device lifetime as partial downtime', () => {
-    // Enrolled 4 days ago but only up 2 days (rebooted 2 days ago) →
-    // 2 days up over a 4-day clamped window = 50%.
+  it('counts unobserved days within a young device lifetime as downtime', () => {
+    // Enrolled 4 days ago, booted 2 days ago, and NO reliability samples for the
+    // 2 pre-reboot days → only the 3 boot-covered calendar days count as up over
+    // the 5-day clamped window = 60%. (Had it been reporting those days, they'd
+    // be in `observedDays` and it would score ~100 — see the reboot case below.)
     const enrolledAt = new Date(now.getTime() - 4 * DAY * 1000);
     const latest = makeLatest(2 * DAY, 2 * DAY);
-    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(50);
+    expect(computeUptimePercent(latest, NONE, 90, now, enrolledAt)).toBe(60);
   });
 
-  it('leaves an old device (older than the window) unchanged', () => {
-    // Enrolled 200 days ago — older than the 90-day window. Continuously up
-    // for the full window → 100% either way; enrollment clamp is a no-op.
+  it('does NOT crater uptime for an established device that merely rebooted (the core fix)', () => {
+    // Enrolled 200 days ago, reported reliability every day for the last 90 days,
+    // but rebooted 5 days ago (current boot span only covers ~5 days). Under the
+    // old boot-snapshot model this scored ~5/90 ≈ 5.6%. With day-coverage, every
+    // day has an observed sample, so it is ~100%.
+    const enrolledAt = new Date(now.getTime() - 200 * DAY * 1000);
+    const latest = makeLatest(5 * DAY, 5 * DAY); // booted 5 days ago
+    const observed = new Set<string>();
+    for (let d = 0; d <= 90; d += 1) observed.add(dayKeyOffset(d));
+    expect(computeUptimePercent(latest, observed, 90, now, enrolledAt)).toBe(100);
+  });
+
+  it('reflects real offline gaps for an established device', () => {
+    // Enrolled long ago, booted 5 days ago, but only reported on 81 of the 91
+    // window days (offline ~10 days) → ~81 up-days + the boot span, ≈ 89%.
+    const enrolledAt = new Date(now.getTime() - 200 * DAY * 1000);
+    const latest = makeLatest(5 * DAY, 5 * DAY);
+    const observed = new Set<string>();
+    // Report days 5..90 (86 days), leaving days 0..4 to the boot span; drop 10
+    // older days (days 81..90 absent) to simulate an offline stretch.
+    for (let d = 5; d <= 80; d += 1) observed.add(dayKeyOffset(d));
+    const pct = computeUptimePercent(latest, observed, 90, now, enrolledAt);
+    expect(pct).toBeGreaterThan(85);
+    expect(pct).toBeLessThan(95);
+  });
+
+  it('leaves an old continuously-up device at 100', () => {
+    // Enrolled 200 days ago, booted 120 days ago, up continuously → boot span
+    // covers the whole window → 100% with or without observed buckets.
     const enrolledAt = new Date(now.getTime() - 200 * DAY * 1000);
     const latest = makeLatest(120 * DAY, 120 * DAY);
-    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(computeUptimePercent(latest, 90, now));
-    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
-  });
-
-  it('is a no-op when enrollment falls exactly on the window start (boundary)', () => {
-    // enrolledAt === now - windowDays: the clamp Math.max picks fixedStartSeconds,
-    // so the denominator stays the full window — identical to the no-enrollment call.
-    const enrolledAt = new Date(now.getTime() - 90 * DAY * 1000);
-    const latest = makeLatest(120 * DAY, 120 * DAY);
-    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(computeUptimePercent(latest, 90, now));
-    expect(computeUptimePercent(latest, 90, now, enrolledAt)).toBe(100);
+    expect(computeUptimePercent(latest, NONE, 90, now, enrolledAt)).toBe(computeUptimePercent(latest, NONE, 90, now));
+    expect(computeUptimePercent(latest, NONE, 90, now, enrolledAt)).toBe(100);
   });
 
   it('returns 100 when enrollment is at or after now (zero-length window)', () => {
     const latest = makeLatest(0, 0);
-    expect(computeUptimePercent(latest, 90, now, now)).toBe(100);
-    expect(computeUptimePercent(latest, 90, now, new Date(now.getTime() + DAY * 1000))).toBe(100);
+    expect(computeUptimePercent(latest, NONE, 90, now, now)).toBe(100);
+    expect(computeUptimePercent(latest, NONE, 90, now, new Date(now.getTime() + DAY * 1000))).toBe(100);
   });
 });
 
@@ -213,11 +242,14 @@ describe('scoreHangs', () => {
   const { scoreHangs } = reliabilityScoringInternals;
 
   it('returns 100 with no hangs', () => expect(scoreHangs(0, 0)).toBe(100));
-  it('unresolved hangs carry 2x penalty vs resolved', () => {
+  it('unresolved hangs carry 2x penalty vs resolved (no double-count)', () => {
+    // A resolved hang costs 10 (→90); an unresolved hang costs 10 + 10 = 20
+    // (→80), NOT 30. `unresolvedHangCount` is a subset of `hangCount`, so it adds
+    // a single extra 10 rather than being penalised twice.
     const oneResolved = scoreHangs(1, 0);
     const oneUnresolved = scoreHangs(1, 1);
     expect(oneResolved).toBe(90);
-    expect(oneUnresolved).toBe(70);
+    expect(oneUnresolved).toBe(80);
   });
   it('clamps to 0', () => expect(scoreHangs(20, 20)).toBe(0));
 });

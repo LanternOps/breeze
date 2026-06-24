@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, desc, inArray, and, sql } from 'drizzle-orm';
+import { eq, desc, inArray, and, sql, gte } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -28,10 +28,12 @@ const patchHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),
   type: z.enum(['install', 'scan', 'rollback', 'all']).default('all'),
-  status: z.enum(['completed', 'failed', 'pending', 'timeout', 'all']).default('all')
+  status: z.enum(['completed', 'failed', 'pending', 'timeout', 'all']).default('all'),
+  completedAfter: z.string().datetime({ offset: true }).optional()
 });
 
 const PATCH_COMMAND_TYPES = ['install_patches', 'patch_scan', 'rollback_patches', 'download_patches'] as const;
+const LINUX_SOFTWARE_UPDATE_COMMAND_TYPE = 'software_update';
 
 const TYPE_FILTER_MAP: Record<string, string[]> = {
   install: ['install_patches'],
@@ -39,6 +41,15 @@ const TYPE_FILTER_MAP: Record<string, string[]> = {
   rollback: ['rollback_patches'],
   all: [...PATCH_COMMAND_TYPES]
 };
+
+function commandTypesForPatchHistory(type: string, osType?: string | null): string[] {
+  const commandTypes = [...(TYPE_FILTER_MAP[type] ?? PATCH_COMMAND_TYPES)];
+  const normalizedOsType = (osType ?? '').toLowerCase();
+  if ((type === 'install' || type === 'all') && normalizedOsType === 'linux') {
+    commandTypes.push(LINUX_SOFTWARE_UPDATE_COMMAND_TYPE);
+  }
+  return commandTypes;
+}
 
 function safeParsePatchResult(result: unknown): unknown {
   if (!result || typeof result !== 'object') return result;
@@ -101,6 +112,65 @@ function safeParsePatchResult(result: unknown): unknown {
   return raw;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringField(record: Record<string, unknown> | null, key: string): string {
+  const value = record?.[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizePatchHistoryResult(
+  commandType: string,
+  payload: unknown,
+  result: unknown,
+  osType?: string | null
+): unknown {
+  const parsed = safeParsePatchResult(result);
+  if (commandType !== LINUX_SOFTWARE_UPDATE_COMMAND_TYPE || (osType ?? '').toLowerCase() !== 'linux') {
+    return parsed;
+  }
+
+  const raw = asRecord(parsed);
+  if (!raw) return parsed;
+
+  const stdout = asRecord(raw.stdout);
+  if (stdout?.success !== true) {
+    return parsed;
+  }
+
+  const payloadRecord = asRecord(payload);
+  const name = stringField(stdout, 'name') || stringField(payloadRecord, 'name');
+  if (!name) {
+    return parsed;
+  }
+
+  const packageId = stringField(stdout, 'packageId');
+  const version = stringField(stdout, 'version');
+  return {
+    ...raw,
+    installedCount: 1,
+    failedCount: 0,
+    success: true,
+    results: [
+      {
+        id: packageId || name,
+        installId: packageId || name,
+        name,
+        title: name,
+        source: 'linux',
+        externalId: packageId || name,
+        packageId: packageId || undefined,
+        version: version || undefined,
+        status: 'installed',
+      }
+    ]
+  };
+}
+
 /**
  * Resolve which of the given patch IDs carry an explicit partner-wide manual-approval
  * record (`patchApprovals.status = 'approved'`) for the partner.
@@ -150,7 +220,7 @@ patchesRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
-    const { limit, offset, type, status } = c.req.valid('query');
+    const { limit, offset, type, status, completedAfter } = c.req.valid('query');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -160,7 +230,7 @@ patchesRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const commandTypes = TYPE_FILTER_MAP[type] ?? PATCH_COMMAND_TYPES;
+    const commandTypes = commandTypesForPatchHistory(type, device.osType);
 
     const conditions = [
       eq(deviceCommands.deviceId, deviceId),
@@ -168,6 +238,9 @@ patchesRoutes.get(
     ];
     if (status !== 'all') {
       conditions.push(eq(deviceCommands.status, status));
+    }
+    if (completedAfter) {
+      conditions.push(gte(deviceCommands.completedAt, new Date(completedAfter)));
     }
     const whereClause = and(...conditions);
 
@@ -183,6 +256,7 @@ patchesRoutes.get(
       .select({
         id: deviceCommands.id,
         type: deviceCommands.type,
+        payload: deviceCommands.payload,
         status: deviceCommands.status,
         createdAt: deviceCommands.createdAt,
         completedAt: deviceCommands.completedAt,
@@ -203,7 +277,7 @@ patchesRoutes.get(
       status: row.status,
       createdAt: row.createdAt,
       completedAt: row.completedAt,
-      result: safeParsePatchResult(row.result),
+      result: normalizePatchHistoryResult(row.type, row.payload, row.result, device.osType),
       createdBy: row.createdBy,
       createdByEmail: row.createdByEmail
     }));
@@ -246,6 +320,7 @@ patchesRoutes.get(
         severity: patches.severity,
         category: patches.category,
         source: patches.source,
+        packageId: patches.packageId,
         releaseDate: patches.releaseDate,
         requiresReboot: patches.requiresReboot
       })
@@ -254,6 +329,24 @@ patchesRoutes.get(
       .where(eq(devicePatches.deviceId, deviceId))
       .orderBy(desc(devicePatches.lastCheckedAt));
 
+    const lastPatchScanRows = await db
+      .select({
+        status: deviceCommands.status,
+        createdAt: deviceCommands.createdAt,
+        completedAt: deviceCommands.completedAt,
+      })
+      .from(deviceCommands)
+      .where(
+        and(
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.type, 'patch_scan'),
+          inArray(deviceCommands.status, ['completed', 'failed', 'timeout'])
+        )
+      )
+      .orderBy(desc(sql`coalesce(${deviceCommands.completedAt}, ${deviceCommands.createdAt})`))
+      .limit(1);
+
+    const lastPatchScan = lastPatchScanRows[0] ?? null;
     const patchIds = [...new Set(devicePatchList.map((patch) => patch.patchId))];
     // Derive the partner from the device's org. If the lookup returns null (no partner
     // found), treat the approved set as empty — all patches are unapproved (fail-safe).
@@ -270,6 +363,7 @@ patchesRoutes.get(
         name: p.title,
         title: p.title,
         externalId: p.externalId,
+        packageId: p.packageId,
         description: p.description,
         severity: p.severity,
         status: p.status,
@@ -287,6 +381,7 @@ patchesRoutes.get(
         name: p.title,
         title: p.title,
         externalId: p.externalId,
+        packageId: p.packageId,
         description: p.description,
         severity: p.severity,
         status: p.status,
@@ -298,12 +393,13 @@ patchesRoutes.get(
       }));
 
     const installed = devicePatchList
-      .filter(p => p.status === 'installed')
+      .filter(p => p.status === 'installed' && p.source !== 'linux')
       .map(p => ({
         id: p.patchId,
         name: p.title,
         title: p.title,
         externalId: p.externalId,
+        packageId: p.packageId,
         description: p.description,
         severity: p.severity,
         status: p.status,
@@ -335,6 +431,8 @@ patchesRoutes.get(
     return c.json({
       data: {
         compliancePercent,
+        lastPatchScanAt: lastPatchScan?.completedAt ?? lastPatchScan?.createdAt ?? null,
+        lastPatchScanStatus: lastPatchScan?.status ?? null,
         pending,
         missing,
         installed,
@@ -344,11 +442,13 @@ patchesRoutes.get(
           name: p.title,
           title: p.title,
           externalId: p.externalId,
+          packageId: p.packageId,
           description: p.description,
           severity: p.severity,
           status: p.status,
           releaseDate: p.releaseDate,
           installedAt: p.installedAt,
+          source: p.source,
           approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending'
         }))
       }
@@ -381,6 +481,7 @@ patchesRoutes.post(
         id: patches.id,
         source: patches.source,
         externalId: patches.externalId,
+        packageId: patches.packageId,
         title: patches.title
       })
       .from(patches)

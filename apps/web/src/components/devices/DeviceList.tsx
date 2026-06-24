@@ -183,7 +183,7 @@ const statusLabels: Record<DeviceStatus, string> = {
   maintenance: 'Maint',
   decommissioned: 'Decom',
   quarantined: 'Quar',
-  updating: 'Upd',
+  updating: 'Updating',
   pending: 'Pend'
 };
 const statusFullLabels: Record<DeviceStatus, string> = {
@@ -817,10 +817,10 @@ export default function DeviceList({
               <span
                 data-testid={`device-${device.id}-pending-reboot-badge`}
                 title="The OS reports a pending reboot (Windows registry / Linux reboot-required markers)."
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                Reboot pending
-              </span>
+                aria-label="Reboot pending"
+                role="img"
+                className="inline-block h-2 w-2 shrink-0 rounded-full bg-warning"
+              />
             )}
           </div>
         </td>

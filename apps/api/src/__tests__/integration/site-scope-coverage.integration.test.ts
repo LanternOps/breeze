@@ -144,7 +144,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/inventory.ts:PUT /:id/network',
   'routes/agents/inventory.ts:PUT /:id/software',
   'routes/agents/inventory.ts:PUT /:id/warranty-info',
-  'routes/agents/patches.ts:PUT /:id/patches',
   'routes/agents/sessions.ts:PUT /:id/sessions',
   'routes/agents/state.ts:PUT /:id/config-state',
   'routes/agents/state.ts:PUT /:id/registry-state',

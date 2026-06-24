@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { inArray } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -206,7 +207,11 @@ describe('software inventory routes', () => {
       expect(body.pagination.total).toBe(2);
     });
 
-    it('returns 400 when no org context', async () => {
+    // "All Orgs": a partner/multi-org caller with no orgId now aggregates across
+    // every accessible org (via auth.orgCondition) instead of 400ing. This
+    // supersedes the old #620 "Organization context required" contract for the
+    // inventory READ endpoints; the policy writes still require a single org.
+    it('aggregates across accessible orgs when no orgId is provided (All Orgs)', async () => {
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('auth', {
@@ -214,19 +219,26 @@ describe('software inventory routes', () => {
           scope: 'partner',
           orgId: null,
           accessibleOrgIds: ['org-a', 'org-b'],
+          // Real partner orgCondition narrows to the accessible orgs (not undefined,
+          // which would exercise the system-scope path instead).
+          orgCondition: (col: any) => inArray(col, ['org-a', 'org-b']),
           canAccessOrg: () => true,
         });
         return next();
       });
+
+      mockSelectFromWhere([]); // getPolicyStatusMap
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '0' }] as any)
+        .mockResolvedValueOnce([] as any);
 
       const res = await app.request('/software-inventory', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toContain('Organization context required');
+      expect(res.status).toBe(200);
+      expect((await res.json()).pagination.total).toBe(0);
     });
 
     it('filters by search term', async () => {

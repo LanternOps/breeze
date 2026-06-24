@@ -623,6 +623,146 @@ describe("binarySync", () => {
     });
   });
 
+  // Controlled fleet rollout (AGENT_AUTO_PROMOTE). Default (unset/true) keeps
+  // sync == instant fleet upgrade target. When false, binarySync registers the
+  // binary but never touches isLatest — the demote UPDATE is skipped, the
+  // insert uses isLatest:false, and the conflict `set` omits isLatest.
+  describe("AGENT_AUTO_PROMOTE controlled rollout", () => {
+    it("local-binary path: AGENT_AUTO_PROMOTE=false registers isLatest:false and does NOT demote", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      process.env.AGENT_AUTO_PROMOTE = "false";
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      fsMocks.readFile.mockResolvedValue("0.70.0" as any);
+
+      await syncBinaries();
+
+      // No demote: the tx.update (demote existing isLatest) must NOT run.
+      expect(dbMocks.txUpdate).not.toHaveBeenCalled();
+
+      // Insert registers the row with isLatest:false.
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.length).toBeGreaterThan(0);
+      for (const values of insertCalls) {
+        expect(values.isLatest).toBe(false);
+      }
+
+      // Conflict set OMITS isLatest entirely so re-sync never changes target.
+      const conflictSets = dbMocks.onConflictDoUpdate.mock.calls.map(
+        (call: any[]) => (call[0] as { set: Record<string, unknown> }).set,
+      );
+      expect(conflictSets.length).toBeGreaterThan(0);
+      for (const set of conflictSets) {
+        expect("isLatest" in set).toBe(false);
+        // Still updates the registration fields.
+        expect(set.checksum).toEqual(expect.any(String));
+        expect(set.downloadUrl).toEqual(expect.any(String));
+      }
+    });
+
+    it("local-binary path: default (AGENT_AUTO_PROMOTE unset) promotes — demotes + isLatest:true (unchanged)", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.AGENT_AUTO_PROMOTE;
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      fsMocks.readFile.mockResolvedValue("0.70.0" as any);
+
+      await syncBinaries();
+
+      // Demote ran.
+      expect(dbMocks.txUpdate).toHaveBeenCalled();
+      expect(dbMocks.updateSet).toHaveBeenCalledWith({ isLatest: false });
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      for (const values of insertCalls) {
+        expect(values.isLatest).toBe(true);
+      }
+      const conflictSets = dbMocks.onConflictDoUpdate.mock.calls.map(
+        (call: any[]) => (call[0] as { set: Record<string, unknown> }).set,
+      );
+      for (const set of conflictSets) {
+        expect(set.isLatest).toBe(true);
+      }
+    });
+
+    it("GitHub path: AGENT_AUTO_PROMOTE=false registers isLatest:false and does NOT demote", async () => {
+      process.env.AGENT_AUTO_PROMOTE = "false";
+      const assetName = "breeze-agent-linux-amd64";
+      const asset = Buffer.from("trusted linux agent");
+      const signed = makeSignedReleaseManifest(assetName, asset);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: "release notes",
+                assets: [
+                  {
+                    name: assetName,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${assetName}`,
+                    size: asset.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+
+      const result = await syncFromGitHub();
+
+      // Still synced/registered.
+      expect(result.synced).toContain("agent:linux/amd64");
+      // No demote UPDATE.
+      expect(dbMocks.txUpdate).not.toHaveBeenCalled();
+      // Insert with isLatest:false.
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          version: "1.2.3",
+          component: "agent",
+          isLatest: false,
+        }),
+      );
+      // Conflict set omits isLatest but keeps registration fields.
+      const set = (dbMocks.onConflictDoUpdate.mock.calls[0]![0] as any).set;
+      expect("isLatest" in set).toBe(false);
+      expect(set.checksum).toBe(signed.checksum);
+    });
+  });
+
   it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
     // The agent_versions table has a UNIQUE constraint on
     // (version, platform, architecture, component). The local-binary path used
