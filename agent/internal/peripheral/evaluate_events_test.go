@@ -16,7 +16,7 @@ func TestToEventsNoPolicy(t *testing.T) {
 		},
 	}
 
-	events := ToEvents(results)
+	events := ToEvents(results, EnforcementOutcome{})
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want 1", len(events))
 	}
@@ -59,7 +59,7 @@ func TestToEventsWithBlockPolicy(t *testing.T) {
 		},
 	}
 
-	events := ToEvents(results)
+	events := ToEvents(results, EnforcementOutcome{})
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want 1", len(events))
 	}
@@ -97,14 +97,11 @@ func TestToEventsWithReadOnlyPolicy(t *testing.T) {
 		},
 	}
 
-	events := ToEvents(results)
+	events := ToEvents(results, EnforcementOutcome{})
 	ev := events[0]
 
 	if ev.Details["enforcement"] != "alert_only" {
 		t.Fatalf("Details.enforcement = %v, want %q", ev.Details["enforcement"], "alert_only")
-	}
-	if ev.Details["note"] == nil {
-		t.Fatal("Details.note should be set for read_only action")
 	}
 }
 
@@ -122,7 +119,7 @@ func TestToEventsWithAllowPolicy(t *testing.T) {
 		},
 	}
 
-	events := ToEvents(results)
+	events := ToEvents(results, EnforcementOutcome{})
 	ev := events[0]
 
 	// Allow action should NOT have enforcement details
@@ -146,7 +143,7 @@ func TestToEventsWithExceptedResult(t *testing.T) {
 		},
 	}
 
-	events := ToEvents(results)
+	events := ToEvents(results, EnforcementOutcome{})
 	ev := events[0]
 
 	if ev.Details["excepted"] != true {
@@ -162,7 +159,7 @@ func TestToEventsMultiple(t *testing.T) {
 		{Peripheral: DetectedPeripheral{PeripheralType: "bluetooth", Vendor: "C"}},
 	}
 
-	events := ToEvents(results)
+	events := ToEvents(results, EnforcementOutcome{})
 	if len(events) != 3 {
 		t.Fatalf("got %d events, want 3", len(events))
 	}
@@ -178,13 +175,63 @@ func TestToEventsMultiple(t *testing.T) {
 }
 
 func TestToEventsEmpty(t *testing.T) {
-	events := ToEvents(nil)
+	events := ToEvents(nil, EnforcementOutcome{})
 	if len(events) != 0 {
 		t.Fatalf("got %d events for nil results, want 0", len(events))
 	}
 
-	events = ToEvents([]EvaluationResult{})
+	events = ToEvents([]EvaluationResult{}, EnforcementOutcome{})
 	if len(events) != 0 {
 		t.Fatalf("got %d events for empty results, want 0", len(events))
+	}
+}
+
+func TestToEvents_VerifiedBlockReportsBlocked(t *testing.T) {
+	pol := Policy{ID: "p1", Name: "No USB", DeviceClass: "storage", Action: "block"}
+	results := []EvaluationResult{
+		{Peripheral: DetectedPeripheral{PeripheralType: "usb", DeviceClass: "storage", DeviceID: "USBSTOR\\B"}, Policy: &pol, Action: "block"},
+	}
+	outcome := EnforcementOutcome{
+		GateOutcomes: map[string]EnforceOutcome{"storage": {Mechanism: "usbstor-start", Applied: true, Verified: true}},
+		DeviceOutcomes: []DeviceOutcome{
+			{InstanceID: "USBSTOR\\B", EnforceOutcome: EnforceOutcome{Mechanism: "pnputil", Applied: true, Verified: true}},
+		},
+	}
+	events := ToEvents(results, outcome)
+	if events[0].EventType != "blocked" {
+		t.Fatalf("expected eventType blocked, got %q", events[0].EventType)
+	}
+	if events[0].Details["enforcement"] != "blocked" {
+		t.Fatalf("expected enforcement=blocked, got %v", events[0].Details["enforcement"])
+	}
+}
+
+func TestToEvents_UnverifiedBlockFallsBackToAlertOnly(t *testing.T) {
+	pol := Policy{ID: "p1", Name: "No USB", DeviceClass: "storage", Action: "block"}
+	results := []EvaluationResult{
+		{Peripheral: DetectedPeripheral{PeripheralType: "usb", DeviceClass: "storage", DeviceID: "USBSTOR\\B"}, Policy: &pol, Action: "block"},
+	}
+	outcome := EnforcementOutcome{
+		DeviceOutcomes: []DeviceOutcome{
+			{InstanceID: "USBSTOR\\B", EnforceOutcome: EnforceOutcome{Mechanism: "pnputil", Applied: true, Verified: false, Detail: "probe failed"}},
+		},
+	}
+	events := ToEvents(results, outcome)
+	if events[0].Details["enforcement"] != "alert_only" {
+		t.Fatalf("unverified block must report alert_only, got %v", events[0].Details["enforcement"])
+	}
+	if events[0].Details["probeDetail"] != "probe failed" {
+		t.Fatalf("expected probeDetail surfaced, got %v", events[0].Details["probeDetail"])
+	}
+}
+
+func TestToEvents_BluetoothBlockStillAlertOnly(t *testing.T) {
+	pol := Policy{ID: "p1", Name: "No BT", DeviceClass: "bluetooth", Action: "block"}
+	results := []EvaluationResult{
+		{Peripheral: DetectedPeripheral{PeripheralType: "bluetooth", DeviceClass: "bluetooth", DeviceID: "BTHENUM\\X"}, Policy: &pol, Action: "block"},
+	}
+	events := ToEvents(results, EnforcementOutcome{})
+	if events[0].Details["enforcement"] != "alert_only" {
+		t.Fatalf("bluetooth block must stay alert_only, got %v", events[0].Details["enforcement"])
 	}
 }

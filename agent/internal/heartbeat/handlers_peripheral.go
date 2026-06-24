@@ -55,7 +55,7 @@ func handlePeripheralPolicySync(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// Evaluate detected devices against policies.
 	results := peripheral.Evaluate(detected, payload.Policies)
-	events := peripheral.ToEvents(results)
+	events := peripheral.ToEvents(results, peripheral.EnforcementOutcome{})
 
 	// Submit events to the server.
 	if len(events) > 0 {

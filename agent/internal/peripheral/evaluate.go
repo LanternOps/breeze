@@ -110,8 +110,15 @@ func fieldMatches(ruleVal, deviceVal string) bool {
 	return strings.EqualFold(ruleVal, deviceVal)
 }
 
-// ToEvents converts evaluation results into PeripheralEvents ready for submission.
-func ToEvents(results []EvaluationResult) []PeripheralEvent {
+// ToEvents converts evaluation results into PeripheralEvents, stamping each with
+// the *verified* enforcement outcome. A block/read_only that could not be
+// verified (or that targets a non-enforced class/platform) reports alert_only.
+func ToEvents(results []EvaluationResult, outcome EnforcementOutcome) []PeripheralEvent {
+	deviceOut := map[string]EnforceOutcome{}
+	for _, d := range outcome.DeviceOutcomes {
+		deviceOut[d.InstanceID] = d.EnforceOutcome
+	}
+
 	events := make([]PeripheralEvent, 0, len(results))
 	now := time.Now()
 	for i, r := range results {
@@ -125,11 +132,19 @@ func ToEvents(results []EvaluationResult) []PeripheralEvent {
 
 			switch r.Action {
 			case "block":
-				details["enforcement"] = "alert_only"
-				details["note"] = "blocking requires kernel driver — logged for visibility"
+				et, enf, dev := classifyBlockOutcome(r, deviceOut, outcome.GateOutcomes)
+				eventType = et
+				details["enforcement"] = enf
+				applyOutcomeDetails(details, dev)
 			case "read_only":
-				details["enforcement"] = "alert_only"
-				details["note"] = "read-only mount requires kernel driver — logged for visibility"
+				ro := outcome.ReadOnlyOutcomes[r.Peripheral.DeviceClass]
+				if ro.Applied && ro.Verified {
+					eventType = "mounted_read_only"
+					details["enforcement"] = "read_only"
+				} else {
+					details["enforcement"] = "alert_only"
+				}
+				applyOutcomeDetails(details, ro)
 			}
 		}
 
@@ -146,6 +161,34 @@ func ToEvents(results []EvaluationResult) []PeripheralEvent {
 		})
 	}
 	return events
+}
+
+// classifyBlockOutcome decides the event type/enforcement string for a block.
+// A device counts as truly blocked if EITHER its per-device disable verified OR
+// the class gate verified. Otherwise alert_only.
+func classifyBlockOutcome(r EvaluationResult, deviceOut, gateOut map[string]EnforceOutcome) (eventType, enforcement string, used EnforceOutcome) {
+	dev := deviceOut[r.Peripheral.DeviceID]
+	gate := gateOut[r.Peripheral.DeviceClass]
+	if dev.Applied && dev.Verified {
+		return "blocked", "blocked", dev
+	}
+	if gate.Applied && gate.Verified {
+		return "blocked", "blocked", gate
+	}
+	// Pick whichever outcome carries a detail to surface; default to device.
+	if dev.Mechanism != "" {
+		return "connected", "alert_only", dev
+	}
+	return "connected", "alert_only", gate
+}
+
+func applyOutcomeDetails(details map[string]any, o EnforceOutcome) {
+	if o.Mechanism != "" {
+		details["mechanism"] = o.Mechanism
+	}
+	if o.Detail != "" {
+		details["probeDetail"] = o.Detail
+	}
 }
 
 func policyID(p *Policy) string {
