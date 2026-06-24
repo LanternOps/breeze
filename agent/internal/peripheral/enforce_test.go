@@ -61,3 +61,60 @@ func TestPlanEnforcement_NonStorageBlockIgnored(t *testing.T) {
 		t.Fatalf("bluetooth block must produce empty plan, got %+v", got)
 	}
 }
+
+type fakeEnforcer struct {
+	gatesApplied  []string
+	gatesReverted []string
+	roApplied     []string
+	roReverted    []string
+	disabled      []string
+}
+
+func (f *fakeEnforcer) ApplyGate(class string, hasExceptions bool) EnforceOutcome {
+	f.gatesApplied = append(f.gatesApplied, class)
+	return EnforceOutcome{Mechanism: "fake-gate", Applied: true, Verified: true}
+}
+func (f *fakeEnforcer) RevertGate(class string) EnforceOutcome {
+	f.gatesReverted = append(f.gatesReverted, class)
+	return EnforceOutcome{Mechanism: "fake-gate", Applied: false, Verified: true}
+}
+func (f *fakeEnforcer) DisableDevice(id string) EnforceOutcome {
+	f.disabled = append(f.disabled, id)
+	return EnforceOutcome{Mechanism: "fake-disable", Applied: true, Verified: true}
+}
+func (f *fakeEnforcer) ApplyReadOnly(class string) EnforceOutcome {
+	f.roApplied = append(f.roApplied, class)
+	return EnforceOutcome{Mechanism: "fake-ro", Applied: true, Verified: true}
+}
+func (f *fakeEnforcer) RevertReadOnly(class string) EnforceOutcome {
+	f.roReverted = append(f.roReverted, class)
+	return EnforceOutcome{Mechanism: "fake-ro", Applied: false, Verified: true}
+}
+
+func TestEnforce_AppliesAndReverts(t *testing.T) {
+	f := &fakeEnforcer{}
+	plan := EnforcementPlan{
+		BlockGates:         []ClassGate{{Class: "storage", HasExceptions: false}},
+		DisableInstanceIDs: []string{"USBSTOR\\B"},
+		ReadOnlyClasses:    nil,
+	}
+	// all enforceable classes; "all_usb" had a block last sync but isn't in this plan -> revert.
+	out := Enforce(f, plan, []string{"storage", "all_usb"})
+
+	if len(f.gatesApplied) != 1 || f.gatesApplied[0] != "storage" {
+		t.Fatalf("expected storage gate applied, got %+v", f.gatesApplied)
+	}
+	if len(f.gatesReverted) != 1 || f.gatesReverted[0] != "all_usb" {
+		t.Fatalf("expected all_usb gate reverted, got %+v", f.gatesReverted)
+	}
+	if len(f.disabled) != 1 || f.disabled[0] != "USBSTOR\\B" {
+		t.Fatalf("expected device disabled, got %+v", f.disabled)
+	}
+	// read-only not in plan for either class -> both reverted
+	if len(f.roReverted) != 2 {
+		t.Fatalf("expected 2 read-only reverts, got %+v", f.roReverted)
+	}
+	if out.GateOutcomes["storage"].Mechanism != "fake-gate" {
+		t.Fatalf("outcome not recorded: %+v", out.GateOutcomes)
+	}
+}

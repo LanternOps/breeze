@@ -74,3 +74,76 @@ func containsStr(xs []string, v string) bool {
 	}
 	return false
 }
+
+// EnforceOutcome records what one mechanism did and whether a post-write probe
+// confirmed it. Applied=true means we set the block; Verified=false means the
+// probe could NOT confirm it (caller should report alert_only, not success).
+type EnforceOutcome struct {
+	Mechanism string
+	Applied   bool
+	Verified  bool
+	Detail    string
+}
+
+type DeviceOutcome struct {
+	InstanceID string
+	EnforceOutcome
+}
+
+type EnforcementOutcome struct {
+	GateOutcomes     map[string]EnforceOutcome
+	DeviceOutcomes   []DeviceOutcome
+	ReadOnlyOutcomes map[string]EnforceOutcome
+}
+
+// Enforcer abstracts all OS-touching enforcement so the orchestrator is testable.
+type Enforcer interface {
+	ApplyGate(class string, hasExceptions bool) EnforceOutcome
+	RevertGate(class string) EnforceOutcome
+	DisableDevice(instanceID string) EnforceOutcome
+	ApplyReadOnly(class string) EnforceOutcome
+	RevertReadOnly(class string) EnforceOutcome
+}
+
+// Enforce converges the OS to `plan`. For every class in allClasses not covered
+// by the plan, it reverts any prior gate/read-only so deleting a policy unblocks.
+func Enforce(e Enforcer, plan EnforcementPlan, allClasses []string) EnforcementOutcome {
+	out := EnforcementOutcome{
+		GateOutcomes:     map[string]EnforceOutcome{},
+		ReadOnlyOutcomes: map[string]EnforceOutcome{},
+	}
+
+	wantGate := map[string]ClassGate{}
+	for _, g := range plan.BlockGates {
+		wantGate[g.Class] = g
+	}
+	wantRO := map[string]bool{}
+	for _, c := range plan.ReadOnlyClasses {
+		wantRO[c] = true
+	}
+
+	for _, class := range allClasses {
+		if g, ok := wantGate[class]; ok {
+			out.GateOutcomes[class] = e.ApplyGate(class, g.HasExceptions)
+		} else {
+			out.GateOutcomes[class] = e.RevertGate(class)
+		}
+		if wantRO[class] {
+			out.ReadOnlyOutcomes[class] = e.ApplyReadOnly(class)
+		} else {
+			out.ReadOnlyOutcomes[class] = e.RevertReadOnly(class)
+		}
+	}
+
+	for _, id := range plan.DisableInstanceIDs {
+		out.DeviceOutcomes = append(out.DeviceOutcomes, DeviceOutcome{
+			InstanceID:     id,
+			EnforceOutcome: e.DisableDevice(id),
+		})
+	}
+	return out
+}
+
+// EnforceableClasses returns the classes Tier 1 manages, for the convergence
+// revert sweep. Stable order for deterministic tests.
+func EnforceableClasses() []string { return []string{"all_usb", "storage"} }
