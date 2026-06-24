@@ -314,6 +314,16 @@ jobs:
             --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-agent.exe" `
             --out ..\cmd\breeze-agent\rsrc_windows_amd64.syso
           if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-agent failed with exit code $LASTEXITCODE" }
+          # breeze-user-helper: asInvoker (NOT --admin). It is spawned into the
+          # logged-in user's session with that user's filtered token; an admin
+          # manifest makes CreateProcessAsUser fail ERROR_ELEVATION_REQUIRED
+          # (#949 regression). Keeps VERSIONINFO for the #944 MSI overwrite rule.
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM User Helper" --file-description "Breeze RMM User Helper" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-user-helper.exe" `
+            --out ..\cmd\breeze-user-helper\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-user-helper failed with exit code $LASTEXITCODE" }
           & $winres simply --arch amd64 --no-suffix --icon icon.ico `
             --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
             --product-name "Breeze RMM Watchdog" --file-description "Breeze RMM Watchdog" `
@@ -357,17 +367,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "go build breeze-watchdog failed with exit code $LASTEXITCODE" }
           Pop-Location
           # Build breeze-user-helper (GUI-subsystem sibling of breeze-agent).
-          # Same Go source as breeze-agent, only the -H windowsgui linker flag
-          # differs. Required by the AgentUserHelper scheduled task and the
-          # SYSTEM-context sessionbroker spawn paths so the user-helper does
-          # not surface a console window in the interactive session.
+          # Thin cmd/breeze-user-helper wrapper over the same internal/agentapp
+          # code as breeze-agent — only the -H windowsgui linker flag and the
+          # embedded asInvoker manifest differ. The separate cmd package is what
+          # lets it ship asInvoker instead of the agent's requireAdministrator.
+          # Required by the AgentUserHelper scheduled task and the sessionbroker
+          # user-session spawn path (which uses the user's non-elevated token).
           Push-Location agent
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           $env:CGO_ENABLED = "0"
-          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION -H windowsgui" -o ..\dist\breeze-user-helper-windows-amd64.exe .\cmd\breeze-agent
+          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION -H windowsgui" -o ..\dist\breeze-user-helper-windows-amd64.exe .\cmd\breeze-user-helper
           if ($LASTEXITCODE -ne 0) { throw "go build breeze-user-helper failed with exit code $LASTEXITCODE" }
           Pop-Location
+          # Regression guard (#949): assert the SHIPPED manifests are correct.
+          # The user-helper MUST be asInvoker and the agent MUST be
+          # requireAdministrator — and the inverse for each, since #949 is a
+          # bidirectional regression (user-helper gaining admin OR agent losing
+          # it both break). Read via .NET ReadAllBytes (Get-Content -Encoding
+          # Byte was removed in pwsh 7) and scan the exe's ASCII projection. cwd
+          # is the repo root here (the builds above Push-Location'd into agent
+          # and wrote ..\dist), so dist\ resolves at the repo root. The regexes
+          # are quote/spacing/attribute-order tolerant so a benign go-winres
+          # formatting change can't silently flip the guard.
+          $uhText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Resolve-Path "dist\breeze-user-helper-windows-amd64.exe").Path))
+          if ($uhText -notmatch 'requestedExecutionLevel[^>]*level\s*=\s*["'']asInvoker') { throw "breeze-user-helper.exe is not asInvoker — would reintroduce #949 (740 on filtered-token sessions)" }
+          if ($uhText -match 'level\s*=\s*["'']requireAdministrator') { throw "breeze-user-helper.exe is requireAdministrator — wrong manifest (#949)" }
+          $agText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Resolve-Path "dist\breeze-agent-windows-amd64.exe").Path))
+          if ($agText -notmatch 'requestedExecutionLevel[^>]*level\s*=\s*["'']requireAdministrator') { throw "breeze-agent.exe lost its requireAdministrator manifest" }
+          if ($agText -match 'level\s*=\s*["'']asInvoker') { throw "breeze-agent.exe is asInvoker — lost its requireAdministrator manifest (#949)" }
+          Write-Host "Manifest guard OK: user-helper=asInvoker, agent=requireAdministrator"
 
       - name: Validate signing configuration
         shell: pwsh

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package agentapp
 
 // detachHelperConsole is a no-op outside Windows. macOS and Linux do not
 // have the "console window flashes when a console-subsystem binary is

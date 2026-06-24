@@ -1,4 +1,4 @@
-package main
+package agentapp
 
 import (
 	"encoding/binary"
@@ -10,8 +10,8 @@ import (
 	"testing"
 )
 
-// TestUserHelperBinaryHasGUISubsystem cross-compiles the SAME source as the
-// user-helper binary (./cmd/breeze-agent with -H windowsgui) and asserts the
+// TestUserHelperBinaryHasGUISubsystem cross-compiles the user-helper binary
+// (./cmd/breeze-user-helper with -H windowsgui) and asserts the
 // resulting PE file has subsystem byte 2 (IMAGE_SUBSYSTEM_WINDOWS_GUI), not 3
 // (IMAGE_SUBSYSTEM_WINDOWS_CUI).
 //
@@ -37,7 +37,7 @@ func TestUserHelperBinaryHasGUISubsystem(t *testing.T) {
 		"build",
 		"-ldflags", "-s -w -H windowsgui",
 		"-o", outPath,
-		".",
+		"github.com/breeze-rmm/agent/cmd/breeze-user-helper",
 	)
 	cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0")
 	out, err := cmd.CombinedOutput()
@@ -75,8 +75,10 @@ func TestUserHelperBinaryHasGUISubsystem(t *testing.T) {
 // silently make breeze-agent.exe a GUI-subsystem binary — `breeze-agent
 // enroll` and other CLI subcommands would then run without a usable stdout
 // (admins running the CLI from cmd would see no output), and the post-install
-// MSI enrollment CA would lose its enroll-last-error.txt diagnostic trail
-// because the CA captures stderr.
+// MSI enrollment custom action would lose its stderr->install.log diagnostic
+// trail, since the CA captures the enroll process's stderr and a GUI-subsystem
+// binary has no console/stderr. (enroll-last-error.txt is written directly to
+// a file and would survive — it is a separate sink from the stderr trail.)
 //
 // Together with TestUserHelperBinaryHasGUISubsystem, this pins the
 // subsystem-byte invariant in both directions.
@@ -93,7 +95,7 @@ func TestAgentBinaryHasCUISubsystem(t *testing.T) {
 		"build",
 		"-ldflags", "-s -w", // explicitly no -H windowsgui
 		"-o", outPath,
-		".",
+		"github.com/breeze-rmm/agent/cmd/breeze-agent",
 	)
 	cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0")
 	out, err := cmd.CombinedOutput()
@@ -122,8 +124,8 @@ func TestAgentBinaryHasCUISubsystem(t *testing.T) {
 }
 
 // readPESubsystem returns the value of the IMAGE_OPTIONAL_HEADER.Subsystem
-// field from a Windows PE file. For PE32 and PE32+ the field lives at PE
-// header offset 0x5c (44 bytes into the optional header after the magic).
+// field from a Windows PE file. For both PE32 and PE32+ the field sits at
+// absolute file offset peOff+0x5c (which is 0x44 into the optional header).
 func readPESubsystem(path string) (uint16, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -140,10 +142,10 @@ func readPESubsystem(path string) (uint16, error) {
 		return 0, err
 	}
 
-	// "PE\0\0" signature + COFF header (20 bytes) starts at peOff. The
-	// optional header begins at peOff + 0x18. Subsystem is at +0x5c
-	// inside the optional header (same offset for PE32 and PE32+ because
-	// the preceding fields are identically sized in both layouts).
+	// "PE\0\0" signature (4 bytes) + COFF header (20 bytes) = 0x18, so the
+	// optional header begins at peOff + 0x18. Subsystem is at +0x44 inside the
+	// optional header, i.e. absolute file offset peOff + 0x5c (same for PE32 and
+	// PE32+ because the preceding fields are identically sized in both layouts).
 	if _, err := f.Seek(int64(peOff)+0x5c, io.SeekStart); err != nil {
 		return 0, err
 	}

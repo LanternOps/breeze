@@ -42,17 +42,23 @@ build-darwin:
 build-windows: build-windows-user-helper
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-windows-amd64.exe ./cmd/breeze-agent
 
-# build-windows-user-helper builds the SAME ./cmd/breeze-agent source as a
-# GUI-subsystem PE binary so the scheduled task that launches the user-helper
-# at user logon does not allocate a visible console window. Console-subsystem
-# binaries (the default `go build` output on Windows) get an attached console
-# from the kernel whenever the Task Scheduler spawns them in a user session,
-# regardless of the task XML <Hidden> flag. -H windowsgui flips the PE
-# subsystem byte from 3 to 2; the kernel then allocates no console at all.
-# Same Go program, same subcommands, same agent.yaml — only the linker flag
-# differs.
+# build-windows-user-helper builds ./cmd/breeze-user-helper as a GUI-subsystem
+# PE binary so the scheduled task that launches the user-helper at user logon
+# does not allocate a visible console window. Console-subsystem binaries (the
+# default `go build` output on Windows) get an attached console from the kernel
+# whenever the Task Scheduler spawns them in a user session, regardless of the
+# task XML <Hidden> flag. -H windowsgui flips the PE subsystem byte from 3 to 2;
+# the kernel then allocates no console at all.
+#
+# cmd/breeze-user-helper is a thin wrapper over the same internal/agentapp code
+# as cmd/breeze-agent — same program, same subcommands, same agent.yaml. It
+# exists as a separate cmd package solely so it can embed an asInvoker manifest
+# (see build-winres) instead of the agent's requireAdministrator one: the
+# sessionbroker spawns it into the logged-in user's non-elevated session, where
+# a requireAdministrator manifest makes CreateProcessAsUser fail with
+# ERROR_ELEVATION_REQUIRED (#949 regression).
 build-windows-user-helper:
-	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/breeze-user-helper-windows-amd64.exe ./cmd/breeze-agent
+	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/breeze-user-helper-windows-amd64.exe ./cmd/breeze-user-helper
 
 build-winres:
 	@command -v go-winres >/dev/null 2>&1 || (echo "go-winres not found. Install with: go install github.com/tc-hib/go-winres@v0.3.3" && exit 1)
@@ -71,8 +77,11 @@ build-winres:
 	# `make` + JSON because (a) .ico files work via --icon in simply mode but
 	# not in JSON-mode RT_GROUP_ICON entries, and (b) one Makefile line per
 	# binary keeps the source of truth here in the build file instead of
-	# scattered across resources/winres-*.json. The four binaries map to:
+	# scattered across resources/winres-*.json. The five binaries map to:
 	#   breeze-agent.exe            - admin manifest (matches existing UAC)
+	#   breeze-user-helper.exe      - per-user session, asInvoker (NOT admin: it
+	#                                 is spawned with the user's filtered token,
+	#                                 so an admin manifest => ELEVATION_REQUIRED)
 	#   breeze-watchdog.exe         - service, asInvoker
 	#   breeze-backup.exe           - launched by agent, asInvoker
 	#   breeze-desktop-helper.exe   - per-user session, asInvoker, GUI manifest
@@ -84,6 +93,14 @@ build-winres:
 		--copyright "Copyright (c) Breeze RMM" \
 		--original-filename "breeze-agent.exe" \
 		--out ../cmd/breeze-agent/rsrc_windows_amd64.syso
+	cd resources && go-winres simply --arch amd64 --no-suffix \
+		--icon icon.ico \
+		--file-version $(VERSION) --product-version $(VERSION) \
+		--product-name "Breeze RMM User Helper" \
+		--file-description "Breeze RMM User Helper" \
+		--copyright "Copyright (c) Breeze RMM" \
+		--original-filename "breeze-user-helper.exe" \
+		--out ../cmd/breeze-user-helper/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
@@ -157,7 +174,7 @@ run:
 
 # Run user helper (for development)
 run-user-helper:
-	go run ./cmd/breeze-agent user-helper
+	go run ./cmd/breeze-user-helper user-helper
 
 # Install user helper service files (requires sudo on Linux/macOS)
 install-user-helper:

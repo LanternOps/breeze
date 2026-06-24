@@ -1,4 +1,4 @@
-package main
+package agentapp
 
 import (
 	"github.com/breeze-rmm/agent/internal/remote/tools"
