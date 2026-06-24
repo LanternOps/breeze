@@ -144,7 +144,7 @@ import { adminRoutes } from './routes/admin';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException, flushSentry, initSentry } from './services/sentry';
-import { isBenignRejection } from './services/rejectionSuppressions';
+import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
 
@@ -1392,6 +1392,12 @@ function installSignalHandlers(): void {
       console.warn('[SDK] Suppressed benign unhandled rejection (session already closed):', message);
       return;
     }
+    if (isRecoverablePostgresConnectionTeardown(reason)) {
+      console.error('[db] Suppressed postgres connection-teardown write race; pool will reconnect (#1105):',
+        reason instanceof Error ? reason.message : String(reason));
+      captureException(reason instanceof Error ? reason : new Error(String(reason)));
+      return;
+    }
     console.error('[FATAL] Unhandled rejection:', reason);
     captureException(reason instanceof Error ? reason : new Error(String(reason)));
   });
@@ -1402,6 +1408,15 @@ function installSignalHandlers(): void {
   process.on('uncaughtException', (err) => {
     if (isBenignRejection(err)) {
       console.warn('[SDK] Suppressed benign uncaught exception:', err.message);
+      return;
+    }
+    // A dropped DB connection's orphaned buffered write (postgres@3) throws
+    // outside every async frame. The driver already discards the connection
+    // and reconnects, so surviving it keeps the API up instead of crash-
+    // looping and logging out every active session on restart (#1105).
+    if (isRecoverablePostgresConnectionTeardown(err)) {
+      console.error('[db] Suppressed postgres connection-teardown write race; pool will reconnect (#1105):', err.message);
+      captureException(err);
       return;
     }
     console.error('[FATAL] Uncaught exception:', err);
