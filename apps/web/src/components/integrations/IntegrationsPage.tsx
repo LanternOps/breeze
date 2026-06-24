@@ -48,7 +48,9 @@ const identitySubTabs: { id: IdentitySubTab; label: string }[] = [
 
 const distributorSubTabs: { id: DistributorSubTab; label: string }[] = [
   { id: 'pax8', label: 'Pax8' },
-  { id: 'tdsynnex', label: 'TD SYNNEX' },
+  // Digital Bridge "TD SYNNEX" tab is hidden for now — that API is transactional
+  // only and exposes no catalog/price surface. The panel, routes, and service
+  // remain; re-add this entry to restore the tab.
   { id: 'tdsynnex-ec', label: 'TD SYNNEX Pricing' },
 ];
 
