@@ -356,4 +356,32 @@ describe('DeviceReliabilityPanel', () => {
     fireEvent.click(atRiskHelp.querySelector('button')!);
     expect(await screen.findByText(/Biggest drag: Uptime/)).toBeInTheDocument();
   });
+
+  it('At-risk tooltip falls back to the top issue when there are no drivers', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        snapshot: {
+          deviceId: 'dev-1',
+          reliabilityScore: 48,
+          trendDirection: 'degrading',
+          trendConfidence: 0.6,
+          uptime30d: 92.0,
+          crashCount30d: 5,
+          hangCount30d: 0,
+          serviceFailureCount30d: 0,
+          hardwareErrorCount30d: 0,
+          mtbfHours: null,
+          topIssues: [{ type: 'crashes', count: 5, severity: 'critical' }],
+          drivers: [],
+          computedAt: '2026-06-23T19:00:00Z',
+        },
+        history: [],
+      }),
+    );
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    const atRiskHelp = await screen.findByTestId('reliability-atrisk-help');
+    fireEvent.click(atRiskHelp.querySelector('button')!);
+    expect(await screen.findByText(/Biggest drag: Crashes/)).toBeInTheDocument();
+  });
 });

@@ -53,10 +53,12 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: 'device.decommission', icon: Trash2 },
   { prefix: 'device.permanent_delete', icon: Trash2 },
   { prefix: 'device.restore', icon: RotateCcw },
-  // Automated agent-dispatched commands (scheduled patches, automations). These
-  // are written as `agent.command.<type>` with no route-audit twin; the server
-  // only returns them when includeAutomated=true (and scoped to system/agent
-  // actors), so they don't duplicate the manual route audits above.
+  // Automated agent-dispatched commands (scheduled patches, automations). Listed
+  // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
+  // from ACTION_PREFIXES below. The server surfaces these solely via the
+  // actor-scoped includeAutomated predicate (system actors, no manual twin);
+  // sending them as plain action prefixes would re-admit the manual
+  // (actor_type='user') twin rows and double-list them.
   { prefix: 'agent.command.install_patches', icon: Download },
   { prefix: 'agent.command.rollback_patches', icon: RotateCcw },
   { prefix: 'agent.command.script', icon: Terminal },
@@ -64,15 +66,21 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: 'agent.command.software_update', icon: Package },
 ];
 
+const AUTOMATED_ACTION_PREFIX = 'agent.command.';
+
 function ruleFor(action?: string) {
   if (!action) return undefined;
   return ACTION_RULES.find((r) => action.startsWith(r.prefix));
 }
 
-// The same prefix set, sent to the API so the "deliberate action" filter runs
+// The deliberate-action prefix set, sent to the API so the filter runs
 // server-side (index-backed) instead of over-fetching raw rows and discarding
-// most of them client-side (issue #1726).
-const ACTION_PREFIXES = ACTION_RULES.map((r) => r.prefix).join(',');
+// most of them client-side (issue #1726). The agent.command.* rules are
+// excluded — those rows arrive only through the actor-scoped includeAutomated
+// predicate, never as plain prefix matches (see the comment above).
+const ACTION_PREFIXES = ACTION_RULES.filter((r) => !r.prefix.startsWith(AUTOMATED_ACTION_PREFIX))
+  .map((r) => r.prefix)
+  .join(',');
 
 // How many filtered rows to request per page. Small fixed window for a fast,
 // predictable first paint; "Load more" pulls the next page on demand.
@@ -209,11 +217,13 @@ export default function DeviceActivityFeed({
   }, [loadPage]);
 
   // Report whether the pane has anything worth showing so the parent can collapse
-  // the rail when it's empty. Only meaningful once the initial load settles.
+  // the rail when it's empty. Skip while loading OR errored: an error is not
+  // "no content", and collapsing on error would shove the "Couldn't load /
+  // Retry" pane into a narrow strip. On error the parent keeps its prior layout.
   useEffect(() => {
-    if (loading) return;
+    if (loading || error) return;
     onHasContentChange?.(events.length > 0 || activeAlerts > 0);
-  }, [loading, events.length, activeAlerts, onHasContentChange]);
+  }, [loading, error, events.length, activeAlerts, onHasContentChange]);
 
   // Retry the whole pane from page 1 on a fresh controller (the mount effect's
   // controller is aborted once its cleanup runs).
@@ -301,13 +311,14 @@ export default function DeviceActivityFeed({
               const Icon = ruleFor(e.action)?.icon ?? Activity;
               const initiator = e.initiatedBy ? INITIATOR_LABELS[e.initiatedBy] : undefined;
               const failed = e.result === 'failure' || e.result === 'denied';
-              // System/agent-dispatched commands carry no initiatedBy; surface them
-              // as "Automated" so an unattended patch run / automation is legible.
-              const automated =
-                !initiator && (e.actor?.type === 'system' || e.actor?.type === 'agent');
+              // Tag the automated-dispatch rows (the agent.command.* family the
+              // server returns only for non-user actors) as "Automated". Keyed on
+              // the action, not actor.type, so other system-actor rows aren't
+              // mislabeled — and an explicit initiatedBy label still wins.
+              const automated = !initiator && (e.action ?? '').startsWith(AUTOMATED_ACTION_PREFIX);
               const namedActor = e.actor?.name && e.actor.name !== 'System' ? e.actor.name : undefined;
               // For automated rows the "Automated" chip already conveys the actor,
-              // so drop the generic "System"/"Agent" label and keep only a real name.
+              // so drop the generic "System" label and keep only a real name.
               const who = automated ? namedActor : namedActor ?? initiator ?? e.actor?.name;
               return (
                 <li key={e.id} className="flex gap-3">

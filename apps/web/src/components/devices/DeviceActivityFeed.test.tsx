@@ -24,18 +24,21 @@ function mockFeed(events: unknown[], alerts: unknown[] = []) {
 describe('DeviceActivityFeed', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('requests automated activity', async () => {
+  it('requests automated activity but never sends agent.command.* as plain action prefixes', async () => {
     mockFeed([]);
     render(<DeviceActivityFeed deviceId="dev-1" />);
-    await waitFor(() =>
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        expect.stringContaining('includeAutomated=true'),
-        expect.anything()
-      )
-    );
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const eventsCall = fetchWithAuthMock.mock.calls.find(([url]) => String(url).includes('/events'));
+    expect(eventsCall).toBeDefined();
+    const url = String(eventsCall![0]);
+    expect(url).toContain('includeAutomated=true');
+    // agent.command.* rows must arrive only via the actor-scoped includeAutomated
+    // predicate, never as plain action prefixes — otherwise the manual
+    // (actor_type='user') twins would be re-admitted and double-listed.
+    expect(url).not.toContain('agent.command');
   });
 
-  it('shows an Automated chip for a system-initiated row with no initiatedBy', async () => {
+  it('shows an Automated chip for an automated row and drops the redundant "System" label', async () => {
     mockFeed([
       {
         id: 'e1',
@@ -50,6 +53,27 @@ describe('DeviceActivityFeed', () => {
     render(<DeviceActivityFeed deviceId="dev-1" />);
     expect(await screen.findByText('Patches installed — host-1')).toBeInTheDocument();
     expect(screen.getByText('Automated')).toBeInTheDocument();
+    // The "Automated" chip conveys the actor; the generic "System" must not also show.
+    expect(screen.queryByText('System')).toBeNull();
+  });
+
+  it('does NOT tag a non-automated system-actor row as Automated', async () => {
+    // A system-actor row whose action is not agent.command.* (e.g. a route audit)
+    // must not be mislabeled — the chip is keyed on the action, not actor.type.
+    mockFeed([
+      {
+        id: 'e1',
+        action: 'device.maintenance.enable',
+        message: 'Maintenance mode enabled',
+        result: 'success',
+        initiatedBy: null,
+        timestamp: new Date().toISOString(),
+        actor: { type: 'system', name: 'System' },
+      },
+    ]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    expect(await screen.findByText('Maintenance mode enabled')).toBeInTheDocument();
+    expect(screen.queryByText('Automated')).toBeNull();
   });
 
   it('reports no content when the feed is empty', async () => {
@@ -71,6 +95,15 @@ describe('DeviceActivityFeed', () => {
         actor: { type: 'system', name: 'System' },
       },
     ]);
+    const onHasContentChange = vi.fn();
+    render(<DeviceActivityFeed deviceId="dev-1" onHasContentChange={onHasContentChange} />);
+    await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(true));
+  });
+
+  it('reports content when there are no events but active alerts exist', async () => {
+    // The pinned active-alerts banner is content too — the rail must not collapse
+    // while an alert is showing.
+    mockFeed([], [{ id: 'a1', status: 'active' }]);
     const onHasContentChange = vi.fn();
     render(<DeviceActivityFeed deviceId="dev-1" onHasContentChange={onHasContentChange} />);
     await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(true));

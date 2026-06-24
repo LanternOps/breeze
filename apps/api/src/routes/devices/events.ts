@@ -45,6 +45,39 @@ export function likePrefixPattern(prefix: string): string {
   return prefix.replace(/[%_\\]/g, '\\$&') + '%';
 }
 
+// Build the OR-group of action conditions for the deliberate-action filter:
+// each supplied action prefix, plus (opt-in) automated agent-dispatched
+// commands. Exported so the includeAutomated dedup can be exercised against a
+// live Postgres (the actor_type guard is a LIKE/IN predicate a Drizzle mock
+// can't prove). Returns the disjuncts; the caller OR-combines them.
+export function buildActionConditions(
+  actions: string[] | undefined,
+  includeAutomated: boolean
+): SQL[] {
+  const actionClauses: SQL[] = [];
+  if (actions && actions.length > 0) {
+    // `LIKE` with an escaped prefix keeps it index-friendly and avoids ILIKE's
+    // case-fold cost — audit action keys are already lowercase dotted ids.
+    for (const prefix of actions) {
+      actionClauses.push(sql`${auditLogs.action} LIKE ${likePrefixPattern(prefix)}`);
+    }
+  }
+  if (includeAutomated) {
+    // Automated patch runs / automations are written by commandQueue as
+    // `agent.command.<type>` with actor_type 'system' (commandQueue emits
+    // 'system' for any unattended dispatch, never a real user) and have no
+    // route-audit twin. Manual commands (actor_type 'user') are excluded —
+    // they're already represented by their richer route audit (e.g.
+    // script.execute, device.patch.*, device.software.*), so this avoids
+    // double-listing. The 'agent' arm is defensive; only 'system' is emitted
+    // today.
+    actionClauses.push(
+      sql`(${auditLogs.action} LIKE ${likePrefixPattern('agent.command.')} AND ${auditLogs.actorType} IN ('system','agent'))`
+    );
+  }
+  return actionClauses;
+}
+
 const eventsQuerySchema = z.object({
   search: z.string().max(200).optional(),
   category: eventCategoryEnum.optional(),
@@ -139,24 +172,7 @@ eventsRoutes.get(
 
     // The overview "deliberate action" filter: any supplied action prefix, plus
     // (opt-in) automated agent-dispatched commands. Both go into one OR group.
-    const actionClauses: SQL[] = [];
-    if (actions && actions.length > 0) {
-      // `LIKE` with an escaped prefix keeps it index-friendly and avoids ILIKE's
-      // case-fold cost — audit action keys are already lowercase dotted ids.
-      for (const prefix of actions) {
-        actionClauses.push(sql`${auditLogs.action} LIKE ${likePrefixPattern(prefix)}`);
-      }
-    }
-    if (includeAutomated) {
-      // Automated patch runs / automations are written by commandQueue as
-      // `agent.command.<type>` with actor_type 'system'/'agent' and no
-      // route-audit twin. Manual commands (actor_type 'user') are excluded —
-      // they're already represented by their richer route audit
-      // (script.execute, device.patch.*), so this avoids double-listing.
-      actionClauses.push(
-        sql`(${auditLogs.action} LIKE ${likePrefixPattern('agent.command.')} AND ${auditLogs.actorType} IN ('system','agent'))`
-      );
-    }
+    const actionClauses = buildActionConditions(actions, includeAutomated);
     if (actionClauses.length > 0) {
       conditions.push(or(...actionClauses)!);
     }
