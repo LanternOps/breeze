@@ -116,6 +116,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
   }),
 
+  remediate_vulnerability: z.object({
+    deviceVulnerabilityIds: z.array(uuid).min(1).max(100),
+  }),
+
   // PAM Brain elevation tools (#1160). durationMinutes/limit are intentionally
   // un-capped here — the handlers clamp them (480 / 100) so the Brain can pass a
   // larger value without a validation failure.

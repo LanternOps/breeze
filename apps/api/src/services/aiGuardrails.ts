@@ -89,6 +89,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_device_details: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
+  remediate_vulnerability: { resource: 'patches', action: 'execute' },
   analyze_metrics: { resource: 'devices', action: 'read' },
   get_s1_status: { resource: 'organizations', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },

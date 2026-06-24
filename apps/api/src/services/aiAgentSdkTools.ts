@@ -115,6 +115,7 @@ export const TOOL_TIERS = {
   manage_patches: 1,         // Action-level escalation in guardrails
   get_vulnerability_report: 1, // BE-16
   get_device_vulnerabilities: 1, // BE-16
+  remediate_vulnerability: 3, // BE-16 (approval-gated)
   manage_groups: 1,          // Action-level escalation in guardrails
   manage_maintenance_windows: 1, // Action-level escalation in guardrails
   manage_automations: 1,     // Action-level escalation in guardrails
