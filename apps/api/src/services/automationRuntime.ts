@@ -1584,8 +1584,37 @@ async function resolveConfigPolicyOrgId(featureLinkId: string): Promise<string |
 }
 
 /**
+ * Resolves the owning `configurationPolicies.id` for a configPolicyAutomation by
+ * traversing configPolicyFeatureLinks -> configurationPolicies.
+ *
+ * `automationRuns.config_policy_id` is read by every consumer (the RLS
+ * EXISTS-join in `2026-05-30-fk-child-tables-rls.sql` and the read route in
+ * `routes/automations.ts`) as a `configurationPolicies.id`, NOT a feature-link
+ * id. Writing the feature-link id here would make the run RLS-invisible to any
+ * org-scoped reader (it matches no `configurationPolicies` row), so the run is
+ * silently un-readable in the portal even though the INSERT succeeds under the
+ * worker's system db context (issue #1855).
+ */
+async function resolveConfigPolicyId(featureLinkId: string): Promise<string | null> {
+  // Import here to avoid circular dependency at module level
+  const { configPolicyFeatureLinks } = await import('../db/schema');
+
+  const [row] = await db
+    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
+    .from(configPolicyFeatureLinks)
+    .where(eq(configPolicyFeatureLinks.id, featureLinkId))
+    .limit(1);
+
+  return row?.configPolicyId ?? null;
+}
+
+/**
  * Creates an automationRuns record for a config policy automation execution.
  * Uses `automationId: null` and fills `configPolicyId` + `configItemName`.
+ *
+ * `configPolicyId` is resolved to the owning `configurationPolicies.id` (NOT
+ * the feature-link id on `automation.featureLinkId`) so the run is readable by
+ * org-scoped consumers — see `resolveConfigPolicyId` / issue #1855.
  */
 export async function createConfigPolicyAutomationRun(options: {
   automation: ConfigPolicyAutomationRow;
@@ -1593,11 +1622,13 @@ export async function createConfigPolicyAutomationRun(options: {
   triggeredBy: string;
   details?: Record<string, unknown>;
 }): Promise<AutomationRunRow> {
+  const configPolicyId = await resolveConfigPolicyId(options.automation.featureLinkId);
+
   const [run] = await db
     .insert(automationRuns)
     .values({
       automationId: null,
-      configPolicyId: options.automation.featureLinkId,
+      configPolicyId,
       configItemName: options.automation.name,
       triggeredBy: options.triggeredBy,
       status: 'running',
