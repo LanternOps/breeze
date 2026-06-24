@@ -68,27 +68,61 @@ type fakeEnforcer struct {
 	roApplied     []string
 	roReverted    []string
 	disabled      []string
+	calls         []string // ordered log of every method invocation
 }
 
 func (f *fakeEnforcer) ApplyGate(class string, hasExceptions bool) EnforceOutcome {
 	f.gatesApplied = append(f.gatesApplied, class)
+	f.calls = append(f.calls, "apply-gate")
 	return EnforceOutcome{Mechanism: "fake-gate", Applied: true, Verified: true}
 }
 func (f *fakeEnforcer) RevertGate(class string) EnforceOutcome {
 	f.gatesReverted = append(f.gatesReverted, class)
+	f.calls = append(f.calls, "revert-gate")
 	return EnforceOutcome{Mechanism: "fake-gate", Applied: false, Verified: true}
 }
 func (f *fakeEnforcer) DisableDevice(id string) EnforceOutcome {
 	f.disabled = append(f.disabled, id)
+	f.calls = append(f.calls, "disable")
 	return EnforceOutcome{Mechanism: "fake-disable", Applied: true, Verified: true}
 }
 func (f *fakeEnforcer) ApplyReadOnly(class string) EnforceOutcome {
 	f.roApplied = append(f.roApplied, class)
+	f.calls = append(f.calls, "apply-ro")
 	return EnforceOutcome{Mechanism: "fake-ro", Applied: true, Verified: true}
 }
 func (f *fakeEnforcer) RevertReadOnly(class string) EnforceOutcome {
 	f.roReverted = append(f.roReverted, class)
+	f.calls = append(f.calls, "revert-ro")
 	return EnforceOutcome{Mechanism: "fake-ro", Applied: false, Verified: true}
+}
+
+// TestEnforce_RevertsBeforeApplies locks the invariant that every revert runs
+// before every apply, regardless of allClasses order. storage and all_usb map
+// to the SAME underlying OS resource (the USBSTOR gate), so an apply followed by
+// a revert of a sibling class would clobber the desired block. Here the applied
+// class ("storage") is listed FIRST in allClasses to defeat any order coincidence.
+func TestEnforce_RevertsBeforeApplies(t *testing.T) {
+	f := &fakeEnforcer{}
+	plan := EnforcementPlan{BlockGates: []ClassGate{{Class: "storage"}}}
+	Enforce(f, plan, []string{"storage", "all_usb"})
+
+	lastRevert, firstApply := -1, len(f.calls)
+	for i, c := range f.calls {
+		switch c {
+		case "revert-gate", "revert-ro":
+			if i > lastRevert {
+				lastRevert = i
+			}
+		case "apply-gate", "apply-ro":
+			if i < firstApply {
+				firstApply = i
+			}
+		}
+	}
+	if lastRevert >= firstApply {
+		t.Fatalf("revert must precede apply; call order=%v (lastRevert=%d firstApply=%d)", f.calls, lastRevert, firstApply)
+	}
 }
 
 func TestEnforce_AppliesAndReverts(t *testing.T) {

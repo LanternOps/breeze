@@ -127,16 +127,25 @@ func Enforce(e Enforcer, plan EnforcementPlan, allClasses []string) EnforcementO
 		wantRO[c] = true
 	}
 
+	// Revert before apply because multiple policy classes can map to the same
+	// underlying OS resource (for example Windows USBSTOR gates). If a shared
+	// resource is reverted after another class applies it, the revert clobbers
+	// the desired block.
+	for _, class := range allClasses {
+		if _, ok := wantGate[class]; !ok {
+			out.GateOutcomes[class] = e.RevertGate(class)
+		}
+		if !wantRO[class] {
+			out.ReadOnlyOutcomes[class] = e.RevertReadOnly(class)
+		}
+	}
+
 	for _, class := range allClasses {
 		if g, ok := wantGate[class]; ok {
 			out.GateOutcomes[class] = e.ApplyGate(class, g.HasExceptions)
-		} else {
-			out.GateOutcomes[class] = e.RevertGate(class)
 		}
 		if wantRO[class] {
 			out.ReadOnlyOutcomes[class] = e.ApplyReadOnly(class)
-		} else {
-			out.ReadOnlyOutcomes[class] = e.RevertReadOnly(class)
 		}
 	}
 
