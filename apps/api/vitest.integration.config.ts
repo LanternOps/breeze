@@ -43,6 +43,11 @@ export default defineConfig({
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
       'src/services/exploitFeeds.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 Phase 4 domain events:
+      // vulnerability.critical_detected emission from correlation.
+      'src/services/vulnerabilityEvents.integration.test.ts',
+      // Co-located real-DB integration test for BE-16 Phase 4 remediation events.
+      'src/services/vulnerabilityRemediationEvents.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's
