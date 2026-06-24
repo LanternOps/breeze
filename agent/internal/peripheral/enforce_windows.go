@@ -67,13 +67,21 @@ func (winEnforcer) RevertGate(class string) EnforceOutcome {
 func (winEnforcer) DisableDevice(instanceID string) EnforceOutcome {
 	cmd := exec.Command("pnputil", "/remove-device", instanceID)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return EnforceOutcome{Mechanism: "pnputil", Applied: false, Verified: false,
-			Detail: fmt.Sprintf("pnputil: %v: %s", err, strings.TrimSpace(string(out)))}
+		removeErr := err
+		removeOut := strings.TrimSpace(string(out))
+		cmd = exec.Command("pnputil", "/disable-device", instanceID)
+		if out, err = cmd.CombinedOutput(); err != nil {
+			return EnforceOutcome{Mechanism: "pnputil", Applied: false, Verified: false,
+				Detail: fmt.Sprintf("pnputil remove: %v: %s; disable: %v: %s",
+					removeErr, removeOut, err, strings.TrimSpace(string(out)))}
+		}
 	}
 	// Probe: device should no longer enumerate as present (removed) or report disabled.
 	probe := exec.Command("pnputil", "/enum-devices", "/instanceid", instanceID)
-	pout, _ := probe.CombinedOutput()
-	verified := !strings.Contains(strings.ToLower(string(pout)), "status:              started")
+	pout, err := probe.CombinedOutput()
+	normalized := strings.Join(strings.Fields(strings.ToLower(string(pout))), " ")
+	verified := err != nil || !(strings.Contains(normalized, "status: started") ||
+		strings.Contains(normalized, "status: running"))
 	return EnforceOutcome{Mechanism: "pnputil", Applied: true, Verified: verified,
 		Detail: probeDetail(verified, "device still reports started after remove")}
 }
@@ -99,8 +107,21 @@ func (winEnforcer) RevertReadOnly(class string) EnforceOutcome {
 		// Key absent == nothing to revert.
 		return EnforceOutcome{Mechanism: "removable-storage-deny-write", Applied: false, Verified: true}
 	}
-	defer k.Close()
 	_ = k.DeleteValue(denyWriteValue)
+	_ = k.Close()
+	k, err = registry.OpenKey(registry.LOCAL_MACHINE, removableStorageKey, registry.QUERY_VALUE)
+	if err != nil {
+		if err == registry.ErrNotExist {
+			return EnforceOutcome{Mechanism: "removable-storage-deny-write", Applied: false, Verified: true}
+		}
+		return EnforceOutcome{Mechanism: "removable-storage-deny-write", Applied: false, Verified: false,
+			Detail: "verify key: " + err.Error()}
+	}
+	defer k.Close()
+	if _, _, err := k.GetIntegerValue(denyWriteValue); err == nil {
+		return EnforceOutcome{Mechanism: "removable-storage-deny-write", Applied: false, Verified: false,
+			Detail: "Deny_Write still present after delete"}
+	}
 	return EnforceOutcome{Mechanism: "removable-storage-deny-write", Applied: false, Verified: true}
 }
 
