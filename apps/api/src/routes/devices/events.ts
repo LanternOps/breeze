@@ -72,6 +72,12 @@ const eventsQuerySchema = z.object({
             .filter(Boolean)
         : undefined
     ),
+  // Opt-in to also surface automated agent.command.* commands.
+  includeAutomated: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
   // Whether to run the parallel unbounded count(*) over the same predicate.
   // Defaults to false so the common "last N" feed read does not pay for a full
   // history count on every load (issue #1726). When false, pagination.total is
@@ -93,7 +99,7 @@ eventsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { search, category, result, initiatedBy, from, to, page, limit, actions, withTotal } =
+    const { search, category, result, initiatedBy, from, to, page, limit, actions, withTotal, includeAutomated } =
       c.req.valid('query');
     const offset = (page - 1) * limit;
 
@@ -131,14 +137,28 @@ eventsRoutes.get(
       conditions.push(ilike(auditLogs.action, `${category}.%`));
     }
 
+    // The overview "deliberate action" filter: any supplied action prefix, plus
+    // (opt-in) automated agent-dispatched commands. Both go into one OR group.
+    const actionClauses: SQL[] = [];
     if (actions && actions.length > 0) {
-      // Match any of the supplied action prefixes (server-side equivalent of the
-      // overview pane's "deliberate action" filter). `LIKE` with an escaped
-      // prefix keeps it index-friendly and avoids ILIKE's case-fold cost — audit
-      // action keys are already lowercase dotted identifiers.
-      conditions.push(
-        or(...actions.map((prefix) => sql`${auditLogs.action} LIKE ${likePrefixPattern(prefix)}`))!
+      // `LIKE` with an escaped prefix keeps it index-friendly and avoids ILIKE's
+      // case-fold cost — audit action keys are already lowercase dotted ids.
+      for (const prefix of actions) {
+        actionClauses.push(sql`${auditLogs.action} LIKE ${likePrefixPattern(prefix)}`);
+      }
+    }
+    if (includeAutomated) {
+      // Automated patch runs / automations are written by commandQueue as
+      // `agent.command.<type>` with actor_type 'system'/'agent' and no
+      // route-audit twin. Manual commands (actor_type 'user') are excluded —
+      // they're already represented by their richer route audit
+      // (script.execute, device.patch.*), so this avoids double-listing.
+      actionClauses.push(
+        sql`(${auditLogs.action} LIKE ${likePrefixPattern('agent.command.')} AND ${auditLogs.actorType} IN ('system','agent'))`
       );
+    }
+    if (actionClauses.length > 0) {
+      conditions.push(or(...actionClauses)!);
     }
 
     if (result) {
@@ -280,6 +300,11 @@ const actionLabels: Record<string, string> = {
   'device.maintenance.disable': 'Maintenance mode disabled',
   'script.execute': 'Script executed',
   'script.execution.cancel': 'Script execution cancelled',
+  'agent.command.install_patches': 'Patches installed',
+  'agent.command.rollback_patches': 'Patches rolled back',
+  'agent.command.script': 'Script ran',
+  'agent.command.software_uninstall': 'Software uninstalled',
+  'agent.command.software_update': 'Software updated',
   'alert.acknowledge': 'Alert acknowledged',
   'alert.resolve': 'Alert resolved',
   'alert.suppress': 'Alert suppressed',
@@ -305,7 +330,7 @@ const actionLabels: Record<string, string> = {
   'maintenance_occurrence.end': 'Maintenance window ended',
 };
 
-function formatActionMessage(action: string, resourceName: string | null, result: string): string {
+export function formatActionMessage(action: string, resourceName: string | null, result: string): string {
   const label = actionLabels[action];
   if (label) {
     const suffix = result === 'failure' ? ' (failed)' : result === 'denied' ? ' (denied)' : '';
