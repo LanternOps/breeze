@@ -7,11 +7,13 @@ const mocks = vi.hoisted(() => {
     db: {
       select: vi.fn(),
       insert: vi.fn(),
+      update: vi.fn(),
     },
     encryptSecret: vi.fn((value: string) => `enc(${value})`),
     decryptForColumn: vi.fn((_table: string, _column: string, value: string | null | undefined) =>
       value?.startsWith('enc(') ? value.slice(4, -1) : (value ?? null)
     ),
+    safeFetch: vi.fn(),
   };
 });
 
@@ -20,6 +22,7 @@ vi.mock('./secretCrypto', () => ({
   encryptSecret: mocks.encryptSecret,
   decryptForColumn: mocks.decryptForColumn,
 }));
+vi.mock('./urlSafety', () => ({ safeFetch: (...args: unknown[]) => mocks.safeFetch(...args) }));
 
 import {
   getEcExpressStatus,
@@ -31,6 +34,7 @@ import {
   buildSoapEnvelope,
   parsePnaResponse,
   importEcExpressCatalogItem,
+  testEcExpressConnection,
 } from './tdSynnexEcExpress';
 import { createCatalogItem } from './catalogService';
 
@@ -55,6 +59,29 @@ function insertChain(returningRows: unknown[]) {
     returning: vi.fn().mockResolvedValue(returningRows),
   };
 }
+
+function updateChain(returningRows: unknown[]) {
+  return {
+    set: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    returning: vi.fn().mockResolvedValue(returningRows),
+  };
+}
+
+function xmlResponse(xml: string): Response {
+  return { text: vi.fn().mockResolvedValue(xml) } as unknown as Response;
+}
+
+const PA_NOTFOUND_XML =
+  '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+  + '<ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return>'
+  + '<priceAvail><synnexSku>1</synnexSku><status>NOTFOUND</status></priceAvail>'
+  + '</return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>';
+
+const PA_LOGIN_FAILED_XML =
+  '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+  + '<soap:Fault><faultcode>soap:000000</faultcode><faultstring>user login failed</faultstring></soap:Fault>'
+  + '</soap:Body></soap:Envelope>';
 
 const fullRow = {
   id: 'integration-1',
@@ -267,6 +294,50 @@ describe('tdSynnexEcExpress service', () => {
     });
   });
 
+  describe('testEcExpressConnection', () => {
+    it('returns masked status with lastTestStatus "success" on a non-fault PA response', async () => {
+      mocks.db.select.mockReturnValueOnce(selectChain([fullRow]));
+      mocks.safeFetch.mockResolvedValueOnce(xmlResponse(PA_NOTFOUND_XML));
+      const updateChainMock = updateChain([{ ...fullRow, lastTestStatus: 'success', lastTestError: null }]);
+      mocks.db.update.mockReturnValueOnce(updateChainMock);
+
+      const result = await testEcExpressConnection(actor);
+
+      expect(result.lastTestStatus).toBe('success');
+      expect(result.lastTestError).toBeNull();
+      // masked-status contract: credentials are present-but-masked, not blanked
+      expect(result.credentials).toEqual({
+        email: EC_MASKED_SECRET,
+        password: EC_MASKED_SECRET,
+        customerNo: EC_MASKED_SECRET,
+      });
+      const setArg = updateChainMock.set.mock.calls[0]![0];
+      expect(setArg.lastTestStatus).toBe('success');
+    });
+
+    it('persists lastTestStatus "failed" then re-throws on an EC_AUTH_FAILED fault', async () => {
+      mocks.db.select.mockReturnValueOnce(selectChain([fullRow]));
+      mocks.safeFetch.mockResolvedValueOnce(xmlResponse(PA_LOGIN_FAILED_XML));
+      const updateChainMock = updateChain([]);
+      mocks.db.update.mockReturnValueOnce(updateChainMock);
+
+      await expect(testEcExpressConnection(actor))
+        .rejects.toMatchObject({ code: 'EC_AUTH_FAILED', status: 401 });
+
+      const setArg = updateChainMock.set.mock.calls[0]![0];
+      expect(setArg.lastTestStatus).toBe('failed');
+      expect(setArg.lastTestError).toMatch(/login failed/i);
+    });
+
+    it('throws EC_NOT_CONFIGURED when no integration row exists', async () => {
+      mocks.db.select.mockReturnValueOnce(selectChain([]));
+
+      await expect(testEcExpressConnection(actor))
+        .rejects.toMatchObject({ code: 'EC_NOT_CONFIGURED', status: 404 });
+      expect(mocks.safeFetch).not.toHaveBeenCalled();
+    });
+  });
+
   describe('TdSynnexEcExpressError', () => {
     it('carries the correct HTTP status for each error code', () => {
       expect(new TdSynnexEcExpressError('', 'EC_PARTNER_REQUIRED').status).toBe(400);
@@ -305,6 +376,9 @@ it('parses a real multi-SKU PA response into products', () => {
 it('maps soap:Fault "user login failed" to EC_AUTH_FAILED', () => {
   const fault = '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultcode>soap:000000</faultcode><faultstring>user login failed</faultstring></soap:Fault></soap:Body></soap:Envelope>';
   expect(() => parsePnaResponse(fault)).toThrow(/login failed/i);
+  expect(() => parsePnaResponse(fault)).toThrow(
+    expect.objectContaining({ code: 'EC_AUTH_FAILED', status: 401 })
+  );
 });
 
 it('handles single (non-array) priceAvail in response', () => {

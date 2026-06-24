@@ -85,6 +85,46 @@ describe('TdSynnexEcExpressPanel', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
+  it('renders the success indicator after a test without blanking the form', async () => {
+    const testResult = {
+      data: {
+        configured: true,
+        enabled: true,
+        region: 'US',
+        credentials: { email: '********', password: '********', customerNo: 'CUST-1' },
+        settings: { defaultWarehouse: '', hideZeroInv: false, defaultMarkupPercent: 0 },
+        lastTestStatus: 'success',
+        lastTestAt: '2026-06-23T00:00:00.000Z',
+        lastTestError: null,
+      },
+    };
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonResponse(statusPayload)) // initial status load
+      .mockResolvedValueOnce(jsonResponse(testResult)); // POST /test
+
+    render(<TdSynnexEcExpressPanel />);
+    await screen.findByTestId('td-synnex-ec-panel');
+
+    fireEvent.click(screen.getByTestId('td-synnex-ec-test'));
+
+    await waitFor(() => {
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        '/catalog/distributors/td-synnex-ec/test',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    // Success indicator renders (was never reached when the service returned the
+    // old { ok } shape with lastTestStatus 'ok' instead of 'success').
+    await waitFor(() =>
+      expect(within(screen.getByTestId('td-synnex-ec-status-label')).getByText(/Last test succeeded/i)).toBeTruthy()
+    );
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    // Form/credentials are NOT blanked out by the response mapping.
+    expect((screen.getByTestId('td-synnex-ec-customer-no') as HTMLInputElement).value).toBe('CUST-1');
+    expect((screen.getByTestId('td-synnex-ec-password') as HTMLInputElement).value).toBe('********');
+  });
+
   it('looks up a SKU and renders pricing, availability, and warehouse stock', async () => {
     fetchWithAuth
       .mockResolvedValueOnce(jsonResponse(statusPayload))

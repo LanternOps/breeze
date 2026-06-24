@@ -201,7 +201,8 @@ afterAll(async () => {
       seededPartnerIds.map((id) => sql`${id}`),
       sql`, `
     );
-    // Delete order respects FKs: bundle components → items → orgs → partners.
+    // Delete order respects FKs: bundle components → items → EC Express +
+    // Digital Bridge integrations → orgs → partners.
     await db
       .delete(catalogBundleComponents)
       .where(sql`${catalogBundleComponents.partnerId} IN (${partnerList})`);

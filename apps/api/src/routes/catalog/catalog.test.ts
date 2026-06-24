@@ -438,6 +438,23 @@ describe('catalog EC Express distributor routes', () => {
     expect(ecSvc.getEcExpressStatus).toHaveBeenCalledOnce();
   });
 
+  it('POST /distributors/td-synnex-ec/test returns 200 with the masked status', async () => {
+    (ecSvc.testEcExpressConnection as any).mockResolvedValue({
+      configured: true,
+      enabled: true,
+      region: 'US',
+      credentials: { email: '********', password: '********', customerNo: '********' },
+      lastTestStatus: 'success',
+      lastTestAt: new Date().toISOString(),
+      lastTestError: null,
+    });
+    const res = await app().request('/distributors/td-synnex-ec/test', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.lastTestStatus).toBe('success');
+    expect(ecSvc.testEcExpressConnection).toHaveBeenCalledOnce();
+  });
+
   it('PUT /distributors/td-synnex-ec/config rejects an unknown region with 400 (Zod length)', async () => {
     const res = await app().request('/distributors/td-synnex-ec/config', {
       method: 'PUT',

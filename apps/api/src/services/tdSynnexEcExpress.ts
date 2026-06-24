@@ -210,7 +210,8 @@ export async function saveEcExpressConfig(input: TdSynnexEcExpressConfigInput, a
   return maskConfig(row ?? null);
 }
 
-// --- internal helpers reused by Tasks 3/4 ---
+// Region endpoint resolution + credential decryption, shared by the SOAP
+// price-availability call (lookup + connection test) and config validation.
 
 export function endpointForRegion(region: string): string {
   const url = REGION_ENDPOINTS[region];
@@ -236,7 +237,8 @@ export function decryptCredentials(
   return { email, password, customerNo };
 }
 
-// --- Task 3: SOAP envelope build, response parse, product lookup, connection test ---
+// SOAP envelope build, response parse, product lookup, and connection test
+// against the TD SYNNEX PriceAvailability (PNA) web service.
 
 const WSSE = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd';
 const PNA_NS = 'http://pnaV05.model.ws.synnex.com/';
@@ -391,45 +393,42 @@ export async function lookupEcExpressProducts(
   return found;
 }
 
-export async function testEcExpressConnection(
-  actor: CatalogActor
-): Promise<{ ok: boolean; error?: string }> {
+export async function testEcExpressConnection(actor: CatalogActor) {
   const partnerId = requirePartner(actor);
+  // Load directly rather than via getActiveIntegration: a partner must be able to
+  // run a connection test BEFORE enabling the integration, so we require it to be
+  // configured but not enabled. On success/failure we persist the masked-status
+  // contract that the web panel consumes (mirrors testTdSynnexDigitalBridgeConnection).
   const [row] = await db
     .select()
     .from(tdSynnexEcExpressIntegrations)
     .where(eq(tdSynnexEcExpressIntegrations.partnerId, partnerId))
     .limit(1);
   if (!row) throw new TdSynnexEcExpressError('EC Express is not configured', 'EC_NOT_CONFIGURED');
-  const finish = async (status: 'ok' | 'error', error?: string) => {
+  try {
+    // Any non-fault PA response (including NOTFOUND) means credentials authenticated.
+    await callPna(row, [{ kind: 'sku', value: '1' }]);
+    const [updated] = await db
+      .update(tdSynnexEcExpressIntegrations)
+      .set({ lastTestStatus: 'success', lastTestAt: new Date(), lastTestError: null, updatedAt: new Date() })
+      .where(eq(tdSynnexEcExpressIntegrations.id, row.id))
+      .returning();
+    return maskConfig(updated ?? row);
+  } catch (err) {
     await db
       .update(tdSynnexEcExpressIntegrations)
-      .set({ lastTestStatus: status, lastTestAt: new Date(), lastTestError: error ?? null, updatedAt: new Date() })
-      .where(eq(tdSynnexEcExpressIntegrations.partnerId, partnerId));
-  };
-  try {
-    await callPna(row, [{ kind: 'sku', value: '1' }]); // any non-fault response = auth OK (NOTFOUND is fine)
-    await finish('ok');
-    return { ok: true };
-  } catch (err) {
-    const msg = err instanceof TdSynnexEcExpressError ? err.message : 'Connection failed';
-    if (err instanceof TdSynnexEcExpressError && err.code === 'EC_AUTH_FAILED') {
-      await finish('error', msg);
-      return { ok: false, error: msg };
-    }
-    if (
-      err instanceof TdSynnexEcExpressError
-      && (err.code === 'EC_NO_RESULTS' || err.code === 'EC_PROVIDER_ERROR')
-    ) {
-      await finish('ok');
-      return { ok: true };
-    }
-    await finish('error', msg);
-    return { ok: false, error: msg };
+      .set({
+        lastTestStatus: 'failed',
+        lastTestAt: new Date(),
+        lastTestError: err instanceof Error ? err.message : 'Connection test failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(tdSynnexEcExpressIntegrations.id, row.id));
+    throw err;
   }
 }
 
-// --- Task 4: Import a looked-up product into the partner catalog ---
+// Import a looked-up product into the partner catalog.
 
 export interface EcImportInput {
   product: TdSynnexEcProduct;
