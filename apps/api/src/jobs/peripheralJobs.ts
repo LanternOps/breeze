@@ -135,21 +135,37 @@ async function processAnomalyScan(_data: AnomalyScanJobData): Promise<{ alerts: 
   return { alerts, failed };
 }
 
-async function processPolicyDistribution(data: PolicyDistributionJobData): Promise<{
+/**
+ * Returns the changed policy ids that are NOT present in the DB snapshot the
+ * worker just read. With no hard-delete path for peripheral policies, a changed
+ * id that is absent can only mean the producer's request transaction has not
+ * committed yet (the enqueue-before-commit race) — so the worker should retry
+ * rather than ship an incomplete policy set. Disabled policies still exist as
+ * rows, so they are correctly treated as visible (not a race).
+ */
+export function findUncommittedPolicyIds(
+  changedPolicyIds: string[],
+  existingPolicyIds: Iterable<string>
+): string[] {
+  const existing = new Set(existingPolicyIds);
+  return changedPolicyIds.filter((id) => !existing.has(id));
+}
+
+export async function processPolicyDistribution(data: PolicyDistributionJobData): Promise<{
   queued: number;
   immediate: number;
   failed: number;
 }> {
-  const [activePolicies, orgDevices] = await Promise.all([
+  // Read the org's full policy set (active AND inactive) plus its devices. The
+  // full set lets us both (a) detect the enqueue-before-commit race — a changed
+  // policy id missing here means the producer txn hasn't committed yet — and
+  // (b) build the payload from the *current* active subset (re-read each run so
+  // coalesced bursts always send the latest state).
+  const [orgPolicies, orgDevices] = await Promise.all([
     db
       .select()
       .from(peripheralPolicies)
-      .where(
-        and(
-          eq(peripheralPolicies.orgId, data.orgId),
-          eq(peripheralPolicies.isActive, true)
-        )
-      )
+      .where(eq(peripheralPolicies.orgId, data.orgId))
       .orderBy(peripheralPolicies.updatedAt),
     db
       .select({
@@ -165,9 +181,27 @@ async function processPolicyDistribution(data: PolicyDistributionJobData): Promi
       )
   ]);
 
+  const changedPolicyIds = data.changedPolicyIds ?? [];
+  const uncommitted = findUncommittedPolicyIds(
+    changedPolicyIds,
+    orgPolicies.map((policy) => policy.id)
+  );
+  if (uncommitted.length > 0) {
+    // The producing request transaction hasn't committed yet. Throw so BullMQ
+    // retries with backoff; by the next attempt the rows are visible and the
+    // re-read above produces the correct payload. Shipping policies:[] here
+    // would silently leave agents unenforced.
+    throw new Error(
+      `peripheral policy distribution raced the producer commit for org ${data.orgId}; `
+      + `changed policy id(s) not yet visible: ${uncommitted.join(', ')} — retrying`
+    );
+  }
+
   if (orgDevices.length === 0) {
     return { queued: 0, immediate: 0, failed: 0 };
   }
+
+  const activePolicies = orgPolicies.filter((policy) => policy.isActive);
 
   const payload = {
     generatedAt: new Date().toISOString(),
@@ -326,6 +360,12 @@ export async function schedulePeripheralPolicyDistribution(
     },
     {
       jobId,
+      // Retry so a run that loses the enqueue-before-commit race (changed policy
+      // not yet visible → processPolicyDistribution throws) re-runs after the
+      // producer txn commits. Exponential backoff from 250ms covers the brief
+      // commit window without delaying healthy distributions.
+      attempts: 6,
+      backoff: { type: 'exponential', delay: 250 },
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 200 }
     }
