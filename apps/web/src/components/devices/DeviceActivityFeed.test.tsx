@@ -51,4 +51,34 @@ describe('DeviceActivityFeed', () => {
     expect(await screen.findByText('Patches installed — host-1')).toBeInTheDocument();
     expect(screen.getByText('Automated')).toBeInTheDocument();
   });
+
+  it('reports no content when the feed is empty', async () => {
+    mockFeed([], []);
+    const onHasContentChange = vi.fn();
+    render(<DeviceActivityFeed deviceId="dev-1" onHasContentChange={onHasContentChange} />);
+    await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it('reports content when there are events', async () => {
+    mockFeed([
+      {
+        id: 'e1',
+        action: 'agent.command.script',
+        message: 'Script ran',
+        result: 'success',
+        initiatedBy: null,
+        timestamp: new Date().toISOString(),
+        actor: { type: 'system', name: 'System' },
+      },
+    ]);
+    const onHasContentChange = vi.fn();
+    render(<DeviceActivityFeed deviceId="dev-1" onHasContentChange={onHasContentChange} />);
+    await waitFor(() => expect(onHasContentChange).toHaveBeenLastCalledWith(true));
+  });
+
+  it('renders a compact one-line empty state in strip layout', async () => {
+    mockFeed([], []);
+    render(<DeviceActivityFeed deviceId="dev-1" layout="strip" />);
+    expect(await screen.findByTestId('activity-empty-strip')).toBeInTheDocument();
+  });
 });

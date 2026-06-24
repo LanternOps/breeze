@@ -29,6 +29,13 @@ type ActivityEvent = {
 type DeviceActivityFeedProps = {
   deviceId: string;
   timezone?: string;
+  // 'rail' is the right-column card (default). 'strip' is the full-width
+  // placement used when the parent collapses the rail; its empty state is a
+  // single compact line rather than the stacked heading/paragraph/link.
+  layout?: 'rail' | 'strip';
+  // Reports whether the pane has anything worth showing (events or active
+  // alerts) so the parent can collapse the rail when it's empty.
+  onHasContentChange?: (hasContent: boolean) => void;
 };
 
 // "Deliberate actions taken on this endpoint." An event is shown only if its
@@ -102,7 +109,12 @@ function absoluteTime(value?: string, timezone?: string): string | undefined {
   return formatDateTime(d, timezone ? { timeZone: timezone } : undefined);
 }
 
-export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivityFeedProps) {
+export default function DeviceActivityFeed({
+  deviceId,
+  timezone,
+  layout = 'rail',
+  onHasContentChange,
+}: DeviceActivityFeedProps) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [activeAlerts, setActiveAlerts] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -196,6 +208,13 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
     return () => controller.abort();
   }, [loadPage]);
 
+  // Report whether the pane has anything worth showing so the parent can collapse
+  // the rail when it's empty. Only meaningful once the initial load settles.
+  useEffect(() => {
+    if (loading) return;
+    onHasContentChange?.(events.length > 0 || activeAlerts > 0);
+  }, [loading, events.length, activeAlerts, onHasContentChange]);
+
   // Retry the whole pane from page 1 on a fresh controller (the mount effect's
   // controller is aborted once its cleanup runs).
   const reload = useCallback(() => {
@@ -263,7 +282,19 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
             </button>
           </p>
         ) : visible.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent actions on this device.</p>
+          layout === 'strip' ? (
+            <div
+              data-testid="activity-empty-strip"
+              className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground"
+            >
+              <span>No recent actions on this device.</span>
+              <a href="#activities" className="font-medium text-primary hover:underline">
+                View all activity →
+              </a>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No recent actions on this device.</p>
+          )
         ) : (
           <ul className="space-y-3">
             {visible.map((e) => {
@@ -332,7 +363,7 @@ export default function DeviceActivityFeed({ deviceId, timezone }: DeviceActivit
         )}
       </div>
 
-      {!loading && !error && (
+      {!loading && !error && !(layout === 'strip' && visible.length === 0) && (
         <a
           href="#activities"
           className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"

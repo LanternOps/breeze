@@ -151,6 +151,10 @@ function getAnomalyIdFromHash(): string | undefined {
 export default function DeviceDetails({ device, timezone, onBack, onAction }: DeviceDetailsProps) {
   const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
   const [focusedAnomalyId, setFocusedAnomalyId] = useState<string | undefined>(getAnomalyIdFromHash);
+  // Whether the Overview Activity pane has anything to show. Defaults to true so
+  // the common (populated) layout never flashes; the feed reports false to
+  // collapse the right rail and place Activity as a full-width bottom strip.
+  const [activityHasContent, setActivityHasContent] = useState(true);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -243,8 +247,8 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       <OverflowTabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => switchTab(id as Tab)} />
 
       {activeTab === 'overview' && (
-        <div className="grid gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2 space-y-6">
+        <div className={activityHasContent ? 'grid gap-6 lg:grid-cols-3' : 'space-y-6'}>
+          <div className={`space-y-6 ${activityHasContent ? 'lg:col-span-2' : ''}`}>
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — divided on ≥sm. Stats are content-sized (flex, not
                 an equal-width grid) with non-wrapping labels and values so e.g.
@@ -303,7 +307,12 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
             <DeviceWarrantyCard deviceId={device.id} compact />
           </div>
 
-          <DeviceActivityFeed deviceId={device.id} timezone={effectiveTimezone} />
+          <DeviceActivityFeed
+            deviceId={device.id}
+            timezone={effectiveTimezone}
+            layout={activityHasContent ? 'rail' : 'strip'}
+            onHasContentChange={setActivityHasContent}
+          />
         </div>
       )}
 
