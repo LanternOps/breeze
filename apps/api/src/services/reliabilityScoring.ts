@@ -273,35 +273,76 @@ function maxTimestamp(values: Array<string | undefined>): string | undefined {
   return raw;
 }
 
+// The set of UTC day-keys on which the device was observed online — any day
+// with at least one reliability-history sample. A reboot is an intra-day event,
+// so the day's bucket still exists; this is what lets a routine reboot stop
+// erasing days the device was clearly up.
+function observedUpDayKeys(dailyBuckets: DailyAggregateBucket[]): Set<string> {
+  const days = new Set<string>();
+  for (const bucket of dailyBuckets) {
+    if (bucket.sampleCount > 0) days.add(bucket.date);
+  }
+  return days;
+}
+
+// Uptime is real availability over the (enrollment-clamped) window: the fraction
+// of calendar days the device was up. A day counts as "up" when EITHER we
+// observed a reliability sample that day (the device reported, so it was online)
+// OR the day falls inside the current continuous boot span [bootTime, now].
+//
+// This replaces the old single-boot-snapshot model, where uptime% was
+// (now - bootTime) / window. That treated every day before the latest boot as
+// downtime, so a single reboot N days ago collapsed a 90-day uptime to ~N/90
+// even for a device that had been online and reporting the whole time — a
+// routine reboot cratered the score of an otherwise-reliable established device.
+//
+// The enrollment clamp (#1738) is preserved: a device cannot be "up" before it
+// existed, so the window start is clamped forward to `enrolledAt`. If enrolledAt
+// is missing we fall back to the fixed window start (unclamped, pre-#1738).
+function computeUptimeAvailability(
+  latest: LatestHistorySnapshot | null,
+  observedDays: Set<string>,
+  windowDays: number,
+  now: Date,
+  enrolledAt?: Date | null
+): { percent: number; upDays: number; expectedDays: number } {
+  if (!latest && observedDays.size === 0) return { percent: 100, upDays: 0, expectedDays: 0 };
+
+  const fixedStartMs = now.getTime() - windowDays * DAY_MS;
+  const enrolledMs = enrolledAt ? enrolledAt.getTime() : fixedStartMs;
+  const windowStartMs = Math.max(fixedStartMs, enrolledMs);
+  const startKey = toDayKey(new Date(windowStartMs));
+  const nowKey = toDayKey(now);
+  // Zero/negative window (enrolled at or after now) → nothing to measure.
+  if (startKey > nowKey) return { percent: 100, upDays: 0, expectedDays: 0 };
+
+  const bootKey = latest ? toDayKey(latest.bootTime) : null;
+  let expectedDays = 0;
+  let upDays = 0;
+  // Walk one UTC calendar day at a time from the clamped window start to now.
+  for (let ms = windowStartMs; toDayKey(new Date(ms)) <= nowKey; ms += DAY_MS) {
+    const key = toDayKey(new Date(ms));
+    if (key < startKey) continue;
+    expectedDays += 1;
+    const coveredByCurrentBoot = bootKey !== null && key >= bootKey;
+    if (observedDays.has(key) || coveredByCurrentBoot) upDays += 1;
+  }
+  if (expectedDays <= 0) return { percent: 100, upDays: 0, expectedDays: 0 };
+  return {
+    percent: round2(Math.min(100, (upDays / expectedDays) * 100)),
+    upDays,
+    expectedDays,
+  };
+}
+
 function computeUptimePercent(
   latest: LatestHistorySnapshot | null,
+  observedDays: Set<string>,
   windowDays: number,
   now: Date,
   enrolledAt?: Date | null
 ): number {
-  if (!latest) return 100;
-  const fullWindowSeconds = windowDays * 24 * 60 * 60;
-  const nowSeconds = Math.floor(now.getTime() / 1000);
-  // The measurement window starts at `now - windowDays`, but a device cannot be
-  // "up" before it was enrolled, so clamp the window start forward to the
-  // enrollment timestamp. This keeps pre-existence time out of the denominator
-  // (#1738) — a device enrolled 2 days ago is measured over ~2 days, not 90.
-  const fixedStartSeconds = nowSeconds - fullWindowSeconds;
-  // `devices.enrolledAt` is NOT NULL (defaults to now()), so in practice it is
-  // always supplied. If it is ever missing we deliberately fall back to the
-  // fixed window start, i.e. the unclamped pre-#1738 behavior, rather than
-  // guess an enrollment time.
-  const enrolledSeconds = enrolledAt ? Math.floor(enrolledAt.getTime() / 1000) : fixedStartSeconds;
-  const windowStartSeconds = Math.max(fixedStartSeconds, enrolledSeconds);
-  // Denominator is the length of the (possibly shortened) measurement window.
-  // Guard against a zero/negative window (enrolledAt at or after now).
-  const windowSeconds = Math.min(fullWindowSeconds, Math.max(0, nowSeconds - windowStartSeconds));
-  if (windowSeconds <= 0) return 100;
-  const bootSeconds = Math.floor(latest.bootTime.getTime() / 1000);
-  const uptimeStart = Math.max(windowStartSeconds, bootSeconds);
-  const uptimeSecondsFromBoot = Math.max(0, nowSeconds - uptimeStart);
-  const boundedUptimeSeconds = Math.min(windowSeconds, Math.min(uptimeSecondsFromBoot, Math.max(0, latest.uptimeSeconds)));
-  return round2((boundedUptimeSeconds / windowSeconds) * 100);
+  return computeUptimeAvailability(latest, observedDays, windowDays, now, enrolledAt).percent;
 }
 
 function scoreUptime(uptimePercent: number): number {
@@ -316,7 +357,12 @@ function scoreCrashes(crashCount7d: number, crashCount30d: number): number {
 }
 
 function scoreHangs(hangCount30d: number, unresolvedHangCount30d: number): number {
-  return clampScore(100 - hangCount30d * 10 - unresolvedHangCount30d * 20);
+  // Every hang costs 10; unresolved hangs cost an extra 10 on top (20 total).
+  // `unresolvedHangCount30d` is a subset of `hangCount30d`, so the extra penalty
+  // is +10, NOT +20 — the old *20 here double-counted unresolved hangs against
+  // the base *10 (30 each) and disagreed with `scoreDailyBucket`'s per-day
+  // weighting (10 each). This aligns the two.
+  return clampScore(100 - hangCount30d * 10 - unresolvedHangCount30d * 10);
 }
 
 function scoreServiceFailures(serviceFailureCount30d: number, recoveredCount30d: number): number {
@@ -567,13 +613,19 @@ function sumBucketsInWindow(
 }
 
 function scoreDailyBucket(bucket: DailyAggregateBucket): number {
+  // Per-day score used only to compute the trend slope. Penalty weights are kept
+  // in lockstep with the headline factor scorers (scoreCrashes/scoreHangs/
+  // scoreServiceFailures/scoreHardwareErrors) so the trend reflects the same
+  // notion of "bad day" as the score itself. Service-failure/recovery were 12/+4
+  // here vs 15/+5 in scoreServiceFailures — aligned to 15/+5. Uptime is
+  // intentionally absent: it is not a per-day-bucket quantity.
   return clampScore(
     100
     - bucket.crashCount * 20
     - bucket.hangCount * 10
     - bucket.unresolvedHangCount * 10
-    - bucket.serviceFailureCount * 12
-    + bucket.recoveredServiceCount * 4
+    - bucket.serviceFailureCount * 15
+    + bucket.recoveredServiceCount * 5
     - bucket.hardwareCriticalCount * 30
     - bucket.hardwareErrorSeverityCount * 15
     - bucket.hardwareWarningCount * 5
@@ -628,8 +680,7 @@ function computeTrend(dailyBuckets: DailyAggregateBucket[], now: Date): { direct
   };
 }
 
-function computeMtbfHours(dailyBuckets: DailyAggregateBucket[], latest: LatestHistorySnapshot | null, now: Date): number | null {
-  if (!latest) return null;
+function computeMtbfHours(dailyBuckets: DailyAggregateBucket[], upDays90: number, now: Date): number | null {
   const crashes90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.crashCount);
   const hangs90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.hangCount);
   const service90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.serviceFailureCount);
@@ -637,7 +688,11 @@ function computeMtbfHours(dailyBuckets: DailyAggregateBucket[], latest: LatestHi
   const failures = crashes90d + hangs90d + service90d + hardware90d;
   if (failures <= 0) return null;
 
-  const operatingHours = Math.min(90 * 24, Math.max(0, latest.uptimeSeconds) / 3600);
+  // Operating hours = the device's actual observed up-days in the 90-day window,
+  // not the current boot session's uptimeSeconds (which understated MTBF the
+  // same way the old uptime% did — a 5-day-uptime device with 90 days of history
+  // looked like it had only operated 5 days).
+  const operatingHours = Math.min(90 * 24, Math.max(0, upDays90) * 24);
   if (operatingHours <= 0) return null;
   return round2(operatingHours / failures);
 }
@@ -941,9 +996,11 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   const dailyBuckets = sortDailyBuckets(dailyBucketMap);
 
   const enrolledAt = device.enrolledAt ?? null;
-  const uptime7d = computeUptimePercent(latest, 7, now, enrolledAt);
-  const uptime30d = computeUptimePercent(latest, 30, now, enrolledAt);
-  const uptime90d = computeUptimePercent(latest, 90, now, enrolledAt);
+  const observedDays = observedUpDayKeys(dailyBuckets);
+  const uptime7d = computeUptimePercent(latest, observedDays, 7, now, enrolledAt);
+  const uptime30d = computeUptimePercent(latest, observedDays, 30, now, enrolledAt);
+  const availability90d = computeUptimeAvailability(latest, observedDays, 90, now, enrolledAt);
+  const uptime90d = availability90d.percent;
 
   const crashCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.crashCount);
   const crashCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.crashCount);
@@ -987,7 +1044,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   );
 
   const trend = computeTrend(dailyBuckets, now);
-  const mtbfHours = computeMtbfHours(dailyBuckets, latest, now);
+  const mtbfHours = computeMtbfHours(dailyBuckets, availability90d.upDays, now);
   const topIssues = computeTopIssues({
     dailyBuckets,
     now,
@@ -1532,6 +1589,8 @@ export const reliabilityScoringInternals = {
   computeTrend,
   computeMtbfHours,
   computeUptimePercent,
+  computeUptimeAvailability,
+  observedUpDayKeys,
   scoreUptime,
   scoreCrashes,
   scoreHangs,
