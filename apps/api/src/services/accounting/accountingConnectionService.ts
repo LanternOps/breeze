@@ -5,6 +5,7 @@ import type { AccountingProviderId } from './types';
 
 export type AccountingEnvironment = 'sandbox' | 'production';
 export type AccountingPushMode = 'auto' | 'manual';
+export type AccountingConnectionStatus = 'connected' | 'disconnected' | 'reauth_required' | 'error';
 
 export interface AccountingConnection {
   id: string;
@@ -20,7 +21,7 @@ export interface AccountingConnection {
   defaultIncomeAccountRef: string | null;
   defaultTaxCodeRef: string | null;
   pushMode: AccountingPushMode;
-  status: string;
+  status: AccountingConnectionStatus;
   createdAt: Date | null;
   updatedAt: Date | null;
   lastError: string | null;
@@ -38,7 +39,7 @@ export interface UpsertConnectionFields {
   defaultTaxCodeRef?: string | null;
   pushMode?: AccountingPushMode;
   webhookVerifierToken?: string | null;
-  status?: string;
+  status?: AccountingConnectionStatus;
   lastError?: string | null;
   connectedBy?: string | null;
 }
@@ -50,7 +51,10 @@ export interface AccountingTokenUpdate {
   refreshTokenExpiresAt: Date;
 }
 
-type DbExecutor = {
+// Structural seam for the request-scoped Drizzle client so callers can inject a
+// mock in tests. Intentionally narrow; production callers pass the real context
+// `db`. (Threading the full `Database` type is a follow-up — see PR review.)
+export type DbExecutor = {
   select: (...args: any[]) => any;
   insert: (...args: any[]) => any;
   update: (...args: any[]) => any;
@@ -89,7 +93,7 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     defaultIncomeAccountRef: row.defaultIncomeAccountRef ?? null,
     defaultTaxCodeRef: row.defaultTaxCodeRef ?? null,
     pushMode: row.pushMode as AccountingPushMode,
-    status: row.status,
+    status: row.status as AccountingConnectionStatus,
     createdAt: row.createdAt ?? null,
     updatedAt: row.updatedAt ?? null,
     lastError: row.lastError ?? null,
@@ -140,21 +144,27 @@ export async function upsertConnection(
     updatedAt: now,
   });
 
+  // UPDATE set: reuse the already-encrypted ciphertext from `values` (encrypting
+  // again here would double the costly encryptSecret work), but for the columns
+  // that carry insert-time DEFAULTS — pushMode/environment/status — read from
+  // `fields` (undefined when the caller omits them) so a token-only reconnect
+  // (the OAuth callback sends no pushMode) does NOT reset an existing
+  // connection's settings, e.g. flip a 'manual' connection back to 'auto'.
   const updateSet = stripUndefined({
     realmIdEncrypted: values.realmIdEncrypted,
     accessTokenEncrypted: values.accessTokenEncrypted,
     refreshTokenEncrypted: values.refreshTokenEncrypted,
-    accessTokenExpiresAt: values.accessTokenExpiresAt,
-    refreshTokenExpiresAt: values.refreshTokenExpiresAt,
-    environment: values.environment,
-    homeCurrency: values.homeCurrency,
-    defaultIncomeAccountRef: values.defaultIncomeAccountRef,
-    defaultTaxCodeRef: values.defaultTaxCodeRef,
-    pushMode: values.pushMode,
+    accessTokenExpiresAt: fields.accessTokenExpiresAt,
+    refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
+    environment: fields.environment,
+    homeCurrency: fields.homeCurrency,
+    defaultIncomeAccountRef: fields.defaultIncomeAccountRef,
+    defaultTaxCodeRef: fields.defaultTaxCodeRef,
+    pushMode: fields.pushMode,
     webhookVerifierTokenEncrypted: values.webhookVerifierTokenEncrypted,
-    status: values.status,
-    lastError: values.lastError,
-    connectedBy: values.connectedBy,
+    status: fields.status,
+    lastError: fields.lastError,
+    connectedBy: fields.connectedBy,
     updatedAt: now,
   });
 
@@ -180,7 +190,10 @@ export async function updateTokens(
   partnerId: string,
   tokens: AccountingTokenUpdate
 ): Promise<void> {
-  await db
+  // RETURNING + 0-row guard: an RLS-context mismatch (wrong/bare db context)
+  // would otherwise match 0 rows silently and discard the freshly-rotated
+  // refresh token, permanently breaking the connection. Fail loudly instead.
+  const updated = await db
     .update(accountingConnections)
     .set({
       accessTokenEncrypted: encryptSecret(tokens.accessToken),
@@ -192,17 +205,21 @@ export async function updateTokens(
     .where(and(
       eq(accountingConnections.id, connectionId),
       eq(accountingConnections.partnerId, partnerId)
-    ));
+    ))
+    .returning({ id: accountingConnections.id });
+  if (updated.length === 0) {
+    throw new Error(`updateTokens matched no accounting_connections row (id=${connectionId}); refusing to drop rotated token silently`);
+  }
 }
 
 export async function markStatus(
   db: DbExecutor,
   connectionId: string,
   partnerId: string,
-  status: string,
+  status: AccountingConnectionStatus,
   lastError?: string
 ): Promise<void> {
-  await db
+  const updated = await db
     .update(accountingConnections)
     .set(stripUndefined({
       status,
@@ -212,18 +229,25 @@ export async function markStatus(
     .where(and(
       eq(accountingConnections.id, connectionId),
       eq(accountingConnections.partnerId, partnerId)
-    ));
+    ))
+    .returning({ id: accountingConnections.id });
+  if (updated.length === 0) {
+    throw new Error(`markStatus matched no accounting_connections row (id=${connectionId}); status '${status}' not persisted`);
+  }
 }
 
+/** Returns true if a connection row was deleted, false if none matched. */
 export async function deleteConnection(
   db: DbExecutor,
   partnerId: string,
   provider: AccountingProviderId
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const deleted = await db
     .delete(accountingConnections)
     .where(and(
       eq(accountingConnections.partnerId, partnerId),
       eq(accountingConnections.provider, provider)
-    ));
+    ))
+    .returning({ id: accountingConnections.id });
+  return deleted.length > 0;
 }

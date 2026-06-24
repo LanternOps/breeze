@@ -111,6 +111,7 @@ export default function QuickbooksIntegration() {
       window.location.assign(result.authUrl);
     } catch (err) {
       if (isMfaError(err)) setLoadError(MFA_HINT);
+      else if (!(err instanceof ActionError)) handleActionError(err, 'Failed to start the QuickBooks connection.');
       setConnecting(false);
     }
   }, [onUnauthorized]);

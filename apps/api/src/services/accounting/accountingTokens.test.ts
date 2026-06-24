@@ -52,7 +52,7 @@ describe('accountingTokens', () => {
   it('returns the existing access token when it is outside the refresh buffer', async () => {
     const { getValidAccessToken } = await import('./accountingTokens');
 
-    const token = await getValidAccessToken({}, connection());
+    const token = await getValidAccessToken({} as any, connection());
 
     expect(token).toBe('OLD-at');
     expect(mocks.provider.refresh).not.toHaveBeenCalled();
@@ -60,7 +60,7 @@ describe('accountingTokens', () => {
   });
 
   it('persists the rotated refresh token on refresh', async () => {
-    const db = {};
+    const db = {} as any;
     const conn = connection({
       accessTokenExpiresAt: new Date(Date.now() + 60_000),
     });
@@ -91,7 +91,7 @@ describe('accountingTokens', () => {
 
     const { getValidAccessToken, ReauthRequiredError } = await import('./accountingTokens');
 
-    await expect(getValidAccessToken({}, conn)).rejects.toBeInstanceOf(ReauthRequiredError);
+    await expect(getValidAccessToken({} as any, conn)).rejects.toBeInstanceOf(ReauthRequiredError);
     expect(mocks.markStatus).toHaveBeenCalledWith(
       {},
       conn.id,
@@ -100,5 +100,29 @@ describe('accountingTokens', () => {
       expect.any(String)
     );
     expect(mocks.provider.refresh).not.toHaveBeenCalled();
+  });
+
+  it('marks reauth_required when refresh returns an explicit invalid_grant', async () => {
+    const conn = connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) });
+    mocks.provider.refresh.mockRejectedValueOnce({ status: 400, qboError: 'invalid_grant', message: 'invalid_grant' });
+
+    const { getValidAccessToken, ReauthRequiredError } = await import('./accountingTokens');
+
+    await expect(getValidAccessToken({} as any, conn)).rejects.toBeInstanceOf(ReauthRequiredError);
+    expect(mocks.markStatus).toHaveBeenCalledWith({}, conn.id, conn.partnerId, 'reauth_required', expect.any(String));
+    expect(mocks.updateTokens).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a transient refresh error (does NOT misclassify as reauth)', async () => {
+    const conn = connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) });
+    // 503 whose body merely mentions invalid_grant — must NOT force-disconnect.
+    const boom = Object.assign(new Error('upstream 503 mentioning invalid_grant'), { status: 503 });
+    mocks.provider.refresh.mockRejectedValueOnce(boom);
+
+    const { getValidAccessToken } = await import('./accountingTokens');
+
+    await expect(getValidAccessToken({} as any, conn)).rejects.toBe(boom);
+    expect(mocks.markStatus).not.toHaveBeenCalled();
+    expect(mocks.updateTokens).not.toHaveBeenCalled();
   });
 });

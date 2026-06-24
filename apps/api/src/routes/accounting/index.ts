@@ -14,6 +14,7 @@ import {
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
+import { captureException } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
 
 export const accountingRoutes = new Hono();
@@ -173,35 +174,48 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   let tokens;
   try {
     tokens = await runOutsideDbContext(() => providerClient.exchangeCode(query.code, query.realmId));
-  } catch {
+  } catch (err) {
+    // Never log query.code / realmId / token bodies — only partner + provider.
+    captureException(err instanceof Error ? err : new Error(String(err)), c);
+    console.error('[accounting] QuickBooks code exchange failed', { partnerId: state.partnerId, provider });
     deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
-    return c.redirect('/integrations?accounting=quickbooks&error=exchange_failed');
+    return c.redirect('/integrations?accounting=quickbooks&error=exchange_failed#accounting');
   }
 
   // No request auth context here, so the write would match 0 rows under
   // breeze_app RLS (silent failure). Run it in system context with the
-  // partnerId taken from the verified state.
-  await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
-    realmId: tokens.realmId,
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
-    accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-    refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
-    environment: QBO_ENVIRONMENT as 'sandbox' | 'production',
-    status: 'connected',
-    lastError: null,
-    connectedBy: state.userId,
-  }));
+  // partnerId taken from the verified state. Guard the persist: a failure
+  // after a successful exchange leaves a live-but-unrecorded grant, so surface
+  // it rather than 500-ing on a raw page.
+  try {
+    await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
+      realmId: tokens.realmId,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      environment: QBO_ENVIRONMENT as 'sandbox' | 'production',
+      status: 'connected',
+      lastError: null,
+      connectedBy: state.userId,
+    }));
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), c);
+    console.error('[accounting] QuickBooks connection persist failed', { partnerId: state.partnerId, provider });
+    deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
+    return c.redirect('/integrations?accounting=quickbooks&error=persist_failed#accounting');
+  }
 
   deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
-  return c.redirect('/integrations?accounting=quickbooks&connected=1');
+  return c.redirect('/integrations?accounting=quickbooks&connected=1#accounting');
 });
 
 accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  await deleteConnection(db, partner.partnerId, provider);
+  const removed = await deleteConnection(db, partner.partnerId, provider);
+  if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
   return c.json({ disconnected: true });
 });
 

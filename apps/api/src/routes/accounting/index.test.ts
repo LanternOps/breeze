@@ -8,8 +8,8 @@ import { createHmac } from 'crypto';
 // perturbs the shared-worker process.env that secretCrypto reads in sibling tests.
 const FIXED_SECRET = 'test-jwt-secret-must-be-at-least-32-characters-long';
 
-function mintState(partnerId: string, userId: string | null): { state: string; cookie: string } {
-  const payload = { partnerId, userId, nonce: 'test-nonce', exp: Date.now() + 60_000 };
+function mintState(partnerId: string, userId: string | null, exp = Date.now() + 60_000): { state: string; cookie: string } {
+  const payload = { partnerId, userId, nonce: 'test-nonce', exp };
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   const sig = createHmac('sha256', FIXED_SECRET).update(`accounting-oauth:${encoded}`).digest('base64url');
   const state = `${encoded}.${sig}`;
@@ -80,6 +80,10 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   getConnection: mocks.getConnection,
   upsertConnection: mocks.upsertConnection,
   deleteConnection: mocks.deleteConnection,
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
 }));
 
 vi.mock('../../services/accounting/providerRegistry', () => ({
@@ -189,6 +193,47 @@ describe('accounting routes', () => {
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({ error: expect.stringContaining('binding') });
     expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    expect(mocks.upsertConnection).not.toHaveBeenCalled();
+  });
+
+  it('callback with a PRESENT but MISMATCHED binding cookie is rejected (CSRF)', async () => {
+    const { state } = mintState(authState.partnerId!, null);
+    const other = mintState(authState.partnerId!, null, Date.now() + 120_000); // a DIFFERENT state's cookie
+
+    const res = await app.request(
+      `/accounting/quickbooks/callback?code=abc&realmId=realm-1&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: `breeze_accounting_oauth_state=${other.cookie}` } },
+    );
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: expect.stringContaining('binding') });
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it('callback with an EXPIRED state is rejected', async () => {
+    const { state, cookie } = mintState(authState.partnerId!, null, Date.now() - 1000);
+
+    const res = await app.request(
+      `/accounting/quickbooks/callback?code=abc&realmId=realm-1&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` } },
+    );
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: expect.stringContaining('OAuth state') });
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it('callback redirects to error=exchange_failed when token exchange throws (no connection persisted)', async () => {
+    mocks.exchangeCode.mockRejectedValueOnce(new Error('intuit 400 invalid_grant'));
+    const { state, cookie } = mintState(authState.partnerId!, '33333333-3333-3333-3333-333333333333');
+
+    const res = await app.request(
+      `/accounting/quickbooks/callback?code=bad&realmId=realm-1&state=${encodeURIComponent(state)}`,
+      { headers: { Cookie: `breeze_accounting_oauth_state=${cookie}` } },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('error=exchange_failed');
     expect(mocks.upsertConnection).not.toHaveBeenCalled();
   });
 

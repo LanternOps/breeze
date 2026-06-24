@@ -99,6 +99,22 @@ describe('QuickbooksIntegration', () => {
     );
   });
 
+  it('renders the reauth-required state with a Reconnect CTA and last error', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === '/accounting/quickbooks') {
+        return jsonResponse({ status: 'reauth_required', environment: 'production', pushMode: 'auto', connectedAt: '2026-06-23T00:00:00Z', lastError: 'refresh token expired' });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+
+    expect(await screen.findByTestId('quickbooks-status-reauth')).toBeTruthy();
+    expect(screen.getByTestId('quickbooks-last-error')).toHaveTextContent('refresh token expired');
+    expect(screen.getByTestId('quickbooks-connect')).toHaveTextContent('Reconnect');
+    expect(screen.queryByTestId('quickbooks-disconnect')).toBeNull();
+  });
+
   it('shows a partner-scope-only message for org-scope users and never calls the API', async () => {
     scope = 'organization';
 

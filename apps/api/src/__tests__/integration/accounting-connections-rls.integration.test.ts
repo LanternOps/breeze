@@ -11,7 +11,7 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   db,
   withDbAccessContext,
@@ -51,6 +51,20 @@ async function captureCause(fn: () => Promise<unknown>): Promise<{ code?: string
 }
 
 describe('accounting_connections RLS — partner-axis forge (breeze_app role)', () => {
+  // Non-vacuity guard: if the code-under-test pool is ever a BYPASSRLS role
+  // (e.g. a worktree missing its .env.test symlink), every forge assertion
+  // below passes even with broken policies. Fail loudly here first.
+  runDb('code-under-test runs as a non-BYPASSRLS role (guards against vacuous RLS)', async () => {
+    const { partnerAContext } = await seedTwoPartners();
+    const rows = await withDbAccessContext(partnerAContext, () =>
+      db.execute(sql`SELECT current_user AS who, rolbypassrls
+                     FROM pg_roles WHERE rolname = current_user`)
+    );
+    const row = (rows as unknown as Array<{ who: string; rolbypassrls: boolean }>)[0];
+    expect(row?.who).toBe('breeze_app');
+    expect(row?.rolbypassrls).toBe(false);
+  });
+
   runDb('allows a legitimate partner-A accounting connection insert', async () => {
     const { partnerA, partnerAContext } = await seedTwoPartners();
 
