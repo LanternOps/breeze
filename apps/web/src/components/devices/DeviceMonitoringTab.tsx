@@ -53,8 +53,7 @@ export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonito
       const response = await fetchWithAuth(`/monitoring/results/${deviceId}/summary`);
       if (!response.ok) throw new Error('Failed to load monitoring results');
       const json = await response.json();
-      const payload = json?.data ?? json;
-      setResults(Array.isArray(payload) ? payload : []);
+      setResults(Array.isArray(json?.data) ? json.data : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load monitoring results');
     } finally {

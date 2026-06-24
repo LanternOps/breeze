@@ -65,6 +65,30 @@ describe('ComplianceStatusTab', () => {
     expect(screen.getAllByTestId('compliance-status-row')).toHaveLength(2);
   });
 
+  it('warns that the summary is page-scoped when results exceed the page', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: [
+          {
+            id: 'c1',
+            configItemName: 'Disk Space Minimum',
+            deviceId: 'dev-1',
+            status: 'compliant',
+            lastCheckedAt: '2026-06-24T10:00:00.000Z',
+            updatedAt: '2026-06-24T10:00:00.000Z',
+            deviceHostname: 'DESKTOP-1',
+          },
+        ],
+        overall: { total: 1, compliant: 1, nonCompliant: 0, unknown: 0 },
+        pagination: { page: 1, limit: 50, total: 120 },
+      })
+    );
+
+    render(<ComplianceStatusTab policyId="pol-1" />);
+
+    expect(await screen.findByTestId('compliance-status-partial')).toBeInTheDocument();
+  });
+
   it('renders an empty state when there are no compliance results', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({ data: [], overall: { total: 0, compliant: 0, nonCompliant: 0, unknown: 0 } })

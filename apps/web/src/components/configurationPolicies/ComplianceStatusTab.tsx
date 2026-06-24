@@ -54,6 +54,7 @@ function formatTimestamp(value: string | null, timezone?: string): string {
 export default function ComplianceStatusTab({ policyId, timezone }: ComplianceStatusTabProps) {
   const [rows, setRows] = useState<ComplianceRow[]>([]);
   const [overall, setOverall] = useState<ComplianceOverall>();
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -66,6 +67,7 @@ export default function ComplianceStatusTab({ policyId, timezone }: ComplianceSt
       const json = (await response.json()) as ComplianceResponse;
       setRows(Array.isArray(json?.data) ? json.data : []);
       setOverall(json?.overall);
+      setTotal(json?.pagination?.total ?? (Array.isArray(json?.data) ? json.data.length : 0));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load compliance status');
     } finally {
@@ -129,6 +131,12 @@ export default function ComplianceStatusTab({ policyId, timezone }: ComplianceSt
         <p className="mt-1 text-sm text-muted-foreground">
           Per-device evaluation of this policy&apos;s compliance rules (re-evaluated automatically).
         </p>
+
+        {overall && total > rows.length && (
+          <p data-testid="compliance-status-partial" className="mt-3 text-xs text-warning">
+            Showing the first {rows.length} of {total} results — the summary below reflects this page only.
+          </p>
+        )}
 
         {overall && (
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
