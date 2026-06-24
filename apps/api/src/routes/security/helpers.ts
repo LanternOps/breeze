@@ -110,6 +110,10 @@ export function mapThreatFilterToDb(status: ThreatStatus): string[] {
 export function normalizeEncryption(encryptionStatus: string): 'encrypted' | 'partial' | 'unencrypted' {
   const value = encryptionStatus.toLowerCase();
   if (value.includes('partial')) return 'partial';
+  // 'unencrypted' must be checked before 'encrypted' -- 'encrypted' is a
+  // substring of 'unencrypted', so the original order classified every
+  // unencrypted device as encrypted across the security views (#1831).
+  if (value.includes('unencrypted')) return 'unencrypted';
   if (value.includes('encrypted')) return 'encrypted';
   return 'unencrypted';
 }
