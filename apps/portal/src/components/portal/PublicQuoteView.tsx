@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { portalApi, buildPortalApiUrl, type PublicQuoteDetail } from '@/lib/api';
-import { sellerLines } from '@/lib/sellerLines';
 import { cn } from '@/lib/utils';
 import { QuoteBlocks, money } from './quoteBlocks';
+import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { SignaturePanel } from './SignaturePanel';
 
 interface PublicQuoteViewProps {
   token: string;
@@ -18,7 +19,6 @@ function shortDate(value: string | null | undefined): string {
 }
 
 export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps) {
-  const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(initial?.quote.status ?? '');
   const [msg, setMsg] = useState<string | null>(null);
@@ -39,20 +39,28 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
 
-  const seller = quote.sellerSnapshot ?? null;
-  const sellerAddressLines = sellerLines(seller?.address ?? null);
+  const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
 
-  const accept = async () => {
-    if (busy) return;
-    if (!name.trim()) {
-      setMsg('Please type your full name to sign.');
-      setMsgError(true);
-      return;
-    }
+  const statusBadge =
+    status === 'accepted' || status === 'converted'
+      ? { label: 'Accepted', cls: 'bg-success/10 text-success' }
+      : status === 'declined'
+        ? { label: 'Declined', cls: 'bg-destructive/10 text-destructive' }
+        : status === 'expired'
+          ? { label: 'Expired', cls: 'bg-destructive/10 text-destructive' }
+          : null;
+
+  const headerDates = [
+    ...(quote.issueDate ? [{ label: 'Issued', value: shortDate(quote.issueDate) }] : []),
+    ...(quote.expiryDate ? [{ label: 'Valid until', value: shortDate(quote.expiryDate) }] : []),
+  ];
+
+  const accept = async (signerName: string) => {
+    if (busy || !signerName.trim()) return;
     setBusy(true);
     setMsg(null);
     setMsgError(false);
-    const res = await portalApi.acceptPublicQuote(token, name.trim());
+    const res = await portalApi.acceptPublicQuote(token, signerName.trim());
     setBusy(false);
     if (res.error) {
       setMsg(res.error);
@@ -90,93 +98,74 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
   };
 
   return (
-    <div data-testid="public-quote" className="mx-auto w-full max-w-2xl space-y-6 p-2 sm:p-6">
-      <header className="flex items-center gap-3 border-b pb-4">
-        {branding.logoUrl && (
-          <img src={branding.logoUrl} alt={branding.partnerName} className="h-10 w-auto" />
-        )}
-        <div>
-          <h1 className="text-xl font-semibold">
-            Proposal {quote.quoteNumber ?? ''}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            from {branding.partnerName}
-            {quote.expiryDate ? ` · valid until ${shortDate(quote.expiryDate)}` : ''}
+    <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
+      <DocumentPaper primaryColor={branding.primaryColor} testId="public-quote">
+        <DocumentHeader
+          logoUrl={branding.logoUrl}
+          partnerName={branding.partnerName}
+          seller={seller}
+          eyebrow="Proposal"
+          title={quote.quoteNumber ?? 'Proposal'}
+          statusLabel={statusBadge?.label}
+          statusClass={statusBadge?.cls}
+          dates={headerDates}
+          preparedForName={quote.billToName ?? undefined}
+        />
+
+        {quote.introNotes && (
+          <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">
+            {quote.introNotes}
           </p>
-        </div>
-      </header>
-
-      {quote.introNotes && (
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{quote.introNotes}</p>
-      )}
-
-      {seller?.name && (
-        <div className="rounded-lg border p-4" data-testid="public-quote-from">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">From</p>
-          <p className="mt-1 text-sm font-medium">{seller.name}</p>
-          {sellerAddressLines.map((l, i) => <p key={i} className="text-sm text-muted-foreground">{l}</p>)}
-          {seller.phone && <p className="text-sm text-muted-foreground">{seller.phone}</p>}
-          {seller.email && <p className="text-sm text-muted-foreground">{seller.email}</p>}
-          {seller.website && <p className="text-sm text-muted-foreground">{seller.website}</p>}
-        </div>
-      )}
-
-      <QuoteBlocks
-        blocks={blocks}
-        lines={lines}
-        currency={currency}
-        imageUrl={(imageId) =>
-          buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)
-        }
-      />
-
-      <div className="ml-auto max-w-xs space-y-1 text-sm">
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">One-time</span>
-          <span>{money(quote.oneTimeTotal ?? 0, currency)}</span>
-        </div>
-        {Number(quote.monthlyRecurringTotal ?? 0) > 0 && (
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Monthly</span>
-            <span>{money(quote.monthlyRecurringTotal ?? 0, currency)}/mo</span>
-          </div>
         )}
-        {Number(quote.annualRecurringTotal ?? 0) > 0 && (
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Annual</span>
-            <span>{money(quote.annualRecurringTotal ?? 0, currency)}/yr</span>
-          </div>
-        )}
-        <div className="flex justify-between border-t pt-1 font-semibold">
-          <span>{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
-          <span>{money(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total, currency)}</span>
-        </div>
-        {hasRecurring && (
-          <>
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>First-period total (incl. recurring)</span>
-              <span>{money(quote.total, currency)}</span>
+
+        <QuoteBlocks
+          blocks={blocks}
+          lines={lines}
+          currency={currency}
+          imageUrl={(imageId) =>
+            buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)
+          }
+        />
+
+        <section className="flex justify-end">
+          <div className="w-full max-w-xs space-y-2.5">
+            {hasRecurring && Number(quote.monthlyRecurringTotal ?? 0) > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Monthly recurring</span>
+                <span className="tabular-nums text-foreground">{money(quote.monthlyRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
+              </div>
+            )}
+            {hasRecurring && Number(quote.annualRecurringTotal ?? 0) > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Annual recurring</span>
+                <span className="tabular-nums text-foreground">{money(quote.annualRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>
+              </div>
+            )}
+            <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }}>
+              <span className="text-sm font-semibold text-foreground">{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
+              <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
+                {money(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total, currency)}
+              </span>
             </div>
-            <p className="pt-1 text-xs text-muted-foreground">
-              Accepting invoices only the one-time charges now. Recurring lines bill on their own schedule.
-            </p>
-          </>
+            {hasRecurring && (
+              <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">First-period total</span>
+                  <span className="tabular-nums text-foreground">{money(quote.total, currency)}</span>
+                </div>
+                <p className="pt-1 text-xs leading-relaxed text-muted-foreground">
+                  Accepting this proposal bills only the one-time charges now. Recurring lines bill on their own schedule.
+                </p>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
+        {quote.termsAndConditions && (
+          <DocumentTerms label="Terms & Conditions" testId="public-quote-terms-conditions">{quote.termsAndConditions}</DocumentTerms>
         )}
-      </div>
-
-      {quote.terms && (
-        <div className="rounded-lg border p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terms</p>
-          <p className="mt-1 whitespace-pre-wrap text-sm">{quote.terms}</p>
-        </div>
-      )}
-
-      {quote.termsAndConditions && (
-        <div className="rounded-lg border p-4" data-testid="public-quote-terms-conditions">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terms &amp; Conditions</p>
-          <p className="mt-1 whitespace-pre-wrap text-sm">{quote.termsAndConditions}</p>
-        </div>
-      )}
+      </DocumentPaper>
 
       {status === 'converted' && (
         <div data-testid="public-quote-accepted" className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success">
@@ -207,40 +196,12 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       )}
 
       {open && (
-        <div className="space-y-3 rounded-md border p-4">
-          <label htmlFor="public-quote-signer" className="block text-sm font-medium">
-            Type your full name to accept &amp; sign
-          </label>
-          <input
-            id="public-quote-signer"
-            data-testid="public-quote-signer"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={busy}
-            className="w-full rounded-md border px-3 py-2 text-sm disabled:opacity-50"
-            placeholder="Your full name"
-          />
-          <div className="flex gap-3">
-            <button
-              type="button"
-              data-testid="public-quote-accept"
-              disabled={busy}
-              onClick={() => void accept()}
-              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {busy ? 'Working…' : 'Accept & sign'}
-            </button>
-            <button
-              type="button"
-              data-testid="public-quote-decline"
-              disabled={busy}
-              onClick={() => void decline()}
-              className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              Decline
-            </button>
-          </div>
-        </div>
+        <SignaturePanel
+          onAccept={(signerName) => void accept(signerName)}
+          onDecline={() => void decline()}
+          busy={busy}
+          testIdPrefix="public-quote"
+        />
       )}
     </div>
   );
