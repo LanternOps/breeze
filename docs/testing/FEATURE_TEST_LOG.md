@@ -4,6 +4,24 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## BE-16 Enhancement P1 — Risk-acceptance RBAC (`vulnerabilities:accept_risk`) — unit tests + type-check — 2026-06-24
+
+**Branch:** `feat/be16-vuln-phase1` · **Tested by:** Claude · **Result:** PASS (unit/web suites + astro check); browser wt-stack spot-check **pending Todd's manual UI verification**.
+
+**What was added (Tasks 1–4):**
+- New permission `vulnerabilities:accept_risk` (`VULN_RISK_ACCEPT`) registered in `apps/api/src/services/permissions.ts` and seeded for Org Admin, "Security Approver" (org), and "Partner Security Approver" (partner) roles.
+- Migration `2026-06-29-vuln-risk-accept-permission.sql`: inserts the permission row + the two new stock roles + their grants. Idempotent.
+- API gate change: `POST /vulnerabilities/:id/accept-risk` and `POST /vulnerabilities/:id/reopen` now require `vulnerabilities:accept_risk` (previously plain `devices:write`). `POST /vulnerabilities/:id/mitigate` unchanged (`devices:write`).
+- Web gate: **Accept risk** button and **Reopen** button in `DeviceVulnerabilitiesTab` are hidden/disabled when `can('vulnerabilities','accept_risk')` is false.
+
+**Verification runs (2026-06-24):**
+- API suites (`seed.test.ts`, `permissions.test.ts`, `vulnerabilities.test.ts`, `autoMigrate.test.ts`): **4 files, 183 tests — all PASS**.
+- Web suites (`DeviceVulnerabilitiesTab.test.tsx`, `permissions.test.ts`): **2 files, 30 tests — all PASS**.
+- `astro check` (1075 files): **0 errors, 0 warnings** (202 pre-existing hints, none in vuln/permission code).
+- `db:check-drift`: **not cleanly runnable** — shared local DB (main-branch ledger) has not had the 11 branch-specific migrations applied; script reports them as "not in ledger". This is expected for a feature-branch worktree; it is not a Drizzle schema/code mismatch. Run against a fresh DB after branch migrations are applied to confirm clean drift.
+
+**Browser wt-stack spot-check:** DEFERRED — manual UI verification by Todd (confirm Accept risk + Reopen visible for Partner Admin `*:*`, hidden for a user lacking `vulnerabilities:accept_risk`, and that accept-risk succeeds end-to-end).
+
 ## Vulnerability Management (BE-16 Phase 1) — wt-stack + Playwright — 2026-06-23
 
 **Branch:** `feat/be16-vuln-phase1` · **Tested by:** Claude · **Result:** PASS, no bugs.
