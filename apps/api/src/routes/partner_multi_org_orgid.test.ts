@@ -93,6 +93,7 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => chainMock([])),
     update: vi.fn(() => chainMock(undefined)),
     delete: vi.fn(() => chainMock(undefined)),
+    execute: vi.fn(async () => []),
     transaction: vi.fn(async (fn: any) => fn({
       select: vi.fn(() => chainMock([])),
       insert: vi.fn(() => chainMock([])),
@@ -316,7 +317,11 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
       await expectNotOrgIdRequired400(res);
     });
 
-    it('GET /software-inventory 400s when orgId is missing', async () => {
+    // Exception to the #620 "missing orgId => 400" rule: the software-inventory
+    // READ endpoints now aggregate across all accessible orgs ("All Orgs") when
+    // no orgId is supplied, rather than 400ing. (The catalog/discovery/huntress
+    // routes below still require an explicit orgId.)
+    it('GET /software-inventory aggregates across all orgs when orgId is missing', async () => {
       const { softwareInventoryRoutes } = await import('./softwareInventory');
       const app = new Hono().route('/software-inventory', softwareInventoryRoutes);
 
@@ -325,7 +330,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
         headers: { Authorization: 'Bearer t' },
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
     });
 
     it('GET /software-inventory 403s when ?orgId= is foreign', async () => {

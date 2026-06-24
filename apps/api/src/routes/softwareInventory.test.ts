@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { eq, inArray } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -127,6 +128,32 @@ function setAuth(allowedSiteIds?: string[]) {
   });
 }
 
+const ORG_A = '11111111-1111-1111-1111-1111111111aa';
+const ORG_B = '22222222-2222-2222-2222-2222222222bb';
+const ORG_FOREIGN = '99999999-9999-9999-9999-999999999999';
+
+// Partner/system scope users have orgId=null and reach multiple orgs. "All Orgs"
+// (no orgId query param) must aggregate across auth.accessibleOrgIds via the
+// shared auth.orgCondition() helper — never 400 "Organization context required".
+function setMultiOrgAuth(scope: 'partner' | 'system', orgIds: string[] | null) {
+  vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+    c.set('auth', {
+      user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+      scope,
+      partnerId: scope === 'partner' ? 'partner-1' : null,
+      orgId: null,
+      accessibleOrgIds: orgIds,
+      orgCondition: (col: any) => {
+        if (orgIds === null) return undefined; // system scope — no filter
+        if (orgIds.length === 1) return eq(col, orgIds[0]);
+        return inArray(col, orgIds);
+      },
+      canAccessOrg: (id: string) => orgIds === null || orgIds.includes(id),
+    });
+    return next();
+  });
+}
+
 function mockPolicyStatusMap(rows: any[] = []) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
@@ -239,6 +266,83 @@ describe('softwareInventoryRoutes site-scope reads', () => {
     });
   });
 
+  describe('GET /software-inventory — All Orgs (multi-org) reads', () => {
+    const FIREFOX_ROW = {
+      name: 'Firefox',
+      vendor: 'Mozilla',
+      device_count: '3',
+      first_seen: null,
+      last_seen: null,
+      version_data: null,
+    };
+
+    it('aggregates across all accessible orgs when no orgId is provided (partner scope)', async () => {
+      setMultiOrgAuth('partner', [ORG_A, ORG_B]);
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '1' }] as any)
+        .mockResolvedValueOnce([FIREFOX_ROW] as any);
+      mockPolicyStatusMap();
+
+      const res = await app.request('/software-inventory', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const countSql = dumpSql(vi.mocked(db.execute).mock.calls[0]?.[0]);
+      const listSql = dumpSql(vi.mocked(db.execute).mock.calls[1]?.[0]);
+      for (const sqlText of [countSql, listSql]) {
+        expect(sqlText).toContain(ORG_A);
+        expect(sqlText).toContain(ORG_B);
+      }
+    });
+
+    it('does not 400 for a system-scope caller viewing all orgs (no org filter)', async () => {
+      setMultiOrgAuth('system', null);
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '1' }] as any)
+        .mockResolvedValueOnce([FIREFOX_ROW] as any);
+      mockPolicyStatusMap();
+
+      const res = await app.request('/software-inventory', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('scopes to a single org when an accessible orgId is provided (partner scope)', async () => {
+      setMultiOrgAuth('partner', [ORG_A, ORG_B]);
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '1' }] as any)
+        .mockResolvedValueOnce([FIREFOX_ROW] as any);
+      mockPolicyStatusMap();
+
+      const res = await app.request(`/software-inventory?orgId=${ORG_A}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const listSql = dumpSql(vi.mocked(db.execute).mock.calls[1]?.[0]);
+      expect(listSql).toContain(ORG_A);
+      expect(listSql).not.toContain(ORG_B);
+    });
+
+    it('rejects an orgId outside the accessible set with 403', async () => {
+      setMultiOrgAuth('partner', [ORG_A, ORG_B]);
+
+      const res = await app.request(`/software-inventory?orgId=${ORG_FOREIGN}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.execute)).not.toHaveBeenCalled();
+    });
+  });
+
   describe('GET /software-inventory/:name/devices', () => {
     it('narrows drilldown count and list to allowed sites for a restricted caller', async () => {
       setAuth([SITE_ALLOWED]);
@@ -259,6 +363,26 @@ describe('softwareInventoryRoutes site-scope reads', () => {
         expect(rendered).toContain('devices.siteId');
         expect(rendered).toContain(SITE_ALLOWED);
         expect(rendered).not.toContain(SITE_DENIED);
+      }
+    });
+
+    it('drills down across all accessible orgs when no orgId is provided (partner scope)', async () => {
+      setMultiOrgAuth('partner', [ORG_A, ORG_B]);
+      const whereArgs: unknown[] = [];
+      mockDrilldownCount([{ count: 2 }], whereArgs);
+      mockDrilldownRows([{ deviceId: DEVICE_ALLOWED, hostname: 'allowed-device' }], whereArgs);
+
+      const res = await app.request('/software-inventory/Firefox/devices', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(whereArgs).toHaveLength(2);
+      for (const where of whereArgs) {
+        const rendered = dumpSql(where);
+        expect(rendered).toContain(ORG_A);
+        expect(rendered).toContain(ORG_B);
       }
     });
 
