@@ -215,6 +215,9 @@ const (
 	CmdTunnelData  = "tunnel_data"
 	CmdTunnelClose = "tunnel_close"
 
+	// One-shot HTTP proxy request (network proxy)
+	CmdHttpRequest = "http_request"
+
 	// PAM Track 5: actuate an approved UAC elevation by typing the
 	// dormant-admin credentials into consent.exe on the secure desktop.
 	// Server-pushed only; handled by internal/pamactuator on Windows and

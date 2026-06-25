@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { ArrowLeft, Copy, Check, X, Globe, Network } from 'lucide-react';
+import { ArrowLeft, X, Globe, Network, ExternalLink } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
 
@@ -9,30 +9,37 @@ interface Props {
 }
 
 /**
- * Proxy tunnel info page. Shows the tunnel status, target, and connection URLs
- * for accessing the proxied service.
+ * Network Proxy page. Renders the proxied device's web UI in an iframe served
+ * through the API HTTP reverse proxy (`/api/v1/tunnel-http/:id/*`). A one-time
+ * http-ticket authorizes the first navigation, which the proxy exchanges for a
+ * short-lived, path-scoped cookie used by all sub-resource requests.
+ *
+ * Note: unlike VNC/terminal there is no long-lived relay WebSocket, so the
+ * `tunnel_sessions` status never flips to "active". The displayed status is
+ * driven by the iframe load; the background poll only surfaces a server-side
+ * failure/teardown.
  */
-function buildTunnelWsUrl(tunnelId: string, ticket: string): string {
+function buildProxyUrl(tunnelId: string, ticket: string): string {
   const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
-  const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws';
-  const wsHost = apiUrl.replace(/^https?:\/\//, '');
-  return `${wsProtocol}://${wsHost}/api/v1/tunnel-ws/${tunnelId}/ws?ticket=${encodeURIComponent(ticket)}`;
+  return `${apiUrl}/api/v1/tunnel-http/${tunnelId}/?__bzt=${encodeURIComponent(ticket)}`;
 }
 
 export default function ProxyTunnelPage({ tunnelId, target }: Props) {
   const [status, setStatus] = useState<'connecting' | 'active' | 'disconnected' | 'failed'>('connecting');
-  const [wsUrl, setWsUrl] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [proxyUrl, setProxyUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Poll only to surface a server-side failure/teardown. The proxied service's
+  // liveness is reflected by the iframe load below — the HTTP proxy issues
+  // per-request fetches, so no relay ever flips the session to "active".
   const pollStatus = useCallback(async () => {
     try {
       const res = await fetchWithAuth(`/tunnels/${tunnelId}`);
       if (res.ok) {
         const data = await res.json();
-        setStatus(data.status);
-        if (data.status === 'failed') {
-          setError(extractApiError(data, 'Tunnel failed'));
+        if (data.status === 'failed' || data.status === 'disconnected') {
+          setStatus(data.status);
+          if (data.status === 'failed') setError(extractApiError(data, 'Tunnel failed'));
         }
       }
     } catch { /* ignore */ }
@@ -49,22 +56,23 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
 
     const mintTicket = async () => {
       try {
-        const res = await fetchWithAuth(`/tunnels/${tunnelId}/ws-ticket`, { method: 'POST' });
+        const res = await fetchWithAuth(`/tunnels/${tunnelId}/http-ticket`, { method: 'POST' });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error || 'Failed to obtain tunnel ticket');
         }
         const body = await res.json();
+        // The mint endpoint wraps the ticket: `{ ticket: { ticket, expiresInSeconds } }`.
         const ticket = typeof body.ticket === 'string' ? body.ticket : body.ticket?.ticket;
         if (!ticket) {
           throw new Error('Invalid tunnel ticket response');
         }
         if (!cancelled) {
-          setWsUrl(buildTunnelWsUrl(tunnelId, ticket));
+          setProxyUrl(buildProxyUrl(tunnelId, ticket));
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to prepare tunnel relay URL');
+          setError(err instanceof Error ? err.message : 'Failed to prepare the proxy connection');
         }
       }
     };
@@ -80,14 +88,6 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
     setStatus('disconnected');
   }, [tunnelId]);
 
-  const handleCopyWsUrl = useCallback(() => {
-    if (!wsUrl) return;
-    navigator.clipboard.writeText(wsUrl).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [wsUrl]);
-
   const statusColor = {
     connecting: 'text-amber-500',
     active: 'text-green-500',
@@ -96,16 +96,16 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
   }[status];
 
   const statusLabel = {
-    connecting: 'Connecting...',
-    active: 'Active',
+    connecting: 'Connecting…',
+    active: 'Connected',
     disconnected: 'Disconnected',
     failed: 'Failed',
   }[status];
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="flex items-center justify-between border-b px-6 py-3">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between gap-4 border-b px-6 py-3">
+        <div className="flex items-center gap-3 min-w-0">
           <a
             href="/remote"
             className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition"
@@ -114,33 +114,44 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
             Back
           </a>
           <span className="text-muted-foreground">|</span>
-          <Globe className="h-4 w-4 text-muted-foreground" />
+          <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="text-sm font-medium">Network Proxy</span>
+          <span className="text-muted-foreground">·</span>
+          <span className="truncate font-mono text-xs text-muted-foreground">{target || '—'}</span>
+          <span className={`shrink-0 text-xs font-medium ${statusColor}`}>{statusLabel}</span>
         </div>
-        <button
-          type="button"
-          onClick={handleClose}
-          disabled={status === 'disconnected' || status === 'failed'}
-          className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition disabled:opacity-50"
-        >
-          <X className="h-4 w-4" />
-          Close Tunnel
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {proxyUrl && (
+            <a
+              href={proxyUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open in new tab
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={handleClose}
+            disabled={status === 'disconnected' || status === 'failed'}
+            className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+          >
+            <X className="h-4 w-4" />
+            Close
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 flex items-start justify-center p-8">
-        <div className="w-full max-w-lg space-y-6">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
+      {error ? (
+        <div className="flex flex-1 items-start justify-center p-8">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+            <h2 className="flex items-center gap-2 text-lg font-semibold">
               <Network className="h-5 w-5" />
               Tunnel Details
             </h2>
-
             <dl className="mt-4 space-y-3 text-sm">
-              <div className="flex justify-between">
-                <dt className="text-muted-foreground">Status</dt>
-                <dd className={`font-medium ${statusColor}`}>{statusLabel}</dd>
-              </div>
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">Target</dt>
                 <dd className="font-mono font-medium">{target || '—'}</dd>
@@ -150,37 +161,30 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
                 <dd className="font-mono text-xs text-muted-foreground">{tunnelId}</dd>
               </div>
             </dl>
-
-            {error && (
-              <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
-                {error}
-              </div>
-            )}
-          </div>
-
-          {wsUrl && status !== 'failed' && (
-            <div className="rounded-lg border bg-card p-6 shadow-sm">
-              <h3 className="text-sm font-semibold">WebSocket Relay URL</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Use this URL to connect to the proxied service via WebSocket relay.
-              </p>
-              <div className="mt-3 flex items-center gap-2">
-                <code className="flex-1 rounded-md border bg-muted px-3 py-2 text-xs font-mono break-all">
-                  {wsUrl}
-                </code>
-                <button
-                  type="button"
-                  onClick={handleCopyWsUrl}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted transition"
-                  title="Copy URL"
-                >
-                  {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                </button>
-              </div>
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
+              {error}
             </div>
-          )}
+          </div>
         </div>
-      </div>
+      ) : proxyUrl ? (
+        <iframe
+          src={proxyUrl}
+          title="Proxied service"
+          data-testid="network-proxy-frame"
+          // The proxied device is untrusted. Omitting `allow-same-origin` forces
+          // the framed content into a null origin so its scripts cannot read this
+          // app's cookies/storage or reach the parent frame (defense-in-depth with
+          // the server-set sandbox CSP). The proxy auth cookie is HttpOnly and
+          // attaches by site, so auth still works.
+          sandbox="allow-scripts allow-forms allow-popups"
+          className="w-full flex-1 border-0"
+          onLoad={() => setStatus((s) => (s === 'failed' || s === 'disconnected' ? s : 'active'))}
+        />
+      ) : (
+        <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
+          Preparing proxy connection…
+        </div>
+      )}
     </div>
   );
 }

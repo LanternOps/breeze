@@ -297,6 +297,32 @@ describe('system tools routes', () => {
     expect(body.meta.total).toBe(1);
   });
 
+  it('forwards a high services limit and clamps it to the route maximum (500)', async () => {
+    mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ services: [], total: 0, page: 1, limit: 500, totalPages: 0 })
+    });
+
+    // The web Services tab requests ?limit=500 to fetch the full list in one
+    // request; values above the route cap must clamp to 500, not fall back to 50.
+    await app.request(`/system-tools/devices/${deviceId}/services?limit=500`);
+    expect(mockExecuteCommand).toHaveBeenLastCalledWith(
+      deviceId,
+      'LIST_SERVICES',
+      expect.objectContaining({ limit: 500 }),
+      expect.anything()
+    );
+
+    await app.request(`/system-tools/devices/${deviceId}/services?limit=600`);
+    expect(mockExecuteCommand).toHaveBeenLastCalledWith(
+      deviceId,
+      'LIST_SERVICES',
+      expect.objectContaining({ limit: 500 }),
+      expect.anything()
+    );
+  });
+
   it('gets service details via agent command', async () => {
     mockDeviceSelect();
     mockExecuteCommand.mockResolvedValue({

@@ -117,6 +117,7 @@ var allCommandTypes = []string{
 
 	// handlers_tunnel.go init()
 	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
+	tools.CmdHttpRequest,
 
 	// handlers_actuate.go init() — PAM Track 5
 	tools.CmdActuateElevation,

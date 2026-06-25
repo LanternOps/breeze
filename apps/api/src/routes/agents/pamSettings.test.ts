@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { PAM_DEFAULTS, parsePamSettings } from './pamSettings';
 
 describe('parsePamSettings', () => {
-  it('defaults to interception enabled', () => {
-    expect(PAM_DEFAULTS.uacInterceptionEnabled).toBe(true);
+  it('defaults to interception disabled (opt-in)', () => {
+    expect(PAM_DEFAULTS.uacInterceptionEnabled).toBe(false);
   });
 
   it('returns defaults for null/undefined/non-object input', () => {

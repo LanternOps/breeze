@@ -96,7 +96,13 @@ servicesRoutes.get(
     }
 
     const query = c.req.valid('query');
-    const { page, limit } = getPagination(query);
+    // The Services UI paginates client-side, so it fetches the list in one
+    // request with a high limit. Allow up to 500 (the agent's max accepted page
+    // size, matching the Processes tab) instead of the default cap of 100 — this
+    // covers realistic Windows service counts. The agent hard-caps the full list
+    // at 512 (maxServiceListEntries), so devices with >500 services are not paged
+    // through here; 500 is intentionally the single-request ceiling.
+    const { page, limit } = getPagination(query, 500);
     const search = query.search || '';
     const status = query.status || '';
 

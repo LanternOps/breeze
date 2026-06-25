@@ -236,16 +236,32 @@ func handleWakeOnLan(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 // handleRefreshInventory triggers an immediate run of the full inventory cycle
 // (hardware, software, disk, network, configuration changes, sessions,
-// connections, patches, policy state, security status, Apple warranty). Each
-// collector is dispatched to its own goroutine via h.sendInventory(); the
-// returned result acknowledges the dispatch synchronously while data flows in
-// over the next 30s–2min as each collector completes.
+// connections, patches, policy state, security status, Apple warranty). Most
+// collectors are dispatched via h.sendInventory(); hardware, patch, security,
+// and session inventory are dispatched separately here because they run on
+// their own cadences (daily / 5-min) and are no longer in the sendInventory
+// fan-out. Each runs in its own goroutine; the returned result acknowledges the
+// dispatch synchronously while data flows in over the next 30s–2min.
 func handleRefreshInventory(h *Heartbeat, _ Command) tools.CommandResult {
 	start := time.Now()
 	if h.sendInventoryFn != nil {
 		h.sendInventoryFn()
 	} else {
 		h.sendInventory()
+		// Hardware, patch, security, and session inventory run on their own
+		// cadences (daily / 5-min) and are no longer part of the sendInventory
+		// fan-out, so dispatch them explicitly here to keep "Refresh Inventory" a
+		// full refresh of everything in the dispatched list below.
+		go h.sendHardwareInventory()
+		go h.sendPatchInventory()
+		go h.sendSecurityStatus()
+		go h.sendSessionInventory()
+		// Reset the daily gates so the scheduler doesn't immediately re-run the
+		// hardware/patch scans right after this manual refresh.
+		h.mu.Lock()
+		h.lastHardwareUpdate = time.Now()
+		h.lastPatchUpdate = time.Now()
+		h.mu.Unlock()
 	}
 	return tools.NewSuccessResult(map[string]any{
 		"dispatched": []string{
