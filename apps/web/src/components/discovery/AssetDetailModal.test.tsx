@@ -71,7 +71,7 @@ describe('AssetDetailModal — link to managed device', () => {
         screen.getByText('Asset linked to WS-FRONTDESK. It is now marked approved.')
       ).toBeInTheDocument();
     });
-    expect(onLinked).toHaveBeenCalledWith('asset-1');
+    expect(onLinked).toHaveBeenCalledWith('asset-1', 'dev-1');
     expect(fetchMock).toHaveBeenCalledWith(
       '/discovery/assets/asset-1/link',
       expect.objectContaining({ method: 'POST' })

@@ -778,8 +778,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         asset={selectedAsset}
         devices={devices}
         onClose={() => setSelectedAsset(null)}
-        onLinked={async () => {
-          setSelectedAsset(null);
+        onLinked={async (_assetId, deviceId) => {
+          // Keep the modal open — linking is usually a prerequisite for the
+          // next action in this same modal (e.g. Proxy Access). Reflect the new
+          // link in place so the Proxy section unlocks without a reopen.
+          setSelectedAsset(prev => (prev ? { ...prev, linkedDeviceId: deviceId } : prev));
           await fetchAssets();
         }}
         onDeleted={async () => {

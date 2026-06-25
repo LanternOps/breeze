@@ -36,7 +36,7 @@ type AssetDetailModalProps = {
   loading?: boolean;
   devices?: { id: string; name: string }[];
   onClose: () => void;
-  onLinked?: (assetId: string) => void;
+  onLinked?: (assetId: string, deviceId: string) => void;
   onDeleted?: (assetId: string) => void;
   onUpdated?: (assetId: string) => void;
 };
@@ -115,7 +115,7 @@ export default function AssetDetailModal({
           ? `Asset linked to ${deviceName}. It is now marked approved.`
           : 'Asset linked. It is now marked approved.'
       );
-      onLinked?.(asset.id);
+      onLinked?.(asset.id, selectedDevice);
     } catch (err) {
       setLinkError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
