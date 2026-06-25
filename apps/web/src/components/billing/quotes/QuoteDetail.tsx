@@ -4,7 +4,8 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
-import { quotePdfUrl, sendQuote } from '../../../lib/api/quotes';
+import { deleteQuote, quotePdfUrl, sendQuote } from '../../../lib/api/quotes';
+import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -35,6 +36,8 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
 
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const [delOpen, setDelOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
 
   const send = useCallback(async () => {
@@ -54,6 +57,25 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
       setSending(false);
     }
   }, [sending, quote.id, refresh]);
+
+  const remove = useCallback(async () => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await runAction({
+        request: () => deleteQuote(quote.id),
+        errorFallback: 'Could not delete the draft.',
+        successMessage: 'Draft deleted',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setDelOpen(false);
+      void navigateTo('/billing/quotes');
+    } catch (err) {
+      handleActionError(err, 'Could not delete the draft.');
+    } finally {
+      setDeleting(false);
+    }
+  }, [deleting, quote.id]);
 
   const sortedBlocks = useMemo(
     () => [...blocks].sort((a, b) => a.sortOrder - b.sortOrder),
@@ -251,9 +273,29 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
                 {sending ? 'Sending…' : 'Send proposal'}
               </button>
             )}
+            {can('quotes', 'write') && quote.status === 'draft' && (
+              <button
+                type="button"
+                onClick={() => setDelOpen(true)}
+                data-testid="quote-delete-open"
+                className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+              >
+                Delete draft
+              </button>
+            )}
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={delOpen}
+        onClose={() => setDelOpen(false)}
+        onConfirm={() => void remove()}
+        isLoading={deleting}
+        title="Delete draft quote"
+        message="This permanently deletes the draft quote. This cannot be undone."
+        confirmLabel="Delete draft"
+        confirmTestId="quote-delete-confirm"
+      />
     </div>
   );
 }

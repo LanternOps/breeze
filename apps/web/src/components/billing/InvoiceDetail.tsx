@@ -5,6 +5,7 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLine,
@@ -44,6 +45,8 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
   // Void dialog
   const [voidOpen, setVoidOpen] = useState(false);
+  // Delete dialog
+  const [delOpen, setDelOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [voidReissue, setVoidReissue] = useState(false);
 
@@ -208,6 +211,25 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     }
   }, [busy, voidReason, voidReissue, invoice.id, refresh]);
 
+  const remove = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}`, { method: 'DELETE' }),
+        errorFallback: 'Could not delete the draft.',
+        successMessage: 'Draft deleted',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setDelOpen(false);
+      void navigateTo('/billing/invoices');
+    } catch (err) {
+      handleActionError(err, 'Could not delete the draft.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, invoice.id]);
+
   return (
     <div className="space-y-6" data-testid="invoice-detail">
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
@@ -337,6 +359,16 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                 Void invoice
               </button>
             )}
+            {invoice.status === 'draft' && can('invoices', 'write') && (
+              <button
+                type="button"
+                onClick={() => setDelOpen(true)}
+                data-testid="invoice-delete-open"
+                className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+              >
+                Delete draft
+              </button>
+            )}
           </div>
 
           {/* Payments */}
@@ -440,6 +472,18 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Delete draft dialog */}
+      <ConfirmDialog
+        open={delOpen}
+        onClose={() => setDelOpen(false)}
+        onConfirm={() => void remove()}
+        isLoading={busy}
+        title="Delete draft invoice"
+        message="This permanently deletes the draft invoice. This cannot be undone."
+        confirmLabel="Delete draft"
+        confirmTestId="invoice-delete-confirm"
+      />
 
       {/* Void dialog */}
       <Dialog open={voidOpen} onClose={() => setVoidOpen(false)} title="Void invoice" maxWidth="md" className="p-6">

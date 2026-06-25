@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
   contractTransition,
+  deleteContract,
   generateContractInvoice,
   getContractEstimate,
   formatCadence,
@@ -61,6 +63,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   const currency = contract.currencyCode;
 
   const [busy, setBusy] = useState(false);
+  const [delOpen, setDelOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
 
   useEffect(() => {
@@ -115,6 +118,24 @@ export default function ContractDetail({ detail, onChanged }: Props) {
       setBusy(false);
     }
   }, [busy, contract.id, refresh]);
+
+  const remove = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => deleteContract(contract.id),
+        errorFallback: 'Could not delete the draft.',
+        successMessage: 'Draft deleted',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      void navigateTo('/contracts');
+    } catch (err) {
+      handleActionError(err, 'Could not delete the draft.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, contract.id]);
 
   const availableTransitions = TRANSITIONS_FOR_STATUS[contract.status] ?? [];
   const canGenerate = contract.status === 'active';
@@ -323,8 +344,31 @@ export default function ContractDetail({ detail, onChanged }: Props) {
               Generate invoice now
             </button>
           )}
+
+          {/* Delete draft (write-gated, draft-only) */}
+          {can('contracts', 'write') && contract.status === 'draft' && (
+            <button
+              type="button"
+              onClick={() => setDelOpen(true)}
+              data-testid="contract-delete-open"
+              className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+            >
+              Delete draft
+            </button>
+          )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={delOpen}
+        onClose={() => setDelOpen(false)}
+        onConfirm={() => void remove()}
+        isLoading={busy}
+        title="Delete draft contract"
+        message="This permanently deletes the draft contract. This cannot be undone."
+        confirmLabel="Delete draft"
+        confirmTestId="contract-delete-confirm"
+      />
     </div>
   );
 }
