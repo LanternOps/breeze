@@ -40,6 +40,17 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 		path = "/"
 	}
 
+	// SECURITY: restrict the scheme to http(s). An empty scheme is fine —
+	// tunnel.Fetch derives it from the port. Anything else (file://, gopher://,
+	// etc.) is rejected outright.
+	if scheme != "" && scheme != "http" && scheme != "https" {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "unsupported scheme",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	// SECURITY: reject any path that is not a plain relative path. A value like
 	// "@evil.com/x" or "//evil.com/x" would otherwise re-parse to a different
 	// host and bypass the IsBlocked/IsAllowed checks below (which validate

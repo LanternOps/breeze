@@ -77,6 +77,7 @@ func Fetch(ctx context.Context, req FetchRequest, timeout time.Duration, maxBody
 		Scheme:   scheme,
 		Host:     net.JoinHostPort(req.Host, strconv.Itoa(req.Port)),
 		Path:     ref.Path,
+		RawPath:  ref.RawPath, // preserve %2F etc. — device APIs may distinguish encoded slashes
 		RawQuery: ref.RawQuery,
 	}
 	// Defense-in-depth: the constructed URL must still target exactly req.Host

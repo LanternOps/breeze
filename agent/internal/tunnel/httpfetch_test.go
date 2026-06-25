@@ -32,6 +32,11 @@ func TestFetch(t *testing.T) {
 		case r.URL.Path == "/redirect":
 			w.Header().Set("Location", "/other")
 			w.WriteHeader(http.StatusMovedPermanently)
+		case strings.HasPrefix(r.URL.EscapedPath(), "/foo"):
+			// Report the escaped path so the test can assert %2F survived.
+			w.Header().Set("X-Escaped-Path", r.URL.EscapedPath())
+			w.Header().Set("X-Request-URI", r.RequestURI)
+			w.Write([]byte("escaped-ok"))
 		default:
 			w.Write([]byte("hello-plain"))
 		}
@@ -197,6 +202,27 @@ func TestFetch(t *testing.T) {
 		}
 		if resp.Status != 200 || string(resp.Body) != "hello-plain" {
 			t.Fatalf("got %d %q", resp.Status, resp.Body)
+		}
+	})
+
+	// Device APIs may distinguish an encoded slash (%2F) from a real one, so the
+	// proxy must preserve the encoded form rather than normalizing it away.
+	t.Run("encoded path preserves %2F", func(t *testing.T) {
+		h, p := hostPort(plain.URL)
+		resp, err := Fetch(context.Background(), FetchRequest{
+			Scheme: "http", Host: h, Port: p, Method: "GET", Path: "/foo%2Fbar",
+		}, 5*time.Second, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != 200 || string(resp.Body) != "escaped-ok" {
+			t.Fatalf("got %d %q", resp.Status, resp.Body)
+		}
+		if got := resp.Headers["X-Escaped-Path"]; len(got) == 0 || !strings.Contains(got[0], "%2F") {
+			t.Fatalf("target saw escaped path %v, want one containing %%2F", got)
+		}
+		if got := resp.Headers["X-Request-Uri"]; len(got) == 0 || !strings.Contains(got[0], "%2F") {
+			t.Fatalf("target saw request URI %v, want one containing %%2F", got)
 		}
 	})
 }
