@@ -265,17 +265,22 @@ function dbPlatformToRouteOs(dbPlatform: string): string {
 }
 
 // Construct the server-relative download URL the agent should use. Applies to
-// component=agent and component=helper: both are pulled by the agent's verified
-// downloader (updater.downloadFromURL), which enforces host equality with the
-// agent's configured ServerURL. Without this rewrite the response would hand
-// back the canonical github.com asset URL, which the agent rejects — and, more
-// importantly, the helper used to be fetched via an UNVERIFIED redirect to that
-// CDN and run as SYSTEM/root (the HIGH-severity RCE fixed alongside this).
-// Rewriting to the control-plane origin keeps the helper download inside the
-// trusted origin; the existing /download[/helper]/:os/:arch route then 302s to
-// github server-side, and the signed-manifest SHA-256 binds the bytes either
-// way. Returns null to signal "fall back to the canonical (github) URL"
-// (components without a server-relative route, or no configured origin).
+// component=agent, helper, user-helper, and watchdog: all are pulled by the
+// agent's verified downloader (updater.downloadFromURL), which enforces host
+// equality with the agent's configured ServerURL. Without this rewrite the
+// response would hand back the canonical github.com asset URL, which the agent
+// rejects — and, more importantly, the helper used to be fetched via an
+// UNVERIFIED redirect to that CDN and run as SYSTEM/root (the HIGH-severity RCE
+// fixed alongside this). Rewriting to the control-plane origin keeps the
+// download inside the trusted origin; the existing /download[/...]/:os/:arch
+// route then 302s to github server-side, and the signed-manifest SHA-256 binds
+// the bytes either way. Returns null to signal "fall back to the canonical
+// (github) URL" (components without a server-relative route, or no origin).
+//
+// NOTE: `user-helper` (breeze-user-helper.exe, the GUI-subsystem agent sibling)
+// is distinct from `helper` (the Tauri Helper app). It has its own route; it
+// was omitted here originally, so the agent fell back to the github URL and the
+// host check rejected the user-helper auto-update (#1878, sibling of #646).
 function buildServerRelativeAgentDownloadUrl(
   dbPlatform: string,
   architecture: string,
@@ -284,6 +289,7 @@ function buildServerRelativeAgentDownloadUrl(
   if (
     component !== "agent" &&
     component !== "helper" &&
+    component !== "user-helper" &&
     component !== "watchdog"
   ) {
     return null;
@@ -295,6 +301,9 @@ function buildServerRelativeAgentDownloadUrl(
   const os = dbPlatformToRouteOs(dbPlatform);
   if (component === "helper") {
     return `${origin}/api/v1/agents/download/helper/${os}/${architecture}`;
+  }
+  if (component === "user-helper") {
+    return `${origin}/api/v1/agents/download/user-helper/${os}/${architecture}`;
   }
   if (component === "watchdog") {
     return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}`;

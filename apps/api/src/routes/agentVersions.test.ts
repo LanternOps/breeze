@@ -636,6 +636,61 @@ describe("agentVersions routes", () => {
       }
     });
 
+    it("rewrites user-helper downloadUrl to the server-relative user-helper route (#1878 — sibling of #646)", async () => {
+      const checksum = "c".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "user-helper",
+        platform: "windows",
+        arch: "amd64",
+        url: "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-user-helper-windows-amd64.exe",
+        checksum,
+        size: 1234,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "windows",
+                architecture: "amd64",
+                component: "user-helper",
+                downloadUrl:
+                  "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-user-helper-windows-amd64.exe",
+                checksum,
+                fileSize: BigInt(1234),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=windows&arch=amd64&component=user-helper",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // The bug (#1878): user-helper fell through to null in
+        // buildServerRelativeAgentDownloadUrl, so the response handed back the
+        // canonical github.com asset URL — which the agent's host-equality check
+        // rejects. It must resolve to the user-helper route, which is distinct
+        // from the Tauri /helper app route.
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/user-helper/windows/amd64",
+        );
+        expect(body.url).not.toContain("github.com");
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
     it("maps platform=macos to /darwin in the server-relative URL", async () => {
       const checksum = "b".repeat(64);
       const signed = makeSignedReleaseManifest({
