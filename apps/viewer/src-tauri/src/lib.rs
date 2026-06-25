@@ -460,6 +460,9 @@ enum UpdateStatus {
     Restarting { version: String },
     Deferred { version: String },
     Failed { version: String },
+    /// Downloaded and waiting for the user to choose Restart & update or
+    /// Remind me later. Only emitted when no remote session is active.
+    Ready { version: String },
 }
 
 /// Best-effort broadcast of update status. Emit failures are non-fatal — the
@@ -844,6 +847,10 @@ mod tests {
             (
                 UpdateStatus::Failed { version: v.clone() },
                 json!({ "phase": "failed", "version": "1.2.3" }),
+            ),
+            (
+                UpdateStatus::Ready { version: v.clone() },
+                json!({ "phase": "ready", "version": "1.2.3" }),
             ),
         ];
         for (status, expected) in cases {
