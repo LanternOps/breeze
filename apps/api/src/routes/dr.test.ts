@@ -63,6 +63,10 @@ vi.mock('../db/schema', () => ({
     createdAt: 'dr_executions.created_at',
     status: 'dr_executions.status',
   },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.org_id',
+  },
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -154,6 +158,8 @@ describe('dr routes', () => {
       name: 'Primary Site Failover',
       status: 'draft',
     }]));
+    // device-ownership check returns the assigned device as owned by this org
+    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID }]));
     insertMock.mockReturnValueOnce(chainMock([{
       id: GROUP_ID,
       planId: PLAN_ID,
@@ -454,6 +460,87 @@ describe('dr routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.status).toBe('aborted');
+  });
+
+  it('rejects group create with a foreign-org device', async () => {
+    // plan exists and belongs to org
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: PLAN_ID,
+      orgId: ORG_ID,
+      name: 'Primary Site Failover',
+      status: 'draft',
+    }]));
+    // device-ownership check returns 0 rows: device is not in this org
+    selectMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request(`/dr/plans/${PLAN_ID}/groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'Tier 1 Apps',
+        devices: [DEVICE_ID],
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toContain('do not belong to this organization');
+    // must not persist the foreign device
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects group update with a foreign-org device', async () => {
+    // group exists and belongs to org
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: GROUP_ID,
+      planId: PLAN_ID,
+      orgId: ORG_ID,
+      name: 'Tier 1 Apps',
+      sequence: 1,
+    }]));
+    // device-ownership check returns 0 rows: device is not in this org
+    selectMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ devices: [DEVICE_ID] }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toContain('do not belong to this organization');
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('allows group update that does not change devices (no ownership check)', async () => {
+    // group exists and belongs to org
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: GROUP_ID,
+      planId: PLAN_ID,
+      orgId: ORG_ID,
+      name: 'Tier 1 Apps',
+      sequence: 1,
+    }]));
+    updateMock.mockReturnValueOnce(chainMock([{
+      id: GROUP_ID,
+      planId: PLAN_ID,
+      orgId: ORG_ID,
+      name: 'Renamed',
+      sequence: 1,
+    }]));
+
+    const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.name).toBe('Renamed');
+    // only the group-existence select runs; no device-ownership select
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   it('should reject aborting a completed execution', async () => {

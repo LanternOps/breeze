@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and, desc, asc } from 'drizzle-orm';
+import { eq, and, desc, asc, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { drPlans, drPlanGroups, drExecutions } from '../db/schema';
+import { drPlans, drPlanGroups, drExecutions, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
@@ -35,6 +35,23 @@ drRoutes.use('*', authMiddleware);
 
 const idParamSchema = z.object({ id: z.string().guid() });
 const groupParamSchema = z.object({ id: z.string().guid(), gid: z.string().guid() });
+
+/**
+ * Confirm every device id assigned to a DR group belongs to the plan's org.
+ * DR group commands are dispatched under withSystemDbAccessContext (RLS off), so
+ * a foreign-org device id slipping into devices[] would let a destructive restore
+ * command target another tenant's device. Validate ownership with the
+ * request-scoped RLS `db` before persisting. Returns true when all ids are owned.
+ */
+async function allDevicesBelongToOrg(deviceIds: string[], orgId: string): Promise<boolean> {
+  if (deviceIds.length === 0) return true;
+  const uniqueIds = [...new Set(deviceIds)];
+  const owned = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(inArray(devices.id, uniqueIds), eq(devices.orgId, orgId)));
+  return owned.length === uniqueIds.length;
+}
 
 function resolveOrgId(
   auth: {
@@ -257,6 +274,10 @@ drRoutes.post(
     if (!plan) return c.json({ error: 'Plan not found' }, 404);
 
     const payload = c.req.valid('json');
+    if (payload.devices && !(await allDevicesBelongToOrg(payload.devices, orgId))) {
+      return c.json({ error: 'One or more devices do not belong to this organization' }, 403);
+    }
+
     const [row] = await db
       .insert(drPlanGroups)
       .values({
@@ -304,6 +325,10 @@ drRoutes.patch(
       .limit(1);
 
     if (!existing) return c.json({ error: 'Group not found' }, 404);
+
+    if (payload.devices !== undefined && !(await allDevicesBelongToOrg(payload.devices, orgId))) {
+      return c.json({ error: 'One or more devices do not belong to this organization' }, 403);
+    }
 
     const updateData: Record<string, unknown> = {};
     if (payload.name !== undefined) updateData.name = payload.name;

@@ -495,9 +495,10 @@ export async function queueCommandForExecution(
   options: {
     userId?: string;
     preferHeartbeat?: boolean;
+    expectedOrgId?: string;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
-  const { userId, preferHeartbeat = false } = options;
+  const { userId, preferHeartbeat = false, expectedOrgId } = options;
 
   const [device] = await db
     .select()
@@ -506,6 +507,13 @@ export async function queueCommandForExecution(
     .limit(1);
 
   if (!device) {
+    return { error: 'Device not found' };
+  }
+
+  // Defense-in-depth: this lookup can run under withSystemDbAccessContext (RLS off),
+  // so callers that know the expected owning org (e.g. DR dispatch) pass expectedOrgId
+  // to prevent a cross-tenant device id from receiving a destructive command.
+  if (expectedOrgId !== undefined && device.orgId !== expectedOrgId) {
     return { error: 'Device not found' };
   }
 

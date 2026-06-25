@@ -143,7 +143,9 @@ describe('drExecutionService', () => {
         drPlanId: PLAN_ID,
         drGroupId: GROUP_ID,
       }),
-      { userId: 'user-1' }
+      // expectedOrgId threads the plan's org through to commandQueue's
+      // cross-tenant guard so a foreign device id in devices[] is refused.
+      { userId: 'user-1', expectedOrgId: ORG_ID }
     );
     expect(execution?.status).toBe('running');
     expect(enqueueDrExecutionReconcile).toHaveBeenCalledWith(EXECUTION_ID, 2000);

@@ -9,6 +9,7 @@ import {
   DEVICE_UNREACHABLE_ERROR,
   SEND_RETRY_ATTEMPTS,
   CommandTypes,
+  queueCommandForExecution,
 } from './commandQueue';
 import { db } from '../db';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
@@ -711,6 +712,63 @@ describe('command queue service', () => {
       expect(result.status).toBe('completed');
       // Dispatch path is skipped entirely because preferHeartbeat is true.
       expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('queueCommandForExecution expectedOrgId guard', () => {
+    function mockDeviceLookup(device: unknown) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(device ? [device] : []),
+          }),
+        }),
+      } as any);
+    }
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('refuses a device whose orgId differs from expectedOrgId', async () => {
+      mockDeviceLookup({ id: 'dev-foreign', status: 'online', orgId: 'org-evil' });
+
+      const result = await queueCommandForExecution(
+        'dev-foreign',
+        CommandTypes.BACKUP_RESTORE,
+        {},
+        { expectedOrgId: 'org-victim' },
+      );
+
+      // Matches the adjacent "Device not found" contract — no info leak.
+      expect(result.error).toBe('Device not found');
+      // Must not have proceeded to queue the command.
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('passes the org gate when device.orgId matches expectedOrgId', async () => {
+      // offline so it short-circuits AFTER the org check passes, proving the
+      // org gate did not reject a same-org device.
+      mockDeviceLookup({ id: 'dev-mine', status: 'offline', orgId: 'org-victim' });
+
+      const result = await queueCommandForExecution(
+        'dev-mine',
+        CommandTypes.BACKUP_RESTORE,
+        {},
+        { expectedOrgId: 'org-victim' },
+      );
+
+      expect(result.error).toBe('Device is offline, cannot execute command');
+    });
+
+    it('is unaffected when expectedOrgId is omitted (existing callers)', async () => {
+      // Foreign org, but no expectedOrgId passed: gate is inert, falls through
+      // to the normal status check.
+      mockDeviceLookup({ id: 'dev-any', status: 'offline', orgId: 'org-whatever' });
+
+      const result = await queueCommandForExecution('dev-any', CommandTypes.BACKUP_RESTORE, {});
+
+      expect(result.error).toBe('Device is offline, cannot execute command');
     });
   });
 });

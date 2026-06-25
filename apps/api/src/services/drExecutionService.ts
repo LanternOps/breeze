@@ -360,7 +360,7 @@ async function dispatchGroup(
         groupName: group.name,
         ...payload,
       },
-      { userId: execution.initiatedBy ?? undefined }
+      { userId: execution.initiatedBy ?? undefined, expectedOrgId: execution.orgId }
     );
 
     if (error || !command) {
