@@ -297,3 +297,120 @@ describe('security threats GET routes — requirePermission(devices, read)', () 
     expect(res.status).not.toBe(403);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Site-scope gate tests for GET /threats/:deviceId
+//
+// threats.ts calls listStatusRows(auth) first to confirm the device is visible,
+// then — when userPerms.allowedSiteIds is set — fetches { siteId } from devices
+// and calls canAccessSite. The mocks here use the real canAccessSite (from
+// vi.importActual) so the allowedSiteIds check behaves exactly as in production.
+//
+// db.select call order for the 403 path:
+//   1. listStatusRows  → .from().leftJoin().where()        → row with deviceId
+//   2. site gate       → .from().where().limit()           → { siteId }
+//
+// db.select call order for the 200 path (in-site):
+//   1. listStatusRows  → .from().leftJoin().where()        → row with deviceId
+//   2. site gate       → .from().where().limit()           → { siteId }
+//   3. listThreatRows  → .from().innerJoin().where().orderBy() → []
+// ---------------------------------------------------------------------------
+
+describe('GET /threats/:deviceId — site-scope gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockListStatusRowsForDevice() {
+    // Backs listStatusRows: db.select({...}).from(devices).leftJoin(...).where(...)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            deviceId: DEVICE_ID,
+            orgId: ORG_ID,
+            deviceName: 'test-host',
+            os: 'windows',
+            deviceState: 'online',
+            provider: 'defender',
+            providerVersion: '1.0',
+            definitionsVersion: '1.0',
+            definitionsDate: null,
+            realTimeProtection: true,
+            threatCount: 0,
+            firewallEnabled: true,
+            encryptionStatus: 'encrypted',
+            encryptionDetails: null,
+            localAdminSummary: null,
+            passwordPolicySummary: null,
+            gatekeeperEnabled: null,
+            lastScan: null,
+            lastScanType: null,
+          }]),
+        }),
+      }),
+    } as any);
+  }
+
+  function mockSiteIdLookup(siteId: string | null) {
+    // Backs db.select({ siteId }).from(devices).where(...).limit(1)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(siteId !== null ? [{ siteId }] : [{ siteId: null }]),
+        }),
+      }),
+    } as any);
+  }
+
+  function mockListThreatRowsEmpty() {
+    // Backs listThreatRows: db.select({...}).from(securityThreats).innerJoin(...).where(...).orderBy(...)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      }),
+    } as any);
+  }
+
+  it('returns 403 with a site error when the caller site allowlist excludes the device site', async () => {
+    // Caller has devices:read but is restricted to SITE_ALLOWED; device is in SITE_FORBIDDEN.
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: [SITE_ALLOWED],
+    });
+    mockListStatusRowsForDevice();
+    mockSiteIdLookup(SITE_FORBIDDEN);
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${DEVICE_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    // Must be the site gate error, not the RBAC "Permission denied" message
+    expect(body.error).toMatch(/site/i);
+    // The protected threats data must not be present
+    expect(body.data).toBeUndefined();
+  });
+
+  it('returns non-403 when the device site is in the caller site allowlist', async () => {
+    // Caller has devices:read and is restricted to SITE_ALLOWED; device is also in SITE_ALLOWED.
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: [SITE_ALLOWED],
+    });
+    mockListStatusRowsForDevice();
+    mockSiteIdLookup(SITE_ALLOWED);
+    // Back the subsequent listThreatRows call with an empty set so the handler resolves.
+    mockListThreatRowsEmpty();
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${DEVICE_ID}`, { method: 'GET' });
+
+    // Site gate passed — must not be 403
+    expect(res.status).not.toBe(403);
+  });
+});

@@ -157,3 +157,77 @@ describe('GET /scans/:deviceId — requirePermission(devices, read)', () => {
     expect(res.status).not.toBe(403);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Site-scope gate tests for GET /scans/:deviceId
+//
+// scans.ts calls canAccessDeviceSite(c, auth, device.siteId) right after the
+// device row is fetched (the same row includes siteId). canAccessDeviceSite
+// calls getUserPermissions internally then delegates to canAccessSite (the
+// real implementation imported via vi.importActual). After the gate passes the
+// handler issues a second db.select for the scans list.
+// ---------------------------------------------------------------------------
+
+describe('GET /scans/:deviceId — site-scope gate', () => {
+  const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const SITE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockDeviceSelectWithSite(siteId: string | null) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: DEVICE_ID,
+            hostname: 'test-host',
+            orgId: ORG_ID,
+            siteId,
+          }]),
+        }),
+      }),
+    } as any);
+  }
+
+  it('returns 403 with a site error when the caller site allowlist excludes the device site', async () => {
+    // Caller has devices:read but is restricted to SITE_A; device lives in SITE_B.
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: [SITE_A],
+    });
+    mockDeviceSelectWithSite(SITE_B);
+    const app = buildApp();
+
+    const res = await app.request(`/security/scans/${DEVICE_ID}`, {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    // Must be the site gate error, not the RBAC "Permission denied" message
+    expect(body.error).toMatch(/site/i);
+    // The protected scan list must not be present
+    expect(body.data).toBeUndefined();
+  });
+
+  it('returns non-403 when the device site is in the caller site allowlist', async () => {
+    // Caller has devices:read and is restricted to SITE_A; device also lives in SITE_A.
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: [SITE_A],
+    });
+    mockDeviceSelectWithSite(SITE_A);
+    // Back the subsequent scans SELECT with an empty list so the handler resolves cleanly.
+    mockScansSelect();
+    const app = buildApp();
+
+    const res = await app.request(`/security/scans/${DEVICE_ID}`, {
+      method: 'GET',
+    });
+
+    // Site gate passed — must not be 403
+    expect(res.status).not.toBe(403);
+  });
+});
