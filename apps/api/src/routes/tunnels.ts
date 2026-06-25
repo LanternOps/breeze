@@ -11,6 +11,7 @@ import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds, HTTP_TICKET_TTL_MS } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 import { getTrustedClientIp } from '../services/clientIp';
+import { getActiveAllowlistPatterns } from '../services/tunnelAllowlist';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
@@ -281,18 +282,6 @@ async function logTunnelAudit(
     console.error('Failed to log tunnel audit:', error);
     captureException(error);
   }
-}
-
-async function getActiveAllowlistPatterns(orgId: string): Promise<string[]> {
-  const rules = await db
-    .select({ pattern: tunnelAllowlists.pattern })
-    .from(tunnelAllowlists)
-    .where(and(
-      eq(tunnelAllowlists.orgId, orgId),
-      eq(tunnelAllowlists.direction, 'destination'),
-      eq(tunnelAllowlists.enabled, true),
-    ));
-  return rules.map(r => r.pattern);
 }
 
 // --- Routes ---

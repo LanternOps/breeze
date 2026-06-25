@@ -112,6 +112,7 @@ import { createAgentWsRoutes } from './routes/agentWs';
 import { createTerminalWsRoutes } from './routes/terminalWs';
 import { createDesktopWsRoutes } from './routes/desktopWs';
 import { createTunnelWsRoutes } from './routes/tunnelWs';
+import { tunnelHttpRoutes } from './routes/tunnelHttp';
 import { createEventWsRoutes, createEventWsTicketRoute } from './routes/eventWs';
 import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './routes/tunnels';
 import { agentVersionRoutes } from './routes/agentVersions';
@@ -794,6 +795,7 @@ api.route('/logs', logsRoutes);
 api.route('/remote/sessions', createTerminalWsRoutes(upgradeWebSocket)); // WebSocket routes first (no auth middleware)
 api.route('/desktop-ws', createDesktopWsRoutes(upgradeWebSocket)); // Desktop WebSocket routes (outside /remote to avoid auth middleware)
 api.route('/tunnel-ws', createTunnelWsRoutes(upgradeWebSocket)); // Tunnel WebSocket routes (no auth middleware — uses one-time tickets)
+api.route('/tunnel-http', tunnelHttpRoutes); // HTTP reverse-proxy (no auth middleware — ticket→scoped-cookie self-auth)
 api.route('/events', createEventWsRoutes(upgradeWebSocket)); // Event stream WebSocket (no auth middleware — uses one-time tickets)
 api.route('/tunnels', tunnelRoutes);
 api.route('/vnc-exchange', vncExchangeRoutes); // No auth — one-time code is the auth
