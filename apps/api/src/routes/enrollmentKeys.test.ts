@@ -83,6 +83,14 @@ vi.mock("../services/installerBuilder", () => ({
   fetchRegularMsi: vi.fn(async () => Buffer.from("regular-msi")),
   assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   fetchMacosInstallerAppZip: vi.fn(async () => null),
+  serveWindowsBootstrapMsi: vi.fn((c: any, args: { msi: Buffer; token: string; apiHost: string }) => {
+    const filename = `Breeze Agent [${args.token}@${args.apiHost}].msi`;
+    c.header("Content-Type", "application/octet-stream");
+    c.header("Content-Disposition", `attachment; filename="${filename}"`);
+    c.header("Content-Length", String(args.msi.length));
+    c.header("Cache-Control", "no-store");
+    return c.body(args.msi);
+  }),
 }));
 
 vi.mock("../services/installerAppZip", () => ({
@@ -440,7 +448,7 @@ describe("GET /s/:code", () => {
     });
     const childRow = makeChildKeyRow({ installerPlatform: "windows" });
 
-    // select: look up by shortCode
+    // select: look up by shortCode; issueBootstrapTokenForKey also selects the child row
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -465,14 +473,23 @@ describe("GET /s/:code", () => {
       }),
     } as any);
 
-    // serveInstaller also calls db.update to increment child key usage
-    // (second update call is handled by same mock — returns the same shape)
+    // serveInstaller (Windows) now calls issueBootstrapTokenForKey — spy it
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-1",
+        token: "ABC1234567",
+        expiresAt: new Date(Date.now() + 3_600_000),
+        parentKeyName: "Test Key",
+      });
 
     const res = await app.request("/s/abc1234567");
 
     expect(res.status).toBe(200);
     const buf = await res.arrayBuffer();
     expect(buf.byteLength).toBeGreaterThan(0);
+
+    issueSpy.mockRestore();
   });
 
   it("returns 404 for unknown code", async () => {
@@ -791,28 +808,30 @@ describe("GET /public-download/:platform", () => {
       );
     });
 
+    // serveInstaller (Windows) now calls issueBootstrapTokenForKey
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-1",
+        token: "ABC1234567",
+        expiresAt: new Date(Date.now() + 3_600_000),
+        parentKeyName: "Test Key",
+      });
+
     const res = await app.request(
       `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
 
     expect(res.status).toBe(200);
     expect(db.update).not.toHaveBeenCalled();
+
+    issueSpy.mockRestore();
   });
 
-  it("uses the remote signing service (no local binary fetch) when configured", async () => {
-    // Regression guard for the most-hit installer path in production. When
-    // MsiSigningService is configured, serveInstaller must:
-    //   1. NOT call fetchRegularMsi / macOS reachability probe / anything local,
-    //   2. call buildAndSignMsi with the correct version + properties,
-    //   3. serve the result as application/octet-stream.
-    process.env.BINARY_VERSION = "0.62.24";
-
-    const buildAndSignMsi = vi.fn(async () => Buffer.from("signed-msi-bytes"));
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
-      buildAndSignMsi,
-      probe: vi.fn(async () => {}),
-    } as any);
-
+  it("public windows download serves a static MSI named with the bootstrap token", async () => {
+    // Verifies that the public download path uses the bootstrap-token flow:
+    // issueBootstrapTokenForKey → fetchRegularMsi → serveWindowsBootstrapMsi
+    // with the token embedded in the Content-Disposition filename.
     const row = makeKeyRow({
       shortCode: "pubcode1234",
       installerPlatform: "windows",
@@ -828,47 +847,28 @@ describe("GET /public-download/:platform", () => {
       }),
     } as any);
 
-    const { fetchRegularMsi, assertMacosInstallerPkgsReachable } =
-      await import("../services/installerBuilder");
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-1",
+        token: "ABCDE12345",
+        expiresAt: new Date(Date.now() + 3_600_000),
+        parentKeyName: "Test Key",
+      });
 
-    consumeDownloadHandleMock.mockResolvedValueOnce(
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    );
     const res = await app.request(
       `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
-    expect(res.headers.get("Content-Disposition")).toContain(
-      "breeze-agent.msi",
+    expect(res.headers.get("Content-Disposition")).toMatch(
+      /^attachment; filename="Breeze Agent \[ABCDE12345@api\.example\.com\]\.msi"$/,
     );
+    // No db.update — download does not consume enrollment slots
+    expect(db.update).not.toHaveBeenCalled();
 
-    expect(fetchRegularMsi).not.toHaveBeenCalled();
-    expect(assertMacosInstallerPkgsReachable).not.toHaveBeenCalled();
-
-    expect(buildAndSignMsi).toHaveBeenCalledTimes(1);
-    const req = (
-      buildAndSignMsi.mock.calls[0] as unknown as [
-        {
-          version: string;
-          properties: {
-            SERVER_URL: string;
-            ENROLLMENT_KEY: string;
-            ENROLLMENT_SECRET?: string;
-          };
-        },
-      ]
-    )[0];
-    // Signing service uses GitHub release tags (v-prefixed) as cache keys
-    expect(req.version).toBe("v0.62.24");
-    expect(req.properties.SERVER_URL).toBe("https://api.example.com");
-    // The token resolved from the one-time handle is embedded as ENROLLMENT_KEY.
-    expect(req.properties.ENROLLMENT_KEY).toBe(
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    );
-
-    delete process.env.BINARY_VERSION;
+    issueSpy.mockRestore();
   });
 
   it("rejects legacy raw token query downloads by default", async () => {
