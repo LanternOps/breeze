@@ -2,7 +2,9 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -135,9 +137,9 @@ func TestFetch(t *testing.T) {
 		}
 	})
 
-	t.Run("self-signed TLS accepted", func(t *testing.T) {
+	t.Run("self-signed TLS accepted with SkipTLSVerify", func(t *testing.T) {
 		h, p := hostPort(tlsSrv.URL)
-		resp, err := Fetch(context.Background(), FetchRequest{Scheme: "https", Host: h, Port: p, Method: "GET", Path: "/"}, 5*time.Second, 1<<20)
+		resp, err := Fetch(context.Background(), FetchRequest{Scheme: "https", Host: h, Port: p, Method: "GET", Path: "/", SkipTLSVerify: true}, 5*time.Second, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -225,4 +227,33 @@ func TestFetch(t *testing.T) {
 			t.Fatalf("target saw request URI %v, want one containing %%2F", got)
 		}
 	})
+}
+
+func TestFetch_TLSVerification(t *testing.T) {
+	// httptest TLS server presents a self-signed cert (unknown CA).
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	port, _ := strconv.Atoi(portStr)
+	base := FetchRequest{Scheme: "https", Host: host, Port: port, Method: "GET", Path: "/"}
+
+	// Verify ON (default): self-signed cert must be rejected as a typed error.
+	if _, err := Fetch(context.Background(), base, 5*time.Second, 1<<20); !errors.Is(err, ErrTLSCertUntrusted) {
+		t.Fatalf("verify-on: want ErrTLSCertUntrusted, got %v", err)
+	}
+
+	// Verify OFF (explicit opt-in): self-signed cert is accepted.
+	skip := base
+	skip.SkipTLSVerify = true
+	resp, err := Fetch(context.Background(), skip, 5*time.Second, 1<<20)
+	if err != nil {
+		t.Fatalf("verify-off: unexpected error %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("verify-off: want 200, got %d", resp.Status)
+	}
 }

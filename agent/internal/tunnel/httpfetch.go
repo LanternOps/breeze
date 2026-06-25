@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +16,11 @@ import (
 	"time"
 )
 
+// ErrTLSCertUntrusted is returned by Fetch when the target presents a
+// certificate that fails verification (self-signed / unknown CA / bad host)
+// and the session did not opt into skipping verification.
+var ErrTLSCertUntrusted = errors.New("tls_cert_untrusted")
+
 // FetchRequest is one proxied HTTP request to a LAN target.
 type FetchRequest struct {
 	Scheme  string              // "http" | "https" (derived from target port if empty)
@@ -23,6 +30,9 @@ type FetchRequest struct {
 	Path    string              // path + raw query, e.g. "/admin/index.html?x=1"
 	Headers map[string][]string // forwarded request headers (already filtered by caller)
 	Body    []byte              // request body (may be nil)
+	// SkipTLSVerify disables TLS certificate verification for this request.
+	// Set per-session for known self-signed embedded LAN devices. Default false.
+	SkipTLSVerify bool
 }
 
 // FetchResponse holds the proxied response.
@@ -108,11 +118,10 @@ func Fetch(ctx context.Context, req FetchRequest, timeout time.Duration, maxBody
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			// Self-signed printer/device certs are the norm on a LAN. The tunnel
-			// target is already constrained to the tunnel_session's host:port and
-			// re-checked against the org allowlist, so cert pinning adds no security
-			// here while breaking every real device. Skip verification deliberately.
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			// TLS verification is ON by default. It is disabled only when the
+			// owning tunnel session explicitly opted in (req.SkipTLSVerify) for a
+			// known self-signed embedded LAN device — a per-session, audited choice.
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: req.SkipTLSVerify}, //nolint:gosec
 			DisableKeepAlives: true,
 			Proxy:             nil,
 		},
@@ -122,6 +131,12 @@ func Fetch(ctx context.Context, req FetchRequest, timeout time.Duration, maxBody
 
 	resp, err := client.Do(hreq)
 	if err != nil {
+		var unknownAuth x509.UnknownAuthorityError
+		var hostErr x509.HostnameError
+		var certInvalid x509.CertificateInvalidError
+		if errors.As(err, &unknownAuth) || errors.As(err, &hostErr) || errors.As(err, &certInvalid) {
+			return nil, ErrTLSCertUntrusted
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
