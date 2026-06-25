@@ -331,11 +331,12 @@ async function scanAndCreateJobs(): Promise<{
 }> {
   const now = new Date();
   let created = 0;
-  // Job ids to enqueue to Redis AFTER the system DB access-context transaction
-  // closes. Enqueuing inside it held the pooled connection idle-in-transaction
-  // across BullMQ/Redis round-trips — a contributor to the #1105 pool-poisoning
-  // pattern (txn around slow non-DB work). DB writes stay in the context; the
-  // Redis enqueue happens outside it (see the worker processor).
+  // Job ids to enqueue to Redis AFTER the scan completes. Each DB op below runs
+  // in its OWN short system context (#1896) so no single transaction spans the
+  // scan; the BullMQ/Redis enqueue then happens entirely outside any context
+  // (see enqueueScanResults in the worker processor) — enqueuing inside a held
+  // context pinned the pooled connection idle-in-transaction across Redis
+  // round-trips, a contributor to the #1105 pool-poisoning pattern.
   const enqueueJobIds: string[] = [];
 
   const patchPoliciesWithSchedules = await runWithSystemDbAccess(() =>

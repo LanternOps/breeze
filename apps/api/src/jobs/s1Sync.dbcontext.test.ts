@@ -10,6 +10,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ---------------------------------------------------------------------------
 
 let contextDepth = 0;
+// Peak nesting observed across the run. The conn-hold regression this guards
+// against is an OUTER context wrapping the whole job while the inner
+// runOutsideDbContext calls remain — that nets depth 2 on the inner DB ops.
+// `runOutsideDbContext` only swaps the `db` handle (ALS exit); it does NOT
+// release an outer transaction, so a depth-0 HTTP assertion alone can pass
+// vacuously. Asserting maxDepth === 1 is what actually catches the re-wrap.
+let maxDepth = 0;
 const httpDepths: number[] = [];
 const publishDepths: number[] = [];
 const dbCallDepths: number[] = [];
@@ -54,6 +61,7 @@ vi.mock('../db', () => ({
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     contextDepth += 1;
+    maxDepth = Math.max(maxDepth, contextDepth);
     try {
       return await fn();
     } finally {
@@ -81,7 +89,7 @@ const listAgentsMock = vi.fn(async () => {
 });
 const listThreatsMock = vi.fn(async () => {
   httpDepths.push(contextDepth);
-  return { results: [], truncated: false };
+  return { results: [] as unknown[], truncated: false };
 });
 const getActivityStatusMock = vi.fn(async () => {
   httpDepths.push(contextDepth);
@@ -118,6 +126,7 @@ describe('s1Sync — DB context boundaries (#1896)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     contextDepth = 0;
+    maxDepth = 0;
     httpDepths.length = 0;
     publishDepths.length = 0;
     dbCallDepths.length = 0;
@@ -154,6 +163,9 @@ describe('s1Sync — DB context boundaries (#1896)', () => {
     for (const depth of dbCallDepths) {
       expect(depth).toBeGreaterThan(0);
     }
+    // No outer wrapper around the whole job: depth never nested (catches a
+    // regression that re-wraps processSyncIntegration in one context).
+    expect(maxDepth).toBe(1);
     // The final status write committed inside a (short) context.
     const statusWrite = updatePayloads.find((u) => u.payload.lastSyncStatus !== undefined);
     expect(statusWrite).toBeDefined();
@@ -182,6 +194,67 @@ describe('s1Sync — DB context boundaries (#1896)', () => {
     const errorWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'error');
     expect(errorWrite).toBeDefined();
     expect(errorWrite!.depth).toBeGreaterThan(0);
+    // The error write's runOutsideDbContext(runWithSystemDbAccess(...)) nets a
+    // single fresh context — never a nested one.
+    expect(maxDepth).toBe(1);
+  });
+
+  it('processSyncIntegration: emits threat-detected events OUTSIDE the DB context, upserts inside it', async () => {
+    selectResults = [
+      // 1. integration read
+      [{
+        id: 'int-1',
+        partnerId: 'partner-1',
+        managementUrl: 'https://s1.example.com',
+        apiTokenEncrypted: 'enc',
+        isActive: true,
+        lastSyncAt: null,
+      }],
+      // 2. agentRows (s1_agents) — provides the org/device context for the threat
+      [{ s1AgentId: 'agent-1', orgId: 'org-1', deviceId: 'device-1' }],
+    ];
+    // One active, recently-detected threat for agent-1 → a detection is emitted.
+    // Use mockImplementationOnce (not mockResolvedValueOnce) so the depth-recording
+    // body still runs for this call.
+    listThreatsMock.mockImplementationOnce(async () => {
+      httpDepths.push(contextDepth);
+      return {
+        results: [{
+          id: 'threat-1',
+          agentId: 'agent-1',
+          mitigationStatus: 'active',
+          threatSeverity: 'high',
+          detectedAt: new Date().toISOString(),
+          resolvedAt: null,
+          threatName: 'EICAR',
+          processName: null,
+          filePath: null,
+          classification: 'Malware',
+          mitreTechniques: null,
+        }] as unknown[],
+        truncated: false,
+      };
+    });
+
+    const result = await processSyncIntegration({
+      type: 'sync-integration',
+      integrationId: 'int-1',
+      syncAgents: false,
+      syncThreats: true,
+    });
+
+    expect(listThreatsMock).toHaveBeenCalledTimes(1);
+    expect(httpDepths).toEqual([0]);             // listThreats ran with no txn held
+    // The threat upsert ran inside a context...
+    expect(dbCallDepths.length).toBeGreaterThan(0);
+    for (const depth of dbCallDepths) {
+      expect(depth).toBeGreaterThan(0);
+    }
+    // ...and the event-bus publish ran OUTSIDE it (a regression that emits
+    // inside the Phase-2 context would hold a connection over the Redis call).
+    expect(publishDepths).toEqual([0]);
+    expect(maxDepth).toBe(1);
+    expect(result.fetchedThreats).toBe(1);
   });
 
   it('processPollActions: polls the provider with no DB context held, writes status inside one', async () => {
@@ -211,6 +284,7 @@ describe('s1Sync — DB context boundaries (#1896)', () => {
     }
     // The completed-action event published OUTSIDE any held transaction.
     expect(publishDepths).toEqual([0]);
+    expect(maxDepth).toBe(1);
     expect(result.polled).toBe(1);
     expect(result.updated).toBe(1);
   });
