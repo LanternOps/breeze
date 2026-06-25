@@ -183,6 +183,93 @@ func TestHandleHttpRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("skipTlsVerify=true threads through handler and accepts self-signed HTTPS cert (Leg A)", func(t *testing.T) {
+		// Leg A: proves skipTlsVerify flows from cmd.Payload through handleHttpRequest
+		// into tunnel.FetchRequest.SkipTLSVerify. The self-signed cert used by
+		// httptest.StartTLS() would be rejected by default TLS verification; if the
+		// flag did NOT thread through, this subtest would get "failed"/"tls_cert_untrusted"
+		// instead of "completed". Non-vacuity: flip skipTlsVerify to false (or remove
+		// it) and the test fails — the completed result is only achievable because the
+		// flag disabled cert verification all the way down.
+		host := nonLoopbackIPv4(t)
+		if host == "" {
+			t.Skip("no non-loopback IPv4 address available; skipping TLS threading test")
+		}
+
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		ln, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			t.Skipf("cannot bind TLS test server: %v", err)
+		}
+		srv.Listener = ln
+		srv.StartTLS()
+		defer srv.Close()
+
+		port := srv.Listener.Addr().(*net.TCPAddr).Port
+		allowlistRule := host + "/32:" + strconv.Itoa(port)
+
+		result := handleHttpRequest(&Heartbeat{}, Command{
+			Payload: map[string]any{
+				"targetHost":     host,
+				"targetPort":     float64(port),
+				"scheme":         "https",
+				"skipTlsVerify":  true,
+				"method":         "GET",
+				"path":           "/",
+				"allowlistRules": []any{allowlistRule},
+			},
+		})
+
+		if result.Status != "completed" {
+			t.Fatalf("Leg A: status = %q, error = %q; want completed (skipTlsVerify must reach Fetch to accept the self-signed cert)", result.Status, result.Error)
+		}
+	})
+
+	t.Run("skipTlsVerify=false (default) rejects self-signed HTTPS cert with stable token (Leg B)", func(t *testing.T) {
+		// Leg B: proves the verify-on path through handleHttpRequest yields the stable
+		// "tls_cert_untrusted" error token. Mirrors Leg A's setup but omits
+		// skipTlsVerify so it defaults to false, which should trigger cert rejection.
+		host := nonLoopbackIPv4(t)
+		if host == "" {
+			t.Skip("no non-loopback IPv4 address available; skipping TLS threading test")
+		}
+
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		ln, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			t.Skipf("cannot bind TLS test server: %v", err)
+		}
+		srv.Listener = ln
+		srv.StartTLS()
+		defer srv.Close()
+
+		port := srv.Listener.Addr().(*net.TCPAddr).Port
+		allowlistRule := host + "/32:" + strconv.Itoa(port)
+
+		result := handleHttpRequest(&Heartbeat{}, Command{
+			Payload: map[string]any{
+				"targetHost": host,
+				"targetPort": float64(port),
+				"scheme":     "https",
+				// skipTlsVerify omitted → defaults to false → cert verification ON
+				"method":         "GET",
+				"path":           "/",
+				"allowlistRules": []any{allowlistRule},
+			},
+		})
+
+		if result.Status != "failed" {
+			t.Fatalf("Leg B: status = %q, want failed (self-signed cert must be rejected when skipTlsVerify=false)", result.Status)
+		}
+		if result.Error != "tls_cert_untrusted" {
+			t.Fatalf("Leg B: error = %q, want tls_cert_untrusted (stable API token must be returned)", result.Error)
+		}
+	})
+
 	t.Run("allowed target returns completed result with decoded body", func(t *testing.T) {
 		const responseBody = "hello from proxy"
 
