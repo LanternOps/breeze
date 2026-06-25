@@ -16,6 +16,12 @@ export const tunnelSessions = pgTable('tunnel_sessions', {
   status: tunnelStatusEnum('status').notNull().default('pending'),
   targetHost: varchar('target_host', { length: 255 }).notNull(),
   targetPort: integer('target_port').notNull(),
+  // http/https for proxy sessions; null for VNC and pre-existing rows (callers
+  // fall back to port inference when null).
+  scheme: varchar('scheme', { length: 5 }),
+  // When true, the agent skips TLS cert verification for this session's HTTPS
+  // target (explicit opt-in for known self-signed embedded LAN devices).
+  skipTlsVerify: boolean('skip_tls_verify').notNull().default(false),
   sourceIp: varchar('source_ip', { length: 45 }),
   bytesSent: bigint('bytes_sent', { mode: 'number' }).default(0),
   bytesRecv: bigint('bytes_recv', { mode: 'number' }).default(0),
