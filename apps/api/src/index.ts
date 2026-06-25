@@ -1034,27 +1034,42 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
             const events = webhook.events ?? [];
             return events.includes(eventType) || events.includes('*');
           })
-          .map((webhook) => ({
-            id: webhook.id,
-            orgId: webhook.orgId,
-            name: webhook.name,
-            // url/secret/headers are encrypted at rest (encryptedColumnRegistry).
-            // Decrypt them here so the delivery worker fetches the real endpoint,
-            // signs with the real secret, and sends real header values. Legacy
-            // plaintext rows pass through decryptForColumn unchanged.
-            url: decryptForColumn('webhooks', 'url', webhook.url) ?? webhook.url,
-            secret: webhook.secret
-              ? decryptForColumn('webhooks', 'secret', webhook.secret) ?? undefined
-              : undefined,
-            events: webhook.events ?? [],
-            headers: headersToRecord(decryptWebhookHeaders(webhook.headers)),
-            retryPolicy: (webhook.retryPolicy ?? undefined) as {
-              maxRetries: number;
-              backoffMultiplier: number;
-              initialDelayMs: number;
-              maxDelayMs: number;
-            } | undefined
-          }));
+          // Decrypt PER ROW inside a try/catch. url/secret/headers are encrypted
+          // at rest (encryptedColumnRegistry); decryptForColumn THROWS on a row
+          // that looks encrypted but can't be decrypted (key/AAD mismatch,
+          // partial migration, corruption). Without per-row isolation a single
+          // bad row would abort the whole .map and silently drop delivery for
+          // EVERY webhook in the org. Skip only the offending webhook (delivering
+          // with unusable credentials is worse) and surface it to Sentry. Legacy
+          // plaintext rows pass through decryptForColumn unchanged.
+          .flatMap((webhook) => {
+            try {
+              return [{
+                id: webhook.id,
+                orgId: webhook.orgId,
+                name: webhook.name,
+                url: decryptForColumn('webhooks', 'url', webhook.url) ?? webhook.url,
+                secret: webhook.secret
+                  ? decryptForColumn('webhooks', 'secret', webhook.secret) ?? undefined
+                  : undefined,
+                events: webhook.events ?? [],
+                headers: headersToRecord(decryptWebhookHeaders(webhook.headers)),
+                retryPolicy: (webhook.retryPolicy ?? undefined) as {
+                  maxRetries: number;
+                  backoffMultiplier: number;
+                  initialDelayMs: number;
+                  maxDelayMs: number;
+                } | undefined
+              }];
+            } catch (err) {
+              console.error(
+                `[webhookDelivery] failed to decrypt webhook ${webhook.id} (org ${webhook.orgId}); skipping delivery for this webhook only`,
+                err
+              );
+              captureException(err instanceof Error ? err : new Error(String(err)));
+              return [];
+            }
+          });
       });
     },
     async (webhook, event) => {
