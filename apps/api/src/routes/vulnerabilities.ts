@@ -6,7 +6,7 @@ import { and, desc, eq, ilike, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 import { writeRouteAudit } from '../services/auditEvents';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
@@ -230,6 +230,9 @@ async function listVulnerabilities(filters: {
   deviceId?: string;
   severity?: string;
   cve?: string;
+  /** Site-axis narrowing: when set, only return findings for devices in these sites.
+   *  Empty array = caller has no in-scope sites → return nothing (fail-closed). */
+  allowedSiteIds?: string[];
 }) {
   const conditions: SQL[] = [];
   // 'all' means no status filter — return every status. Any other value is
@@ -239,6 +242,23 @@ async function listVulnerabilities(filters: {
   }
   if (filters.deviceId) {
     conditions.push(eq(deviceVulnerabilities.deviceId, filters.deviceId));
+  }
+  // Site-axis (app-layer only; RLS does NOT enforce site isolation). Mirrors
+  // assertDeviceSiteAccess used by per-device routes in this file and
+  // the allowedSiteIds filter pattern in reports/data.ts.
+  if (filters.allowedSiteIds !== undefined) {
+    if (filters.allowedSiteIds.length === 0) {
+      return [];
+    }
+    const allowedDeviceRows = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(inArray(devices.siteId, filters.allowedSiteIds));
+    const allowedDeviceIds = allowedDeviceRows.map((r) => r.id);
+    if (allowedDeviceIds.length === 0) {
+      return [];
+    }
+    conditions.push(inArray(deviceVulnerabilities.deviceId, allowedDeviceIds));
   }
 
   const deviceRows = await db
@@ -321,7 +341,14 @@ vulnerabilityRoutes.use('*', requireVulnerabilityRead);
 
 vulnerabilityRoutes.get('/', zValidator('query', listQuerySchema), async (c) => {
   const query = c.req.valid('query');
-  const items = await listVulnerabilities(query);
+  // Site-axis narrowing for the fleet view: per-device routes already gate via
+  // assertDeviceSiteAccess; this fleet (all-devices) query must also restrict to
+  // the caller's allowed sites. Mirrors the site-filter pattern in core.ts.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const items = await listVulnerabilities({
+    ...query,
+    allowedSiteIds: perms?.allowedSiteIds,
+  });
   return c.json({ items: aggregateFleet(items) });
 });
 

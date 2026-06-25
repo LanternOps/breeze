@@ -5,6 +5,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// Partial-mock drizzle-orm so `inArray` is a spy while every other operator
+// (and/or/eq/sql/...) stays real. The GET /rules site-narrowing test asserts
+// inArray(pamRules.siteId, allowedSiteIds) was actually built — removing the
+// production narrowing line makes that assertion fail.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)),
+  };
+});
+
 const authMocks = vi.hoisted(() => ({
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
@@ -65,6 +77,7 @@ vi.mock('../db/schema', () => ({
   pamRules: {
     id: 'id',
     orgId: 'orgId',
+    siteId: 'siteId',
     priority: 'priority',
     createdAt: 'createdAt',
     matchSignerGroupId: 'matchSignerGroupId',
@@ -172,6 +185,7 @@ vi.mock('./softwarePolicies', () => ({
 }));
 
 import { db } from '../db';
+import { inArray } from 'drizzle-orm';
 import { pamRoutes } from './pam';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
@@ -1352,6 +1366,291 @@ describe('PATCH /pam/rules/:id shape validation (Phase 1)', () => {
     });
     expect(res.status).toBe(400);
     expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// Rules CRUD — site-axis enforcement (intra-tenant site privilege escalation).
+// pam_rules is RLS Shape-1 (org_id only), so the SITE axis is app-layer-only.
+// A site-restricted tech (allowedSiteIds=[siteA]) with PAM write + MFA must not
+// author / modify / delete / read org-wide (siteId null) or other-site rules.
+// Unrestricted callers (no allowedSiteIds — the default setAuth()) keep org-wide
+// ability. Mirrors the canAccessSite gate already on the elevation handlers.
+// ============================================================
+describe('PAM rules — site-axis enforcement', () => {
+  const ALLOWED_SITE = '7b41c9a2-0000-4000-8000-000000000010';
+  const OTHER_SITE = '7b41c9a2-0000-4000-8000-000000000011';
+  const RULE_ID = '7b41c9a2-0000-4000-8000-000000000012';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.delete).mockReset();
+  });
+
+  /** Auth as a tech restricted to ALLOWED_SITE only. */
+  function setSiteRestrictedAuth() {
+    authMocks.authMiddlewareMock.mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: USER_ID, email: 't@example.com' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+      });
+      c.set('permissions', { allowedSiteIds: [ALLOWED_SITE] });
+      return next();
+    });
+  }
+
+  function mockExistingRule(rule: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([rule]),
+        })),
+      })),
+    } as any);
+  }
+
+  function mockInsertReturning() {
+    const returning = vi.fn().mockResolvedValue([
+      { id: RULE_ID, name: 'r', verdict: 'auto_approve', priority: 100 },
+    ]);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn(() => ({ returning })) } as any);
+  }
+
+  // ---- POST /rules ----
+
+  it('site-restricted tech is DENIED creating an org-wide (null siteId) rule (403)', async () => {
+    setSiteRestrictedAuth();
+    mockInsertReturning();
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'org-wide', verdict: 'auto_approve', matchHash: 'a'.repeat(64) }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('Site access denied');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted tech is DENIED creating an other-site rule (403)', async () => {
+    setSiteRestrictedAuth();
+    mockInsertReturning();
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'other-site',
+        verdict: 'auto_approve',
+        matchHash: 'a'.repeat(64),
+        siteId: OTHER_SITE,
+      }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('Site access denied');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted tech CAN create a rule for an allowed site (201)', async () => {
+    setSiteRestrictedAuth();
+    mockInsertReturning();
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'allowed-site',
+        verdict: 'auto_approve',
+        matchHash: 'a'.repeat(64),
+        siteId: ALLOWED_SITE,
+      }),
+    });
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { siteId: string };
+    expect(valuesArg.siteId).toBe(ALLOWED_SITE);
+  });
+
+  it('unrestricted caller CAN still create an org-wide (null siteId) rule (201)', async () => {
+    // Default setAuth() => permissions undefined (no allowedSiteIds).
+    mockInsertReturning();
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'org-wide', verdict: 'auto_approve', matchHash: 'a'.repeat(64) }),
+    });
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { siteId: string | null };
+    expect(valuesArg.siteId).toBeNull();
+  });
+
+  // ---- PATCH /rules/:id ----
+
+  it('site-restricted tech is DENIED patching an other-site rule (403)', async () => {
+    setSiteRestrictedAuth();
+    mockExistingRule({
+      id: RULE_ID,
+      orgId: ORG_ID,
+      siteId: OTHER_SITE,
+      matchHash: 'a'.repeat(64),
+      verdict: 'auto_approve',
+    });
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('Site access denied');
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted tech is DENIED patching an org-wide (null siteId) rule (403)', async () => {
+    setSiteRestrictedAuth();
+    mockExistingRule({
+      id: RULE_ID,
+      orgId: ORG_ID,
+      siteId: null,
+      matchHash: 'a'.repeat(64),
+      verdict: 'auto_approve',
+    });
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(res.status).toBe(403);
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted tech is DENIED moving an allowed-site rule to an other site (403)', async () => {
+    setSiteRestrictedAuth();
+    mockExistingRule({
+      id: RULE_ID,
+      orgId: ORG_ID,
+      siteId: ALLOWED_SITE,
+      matchHash: 'a'.repeat(64),
+      verdict: 'auto_approve',
+    });
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteId: OTHER_SITE }),
+    });
+    expect(res.status).toBe(403);
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted tech CAN patch an allowed-site rule (200)', async () => {
+    setSiteRestrictedAuth();
+    mockExistingRule({
+      id: RULE_ID,
+      orgId: ORG_ID,
+      siteId: ALLOWED_SITE,
+      matchHash: 'a'.repeat(64),
+      verdict: 'auto_approve',
+    });
+    const set = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: RULE_ID }]) })) }));
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.update)).toHaveBeenCalled();
+  });
+
+  // ---- DELETE /rules/:id ----
+
+  it('site-restricted tech is DENIED deleting an other-site rule (403)', async () => {
+    setSiteRestrictedAuth();
+    mockExistingRule({ id: RULE_ID, orgId: ORG_ID, siteId: OTHER_SITE, name: 'other' });
+    const res = await app().request(`/pam/rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('Site access denied');
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted tech is DENIED deleting an org-wide (null siteId) rule (403)', async () => {
+    setSiteRestrictedAuth();
+    mockExistingRule({ id: RULE_ID, orgId: ORG_ID, siteId: null, name: 'org-wide' });
+    const res = await app().request(`/pam/rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted tech CAN delete an allowed-site rule (200)', async () => {
+    setSiteRestrictedAuth();
+    mockExistingRule({ id: RULE_ID, orgId: ORG_ID, siteId: ALLOWED_SITE, name: 'allowed' });
+    vi.mocked(db.delete).mockReturnValue({ where: vi.fn() } as any);
+    const res = await app().request(`/pam/rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.delete)).toHaveBeenCalled();
+  });
+
+  it('unrestricted caller CAN still delete an org-wide rule (200)', async () => {
+    // Default setAuth() => no allowedSiteIds.
+    mockExistingRule({ id: RULE_ID, orgId: ORG_ID, siteId: null, name: 'org-wide' });
+    vi.mocked(db.delete).mockReturnValue({ where: vi.fn() } as any);
+    const res = await app().request(`/pam/rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.delete)).toHaveBeenCalled();
+  });
+
+  // ---- GET /rules ----
+
+  it('site-restricted tech GET /rules narrows to allowed sites (other-site/org-wide hidden)', async () => {
+    setSiteRestrictedAuth();
+    vi.mocked(inArray).mockClear();
+    // The mock db ignores the WHERE predicate; assert the route builds a where
+    // (inArray on pamRules.siteId) and returns the rows the DB layer would yield.
+    const allowedRule = { id: RULE_ID, orgId: ORG_ID, siteId: ALLOWED_SITE, name: 'mine' };
+    const chain: any = Promise.resolve([allowedRule]);
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    vi.mocked(db.select).mockReturnValue(chain);
+
+    const res = await app().request('/pam/rules');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.rules).toEqual([allowedRule]);
+    // A site-scoping WHERE predicate was applied (not just the bare org condition).
+    expect(chain.where).toHaveBeenCalled();
+    // Load-bearing: the narrowing MUST be inArray(pamRules.siteId, allowedSiteIds).
+    // The schema mock exposes pamRules.siteId as the literal 'siteId'. If the
+    // production `inArray(pamRules.siteId, perms.allowedSiteIds)` line were
+    // removed, inArray would never be called with the site column and this fails.
+    expect(inArray).toHaveBeenCalledWith('siteId', [ALLOWED_SITE]);
+  });
+
+  it('unrestricted caller GET /rules returns rules without a site filter', async () => {
+    // Default setAuth() => no allowedSiteIds.
+    vi.mocked(inArray).mockClear();
+    const orgWide = { id: RULE_ID, orgId: ORG_ID, siteId: null, name: 'org-wide' };
+    const chain: any = Promise.resolve([orgWide]);
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    vi.mocked(db.select).mockReturnValue(chain);
+
+    const res = await app().request('/pam/rules');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rules).toEqual([orgWide]);
+    // No site narrowing for an unrestricted caller: inArray is never invoked
+    // with the pam_rules site column.
+    expect(inArray).not.toHaveBeenCalledWith('siteId', expect.anything());
   });
 });
 

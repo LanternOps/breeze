@@ -2,6 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { mobileRoutes } from './mobile';
 
+// Partial-mock drizzle-orm so `inArray` is a spy while every other operator
+// (and/eq/sql/...) stays real. The /summary site-narrowing tests assert that
+// device stats build inArray(devices.siteId, allowedSiteIds) and alert stats
+// build inArray(alerts.deviceId, resolvedDeviceIds). Removing either production
+// narrowing line makes the matching assertion fail.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)),
+  };
+});
+
 const { publishEventMock, setCooldownMock, emitAlertStateFeedbackMock, rateLimitState, authState } = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1'),
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
@@ -78,6 +91,8 @@ vi.mock('../middleware/userRateLimit', () => ({
 }));
 
 import { db } from '../db';
+import { inArray } from 'drizzle-orm';
+import { devices, alerts } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 
 const mockSelectLimitChain = (result: unknown) => ({
@@ -1398,6 +1413,88 @@ describe('mobile routes', () => {
       const body = await res.json();
       expect(body.devices.total).toBe(0);
       expect(body.alerts.total).toBe(0);
+    });
+
+    describe('site-axis narrowing', () => {
+      // Helper: summary device/alert aggregate queries return a single row.
+      const mockAggregateChain = (row: unknown) => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([row])
+        })
+      });
+      // Helper: resolveSiteAllowedDeviceIds device lookup chain (returns array of {id, siteId}).
+      const mockDeviceSiteChain = (rows: unknown[]) => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows)
+        })
+      });
+
+      it('returns zeros for both devices and alerts when site-restricted caller has empty allowedSiteIds (fail-closed)', async () => {
+        authState.permissions = { allowedSiteIds: [] };
+
+        const res = await app.request('/mobile/summary', { method: 'GET' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Empty allowedSiteIds → early return zeros for everything
+        expect(body.devices.total).toBe(0);
+        expect(body.alerts.total).toBe(0);
+        // db.select should not have been called (short-circuit before any query)
+        expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      });
+
+      it('applies siteId inArray to device stats and uses resolveSiteAllowedDeviceIds for alert stats when site-restricted', async () => {
+        authState.permissions = { allowedSiteIds: ['site-1'] };
+        vi.mocked(inArray).mockClear();
+
+        const selectMock = vi.mocked(db.select);
+        // Call order:
+        //   1. device stats aggregate (from devices, where includes siteId inArray)
+        //   2. resolveSiteAllowedDeviceIds: select {id, siteId} from devices where orgId
+        //   3. alert stats aggregate (from alerts, where includes deviceId inArray)
+        selectMock
+          .mockReturnValueOnce(mockAggregateChain({ total: 3, online: 2, offline: 1, maintenance: 0 }) as any)
+          .mockReturnValueOnce(mockDeviceSiteChain([{ id: 'dev-1', siteId: 'site-1' }]) as any)
+          .mockReturnValueOnce(mockAggregateChain({ total: 1, active: 1, acknowledged: 0, resolved: 0, critical: 1 }) as any);
+
+        const res = await app.request('/mobile/summary', { method: 'GET' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Device stats reflect the allowed-site devices
+        expect(body.devices.total).toBe(3);
+        // Alert stats reflect the allowed device IDs
+        expect(body.alerts.total).toBe(1);
+        // Three db.select calls: device-agg, device-site-lookup, alert-agg
+        expect(selectMock).toHaveBeenCalledTimes(3);
+
+        // Load-bearing site narrowing. These prove the actual filters were built;
+        // deleting either production line drops the matching inArray call.
+        //   - device stats narrow on the real devices.siteId column with the allowlist
+        //   - alert stats narrow on the real alerts.deviceId column with the device IDs
+        //     resolveSiteAllowedDeviceIds yields for the allowed site (['dev-1'])
+        expect(inArray).toHaveBeenCalledWith(devices.siteId, ['site-1']);
+        expect(inArray).toHaveBeenCalledWith(alerts.deviceId, ['dev-1']);
+      });
+
+      it('returns zero alerts (but real device counts) when resolveSiteAllowedDeviceIds returns empty', async () => {
+        authState.permissions = { allowedSiteIds: ['site-1'] };
+
+        const selectMock = vi.mocked(db.select);
+        // Device stats: some devices returned
+        selectMock
+          .mockReturnValueOnce(mockAggregateChain({ total: 2, online: 1, offline: 1, maintenance: 0 }) as any)
+          // resolveSiteAllowedDeviceIds: no devices in the allowed site
+          .mockReturnValueOnce(mockDeviceSiteChain([]) as any);
+
+        const res = await app.request('/mobile/summary', { method: 'GET' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Device stats already computed before the site-device resolution
+        expect(body.devices.total).toBe(2);
+        // Alert stats zeroed because no in-scope device IDs
+        expect(body.alerts.total).toBe(0);
+        // Only two db.select calls: no alert-agg issued (short-circuited)
+        expect(selectMock).toHaveBeenCalledTimes(2);
+      });
     });
   });
 
