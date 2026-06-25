@@ -93,7 +93,6 @@ vi.mock('../services/tunnelAllowlist', () => ({
   getActiveAllowlistPatterns: vi.fn(async () => ['192.168.1.0/24']),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 import { tunnelHttpRoutes } from './tunnelHttp';
 
 function makeApp() {
