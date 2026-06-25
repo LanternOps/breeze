@@ -15,7 +15,7 @@ import {
   listComplianceSchema,
   policyIdSchema,
 } from './schemas';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
   ensureOrgAccess,
@@ -481,6 +481,88 @@ complianceRoutes.get(
       trend: [],
       policies: allPolicies,
       nonCompliantDevices: allNonCompliantDevices,
+    });
+  }
+);
+
+// GET /policies/compliance/device/:deviceId
+//
+// Per-device config-policy compliance: how one device fares across every
+// config policy assigned to it. Registered BEFORE `/:id/compliance` so the
+// literal `/compliance/...` segment wins over the `:id` param.
+//
+// The underlying helper (`getConfigPolicyComplianceForDevice`) does NO
+// tenant/site authz, so this route is the only guard. Mirrors the device-access
+// gate at `monitoring.ts:872-889`: resolve the device's org/site, deny by org
+// (canAccessOrg), then deny by site (allowedSiteIds). DEVICES_READ is granted to
+// every device-viewing role and only serves to populate `permissions` so the
+// site narrowing below is live.
+complianceRoutes.get(
+  '/compliance/device/:deviceId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const deviceId = c.req.param('deviceId');
+
+    if (!deviceId) {
+      return c.json({ error: 'Device ID required' }, 400);
+    }
+
+    // Resolve the device's org/site for the authz gate.
+    const [device] = await db
+      .select({ orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // Org gate (RLS-independent authz; the helper does none of its own).
+    if (device.orgId === null || !ensureOrgAccess(device.orgId, auth)) {
+      return c.json({ error: 'Access to this device denied' }, 403);
+    }
+
+    // Site gate: RLS does not defend the site axis, so enforce `allowedSiteIds`
+    // here exactly as the sibling monitoring/device routes do.
+    if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    // Scope the rule-info lookup to the device's own org only — we have already
+    // confirmed the caller may access it, and the rows are device-filtered.
+    const { rows, ruleInfoMap } = await getConfigPolicyComplianceForDevice(
+      deviceId,
+      [device.orgId]
+    );
+
+    // Serialize the rule-info map (keyed by feature-link id) so the web client
+    // can render rule names alongside each compliance row.
+    const serializedRuleInfo: Record<string, unknown[]> = {};
+    for (const [featureLinkId, infos] of ruleInfoMap.entries()) {
+      serializedRuleInfo[featureLinkId] = infos;
+    }
+
+    return c.json({
+      data: rows.map((row) => ({
+        id: row.id,
+        policyId: row.policyId,
+        configPolicyId: row.configPolicyId,
+        configItemName: row.configItemName,
+        deviceId: row.deviceId,
+        status: row.status,
+        details: row.details,
+        lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
+        remediationAttempts: row.remediationAttempts,
+        updatedAt: row.updatedAt?.toISOString() ?? null,
+        deviceHostname: row.deviceHostname,
+        deviceStatus: row.deviceStatus,
+        deviceOsType: row.deviceOsType,
+      })),
+      ruleInfo: serializedRuleInfo,
     });
   }
 );
