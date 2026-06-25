@@ -18,7 +18,7 @@
 - Backend is untouched in this plan.
 - EC product shape (`TdSynnexEcProduct`): `{ source:'td_synnex_ec_express', synnexSku, mfgPartNo, status, name, description, currency, cost:number|null, msrp:number|null, discount, totalQty, warehouses, weight, parcelShippable, raw }`.
 - Default sell price = `product.msrp ?? product.cost` (matches existing `sellPriceDefault`); markup default is out of scope.
-- Run web tests with: `pnpm --filter @breeze/web test -- run <path>`.
+- Run web tests with: `pnpm --filter @breeze/web exec vitest run <path>`.
 
 ---
 
@@ -89,7 +89,7 @@ describe('distributors client', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @breeze/web test -- run src/lib/api/distributors.test.ts`
+Run: `pnpm --filter @breeze/web exec vitest run src/lib/api/distributors.test.ts`
 Expected: FAIL — cannot resolve `./distributors`.
 
 - [ ] **Step 3: Write the client**
@@ -168,7 +168,7 @@ export function sellPriceDefault(product: EcProduct): string {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @breeze/web test -- run src/lib/api/distributors.test.ts`
+Run: `pnpm --filter @breeze/web exec vitest run src/lib/api/distributors.test.ts`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
@@ -262,7 +262,7 @@ describe('DistributorLookup', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @breeze/web test -- run src/components/billing/quotes/DistributorLookup.test.tsx`
+Run: `pnpm --filter @breeze/web exec vitest run src/components/billing/quotes/DistributorLookup.test.tsx`
 Expected: FAIL — cannot resolve `./DistributorLookup`.
 
 - [ ] **Step 3: Write the component**
@@ -384,7 +384,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @breeze/web test -- run src/components/billing/quotes/DistributorLookup.test.tsx`
+Run: `pnpm --filter @breeze/web exec vitest run src/components/billing/quotes/DistributorLookup.test.tsx`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
@@ -583,7 +583,7 @@ to the `<BlockCard … />` element.
 
 - [ ] **Step 3: Run the test**
 
-Run: `pnpm --filter @breeze/web test -- run src/components/billing/quotes/QuoteEditor.distributor.test.tsx`
+Run: `pnpm --filter @breeze/web exec vitest run src/components/billing/quotes/QuoteEditor.distributor.test.tsx`
 Expected: PASS — the "distributor mode visible when EC active" gate test is green. (BlockCard doesn't render the mode button until Task 4, so this passes once the gate + props are wired and the existing manual/catalog modes still render. If the mode button isn't visible yet because BlockCard is unchanged, this single gate test is allowed to stay red until Task 4 — note it and proceed.)
 
 > Sequencing note: the `quote-line-mode-blk1-distributor` button is added in Task 4. If you prefer strict red→green per task, move the gate assertion to Task 4 and have Task 3 assert only that `ecExpressStatus` was called on mount (`await waitFor(() => expect(ecExpressStatus).toHaveBeenCalled())`). Either is fine; pick one and keep the suite green at each commit.
@@ -643,7 +643,7 @@ it('hides the distributor mode when EC Express is inactive', async () => {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter @breeze/web test -- run src/components/billing/quotes/QuoteEditor.distributor.test.tsx`
+Run: `pnpm --filter @breeze/web exec vitest run src/components/billing/quotes/QuoteEditor.distributor.test.tsx`
 Expected: FAIL — no `quote-line-mode-blk1-distributor` element.
 
 - [ ] **Step 3: Modify `BlockCard`**
@@ -713,13 +713,13 @@ Finally, pass the props from the parent map (in the `sortedBlocks.map(...)` rend
 
 - [ ] **Step 4: Run the test**
 
-Run: `pnpm --filter @breeze/web test -- run src/components/billing/quotes/QuoteEditor.distributor.test.tsx`
+Run: `pnpm --filter @breeze/web exec vitest run src/components/billing/quotes/QuoteEditor.distributor.test.tsx`
 Expected: PASS — full flow + inactive-hide both green.
 
 - [ ] **Step 5: Typecheck + full web suite for the touched files**
 
 Run: `pnpm --filter @breeze/web exec tsc --noEmit`
-Run: `pnpm --filter @breeze/web test -- run src/components/billing/quotes src/lib/api/distributors.test.ts`
+Run: `pnpm --filter @breeze/web exec vitest run src/components/billing/quotes src/lib/api/distributors.test.ts`
 Expected: 0 type errors; all quote + client tests pass.
 
 - [ ] **Step 6: Commit**
@@ -741,7 +741,7 @@ git commit -m "feat(web): render Search-distributor mode in quote pricing block"
 
 - [ ] **Step 1: Run the guard test**
 
-Run: `pnpm --filter @breeze/web test -- run src/lib/__tests__/no-silent-mutations.test.ts`
+Run: `pnpm --filter @breeze/web exec vitest run src/lib/__tests__/no-silent-mutations.test.ts`
 Expected: PASS. The new mutation (`ecExpressImport`) is invoked **through `runAction`** in `QuoteEditor`, so it should pass without an allowlist entry. The `DistributorLookup` lookup is a GET (not a mutation) and must not be flagged.
 
 - [ ] **Step 2: If it fails**, read the failure. If it flags `distributors.ts` because `ecExpressImport` is a bare POST helper (the guard may scan api modules), add a one-line allowlist entry in `apps/web/src/lib/runActionAllowlist.ts` with a comment that the caller (`QuoteEditor.importAndAddDistributor`) wraps it in `runAction`. Re-run.
