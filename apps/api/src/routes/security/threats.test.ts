@@ -35,11 +35,15 @@ vi.mock('../../db/schema', () => ({
   auditLogs: {},
 }));
 
-vi.mock('../../middleware/auth', () => ({
-  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
-}));
+// Use the real requirePermission so RBAC is actually enforced; only stub
+// requireScope (tenancy check) to a passthrough for unit-test simplicity.
+vi.mock('../../middleware/auth', async () => {
+  const actual = await vi.importActual<any>('../../middleware/auth');
+  return {
+    ...actual,
+    requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  };
+});
 
 const { queueCommandMock, getUserPermissionsMock } = vi.hoisted(() => ({
   queueCommandMock: vi.fn(async () => undefined),
@@ -72,7 +76,7 @@ const THREAT_ID = '33333333-3333-4333-8333-333333333333';
 const SITE_ALLOWED = '44444444-4444-4444-8444-444444444444';
 const SITE_FORBIDDEN = '55555555-5555-4555-8555-555555555555';
 
-function buildApp(permissions?: { allowedSiteIds?: string[] }): Hono {
+function buildApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
@@ -84,7 +88,6 @@ function buildApp(permissions?: { allowedSiteIds?: string[] }): Hono {
       canAccessOrg: () => true,
       orgCondition: () => undefined,
     } as any);
-    if (permissions) c.set('permissions', permissions as any);
     await next();
   });
   app.route('/security', threatsRoutes);
@@ -116,12 +119,20 @@ function mockThreatSelect(siteId: string | null) {
 describe('security threats action routes (site-scope enforcement)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getUserPermissionsMock.mockResolvedValue(null);
+    // Provide devices:execute so real requirePermission passes the POST routes.
+    // Tests that need site-scope restrictions override allowedSiteIds below.
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'execute' }],
+      allowedSiteIds: [SITE_ALLOWED],
+    });
   });
 
   it('rejects quarantine when the threat device is outside the caller site allowlist', async () => {
+    // getUserPermissions returns a site-restricted list that excludes SITE_FORBIDDEN.
+    // requirePermission stores these permissions in context; queueThreatAction
+    // enforces the site allowlist and rejects SITE_FORBIDDEN.
     mockThreatSelect(SITE_FORBIDDEN);
-    const app = buildApp({ allowedSiteIds: [SITE_ALLOWED] });
+    const app = buildApp();
 
     const res = await app.request(`/security/threats/${THREAT_ID}/quarantine`, {
       method: 'POST',
@@ -142,7 +153,7 @@ describe('security threats action routes (site-scope enforcement)', () => {
         where: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
-    const app = buildApp({ allowedSiteIds: [SITE_ALLOWED] });
+    const app = buildApp();
 
     const res = await app.request(`/security/threats/${THREAT_ID}/quarantine`, {
       method: 'POST',
@@ -156,10 +167,13 @@ describe('security threats action routes (site-scope enforcement)', () => {
     expect(queueCommandMock).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects remove for an out-of-site device even when permissions are fetched lazily', async () => {
+  it('rejects remove for an out-of-site device', async () => {
     mockThreatSelect(SITE_FORBIDDEN);
-    // No permissions set in context; handler must fetch them.
-    getUserPermissionsMock.mockResolvedValue({ allowedSiteIds: [SITE_ALLOWED] });
+    // permissions restrict to SITE_ALLOWED only; SITE_FORBIDDEN is denied.
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'execute' }],
+      allowedSiteIds: [SITE_ALLOWED],
+    });
     const app = buildApp();
 
     const res = await app.request(`/security/threats/${THREAT_ID}/remove`, {
@@ -178,8 +192,12 @@ describe('security threats action routes (site-scope enforcement)', () => {
         where: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
-    // permissions has no allowedSiteIds → unrestricted
-    const app = buildApp({});
+    // No allowedSiteIds → unrestricted; SITE_FORBIDDEN is allowed.
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'execute' }],
+      allowedSiteIds: undefined,
+    });
+    const app = buildApp();
 
     const res = await app.request(`/security/threats/${THREAT_ID}/restore`, {
       method: 'POST',
@@ -188,5 +206,94 @@ describe('security threats action routes (site-scope enforcement)', () => {
 
     expect(res.status).toBe(200);
     expect(queueCommandMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// RBAC tests: verify that GET /threats and GET /threats/:deviceId enforce
+// requirePermission('devices', 'read'). The real requirePermission is used
+// (via vi.importActual in the auth mock above) so getUserPermissions controls
+// the outcome — null → 403, missing devices:read → 403, present → pass.
+describe('security threats GET routes — requirePermission(devices, read)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue(null);
+  });
+
+  it('GET /threats returns 403 when the caller has no permissions', async () => {
+    // getUserPermissions returns null → real requirePermission → 403
+    getUserPermissionsMock.mockResolvedValue(null);
+    const app = buildApp();
+
+    const res = await app.request('/security/threats', { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    // DB must not have been reached
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('GET /threats returns 403 when the caller lacks devices:read', async () => {
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'scripts', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+    const app = buildApp();
+
+    const res = await app.request('/security/threats', { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    // DB must not have been reached
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('GET /threats returns non-403 when the caller has devices:read', async () => {
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+    const app = buildApp();
+
+    const res = await app.request('/security/threats', { method: 'GET' });
+
+    // Permission check passed; any status other than 403 is acceptable here.
+    expect(res.status).not.toBe(403);
+  });
+
+  it('GET /threats/:deviceId returns 403 when the caller has no permissions', async () => {
+    // getUserPermissions returns null → real requirePermission → 403
+    getUserPermissionsMock.mockResolvedValue(null);
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${DEVICE_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    // DB must not have been reached
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('GET /threats/:deviceId returns 403 when the caller lacks devices:read', async () => {
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'scripts', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${DEVICE_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    // DB must not have been reached
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('GET /threats/:deviceId returns non-403 when the caller has devices:read', async () => {
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+    // listStatusRows will return empty → device not found → 404, which is not 403.
+    const app = buildApp();
+
+    const res = await app.request(`/security/threats/${DEVICE_ID}`, { method: 'GET' });
+
+    expect(res.status).not.toBe(403);
   });
 });

@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { devices } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import { listStatusQuerySchema, deviceIdParamSchema } from './schemas';
 import { getPagination, paginate, listStatusRows, toStatusResponse } from './helpers';
@@ -14,6 +14,7 @@ export const statusRoutes = new Hono();
 statusRoutes.get(
   '/status',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('query', listStatusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -60,6 +61,7 @@ statusRoutes.get(
 statusRoutes.get(
   '/status/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');

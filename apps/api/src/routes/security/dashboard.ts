@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import {
   listLatestSecurityPosture,
   getSecurityPostureTrend
@@ -26,6 +26,7 @@ export const dashboardRoutes = new Hono();
 dashboardRoutes.get(
   '/dashboard',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('query', dashboardQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -167,6 +168,7 @@ dashboardRoutes.get(
 dashboardRoutes.get(
   '/score-breakdown',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   async (c) => {
     const auth = c.get('auth');
     const scope = resolveScopedOrgIds(auth);

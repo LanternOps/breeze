@@ -35,9 +35,10 @@ const registerVerifySchema = z.object({
   label: deviceLabelSchema.optional(),
 });
 
-// Mobile hardware-key registration (passwordless, deferred proof-of-possession):
-// the phone POSTs only its freshly generated Secure-Enclave / Keystore SPKI
-// public key + a label. No password step-up and no registration-time signature —
+// Mobile hardware-key registration — requires a current-password step-up.
+// The phone POSTs its freshly generated Secure-Enclave / Keystore SPKI public
+// key + a label, plus the account password to prove the caller controls the
+// account (not merely a stolen access token). No registration-time signature —
 // the key is stored PENDING (last_used_at null) and ACTIVATES on its first
 // approval signature, which is verified in the assurance path.
 //
@@ -45,9 +46,12 @@ const registerVerifySchema = z.object({
 // discriminators (the mobile client sends them); we tolerate but do NOT trust
 // them — the server forces kind='mobile_hw_key' and is_platform_bound=true. The
 // authoritative `publicKey` + `label` are re-validated through the shared
-// `mobileHwKeyRegisterSchema` (`.strict()`) before insert.
+// `mobileHwKeyRegisterSchema` (`.strict()`) before insert; `currentPassword` is
+// intentionally stripped prior to that parse so the strict schema doesn't reject
+// the field.
 const mobileRegisterSchema = z
   .object({
+    currentPassword: z.string().min(1).max(256),
     kind: z.literal('mobile_hw_key').optional(),
     isPlatformBound: z.boolean().optional(),
   })
@@ -185,10 +189,11 @@ authenticatorRoutes.post(
   }
 );
 
-// Mobile hardware-key registration — passwordless, single step. The phone POSTs
-// its Secure-Enclave / Keystore public key the moment it has one (right after
-// login); there is NO password step-up and NO registration-time proof-of-
-// possession. The row is inserted PENDING (`last_used_at` null) and is ACTIVATED
+// Mobile hardware-key registration — password step-up required, then deferred PoP.
+// The phone POSTs its Secure-Enclave / Keystore public key plus the account
+// password (step-up), which proves the caller controls the account and not merely
+// a stolen access token. There is NO registration-time proof-of-possession
+// signature — the row is inserted PENDING (`last_used_at` null) and is ACTIVATED
 // on its first real approval signature, verified in
 // `authenticatorAssurance.verifyMobileFactor` (which sets `last_used_at`). The
 // deferred-PoP design means a registered-but-never-used key can never satisfy an
@@ -200,6 +205,19 @@ authenticatorRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+
+    // Password step-up mirrors /devices/webauthn/options — registering an
+    // approver device with a stolen access token is the attack this guards
+    // against. The caller proves they know the account password before any SPKI
+    // key is stored. `currentPassword` is validated by the outer
+    // `mobileRegisterSchema` (required, non-empty) before reaching here.
+    const passwordError = await requireCurrentPasswordStepUp(
+      c,
+      auth.user.id,
+      body.currentPassword,
+      'authenticator:pwd'
+    );
+    if (passwordError) return passwordError;
 
     // Re-validate the authoritative fields through the shared strict schema; the
     // client-asserted kind/isPlatformBound discriminators are ignored (the server

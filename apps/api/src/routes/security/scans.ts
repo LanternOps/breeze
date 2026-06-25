@@ -113,6 +113,7 @@ scansRoutes.post(
 scansRoutes.get(
   '/scans/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('param', deviceIdParamSchema),
   zValidator('query', listScansQuerySchema),
   async (c) => {

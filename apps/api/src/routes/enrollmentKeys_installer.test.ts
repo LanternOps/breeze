@@ -93,7 +93,7 @@ vi.mock('../services/msiSigning', () => ({
   },
 }));
 
-vi.mock('../services/redis', () => ({
+vi.mock('../services', () => ({
   getRedis: vi.fn(() => ({})),
 }));
 
@@ -105,6 +105,7 @@ import { enrollmentKeyRoutes } from './enrollmentKeys';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { MsiSigningService } from '../services/msiSigning';
+import { rateLimiter } from '../services/rate-limit';
 
 const ORG_ID = 'org-111';
 const KEY_ID = '11111111-1111-1111-1111-111111111111';
@@ -592,6 +593,96 @@ describe('enrollment key routes — installer download', () => {
           details: expect.objectContaining({ count: 3 }),
         })
       );
+    });
+
+    // ============================================================
+    // Signing-spend cap tests (per-user and per-parent-key limits)
+    // ============================================================
+    describe('signing-spend cap', () => {
+      beforeEach(() => {
+        // clearAllMocks does NOT drain mockResolvedValueOnce queues — reset rateLimiter
+        // and restore the allowed-by-default impl so an unconsumed `Once` value from a
+        // prior cap test cannot bleed into the next one's per-user/per-key sequence.
+        vi.mocked(rateLimiter).mockReset();
+        vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date() });
+      });
+
+      it('allows signing when both per-user and per-key caps are under limit', async () => {
+        // Default mock: rateLimiter always returns allowed=true
+        mockSelectFromWhereLimit([makeEnrollmentKey()]);
+        mockInsertValuesReturning([
+          makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+        ]);
+
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(200);
+        // Child key was created
+        expect(db.insert).toHaveBeenCalledTimes(1);
+      });
+
+      it('returns 429 and does NOT create child key when per-user cap is exceeded', async () => {
+        // First rateLimiter call (per-user) returns denied; second should never be reached
+        vi.mocked(rateLimiter)
+          .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 3600_000) })
+          .mockResolvedValueOnce({ allowed: true, remaining: 20, resetAt: new Date() });
+
+        mockSelectFromWhereLimit([makeEnrollmentKey()]);
+        // No insert mock needed — child key must NOT be created
+
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(429);
+        const body = await res.json();
+        expect(body.error).toMatch(/rate limit/i);
+        expect(body.retryAfter).toBeDefined();
+        // No child enrollment key created, no signing triggered
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('returns 429 and does NOT create child key when per-parent-key cap is exceeded', async () => {
+        // First rateLimiter call (per-user) passes; second (per-key) is denied
+        vi.mocked(rateLimiter)
+          .mockResolvedValueOnce({ allowed: true, remaining: 5, resetAt: new Date() })
+          .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 3600_000) });
+
+        mockSelectFromWhereLimit([makeEnrollmentKey()]);
+        // No insert mock needed — child key must NOT be created
+
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(429);
+        const body = await res.json();
+        expect(body.error).toMatch(/rate limit/i);
+        expect(body.retryAfter).toBeDefined();
+        // No child enrollment key created, no signing triggered
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('returns 503 and does NOT create child key when Redis is unavailable', async () => {
+        const { getRedis } = await import('../services');
+        vi.mocked(getRedis).mockReturnValueOnce(null as any);
+
+        mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(503);
+        // No child enrollment key created
+        expect(db.insert).not.toHaveBeenCalled();
+      });
     });
   });
 });

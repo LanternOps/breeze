@@ -341,9 +341,9 @@ describe('approver device routes', () => {
     expect(dbState.updateSets).toContainEqual(expect.objectContaining({ label: 'New Name' }));
   });
 
-  // --- Passwordless registration (POST /devices) — activates on first signature ---
+  // --- Mobile hardware-key registration (POST /devices) — password step-up required, activates on first signature ---
 
-  it('registers a mobile_hw_key with no password and stores it pending', async () => {
+  it('registers a mobile_hw_key after the current-password step-up and stores it pending', async () => {
     dbState.insertReturning = [
       {
         ...deviceRow,
@@ -359,13 +359,21 @@ describe('approver device routes', () => {
     const res = await app.request('/authenticator/devices', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true }),
+      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
     });
 
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.device.id).toBe('mobile-pending-1');
     expect(body.device.label).toBe('iPhone');
+
+    // Step-up must have been called before insert, matching the sibling's key prefix.
+    expect(helperMocks.requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-123',
+      'correct-password',
+      'authenticator:pwd',
+    );
 
     const inserted = dbState.insertValues[0];
     expect(inserted).toMatchObject({
@@ -381,14 +389,44 @@ describe('approver device routes', () => {
     // stays null until the first approval signature flips it active (server-side,
     // in the assurance path).
     expect(inserted).not.toHaveProperty('lastUsedAt');
-    // No proof-of-possession at registration time — the password step-up and the
-    // PoP nonce are gone; the first signature is the deferred proof.
     expect(mobileHwKeyMocks.verifyMobileSignature).not.toHaveBeenCalled();
-    expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
     expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'auth.authenticator.device.register' }),
     );
+  });
+
+  it('rejects mobile_hw_key registration when currentPassword is missing (400)', async () => {
+    const res = await app.request('/authenticator/devices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+    expect(dbState.insertValues).toHaveLength(0);
+  });
+
+  it('rejects mobile_hw_key registration when the password step-up fails (401)', async () => {
+    helperMocks.requireCurrentPasswordStepUp.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401 }),
+    );
+
+    const res = await app.request('/authenticator/devices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'wrong-password' }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(helperMocks.requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-123',
+      'wrong-password',
+      'authenticator:pwd',
+    );
+    // No insert should happen when the step-up is rejected.
+    expect(dbState.insertValues).toHaveLength(0);
   });
 
   it('records the per-install mobileDeviceId from the header on registration', async () => {
@@ -410,7 +448,7 @@ describe('approver device routes', () => {
         Authorization: 'Bearer access-token',
         'X-Breeze-Mobile-Device-Id': '11111111-2222-3333-4444-555555555555',
       },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true }),
+      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
     });
 
     expect(res.status).toBe(201);
@@ -418,21 +456,21 @@ describe('approver device routes', () => {
     expect(inserted).toMatchObject({ kind: 'mobile_hw_key', mobileDeviceId: '11111111-2222-3333-4444-555555555555' });
   });
 
-  it('requires authentication for passwordless registration', async () => {
+  it('requires authentication for mobile_hw_key registration', async () => {
     const res = await app.request('/authenticator/devices', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true }),
+      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
     });
     expect(res.status).toBe(401);
     expect(dbState.insertValues).toHaveLength(0);
   });
 
-  it('rejects passwordless registration with a missing publicKey (400)', async () => {
+  it('rejects mobile_hw_key registration with a missing publicKey (400)', async () => {
     const res = await app.request('/authenticator/devices', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', label: 'iPhone', isPlatformBound: true }),
+      body: JSON.stringify({ kind: 'mobile_hw_key', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
     });
     expect(res.status).toBe(400);
     expect(dbState.insertValues).toHaveLength(0);

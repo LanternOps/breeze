@@ -27,6 +27,7 @@ export const threatsRoutes = new Hono();
 threatsRoutes.get(
   '/threats',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('query', listThreatsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -103,6 +104,7 @@ threatsRoutes.get(
 threatsRoutes.get(
   '/threats/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('param', deviceIdParamSchema),
   zValidator('query', listThreatsQuerySchema),
   async (c) => {

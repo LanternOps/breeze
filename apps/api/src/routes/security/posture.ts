@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { devices } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import {
   getLatestSecurityPostureForDevice,
   listLatestSecurityPosture
@@ -18,6 +18,7 @@ export const postureRoutes = new Hono();
 postureRoutes.get(
   '/posture',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('query', postureQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -79,6 +80,7 @@ postureRoutes.get(
 postureRoutes.get(
   '/posture/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'read'),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');

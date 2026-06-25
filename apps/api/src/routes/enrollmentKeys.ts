@@ -39,6 +39,19 @@ import { MsiSigningService } from "../services/msiSigning";
 import { getGithubReleaseVersion } from "../services/binarySource";
 import { captureException } from "../services/sentry";
 
+// ============================================================
+// Signing-spend caps for the authenticated installer endpoint.
+// These bound how many costly MSI-sign / child-key operations
+// a single user or a single parent enrollment key can trigger.
+// ============================================================
+
+/** Max authenticated installer-signing requests per user per hour. */
+const INSTALLER_SIGN_USER_LIMIT = 10;
+/** Max authenticated installer-signing requests per parent enrollment key per hour. */
+const INSTALLER_SIGN_KEY_LIMIT = 30;
+/** Sliding window (seconds) for both authenticated signing-spend caps. */
+const INSTALLER_SIGN_WINDOW_SECONDS = 60 * 60; // 1 hour
+
 /**
  * Narrow `Buffer | null` to `Buffer`, throwing an actionable error when
  * null. Replaces non-null assertions so a future code change that adds a
@@ -1085,6 +1098,62 @@ enrollmentKeyRoutes.get(
         },
         503,
       );
+    }
+
+    // Signing-spend cap — enforce BEFORE child key creation or any signing
+    // operation so an authenticated user cannot drive unbounded (costly,
+    // rate-limited-upstream) signing calls. Two overlapping caps:
+    //   1. Per-user:       INSTALLER_SIGN_USER_LIMIT / INSTALLER_SIGN_WINDOW_SECONDS
+    //   2. Per-parent-key: INSTALLER_SIGN_KEY_LIMIT  / INSTALLER_SIGN_WINDOW_SECONDS
+    // Both fail closed on Redis errors to prevent a Redis outage from
+    // disabling the cap.
+    {
+      const { getRedis } = await import("../services");
+      const { rateLimiter } = await import("../services/rate-limit");
+      const redis = getRedis();
+      if (!redis) {
+        console.error(
+          "[installer] sign-spend rate-limit unavailable: redis client missing",
+        );
+        return c.json({ error: "Service temporarily unavailable" }, 503);
+      }
+
+      // Per-user cap
+      const userResult = await rateLimiter(
+        redis,
+        `rl:installer-sign:user:${auth.user.id}`,
+        INSTALLER_SIGN_USER_LIMIT,
+        INSTALLER_SIGN_WINDOW_SECONDS,
+      );
+      if (!userResult.allowed) {
+        return c.json(
+          {
+            error:
+              "Installer signing rate limit reached. Try again later.",
+            retryAfter: userResult.resetAt.toISOString(),
+          },
+          429,
+        );
+      }
+
+      // Per-parent-key cap (reuses the same bucket as the public route so
+      // combined public + authenticated spend is bounded together).
+      const keyResult = await rateLimiter(
+        redis,
+        `install-sign:${parentKey.id}`,
+        INSTALLER_SIGN_KEY_LIMIT,
+        INSTALLER_SIGN_WINDOW_SECONDS,
+      );
+      if (!keyResult.allowed) {
+        return c.json(
+          {
+            error:
+              "Installer signing rate limit reached for this enrollment key. Try again later.",
+            retryAfter: keyResult.resetAt.toISOString(),
+          },
+          429,
+        );
+      }
     }
 
     // Generate a child enrollment key. Child gets a FRESH TTL independent
