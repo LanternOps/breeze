@@ -142,6 +142,7 @@ describe('isUpdateStatus', () => {
       { phase: 'restarting', version: '1.0.0' },
       { phase: 'deferred', version: '1.0.0' },
       { phase: 'failed', version: '1.0.0' },
+      { phase: 'ready', version: '1.2.3' },
     ];
     for (const v of valid) {
       expect(isUpdateStatus(v)).toBe(true);

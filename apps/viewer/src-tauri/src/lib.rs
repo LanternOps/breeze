@@ -672,6 +672,10 @@ async fn auto_update(app: tauri::AppHandle) {
         emit_update_status(&app, UpdateStatus::Ready { version });
     } else {
         eprintln!("PendingUpdate state missing; cannot present update prompt");
+        // Defensive: clear the banner so a (theoretically impossible) missing
+        // state doesn't leave it pinned on "Downloading…" — the silent-look
+        // this feature exists to remove.
+        emit_update_status(&app, UpdateStatus::Failed { version });
     }
 }
 
