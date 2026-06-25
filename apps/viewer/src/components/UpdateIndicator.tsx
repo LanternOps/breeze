@@ -9,6 +9,7 @@ import {
   shouldAutoDismiss,
   type UpdateStatus,
 } from '../lib/updateStatus';
+import { applyPendingUpdate, dismissPendingUpdate } from '../lib/updateActions';
 
 /** How long a deferred-update notice lingers before auto-dismissing (ms). */
 const DEFERRED_DISMISS_MS = 10_000;
@@ -24,6 +25,7 @@ const DEFERRED_DISMISS_MS = 10_000;
  */
 export default function UpdateIndicator() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [acting, setActing] = useState(false);
 
   useEffect(() => {
     const unlisten = listen<unknown>('update-status', (event) => {
@@ -71,10 +73,10 @@ export default function UpdateIndicator() {
       data-testid="update-indicator"
       role="status"
       aria-live="polite"
-      className="fixed top-3 left-1/2 -translate-x-1/2 z-50 max-w-[90vw]
+      className={`fixed top-3 left-1/2 -translate-x-1/2 z-50 max-w-[90vw]
                  flex flex-col gap-1 px-3 py-2 rounded-lg shadow-lg
                  bg-gray-800/95 border border-gray-700 text-gray-100
-                 backdrop-blur-sm pointer-events-none"
+                 backdrop-blur-sm ${status.phase === 'ready' ? 'pointer-events-auto' : 'pointer-events-none'}`}
     >
       <div className="flex items-center gap-2 text-xs">
         <Icon
@@ -82,6 +84,44 @@ export default function UpdateIndicator() {
         />
         <span className="whitespace-nowrap">{message}</span>
       </div>
+      {status.phase === 'ready' && (
+        <div className="flex items-center gap-2 mt-0.5">
+          <button
+            type="button"
+            disabled={acting}
+            onClick={() => {
+              setActing(true);
+              applyPendingUpdate().catch((e) => {
+                console.error('Failed to apply update', e);
+                // The command rejected (install failed, or nothing staged) and
+                // may not have emitted a status event — surface a failure notice
+                // so the user isn't stranded on a dead prompt. It auto-dismisses
+                // and the update retries on next launch.
+                setStatus({ phase: 'failed', version: status.version });
+                setActing(false);
+              });
+            }}
+            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500
+                       disabled:opacity-50 text-xs font-medium"
+          >
+            Restart &amp; update
+          </button>
+          <button
+            type="button"
+            disabled={acting}
+            onClick={() => {
+              setActing(true);
+              dismissPendingUpdate()
+                .catch((e) => console.error('Failed to dismiss update', e))
+                .finally(() => setStatus(null));
+            }}
+            className="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600
+                       disabled:opacity-50 text-xs"
+          >
+            Remind me later
+          </button>
+        </div>
+      )}
       {active && (
         <div className="h-1 w-full rounded bg-gray-700 overflow-hidden">
           {percent == null ? (
