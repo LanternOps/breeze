@@ -425,9 +425,11 @@ export function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
   return new Worker<PatchJobDeviceData>(
     PATCH_JOB_DEVICE_QUEUE,
     async (job: Job<PatchJobDeviceData>) => {
-      return runWithSystemDbAccess(async () => {
-        return processExecuteDevice(job.data);
-      });
+      // NOT wrapped in one runWithSystemDbAccess: processExecuteDevice manages its
+      // own short contexts so the up-to-30-min completion poll never holds a
+      // pooled connection in an open transaction (#1105 conn-hold that starved
+      // the DB pool under concurrency 10 → user-facing 503s).
+      return processExecuteDevice(job.data);
     },
     {
       connection: getBullMQConnection(),
@@ -439,7 +441,25 @@ export function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
   );
 }
 
+type PreparedDeviceExecution = {
+  commandId: string;
+  approvedPatches: Awaited<ReturnType<typeof resolveApprovedPatchesForDevice>>;
+  targets: { deployment?: { rebootPolicy?: string } };
+};
+
 async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<unknown> {
+  // Phased so the up-to-30-min completion poll never holds a pooled connection
+  // in an open transaction (#1105 conn-hold). Setup and record each run in their
+  // own SHORT system context; the poll runs OUTSIDE any context.
+  const prep = await runWithSystemDbAccess(() => prepareDeviceExecution(data));
+  if (!('commandId' in prep)) return prep; // early skip/error result — return as-is
+  const finalCommand = await pollForPatchCommandResult(prep.commandId);
+  return runWithSystemDbAccess(() => recordDeviceExecution(data, prep, finalCommand));
+}
+
+async function prepareDeviceExecution(
+  data: ExecutePatchJobDeviceData,
+): Promise<PreparedDeviceExecution | { skipped: true; reason: string } | { error: string }> {
   const { patchJobId, deviceId, orgId } = data;
 
   // Load job to get ring config
@@ -665,29 +685,44 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
     return { error: 'Failed to create command' };
   }
 
-  // 4. Poll for result (5s interval, 30min timeout)
+  return { commandId, approvedPatches, targets };
+}
+
+async function pollForPatchCommandResult(commandId: string) {
+  // Poll for the agent's result OUTSIDE any held transaction: each status check
+  // is its own short system context, and the 5s sleeps hold NO pooled connection.
+  // Previously this ran inside ONE open transaction for up to 30 min, starving
+  // the DB pool under worker concurrency 10 (#1105 conn-hold → user 503s).
   const timeoutMs = 30 * 60 * 1000;
   const pollInterval = 5000;
   let elapsed = 0;
-  let finalCommand: typeof cmdResult.command | null = null;
-
   while (elapsed < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
     elapsed += pollInterval;
 
-    const [updated] = await db
-      .select()
-      .from(deviceCommands)
-      .where(eq(deviceCommands.id, commandId))
-      .limit(1);
+    const [updated] = await runWithSystemDbAccess(() =>
+      db
+        .select()
+        .from(deviceCommands)
+        .where(eq(deviceCommands.id, commandId))
+        .limit(1),
+    );
 
-    if (!updated) break;
-
+    if (!updated) return null;
     if (updated.status === 'completed' || updated.status === 'failed') {
-      finalCommand = updated as typeof cmdResult.command;
-      break;
+      return updated;
     }
   }
+  return null;
+}
+
+async function recordDeviceExecution(
+  data: ExecutePatchJobDeviceData,
+  prep: PreparedDeviceExecution,
+  finalCommand: Awaited<ReturnType<typeof pollForPatchCommandResult>>,
+): Promise<unknown> {
+  const { patchJobId, deviceId } = data;
+  const { approvedPatches, targets } = prep;
 
   // 5. Parse result and record outcomes
   const commandResult = finalCommand?.result as {

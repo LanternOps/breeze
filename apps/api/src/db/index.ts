@@ -135,6 +135,42 @@ function getHeldContextWarnMs(): number {
   return raw;
 }
 
+// The held-context warning marks a recurring CONDITION (a conn-hold bug), not N
+// distinct errors. Capturing it to Sentry on EVERY occurrence floods the org's
+// event quota: a single conn-hold worker produced 8.6k events in a week, which
+// exhausted the budget and silently dropped ALL error reporting org-wide (the
+// June 2026 Sentry blackout). Throttle the Sentry capture to at most once per
+// scope per window so it still alerts/trends without flooding. `console.warn`
+// stays unthrottled so logs remain complete. 0 disables the throttle (always
+// capture). Tune via DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS.
+function getHeldContextCaptureThrottleMs(): number {
+  const raw = Number.parseInt(process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS ?? '', 10);
+  if (!Number.isFinite(raw) || raw < 0) {
+    return 5 * 60_000;
+  }
+  return raw;
+}
+const lastHeldContextCaptureAtByScope = new Map<string, number>();
+export function __resetHeldContextCaptureThrottleForTests(): void {
+  lastHeldContextCaptureAtByScope.clear();
+}
+
+/**
+ * Per-scope throttle gate for the held-context Sentry capture. Returns true (and
+ * records `now` as the scope's last-capture time) at most once per `throttleMs`
+ * window per scope; `throttleMs === 0` disables throttling (always true). Pure
+ * apart from the module-level last-seen map — exported for unit testing.
+ */
+export function shouldCaptureHeldContext(scope: string, now: number, throttleMs: number): boolean {
+  if (throttleMs === 0) return true;
+  const lastAt = lastHeldContextCaptureAtByScope.get(scope);
+  if (lastAt === undefined || now - lastAt >= throttleMs) {
+    lastHeldContextCaptureAtByScope.set(scope, now);
+    return true;
+  }
+  return false;
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
   fn: () => Promise<T>
@@ -174,7 +210,11 @@ export async function withDbAccessContext<T>(
               + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
               + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
             console.warn(message);
-            captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+            // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
+            // so a recurring conn-hold can't flood the org's event quota.
+            if (shouldCaptureHeldContext(context.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
+              captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+            }
           }
         }
       } catch {

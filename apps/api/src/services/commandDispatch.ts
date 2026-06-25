@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands } from '../db/schema';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
@@ -8,16 +8,21 @@ export async function claimPendingCommandForDelivery(
   commandId: string,
   executedAt: Date = new Date(),
 ): Promise<{ id: string; executedAt: Date } | null> {
-  const rows = await db
-    .update(deviceCommands)
-    .set({ status: 'sent', executedAt })
-    .where(
-      and(
-        eq(deviceCommands.id, commandId),
-        eq(deviceCommands.status, 'pending'),
-      ),
-    )
-    .returning({ id: deviceCommands.id });
+  // device_commands is system-scoped (agent WS path) and this runs from
+  // executeCommand's runOutsideDbContext block — establish a system context so
+  // the write isn't a contextless bare-pool write (#1375 warning flood).
+  const rows = await withSystemDbAccessContext(() =>
+    db
+      .update(deviceCommands)
+      .set({ status: 'sent', executedAt })
+      .where(
+        and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.status, 'pending'),
+        ),
+      )
+      .returning({ id: deviceCommands.id }),
+  );
 
   return rows.length > 0 ? { id: commandId, executedAt } : null;
 }
@@ -26,16 +31,18 @@ export async function releaseClaimedCommandDelivery(
   commandId: string,
   executedAt: Date,
 ): Promise<void> {
-  await db
-    .update(deviceCommands)
-    .set({ status: 'pending', executedAt: null })
-    .where(
-      and(
-        eq(deviceCommands.id, commandId),
-        eq(deviceCommands.status, 'sent'),
-        eq(deviceCommands.executedAt, executedAt),
+  await withSystemDbAccessContext(() =>
+    db
+      .update(deviceCommands)
+      .set({ status: 'pending', executedAt: null })
+      .where(
+        and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.status, 'sent'),
+          eq(deviceCommands.executedAt, executedAt),
+        ),
       ),
-    );
+  );
 }
 
 export async function claimPendingCommandsForDevice(

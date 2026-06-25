@@ -1,4 +1,4 @@
-import { Job, type JobsOptions, Queue, Worker } from 'bullmq';
+import { Job, type JobsOptions, Queue, UnrecoverableError, Worker } from 'bullmq';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
@@ -9,6 +9,7 @@ import {
   huntressOrgMappings,
 } from '../db/schema';
 import {
+  HuntressApiError,
   HuntressClient,
   parseHuntressWebhookPayload,
   type HuntressAgentRecord,
@@ -913,13 +914,19 @@ export async function syncIntegrationById(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // A Huntress 401/403 is a dead/invalid credential — not transient, not a code
+    // bug, and not worth retrying. Record it (so the UI shows the auth failure)
+    // regardless of attempt, then fail UNRECOVERABLY below so BullMQ skips the
+    // remaining retries; the 'failed' handler suppresses the Sentry capture for
+    // these (they flooded the org quota — BREEZE-1).
+    const isAuthError = isHuntressAuthFailure(error);
     // Only the final attempt records a terminal 'error' (#1736). On an earlier
     // retry attempt we re-throw without touching the status, leaving the row at
     // 'running' so BullMQ can back off and retry while the UI keeps showing
     // "Syncing" — writing 'error' mid-retry would surface a failure that a
     // successful later attempt then silently corrects. Always re-throw so BullMQ
     // sees the failed attempt and schedules the retry / runs its failed handler.
-    if (isFinalAttempt) {
+    if (isFinalAttempt || isAuthError) {
       try {
         // Record the failure on a FRESH transaction. Phase 3's write transaction
         // (or, on the webhook path, the caller's outer context) is rolling back as
@@ -944,6 +951,10 @@ export async function syncIntegrationById(
         console.error(`[HuntressSync] Failed to record sync error for integration ${integrationId}:`, dbErr);
         captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));
       }
+    }
+    if (isAuthError) {
+      // Skip BullMQ's retries — a bad credential fails identically every time.
+      throw new UnrecoverableError(message);
     }
     throw error;
   }
@@ -1114,6 +1125,19 @@ async function scheduleRepeatSyncAll(): Promise<void> {
   );
 }
 
+/**
+ * A Huntress 401/403 means a dead/invalid API credential — a config issue, not a
+ * transient or code error. We fail those unrecoverably (no retries) and suppress
+ * the Sentry capture (it's recorded on the integration row instead). Matches the
+ * UnrecoverableError-wrapped case by message too, since the HuntressApiError type
+ * may not survive BullMQ's error round-trip into the 'failed' event.
+ */
+function isHuntressAuthFailure(error: unknown): boolean {
+  if (error instanceof HuntressApiError) return error.isAuthError;
+  const msg = error instanceof Error ? error.message : String(error);
+  return /Huntress API request failed \(40[13]\b/.test(msg);
+}
+
 export async function initializeHuntressSyncJob(): Promise<void> {
   huntressSyncWorker = createHuntressSyncWorker();
   huntressSyncWorker.on('error', (error) => {
@@ -1121,6 +1145,13 @@ export async function initializeHuntressSyncJob(): Promise<void> {
     captureException(error);
   });
   huntressSyncWorker.on('failed', (job, error) => {
+    // A dead Huntress credential (401/403) is a config issue already recorded on
+    // the integration row — not a code bug. Capturing it once per scheduled run
+    // flooded the org's Sentry quota (BREEZE-1, ~508 events). Log it; don't report.
+    if (isHuntressAuthFailure(error)) {
+      console.warn(`[HuntressSync] Job ${job?.id} failed: Huntress credential rejected (401/403) — update the API key. Not retried, not reported to Sentry.`);
+      return;
+    }
     console.error(`[HuntressSync] Job ${job?.id} failed:`, error);
     captureException(error);
   });
