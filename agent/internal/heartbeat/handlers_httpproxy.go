@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 	targetPortF, _ := cmd.Payload["targetPort"].(float64)
 	targetPort := int(targetPortF)
 	scheme, _ := cmd.Payload["scheme"].(string)
+	skipTLSVerify, _ := cmd.Payload["skipTlsVerify"].(bool)
 	method, _ := cmd.Payload["method"].(string)
 	path, _ := cmd.Payload["path"].(string)
 
@@ -116,13 +118,14 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 	defer cancel()
 
 	return fetchAndEncodeHttp(ctx, tunnel.FetchRequest{
-		Scheme:  scheme,
-		Host:    targetHost,
-		Port:    targetPort,
-		Method:  method,
-		Path:    path,
-		Headers: headers,
-		Body:    body,
+		Scheme:        scheme,
+		Host:          targetHost,
+		Port:          targetPort,
+		Method:        method,
+		Path:          path,
+		Headers:       headers,
+		Body:          body,
+		SkipTLSVerify: skipTLSVerify,
 	}, start)
 }
 
@@ -134,9 +137,15 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 func fetchAndEncodeHttp(ctx context.Context, req tunnel.FetchRequest, start time.Time) tools.CommandResult {
 	resp, err := tunnel.Fetch(ctx, req, httpProxyTimeout, httpProxyMaxBody)
 	if err != nil {
+		errStr := err.Error()
+		if errors.Is(err, tunnel.ErrTLSCertUntrusted) {
+			// Stable token the API matches to surface a "recreate with self-signed
+			// allowed" banner. Keep it exactly "tls_cert_untrusted".
+			errStr = "tls_cert_untrusted"
+		}
 		return tools.CommandResult{
 			Status:     "failed",
-			Error:      err.Error(),
+			Error:      errStr,
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}

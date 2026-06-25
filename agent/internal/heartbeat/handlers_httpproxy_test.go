@@ -259,6 +259,29 @@ func TestHandleHttpRequest(t *testing.T) {
 	})
 }
 
+func TestFetchAndEncodeHttp_TLSCertUntrusted(t *testing.T) {
+	// Self-signed TLS server; SkipTLSVerify=false must yield the typed token.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	port, _ := strconv.Atoi(portStr)
+
+	res := fetchAndEncodeHttp(context.Background(), tunnel.FetchRequest{
+		Scheme: "https", Host: host, Port: port, Method: "GET", Path: "/",
+		SkipTLSVerify: false,
+	}, time.Now())
+
+	if res.Status != "failed" {
+		t.Fatalf("want failed, got %q", res.Status)
+	}
+	if res.Error != "tls_cert_untrusted" {
+		t.Fatalf("want error token tls_cert_untrusted, got %q", res.Error)
+	}
+}
+
 // nonLoopbackIPv4 returns the first non-loopback IPv4 address on the machine,
 // or "" if none is found.
 func nonLoopbackIPv4(t *testing.T) string {
