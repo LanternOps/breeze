@@ -34,7 +34,7 @@ type AssetDetailModalProps = {
   asset?: AssetDetail | null;
   /** While the detail is being fetched (topology click / deep link). */
   loading?: boolean;
-  devices?: { id: string; name: string }[];
+  devices?: { id: string; name: string; online?: boolean }[];
   onClose: () => void;
   onLinked?: (assetId: string, deviceId: string) => void;
   onDeleted?: (assetId: string) => void;
@@ -68,6 +68,11 @@ export default function AssetDetailModal({
   const [proxyError, setProxyError] = useState<string>();
   const [connectingProxy, setConnectingProxy] = useState(false);
   const [selectedProxyPort, setSelectedProxyPort] = useState<number>(0);
+  // The bridge agent = which managed device's agent dials the target. This is
+  // independent of the identity link below — the right bridge is an online agent
+  // that can reach this device on the LAN, which may differ from the device you
+  // link for asset-tracking.
+  const [selectedBridgeDeviceId, setSelectedBridgeDeviceId] = useState('');
 
   useEffect(() => {
     if (asset?.linkedDeviceId) {
@@ -87,6 +92,18 @@ export default function AssetDetailModal({
     setProxyError(undefined);
     setSelectedProxyPort(asset?.openPorts?.[0]?.port ?? 80);
   }, [asset]);
+
+  // Default the proxy bridge agent: prefer the linked device when it's online,
+  // otherwise the first online device. Kept separate from the reset effect above
+  // so a device-list refresh doesn't clobber in-progress edits.
+  useEffect(() => {
+    const onlineIds = new Set((devices ?? []).filter(d => d.online).map(d => d.id));
+    if (asset?.linkedDeviceId && onlineIds.has(asset.linkedDeviceId)) {
+      setSelectedBridgeDeviceId(asset.linkedDeviceId);
+      return;
+    }
+    setSelectedBridgeDeviceId((devices ?? []).find(d => d.online)?.id ?? '');
+  }, [asset, devices]);
 
   const handleLink = async () => {
     if (!asset) return;
@@ -212,7 +229,7 @@ export default function AssetDetailModal({
   }, [asset, onUpdated]);
 
   const handleConnectProxy = useCallback(async () => {
-    if (!asset || !asset.linkedDeviceId) return;
+    if (!asset || !selectedBridgeDeviceId) return;
     try {
       setConnectingProxy(true);
       setProxyError(undefined);
@@ -220,7 +237,7 @@ export default function AssetDetailModal({
       const response = await fetchWithAuth('/tunnels', {
         method: 'POST',
         body: JSON.stringify({
-          deviceId: asset.linkedDeviceId,
+          deviceId: selectedBridgeDeviceId,
           type: 'proxy',
           targetHost: asset.ip,
           targetPort: port,
@@ -239,7 +256,7 @@ export default function AssetDetailModal({
     } finally {
       setConnectingProxy(false);
     }
-  }, [asset, selectedProxyPort]);
+  }, [asset, selectedProxyPort, selectedBridgeDeviceId]);
 
   // No asset record yet: never render nothing while open, or a node click looks
   // like it did nothing. Show a loading state, then a graceful not-found state
@@ -281,6 +298,8 @@ export default function AssetDetailModal({
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';
   const snmpData = asset.snmpData ?? {};
+  // Only online agents can bridge a proxy, so the bridge picker hides offline ones.
+  const onlineDevices = devices.filter(d => d.online);
 
   return (
     <Dialog open={open} onClose={onClose} title={asset.label || asset.hostname || asset.ip} maxWidth="5xl" alignTop className="flex flex-col max-h-[calc(100vh-4rem)]">
@@ -439,6 +458,10 @@ export default function AssetDetailModal({
                 treats them as the same machine. This does not install an agent or create a new
                 device. The asset will be marked as approved.
               </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Identity / asset-tracking only — this does <strong>not</strong> control proxy access
+                or choose the proxy agent (set those under Proxy Access below).
+              </p>
               <div className="mt-3 flex items-center gap-3">
                 <select
                   value={selectedDevice}
@@ -481,7 +504,9 @@ export default function AssetDetailModal({
               {!proxyEnabled ? (
                 <div className="mt-3">
                   <p className="text-xs text-muted-foreground">
-                    Enable proxy access to reach this device's web interface through a managed agent.
+                    Reach this device's web interface in your browser, tunnelled through an
+                    online agent on its network. Enabling whitelists this device's IP so an
+                    agent is permitted to proxy to it.
                   </p>
                   <button
                     type="button"
@@ -499,39 +524,63 @@ export default function AssetDetailModal({
                       Proxy enabled
                     </span>
                   </div>
-                  {asset.linkedDeviceId ? (
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={selectedProxyPort}
-                        onChange={e => setSelectedProxyPort(Number(e.target.value))}
-                        className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                      >
-                        {openPorts.length > 0 ? (
-                          openPorts.map(p => (
-                            <option key={p.port} value={p.port}>
-                              Port {p.port}{p.service ? ` (${p.service})` : ''}
+                  {onlineDevices.length > 0 ? (
+                    <>
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Proxy through agent
+                        </label>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          Pick an online agent that can reach {asset.ip} on its network (usually the
+                          one that discovered it). This is separate from the identity link above.
+                        </p>
+                        <select
+                          value={selectedBridgeDeviceId}
+                          onChange={e => setSelectedBridgeDeviceId(e.target.value)}
+                          data-testid="proxy-bridge-select"
+                          className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        >
+                          {onlineDevices.map(d => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
                             </option>
-                          ))
-                        ) : (
-                          <>
-                            <option value={80}>Port 80 (HTTP)</option>
-                            <option value={443}>Port 443 (HTTPS)</option>
-                          </>
-                        )}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={handleConnectProxy}
-                        disabled={connectingProxy}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-70"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        {connectingProxy ? 'Connecting...' : 'Connect'}
-                      </button>
-                    </div>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={selectedProxyPort}
+                          onChange={e => setSelectedProxyPort(Number(e.target.value))}
+                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        >
+                          {openPorts.length > 0 ? (
+                            openPorts.map(p => (
+                              <option key={p.port} value={p.port}>
+                                Port {p.port}{p.service ? ` (${p.service})` : ''}
+                              </option>
+                            ))
+                          ) : (
+                            <>
+                              <option value={80}>Port 80 (HTTP)</option>
+                              <option value={443}>Port 443 (HTTPS)</option>
+                            </>
+                          )}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleConnectProxy}
+                          disabled={connectingProxy || !selectedBridgeDeviceId}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-70"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          {connectingProxy ? 'Connecting...' : 'Connect'}
+                        </button>
+                      </div>
+                    </>
                   ) : (
                     <p className="text-xs text-amber-600 dark:text-amber-400">
-                      Link this asset to a managed device first to use as the proxy agent.
+                      No online agent available to proxy to this device. An agent must be online and
+                      on the same network as {asset.ip} to bridge the connection.
                     </p>
                   )}
                 </div>

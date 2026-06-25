@@ -76,7 +76,7 @@ export type ApiDiscoveryAsset = {
   updatedAt?: string;
 };
 
-type DeviceOption = { id: string; name: string };
+type DeviceOption = { id: string; name: string; online?: boolean };
 
 export const typeConfig: Record<DiscoveredAssetType, { label: string; color: string }> = {
   workstation: { label: 'Workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40' },
@@ -316,7 +316,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       }
       const data = await response.json();
       const raw: any[] = data.devices ?? data.data ?? data ?? [];
-      setDevices(raw.map((d: any) => ({ id: d.id, name: d.displayName || d.hostname || d.id })));
+      setDevices(raw.map((d: any) => ({ id: d.id, name: d.displayName || d.hostname || d.id, online: d.status === 'online' })));
     } catch (err) {
       console.warn('[DiscoveredAssetList] Failed to fetch devices:', err);
     }
