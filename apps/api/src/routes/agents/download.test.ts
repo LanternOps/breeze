@@ -213,6 +213,7 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
     ['agent', '/download/linux/amd64', '[agent-download]'],
     ['helper', '/download/helper/linux/amd64', '[helper-download]'],
     ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]'],
+    ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]'],
   ])('returns 500 for the %s route on a non-NotFound S3 error', async (_name, path, logTag) => {
     const res = await downloadRoutes.request(path);
     const body = await res.text();
@@ -230,6 +231,7 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
     ['agent', '/download/linux/amd64', '[agent-download]', 'NotFound'],
     ['helper', '/download/helper/linux/amd64', '[helper-download]', 'NoSuchKey'],
     ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]', 'NotFound'],
+    ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]', 'NotFound'],
   ])(
     'still falls back to disk and 404s for the %s route when the S3 object genuinely does not exist',
     async (_name, path, logTag, errName) => {

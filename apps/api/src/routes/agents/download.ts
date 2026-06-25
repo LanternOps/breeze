@@ -377,7 +377,8 @@ downloadRoutes.get('/download/watchdog/:os/:arch', async (c) => {
   });
 });
 
-// breeze-user-helper: the GUI-subsystem sibling of breeze-agent (Windows only),
+// breeze-user-helper: the GUI-subsystem sibling of breeze-agent (Windows in
+// practice; route stays OS-general like the watchdog route it mirrors),
 // spawned by the agent's sessionbroker into the interactive user session. It is
 // a distinct binary from the Tauri "helper" app (/download/helper) and is
 // fetched by the agent's verified updater (component=user-helper). Without this
