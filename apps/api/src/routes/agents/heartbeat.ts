@@ -693,7 +693,16 @@ if (latestHelper) {
   try {
     pamSettings = await buildPamConfigUpdate(device.id);
   } catch (err) {
-    console.error(`[agents] failed to build pam config update for ${agentId}:`, err);
+    // Opt-in default means a resolver failure leaves pamSettings null and we
+    // send uacInterceptionEnabled:false below. For an org that *enforces* PAM
+    // (grandfather flag or an explicit enabling policy) this momentarily drops
+    // elevation gating until the next successful heartbeat — call it out so the
+    // Sentry event isn't mistaken for a benign config-build hiccup. Not cached,
+    // so it self-heals on the next heartbeat.
+    console.error(
+      `[agents] failed to build pam config update for ${agentId} — sending uacInterceptionEnabled:false this heartbeat:`,
+      err,
+    );
     captureException(err);
   }
 
@@ -749,9 +758,8 @@ if (latestHelper) {
       rotateToken: rotateToken || undefined,
       helperEnabled: helperSettings?.enabled ?? false,
       helperSettings: helperSettings ?? undefined,
-      // Opt-in: if the resolver errored and left pamSettings undefined, fail
-      // closed (no capture) rather than interrupting users with elevation
-      // prompts they never opted into.
+      // Opt-in default: a null pamSettings (resolver error, logged above) sends
+      // false so we never prompt users on a device that opted into nothing.
       uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
       manageRemoteManagement: manageRemoteManagement || undefined,
     },

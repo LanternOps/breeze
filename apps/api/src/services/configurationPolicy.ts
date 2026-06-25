@@ -52,9 +52,10 @@ export const remoteAccessInlineSettingsSchema = z.object({
 }).strict();
 
 // Exported so the route can import the same schema (single source of truth).
-// uacInterceptionEnabled defaults to true on the read side (parsePamSettings),
-// so {} is well-formed. Non-boolean values are rejected to prevent the silent-
-// inversion bug where "false" (string) is coerced back to true on read-back.
+// uacInterceptionEnabled defaults to false on the read side (parsePamSettings)
+// — capture is opt-in, so {} is well-formed and means "no capture". Non-boolean
+// values are rejected to prevent a silent-inversion bug where "false" (string)
+// is coerced back to the default on read-back.
 // .strict() matches the posture of patch/backup: unknown keys are rejected.
 export const pamInlineSettingsSchema = z
   .object({

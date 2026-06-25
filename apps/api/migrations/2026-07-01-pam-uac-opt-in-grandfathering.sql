@@ -39,7 +39,11 @@ BEGIN
   ON CONFLICT (org_id) DO UPDATE
     SET uac_interception_enabled = true,
         updated_at = now()
-  WHERE pam_org_config.uac_interception_enabled IS DISTINCT FROM true;
+  -- Only fill in where the org has no opinion yet (NULL). This keeps the
+  -- migration idempotent on re-apply AND never clobbers an explicit value an
+  -- admin set later (true OR false) — a manual replay must not flip a
+  -- deliberate opt-out back on.
+  WHERE pam_org_config.uac_interception_enabled IS NULL;
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n > 0 THEN
     RAISE WARNING 'pam opt-in grandfathering: enabled UAC capture for % org(s) with deliberate PAM config', n;
