@@ -500,9 +500,15 @@ async function syncAgentsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
 ): Promise<{ fetched: number; upserted: number; skipped: number; truncated: boolean }> {
-  const agentResult = await client.listAgents(integration.lastSyncAt ?? undefined);
+  // Phase 1 — fetch agents from SentinelOne with NO DB context held (#1896).
+  // The HTTP round-trip must not pin a pooled connection in an open transaction.
+  const agentResult = await dbModule.runOutsideDbContext(() =>
+    client.listAgents(integration.lastSyncAt ?? undefined)
+  );
   const fetchedAgents = agentResult.results;
 
+  // Phase 2 — all reconcile/mapping/upsert DB work runs in ONE short context.
+  return runWithSystemDbAccess(async () => {
   // Derive distinct sites from the fetched agent list (skip agents with no siteId).
   const siteCountMap = new Map<string, { siteName: string | null; count: number }>();
   for (const agent of fetchedAgents) {
@@ -615,21 +621,28 @@ async function syncAgentsForIntegration(
     upserted += inserted.length;
   }
 
-  return {
-    fetched: fetchedAgents.length,
-    upserted,
-    skipped,
-    truncated: agentResult.truncated
-  };
+    return {
+      fetched: fetchedAgents.length,
+      upserted,
+      skipped,
+      truncated: agentResult.truncated
+    };
+  });
 }
 
 async function syncThreatsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
 ): Promise<{ fetched: number; upserted: number; skipped: number; emitted: number; emitFailures: number; truncated: boolean }> {
-  const threatResult = await client.listThreats(integration.lastSyncAt ?? undefined);
+  // Phase 1 — fetch threats from SentinelOne with NO DB context held (#1896).
+  const threatResult = await dbModule.runOutsideDbContext(() =>
+    client.listThreats(integration.lastSyncAt ?? undefined)
+  );
   const fetchedThreats = threatResult.results;
 
+  // Phase 2 — load contexts + upsert threats in ONE short context; collect the
+  // detections to emit so the event-bus publishes (Phase 3) run OUTSIDE it.
+  const { upserted, skipped, threatsToEmit } = await runWithSystemDbAccess(async () => {
   // Load agent contexts from already-synced s1_agents rows.
   // If an agent was skipped during agent sync (unmapped site), it won't appear here
   // and its threats will be skipped too — consistent with the partner-wide model.
@@ -745,6 +758,11 @@ async function syncThreatsForIntegration(
     upserted += inserted.length;
   }
 
+    return { upserted, skipped, threatsToEmit };
+  });
+
+  // Phase 3 — publish threat-detected events OUTSIDE any DB context (#1896): the
+  // event-bus (Redis) round-trips must not hold a pooled connection.
   let emitted = 0;
   let emitFailures = 0;
   for (const threat of dedupeThreatDetections(threatsToEmit)) {
@@ -787,18 +805,22 @@ async function syncThreatsForIntegration(
 // back to `redactLogMessage(error.responseBody)` would otherwise pass every
 // existing helper-level test.
 export async function processSyncIntegration(data: SyncIntegrationJobData) {
-  const [integration] = await db
-    .select({
-      id: s1Integrations.id,
-      partnerId: s1Integrations.partnerId,
-      managementUrl: s1Integrations.managementUrl,
-      apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
-      isActive: s1Integrations.isActive,
-      lastSyncAt: s1Integrations.lastSyncAt
-    })
-    .from(s1Integrations)
-    .where(eq(s1Integrations.id, data.integrationId))
-    .limit(1);
+  // Phase 1 — read the integration row in its own SHORT context so the provider
+  // fetches (inside syncAgents/syncThreats) hold no open transaction (#1896).
+  const [integration] = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: s1Integrations.id,
+        partnerId: s1Integrations.partnerId,
+        managementUrl: s1Integrations.managementUrl,
+        apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
+        isActive: s1Integrations.isActive,
+        lastSyncAt: s1Integrations.lastSyncAt
+      })
+      .from(s1Integrations)
+      .where(eq(s1Integrations.id, data.integrationId))
+      .limit(1)
+  );
 
   if (!integration || !integration.isActive) {
     console.warn(`[S1SyncJob] Integration ${data.integrationId} not found or inactive; skipping sync`);
@@ -832,15 +854,18 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
       : { fetched: 0, upserted: 0, emitted: 0, emitFailures: 0, truncated: false };
 
     const wasTruncated = agentResult.truncated || threatResult.truncated;
-    await db
-      .update(s1Integrations)
-      .set({
-        lastSyncAt: new Date(),
-        lastSyncStatus: wasTruncated ? 'partial' : 'success',
-        lastSyncError: wasTruncated ? 'Results were truncated due to pagination limits' : null,
-        updatedAt: new Date()
-      })
-      .where(eq(s1Integrations.id, integration.id));
+    // Final status write in its own SHORT context (#1896).
+    await runWithSystemDbAccess(() =>
+      db
+        .update(s1Integrations)
+        .set({
+          lastSyncAt: new Date(),
+          lastSyncStatus: wasTruncated ? 'partial' : 'success',
+          lastSyncError: wasTruncated ? 'Results were truncated due to pagination limits' : null,
+          updatedAt: new Date()
+        })
+        .where(eq(s1Integrations.id, integration.id))
+    );
 
     return {
       integrationId: integration.id,
@@ -857,14 +882,20 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
     // via truncateError — a SentinelOneHttpError's `.message` carries no body.
     logSyncFailureServerSide({ integrationId: integration.id, partnerId: integration.partnerId }, error);
     try {
-      await db
-        .update(s1Integrations)
-        .set({
-          lastSyncStatus: 'error',
-          lastSyncError: truncateError(error),
-          updatedAt: new Date()
-        })
-        .where(eq(s1Integrations.id, integration.id));
+      // Record on a FRESH short context (escape any held/poisoned context first)
+      // so the error status survives and holds no connection over slow work (#1896).
+      await dbModule.runOutsideDbContext(() =>
+        runWithSystemDbAccess(() =>
+          db
+            .update(s1Integrations)
+            .set({
+              lastSyncStatus: 'error',
+              lastSyncError: truncateError(error),
+              updatedAt: new Date()
+            })
+            .where(eq(s1Integrations.id, integration.id))
+        )
+      );
     } catch (dbError) {
       console.error('[S1SyncJob] Failed to persist sync error status:', dbError);
       captureException(dbError);
@@ -875,7 +906,8 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
 
 async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
   const queue = getS1SyncQueue();
-  const integrations = await listActiveIntegrations();
+  // Read in a SHORT context; the BullMQ/Redis enqueue below runs outside it (#1896).
+  const integrations = await runWithSystemDbAccess(() => listActiveIntegrations());
 
   await Promise.all(
     integrations.map((integration) => addUniqueJob(
@@ -896,6 +928,10 @@ async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
 }
 
 export async function processPollActions() {
+  // Phase 1 — read pending actions + resolve per-org SentinelOne clients in ONE
+  // SHORT context (#1896). The per-action provider polls (Phase 2) then run with
+  // no held transaction so a slow/unresponsive S1 API can't pin the connection.
+  const { pendingActions, clientByOrg, clientErrorByOrg } = await runWithSystemDbAccess(async () => {
   const pendingActions = await db
     .select({
       id: s1Actions.id,
@@ -915,7 +951,11 @@ export async function processPollActions() {
     .limit(200);
 
   if (pendingActions.length === 0) {
-    return { polled: 0, updated: 0 };
+    return {
+      pendingActions,
+      clientByOrg: new Map<string, SentinelOneClient | null>(),
+      clientErrorByOrg: new Map<string, string>(),
+    };
   }
 
   // Resolve each action's org → partner → active integration.
@@ -990,6 +1030,13 @@ export async function processPollActions() {
     // → will hit the "No integration found" branch below
   }
 
+    return { pendingActions, clientByOrg, clientErrorByOrg };
+  });
+
+  if (pendingActions.length === 0) {
+    return { polled: 0, updated: 0 };
+  }
+
   let updated = 0;
   for (const action of pendingActions) {
     if (!action.providerActionId) continue;
@@ -998,14 +1045,16 @@ export async function processPollActions() {
 
     if (client === undefined) {
       // No integration found for this org
-      await db
+      await runWithSystemDbAccess(() =>
+        db
         .update(s1Actions)
         .set({
           status: 'failed',
           error: 'Action status polling failed: no active SentinelOne integration is available for this organization',
           completedAt: new Date()
         })
-        .where(eq(s1Actions.id, action.id));
+        .where(eq(s1Actions.id, action.id))
+      );
       recordS1ActionPollTransition('failed');
       updated += 1;
       continue;
@@ -1013,21 +1062,27 @@ export async function processPollActions() {
 
     if (!client) {
       // Client construction failed (bad token)
-      await db
+      await runWithSystemDbAccess(() =>
+        db
         .update(s1Actions)
         .set({
           status: 'failed',
           error: `Action status polling failed: ${clientError ?? 'unknown client error'}`,
           completedAt: new Date()
         })
-        .where(eq(s1Actions.id, action.id));
+        .where(eq(s1Actions.id, action.id))
+      );
       recordS1ActionPollTransition('failed');
       updated += 1;
       continue;
     }
 
     try {
-      const activity = await client.getActivityStatus(action.providerActionId);
+      // Provider status poll OUTSIDE any DB context (#1896): the S1 HTTP must not
+      // pin a pooled connection in an open transaction.
+      const activity = await dbModule.runOutsideDbContext(() =>
+        client.getActivityStatus(action.providerActionId!)
+      );
       const nextStatus = activity.status;
       const isDone = nextStatus === 'completed' || nextStatus === 'failed';
       const nextPayload = toObject(action.payload);
@@ -1035,7 +1090,8 @@ export async function processPollActions() {
       nextPayload.lastPollAt = new Date().toISOString();
 
       try {
-        await db
+        await runWithSystemDbAccess(() =>
+          db
           .update(s1Actions)
           .set({
             status: nextStatus,
@@ -1043,7 +1099,8 @@ export async function processPollActions() {
             error: nextStatus === 'failed' ? truncateError(activity.details) : null,
             payload: nextPayload
           })
-          .where(eq(s1Actions.id, action.id));
+          .where(eq(s1Actions.id, action.id))
+        );
       } catch (dbError) {
         console.error(`[S1SyncJob] Failed to persist poll result for action ${action.id}:`, dbError);
         captureException(dbError);
@@ -1096,7 +1153,8 @@ export async function processPollActions() {
       const failure = applyPollFailure(action.payload, error);
       const nextStatus: S1ActionStatus = failure.shouldFail ? 'failed' : 'in_progress';
 
-      await db
+      await runWithSystemDbAccess(() =>
+        db
         .update(s1Actions)
         .set({
           status: nextStatus,
@@ -1106,7 +1164,8 @@ export async function processPollActions() {
             : null,
           completedAt: failure.shouldFail ? new Date() : null
         })
-        .where(eq(s1Actions.id, action.id));
+        .where(eq(s1Actions.id, action.id))
+      );
 
       recordS1ActionPollTransition(nextStatus);
       updated += 1;
@@ -1123,56 +1182,58 @@ function createS1SyncWorker(): Worker<S1SyncJobData> {
   return new Worker<S1SyncJobData>(
     S1_SYNC_QUEUE,
     async (job: Job<S1SyncJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const start = Date.now();
-        const syncType = job.data.type;
-        switch (job.data.type) {
-          case 'sync-integration': {
-            try {
-              const result = await processSyncIntegration(job.data);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'sync-all-agents': {
-            try {
-              const result = await processSyncAll(true, false);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'sync-all-threats': {
-            try {
-              const result = await processSyncAll(false, true);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'poll-actions': {
-            try {
-              const result = await processPollActions();
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          default: {
+      // NOT wrapped in one runWithSystemDbAccess: each processor manages its own
+      // SHORT system contexts so the SentinelOne HTTP calls (agent/threat fetch,
+      // per-action status poll) never pin a pooled connection in an open
+      // transaction (#1105/#1896 conn-hold → "held a pooled connection" warnings).
+      const start = Date.now();
+      const syncType = job.data.type;
+      switch (job.data.type) {
+        case 'sync-integration': {
+          try {
+            const result = await processSyncIntegration(job.data);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
             recordS1SyncRun(syncType, 'failure', Date.now() - start);
-            throw new Error(`Unknown S1 sync job type: ${(job.data as { type?: string }).type ?? 'unknown'}`);
+            throw error;
           }
         }
-      });
+        case 'sync-all-agents': {
+          try {
+            const result = await processSyncAll(true, false);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        case 'sync-all-threats': {
+          try {
+            const result = await processSyncAll(false, true);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        case 'poll-actions': {
+          try {
+            const result = await processPollActions();
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        default: {
+          recordS1SyncRun(syncType, 'failure', Date.now() - start);
+          throw new Error(`Unknown S1 sync job type: ${(job.data as { type?: string }).type ?? 'unknown'}`);
+        }
+      }
     },
     {
       connection: getBullMQConnection(),
