@@ -27,10 +27,12 @@ import {
 const { db } = dbModule;
 // Opens a SHORT system DB access context for one read/write group (#1896,
 // mirrors #1894). The worker no longer wraps a whole job in one context — each
-// DB touch gets its own short context so SentinelOne HTTP calls and per-action
-// loops run OUTSIDE any open transaction and never pin a pooled connection
-// idle-in-transaction (#1105). Falls back to `fn()` when the context helper is
-// unavailable (unit tests mock `../db` with `withSystemDbAccessContext: undefined`).
+// processor opens short contexts around its DB touches (a few related touches
+// may share one) so SentinelOne HTTP calls and per-action loops run OUTSIDE any
+// open transaction and never pin a pooled connection idle-in-transaction
+// (#1105). The load-bearing invariant: HTTP/Redis work is never inside a
+// context. Falls back to `fn()` when the context helper is unavailable (unit
+// tests mock `../db` with `withSystemDbAccessContext: undefined`).
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();

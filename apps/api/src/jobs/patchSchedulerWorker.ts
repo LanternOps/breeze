@@ -331,11 +331,12 @@ async function scanAndCreateJobs(): Promise<{
 }> {
   const now = new Date();
   let created = 0;
-  // Job ids to enqueue to Redis AFTER the system DB access-context transaction
-  // closes. Enqueuing inside it held the pooled connection idle-in-transaction
-  // across BullMQ/Redis round-trips — a contributor to the #1105 pool-poisoning
-  // pattern (txn around slow non-DB work). DB writes stay in the context; the
-  // Redis enqueue happens outside it (see the worker processor).
+  // Job ids to enqueue to Redis AFTER scanAndCreateJobs returns — by then every
+  // short DB context opened below has already committed and closed. Enqueuing
+  // mid-scan held the pooled connection idle-in-transaction across BullMQ/Redis
+  // round-trips, a contributor to the #1105 pool-poisoning pattern (txn around
+  // slow non-DB work). DB writes happen in short contexts; the Redis enqueue
+  // happens outside any context (see the worker processor).
   const enqueueJobIds: string[] = [];
 
   const patchPoliciesWithSchedules = await runWithSystemDbAccess(() =>
@@ -364,8 +365,9 @@ async function scanAndCreateJobs(): Promise<{
       // policies (ORG_SCOPED_ONLY_FEATURES), so this query never returns one.
       // The guard is a defensive backstop; it never skips real work.
       if (row.policyOrgId === null) continue;
-      // Capture the narrowed (non-null) value: the `!== null` narrowing above
-      // does not propagate into the nested runWithSystemDbAccess closures below.
+      // Capture the narrowed value: the `=== null` early-continue above narrows
+      // row.policyOrgId to non-null, but that narrowing does not propagate into
+      // the nested runWithSystemDbAccess closure where it's consumed below.
       const policyOrgId = row.policyOrgId;
 
       const policyLocal = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(row.configPolicyId));
