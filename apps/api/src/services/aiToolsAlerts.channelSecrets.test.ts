@@ -228,6 +228,24 @@ describe('manage_notification_channels — update action', () => {
     expect(result.details).toContain('webhookUrl must be a non-empty string');
   });
 
+  it('rejects a channel type change before any crypto runs (would corrupt the row)', async () => {
+    mockChannelLookup(EXISTING_CHANNEL); // existing type: 'slack'
+
+    const result = JSON.parse(
+      await handler(
+        { action: 'update', channelId: 'chan-1', type: 'webhook', config: { url: 'https://x' } },
+        makeAuth(),
+      ) as string,
+    );
+
+    expect(result.error).toMatch(/type cannot be changed/i);
+    // Must short-circuit BEFORE encrypt/validate/update, which all run under the
+    // OLD type — otherwise config is encrypted/validated for 'slack' but stored as 'webhook'.
+    expect(mocks.encryptNotificationChannelConfig).not.toHaveBeenCalled();
+    expect(mocks.validateNotificationChannelConfig).not.toHaveBeenCalled();
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+  });
+
   it('encrypts config (merging with existing) before update when validation passes', async () => {
     mockChannelLookup(EXISTING_CHANNEL);
 

@@ -470,9 +470,17 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(notificationChannels).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Notification channel not found or access denied' });
 
+        // Channel type is immutable after creation: the config crypto + validation
+        // below all run under `existing.type`, so allowing a type change here would
+        // encrypt/validate the config for the OLD type and persist it under the NEW
+        // type — a wrong-key/wrong-schema row. Mirror the HTTP route, which does not
+        // allow type changes: reject rather than silently corrupt.
+        if (typeof input.type === 'string' && input.type !== existing.type) {
+          return JSON.stringify({ error: 'Channel type cannot be changed after creation; create a new channel instead' });
+        }
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
-        if (typeof input.type === 'string') updates.type = input.type;
         if (input.config !== undefined && input.config !== null) {
           // Mirror the HTTP PUT route: merge incoming config with the existing
           // encrypted config (preserving masked/preserved secret fields), then
