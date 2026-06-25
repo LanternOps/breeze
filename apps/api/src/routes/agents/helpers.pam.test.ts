@@ -104,6 +104,10 @@ vi.mock('../../db/schema', () => ({
     featureType: 'cpfl.featureType',
     inlineSettings: 'cpfl.inlineSettings',
   },
+  pamOrgConfig: {
+    orgId: 'poc.orgId',
+    uacInterceptionEnabled: 'poc.uacInterceptionEnabled',
+  },
   // Stub out everything else helpers.ts references so the module loads
   softwarePolicies: {},
   softwareComplianceStatus: {},
@@ -171,14 +175,20 @@ const SITE_ID = '00000000-0000-4000-8000-000000000003';
 const PARTNER_ID = '00000000-0000-4000-8000-000000000004';
 const GROUP_ID = '00000000-0000-4000-8000-000000000005';
 
-/** Queue the 4 db.select calls: [deviceRow[], orgRow[], groupRows[], policyRows[]] */
+/**
+ * Queue the db.select calls in order:
+ *   [deviceRow[], orgRow[], groupRows[], policyRows[], orgConfigRows[]]
+ * The 5th (pam_org_config) is only consumed when the device has no resolving
+ * 'pam' feature link, i.e. the org-level grandfather fallback path.
+ */
 function setDbQueue(
   deviceRows: unknown[],
   orgRows: unknown[],
   groupRows: unknown[],
   policyRows: unknown[],
+  orgConfigRows: unknown[] = [],
 ) {
-  dbMock._resetQueue([deviceRows, orgRows, groupRows, policyRows]);
+  dbMock._resetQueue([deviceRows, orgRows, groupRows, policyRows, orgConfigRows]);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,17 +272,74 @@ describe('resolveDevicePamSettings (via buildPamConfigUpdate, cache miss)', () =
     expect(result.uacInterceptionEnabled).toBe(false);
   });
 
-  it('case 4: zero policy rows → returns PAM_DEFAULTS (uacInterceptionEnabled: true)', async () => {
+  it('case 4: zero policy rows + no grandfather row → returns PAM_DEFAULTS (uacInterceptionEnabled: false)', async () => {
     setDbQueue(
       [{ orgId: ORG_ID, siteId: SITE_ID }],
       [{ partnerId: PARTNER_ID }],
       [],
       [], // no policy rows
+      [], // no pam_org_config row → opt-in default
     );
 
     const result = await buildPamConfigUpdate(DEVICE_ID);
     expect(result).toEqual(PAM_DEFAULTS);
+    expect(result.uacInterceptionEnabled).toBe(false);
+  });
+
+  it('grandfathered org: zero policy rows + pam_org_config.uacInterceptionEnabled=true → enabled', async () => {
+    setDbQueue(
+      [{ orgId: ORG_ID, siteId: SITE_ID }],
+      [{ partnerId: PARTNER_ID }],
+      [],
+      [], // no policy rows → org-level fallback
+      [{ enabled: true }], // grandfather flag set by migration
+    );
+
+    const result = await buildPamConfigUpdate(DEVICE_ID);
     expect(result.uacInterceptionEnabled).toBe(true);
+  });
+
+  it('org fallback: pam_org_config.uacInterceptionEnabled=false → disabled', async () => {
+    setDbQueue(
+      [{ orgId: ORG_ID, siteId: SITE_ID }],
+      [{ partnerId: PARTNER_ID }],
+      [],
+      [],
+      [{ enabled: false }],
+    );
+
+    const result = await buildPamConfigUpdate(DEVICE_ID);
+    expect(result.uacInterceptionEnabled).toBe(false);
+  });
+
+  it('org fallback: pam_org_config row with null flag → PAM_DEFAULTS (opt-in off)', async () => {
+    setDbQueue(
+      [{ orgId: ORG_ID, siteId: SITE_ID }],
+      [{ partnerId: PARTNER_ID }],
+      [],
+      [],
+      [{ enabled: null }],
+    );
+
+    const result = await buildPamConfigUpdate(DEVICE_ID);
+    expect(result).toEqual(PAM_DEFAULTS);
+    expect(result.uacInterceptionEnabled).toBe(false);
+  });
+
+  it('explicit policy feature link wins over the org grandfather flag', async () => {
+    // A device-level policy explicitly disables capture; the org carries a
+    // grandfather flag that would enable it. The explicit policy must win and
+    // the org fallback must never be consulted.
+    setDbQueue(
+      [{ orgId: ORG_ID, siteId: SITE_ID }],
+      [{ partnerId: PARTNER_ID }],
+      [],
+      [{ level: 'device', assignmentPriority: 1, inlineSettings: { uacInterceptionEnabled: false } }],
+      [{ enabled: true }], // present but should be ignored
+    );
+
+    const result = await buildPamConfigUpdate(DEVICE_ID);
+    expect(result.uacInterceptionEnabled).toBe(false);
   });
 
   it('case 5: device not found (first query returns []) → returns PAM_DEFAULTS', async () => {
@@ -287,8 +354,9 @@ describe('resolveDevicePamSettings (via buildPamConfigUpdate, cache miss)', () =
     expect(result).toEqual(PAM_DEFAULTS);
   });
 
-  it('case 6: winner has malformed inlineSettings (uacInterceptionEnabled as string "false") → parses to default true', async () => {
-    // parsePamSettings treats non-boolean as default → true
+  it('case 6: winner has malformed inlineSettings (uacInterceptionEnabled as string "false") → parses to default false', async () => {
+    // parsePamSettings treats non-boolean as the (opt-in) default → false.
+    // The winner has (truthy) inlineSettings, so the org fallback is NOT used.
     setDbQueue(
       [{ orgId: ORG_ID, siteId: SITE_ID }],
       [{ partnerId: PARTNER_ID }],
@@ -299,8 +367,8 @@ describe('resolveDevicePamSettings (via buildPamConfigUpdate, cache miss)', () =
     );
 
     const result = await buildPamConfigUpdate(DEVICE_ID);
-    // 'false' (string) is not a boolean, so parsePamSettings falls back to default (true)
-    expect(result.uacInterceptionEnabled).toBe(true);
+    // 'false' (string) is not a boolean, so parsePamSettings falls back to default (false)
+    expect(result.uacInterceptionEnabled).toBe(false);
   });
 
   it('winner with null inlineSettings → returns PAM_DEFAULTS', async () => {

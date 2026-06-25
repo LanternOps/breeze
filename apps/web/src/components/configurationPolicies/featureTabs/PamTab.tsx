@@ -9,9 +9,10 @@ type PamSettings = {
   uacInterceptionEnabled: boolean;
 };
 
-// Default ON — matches agent behavior when no policy assigns this feature.
+// Default OFF (opt-in) — matches agent behavior when no policy assigns this
+// feature: a device with no 'pam' policy does not capture UAC prompts.
 const defaults: PamSettings = {
-  uacInterceptionEnabled: true,
+  uacInterceptionEnabled: false,
 };
 
 export default function PamTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink }: FeatureTabProps) {
@@ -84,7 +85,7 @@ export default function PamTab({ policyId, existingLink, onLinkChanged, linkedPo
           <div>
             <p className="text-sm font-medium">Capture Windows UAC elevation prompts</p>
             <p className="text-xs text-muted-foreground">
-              The agent observes UAC consent prompts and records them as elevation requests for PAM review. Capture is on by default when no policy sets this.
+              The agent observes UAC consent prompts and records them as elevation requests for PAM review. Capture is off by default — enable it here to opt a device's scope into PAM.
             </p>
           </div>
           <button

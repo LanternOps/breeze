@@ -220,11 +220,12 @@ type Heartbeat struct {
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
 
-	// uacInterceptionDisabled is set when the server's 'pam' config policy
-	// turns UAC capture off for this device. Inverted so the zero value
-	// (enabled) matches the default-ON contract before the first heartbeat
-	// and against older servers that never send the field.
-	uacInterceptionDisabled atomic.Bool
+	// uacInterceptionEnabled is set when the server's resolved 'pam' config
+	// policy turns UAC capture ON for this device. Opt-in: the zero value
+	// (disabled) means no capture until the server explicitly enables it, so a
+	// device with no PAM policy — or one talking to a server that never sends
+	// the field — never prompts the user before the first heartbeat says so.
+	uacInterceptionEnabled atomic.Bool
 
 	// Service & process monitoring
 	monitor *monitoring.Monitor
@@ -2644,23 +2645,24 @@ func (h *Heartbeat) handleHelperEnabled(enabled bool) {
 }
 
 // IsUACInterceptionEnabled reports whether etwlua should post UAC elevation
-// events. Default true; only an explicit uacInterceptionEnabled=false from
-// the server's resolved 'pam' config policy disables it.
+// events. Default false (opt-in); only an explicit uacInterceptionEnabled=true
+// from the server's resolved 'pam' config policy enables it.
 func (h *Heartbeat) IsUACInterceptionEnabled() bool {
-	return !h.uacInterceptionDisabled.Load()
+	return h.uacInterceptionEnabled.Load()
 }
 
 // handleUACInterception updates the UAC interception flag from the heartbeat
-// response and logs state transitions. nil (field absent — older server)
-// means enabled.
+// response and logs state transitions. nil (field absent — older server) means
+// disabled: capture is opt-in and stays off until the server sends an explicit
+// true.
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
-	disabled := enabled != nil && !*enabled
-	prev := h.uacInterceptionDisabled.Swap(disabled)
-	if prev != disabled {
-		if disabled {
-			log.Info("UAC interception disabled by configuration policy")
-		} else {
+	on := enabled != nil && *enabled
+	prev := h.uacInterceptionEnabled.Swap(on)
+	if prev != on {
+		if on {
 			log.Info("UAC interception enabled by configuration policy")
+		} else {
+			log.Info("UAC interception disabled by configuration policy")
 		}
 	}
 }

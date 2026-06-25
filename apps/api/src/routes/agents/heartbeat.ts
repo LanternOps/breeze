@@ -749,7 +749,10 @@ if (latestHelper) {
       rotateToken: rotateToken || undefined,
       helperEnabled: helperSettings?.enabled ?? false,
       helperSettings: helperSettings ?? undefined,
-      uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? true,
+      // Opt-in: if the resolver errored and left pamSettings undefined, fail
+      // closed (no capture) rather than interrupting users with elevation
+      // prompts they never opted into.
+      uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
       manageRemoteManagement: manageRemoteManagement || undefined,
     },
   };

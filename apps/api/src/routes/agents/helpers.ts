@@ -29,6 +29,7 @@ import {
   configPolicyMonitoringWatches,
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
+  pamOrgConfig,
 } from '../../db/schema';
 import { getRedis } from '../../services/redis';
 import { publishEvent } from '../../services/eventBus';
@@ -2236,6 +2237,25 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string): 
 // PAM Settings (policy-driven)
 // ============================================
 
+/**
+ * Org-level fallback when no 'pam' config-policy feature link resolves for the
+ * device. Orgs that had deliberately configured PAM before the opt-in switch
+ * carry an explicit uac_interception_enabled=true on their pam_org_config row
+ * (grandfathered by migration 2026-07-01); everyone else falls to PAM_DEFAULTS
+ * (opt-in: off). An explicit config-policy feature link always wins over this.
+ */
+async function resolveOrgPamFallback(orgId: string): Promise<PamSettings> {
+  const [cfg] = await db
+    .select({ enabled: pamOrgConfig.uacInterceptionEnabled })
+    .from(pamOrgConfig)
+    .where(eq(pamOrgConfig.orgId, orgId))
+    .limit(1);
+  if (cfg && typeof cfg.enabled === 'boolean') {
+    return { uacInterceptionEnabled: cfg.enabled };
+  }
+  return PAM_DEFAULTS;
+}
+
 async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> {
   // 1. Load device
   const [device] = await db
@@ -2296,7 +2316,7 @@ async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> 
       or(...targetConditions),
     ));
 
-  if (rows.length === 0) return PAM_DEFAULTS;
+  if (rows.length === 0) return resolveOrgPamFallback(device.orgId);
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
   rows.sort((a, b) => {
@@ -2306,7 +2326,7 @@ async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> 
   });
 
   const winner = rows[0];
-  if (!winner?.inlineSettings) return PAM_DEFAULTS;
+  if (!winner?.inlineSettings) return resolveOrgPamFallback(device.orgId);
 
   return parsePamSettings(winner.inlineSettings);
 }
@@ -2315,8 +2335,8 @@ const PAM_CACHE_TTL_SECONDS = 120;
 
 /**
  * Build PAM config update payload for heartbeat response.
- * Resolves pam policy settings via the config policy hierarchy.
- * Falls back to PAM_DEFAULTS (uacInterceptionEnabled: true) if no policy found.
+ * Resolves pam policy settings via the config policy hierarchy, then the
+ * org-level grandfather flag, then PAM_DEFAULTS (uacInterceptionEnabled: false).
  * Cached per-device in Redis for 120s — policy changes propagate within ~2min + heartbeat interval.
  */
 export async function buildPamConfigUpdate(deviceId: string): Promise<PamSettings> {
