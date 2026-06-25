@@ -110,8 +110,15 @@ func fieldMatches(ruleVal, deviceVal string) bool {
 	return strings.EqualFold(ruleVal, deviceVal)
 }
 
-// ToEvents converts evaluation results into PeripheralEvents ready for submission.
-func ToEvents(results []EvaluationResult) []PeripheralEvent {
+// ToEvents converts evaluation results into PeripheralEvents, stamping each with
+// the *verified* enforcement outcome. A block/read_only that could not be
+// verified (or that targets a non-enforced class/platform) reports alert_only.
+func ToEvents(results []EvaluationResult, outcome EnforcementOutcome) []PeripheralEvent {
+	deviceOut := map[string]EnforceOutcome{}
+	for _, d := range outcome.DeviceOutcomes {
+		deviceOut[d.InstanceID] = d.EnforceOutcome
+	}
+
 	events := make([]PeripheralEvent, 0, len(results))
 	now := time.Now()
 	for i, r := range results {
@@ -125,11 +132,23 @@ func ToEvents(results []EvaluationResult) []PeripheralEvent {
 
 			switch r.Action {
 			case "block":
-				details["enforcement"] = "alert_only"
-				details["note"] = "blocking requires kernel driver — logged for visibility"
+				et, enf, dev := classifyBlockOutcome(r, deviceOut)
+				eventType = et
+				details["enforcement"] = enf
+				applyOutcomeDetails(details, dev)
 			case "read_only":
-				details["enforcement"] = "alert_only"
-				details["note"] = "read-only mount requires kernel driver — logged for visibility"
+				// Outcomes are keyed by the POLICY's class (what planEnforcement
+				// recorded), not the device class — an all_usb policy can match a
+				// storage device, in which case the applied outcome lives under
+				// "all_usb" while the device class is "storage".
+				ro := outcome.ReadOnlyOutcomes[r.Policy.DeviceClass]
+				if ro.Applied && ro.Verified {
+					eventType = "mounted_read_only"
+					details["enforcement"] = "read_only"
+				} else {
+					details["enforcement"] = "alert_only"
+				}
+				applyOutcomeDetails(details, ro)
 			}
 		}
 
@@ -146,6 +165,32 @@ func ToEvents(results []EvaluationResult) []PeripheralEvent {
 		})
 	}
 	return events
+}
+
+// classifyBlockOutcome decides the event type/enforcement string for a block.
+//
+// Every device in a scan is currently CONNECTED. A connected device is only
+// neutralized by a verified per-device disable. The machine-wide gate
+// (USBSTOR Start=4) only refuses FUTURE insertions — it does NOT block a device
+// that is already plugged in — so it must NOT be used to claim a live device is
+// blocked. (A device that the gate keeps out simply never appears in a later
+// scan.) Reporting must therefore key off the per-device outcome only; anything
+// else is a false "blocked" for a still-usable device.
+func classifyBlockOutcome(r EvaluationResult, deviceOut map[string]EnforceOutcome) (eventType, enforcement string, used EnforceOutcome) {
+	dev := deviceOut[r.Peripheral.DeviceID]
+	if dev.Applied && dev.Verified {
+		return "blocked", "blocked", dev
+	}
+	return "connected", "alert_only", dev
+}
+
+func applyOutcomeDetails(details map[string]any, o EnforceOutcome) {
+	if o.Mechanism != "" {
+		details["mechanism"] = o.Mechanism
+	}
+	if o.Detail != "" {
+		details["probeDetail"] = o.Detail
+	}
 }
 
 func policyID(p *Policy) string {
