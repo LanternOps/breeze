@@ -46,6 +46,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'c2c_connections', column: 'client_secret', kind: 'text', description: 'C2C OAuth client secret' },
   { table: 'c2c_connections', column: 'refresh_token', kind: 'text', description: 'C2C OAuth refresh token' },
   { table: 'c2c_connections', column: 'access_token', kind: 'text', description: 'C2C OAuth access token' },
+  { table: 'webhooks', column: 'url', kind: 'text', description: 'outbound webhook delivery URL (may embed credentials in userinfo/query)' },
   { table: 'webhooks', column: 'secret', kind: 'text', description: 'outbound webhook signing secret' },
   { table: 'webhooks', column: 'headers', kind: 'json', description: 'outbound webhook encrypted headers' },
   { table: 'notification_channels', column: 'config', kind: 'json', description: 'notification channel secret config' },

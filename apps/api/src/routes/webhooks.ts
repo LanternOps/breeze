@@ -7,7 +7,7 @@ import { db } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
-import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
+import { redactUrlForLogs, validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
@@ -90,6 +90,19 @@ function headersToRecord(headers: unknown): Record<string, string> {
   return sanitizeOutboundHeaders(headerRecord);
 }
 
+// The delivery URL can embed credentials (basic-auth userinfo, signed query
+// tokens), so it is encrypted at rest via the encryptedColumnRegistry. Decrypt
+// it only for internal delivery use; legacy plaintext rows pass through
+// unchanged (decryptForColumn is a no-op for non-encrypted values).
+function decryptWebhookUrl(webhook: typeof webhooksTable.$inferSelect): string {
+  try {
+    return decryptForColumn('webhooks', 'url', webhook.url) ?? webhook.url;
+  } catch (error) {
+    console.error(`[webhooks] Failed to decrypt url for webhook ${webhook.id}:`, error);
+    return webhook.url;
+  }
+}
+
 function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): WorkerWebhookConfig {
   const retryPolicy = (webhook.retryPolicy ?? undefined) as WorkerWebhookConfig['retryPolicy'];
   let secret: string | undefined;
@@ -106,7 +119,7 @@ function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): Work
     id: webhook.id,
     orgId: webhook.orgId,
     name: webhook.name,
-    url: webhook.url,
+    url: decryptWebhookUrl(webhook),
     secret,
     events: webhook.events ?? [],
     headers: headersToRecord(decryptWebhookHeaders(webhook.headers)),
@@ -115,11 +128,15 @@ function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): Work
 }
 
 function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
+  // Never return credentials embedded in the delivery URL (basic-auth userinfo,
+  // signed query tokens). redactUrlForLogs strips username/password/query/hash
+  // while keeping scheme+host+path so the URL stays recognizable and editable.
+  const decryptedUrl = decryptWebhookUrl(webhook);
   return {
     id: webhook.id,
     orgId: webhook.orgId,
     name: webhook.name,
-    url: webhook.url,
+    url: redactUrlForLogs(decryptedUrl),
     events: webhook.events ?? [],
     headers: normalizeHeaders(redactWebhookHeaders(webhook.headers)),
     status: mapDbStatusToApi(webhook.status as DbWebhookStatus),
@@ -381,7 +398,7 @@ webhookRoutes.post(
       .values({
         orgId,
         name: data.name,
-        url: data.url,
+        url: encryptSecret(data.url) ?? data.url,
         secret: encryptSecret(data.secret),
         events: data.events,
         headers: encryptWebhookHeaders(data.headers ?? []),
@@ -403,7 +420,7 @@ webhookRoutes.post(
       resourceId: created.id,
       resourceName: created.name,
       details: {
-        urlHost: URL.canParse(created.url) ? new URL(created.url).hostname : 'redacted',
+        urlHost: URL.canParse(data.url) ? new URL(data.url).hostname : 'redacted',
         eventCount: created.events?.length ?? 0
       }
     });
@@ -457,7 +474,15 @@ webhookRoutes.patch(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
-    if (data.url) {
+    // The editor pre-fills the masked URL we returned and re-submits it on save.
+    // If the incoming URL is unchanged from the masked form of the stored URL,
+    // the user didn't edit it — keep the existing encrypted value (which may
+    // carry credentials) instead of overwriting with the credential-stripped
+    // form. Mirrors the isMaskedIntegrationSecret no-clobber guard for `secret`.
+    const urlUnchanged =
+      data.url !== undefined && data.url === redactUrlForLogs(decryptWebhookUrl(webhook));
+
+    if (data.url && !urlUnchanged) {
       const urlErrors = await validateWebhookUrlSafetyWithDns(data.url);
       if (urlErrors.length > 0) {
         return c.json({ error: 'Invalid webhook URL', details: urlErrors }, 400);
@@ -469,7 +494,9 @@ webhookRoutes.patch(
     };
 
     if (data.name !== undefined) updatePayload.name = data.name;
-    if (data.url !== undefined) updatePayload.url = data.url;
+    if (data.url !== undefined && !urlUnchanged) {
+      updatePayload.url = encryptSecret(data.url) ?? data.url;
+    }
     if (data.secret !== undefined && !isMaskedIntegrationSecret(data.secret)) {
       updatePayload.secret = encryptSecret(data.secret);
     }

@@ -238,6 +238,8 @@ import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticke
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
+import { decryptForColumn } from './services/secretCrypto';
+import { decryptWebhookHeaders } from './services/notificationChannelSecrets';
 import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
@@ -1036,10 +1038,16 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
             id: webhook.id,
             orgId: webhook.orgId,
             name: webhook.name,
-            url: webhook.url,
-            secret: webhook.secret ?? undefined,
+            // url/secret/headers are encrypted at rest (encryptedColumnRegistry).
+            // Decrypt them here so the delivery worker fetches the real endpoint,
+            // signs with the real secret, and sends real header values. Legacy
+            // plaintext rows pass through decryptForColumn unchanged.
+            url: decryptForColumn('webhooks', 'url', webhook.url) ?? webhook.url,
+            secret: webhook.secret
+              ? decryptForColumn('webhooks', 'secret', webhook.secret) ?? undefined
+              : undefined,
             events: webhook.events ?? [],
-            headers: headersToRecord(webhook.headers),
+            headers: headersToRecord(decryptWebhookHeaders(webhook.headers)),
             retryPolicy: (webhook.retryPolicy ?? undefined) as {
               maxRetries: number;
               backoffMultiplier: number;

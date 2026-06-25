@@ -22,7 +22,21 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('../services/notificationSenders/webhookSender', () => ({
-  validateWebhookUrlSafetyWithDns: validateWebhookUrlSafetyWithDnsMock
+  validateWebhookUrlSafetyWithDns: validateWebhookUrlSafetyWithDnsMock,
+  // Real implementation: strips userinfo/query/hash so masked responses keep
+  // scheme+host+path. Kept in sync with the production helper.
+  redactUrlForLogs: (rawUrl: string) => {
+    try {
+      const parsed = new URL(rawUrl);
+      parsed.username = '';
+      parsed.password = '';
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.toString().replace(/\/$/, '');
+    } catch {
+      return '[invalid-url]';
+    }
+  }
 }));
 
 vi.mock('../db', () => ({
@@ -242,6 +256,163 @@ describe('webhook routes', () => {
       hasSecret: true,
       masked: '********'
     });
+  });
+
+  it('encrypts the delivery URL at rest and masks credentials in the response', async () => {
+    const credentialUrl = 'https://user:pass@example.com/hook?token=secret-token-xyz';
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn((values: any) => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: WEBHOOK_ID_1,
+          orgId: '11111111-1111-1111-1111-111111111111',
+          name: 'Cred Hook',
+          // Echo back what the handler actually persisted (encrypted form).
+          url: values.url,
+          secret: values.secret,
+          events: ['device.created'],
+          headers: [],
+          status: 'active',
+          createdBy: 'user-123',
+          createdAt: new Date('2026-02-07T13:00:00.000Z'),
+          updatedAt: new Date('2026-02-07T13:00:00.000Z'),
+          lastDeliveryAt: null
+        }]))
+      }))
+    } as any);
+
+    const res = await app.request('/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Cred Hook',
+        url: credentialUrl,
+        secret: 'secret-123',
+        events: ['device.created']
+      })
+    });
+
+    expect(res.status).toBe(201);
+
+    // 1. Persisted URL is encrypted, not plaintext.
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0][0];
+    expect(insertValues.url).not.toBe(credentialUrl);
+    expect(String(insertValues.url)).toMatch(/^enc:v[123]:/);
+
+    // 2. API response masks the credential-bearing parts of the URL.
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('secret-token-xyz');
+    expect(JSON.stringify(body)).not.toContain('user:pass');
+    expect(body.url).toBe('https://example.com/hook');
+  });
+
+  it('decrypts the delivery URL for internal delivery use', async () => {
+    const { encryptSecret } = await import('../services/secretCrypto');
+    const encryptedUrl = encryptSecret('https://user:pass@example.com/deliver?token=abc') as string;
+    expect(encryptedUrl).toMatch(/^enc:v[123]:/);
+
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([
+      {
+        id: WEBHOOK_ID_1,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Device Alerts',
+        url: encryptedUrl,
+        secret: null,
+        events: ['device.created'],
+        headers: [],
+        status: 'active',
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null,
+        retryPolicy: null
+      }
+    ]) as any);
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: DELIVERY_ID_1,
+          webhookId: WEBHOOK_ID_1,
+          eventType: 'webhook.test',
+          eventId: 'event-1',
+          payload: { test: true },
+          status: 'pending',
+          attempts: 0,
+          createdAt: new Date(),
+          deliveredAt: null
+        }]))
+      }))
+    } as any);
+
+    queueDeliveryMock.mockResolvedValueOnce(DELIVERY_ID_1);
+
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ payload: { test: true } })
+    });
+
+    expect(res.status).toBe(202);
+    // The worker config passed to queueDelivery must carry the decrypted URL.
+    const workerConfig = (queueDeliveryMock.mock.calls as any[])[0][0];
+    expect(workerConfig.url).toBe('https://user:pass@example.com/deliver?token=abc');
+  });
+
+  it('keeps the stored URL when an update re-submits the masked form', async () => {
+    const { encryptSecret } = await import('../services/secretCrypto');
+    const storedPlain = 'https://user:pass@example.com/hook?token=keepme';
+    const encryptedUrl = encryptSecret(storedPlain) as string;
+
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([
+      {
+        id: WEBHOOK_ID_1,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Device Alerts',
+        url: encryptedUrl,
+        secret: null,
+        events: ['device.created'],
+        headers: [],
+        status: 'active',
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null
+      }
+    ]) as any);
+
+    const updateValuesSpy = vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: WEBHOOK_ID_1,
+          orgId: '11111111-1111-1111-1111-111111111111',
+          name: 'Renamed',
+          url: encryptedUrl,
+          secret: null,
+          events: ['device.created'],
+          headers: [],
+          status: 'active',
+          createdBy: 'user-123',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastDeliveryAt: null
+        }]))
+      }))
+    }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: updateValuesSpy } as any);
+
+    // Editor re-submits the masked URL we previously returned.
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ name: 'Renamed', url: 'https://example.com/hook' })
+    });
+
+    expect(res.status).toBe(200);
+    // url must NOT be overwritten (would otherwise strip credentials).
+    const setPayload = (updateValuesSpy.mock.calls as any[])[0][0];
+    expect(setPayload.url).toBeUndefined();
+    expect(setPayload.name).toBe('Renamed');
   });
 
   it('rejects unsafe webhook URLs', async () => {
