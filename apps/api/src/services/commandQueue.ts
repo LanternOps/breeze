@@ -440,26 +440,30 @@ export async function waitForCommandResult(
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
 
-  // Timeout - update command status
+  // Timeout - update command status. device_commands is system-scoped and this
+  // can run from a runOutsideDbContext poll loop — wrap in a system context so
+  // the write isn't a contextless bare-pool write (#1375).
   const completedAt = new Date();
-  const [timedOutUpdate] = await db
-    .update(deviceCommands)
-    .set({
-      status: 'failed',
-      completedAt,
-      result: {
-        status: 'timeout',
-        error: `Command timed out after ${timeoutMs}ms`
-      }
-    })
-    .where(and(
-      eq(deviceCommands.id, commandId),
-      inArray(deviceCommands.status, ['pending', 'sent']),
-    ))
-    .returning({
-      id: deviceCommands.id,
-      status: deviceCommands.status,
-    });
+  const [timedOutUpdate] = await withSystemDbAccessContext(() =>
+    db
+      .update(deviceCommands)
+      .set({
+        status: 'failed',
+        completedAt,
+        result: {
+          status: 'timeout',
+          error: `Command timed out after ${timeoutMs}ms`
+        }
+      })
+      .where(and(
+        eq(deviceCommands.id, commandId),
+        inArray(deviceCommands.status, ['pending', 'sent']),
+      ))
+      .returning({
+        id: deviceCommands.id,
+        status: deviceCommands.status,
+      }),
+  );
 
   const timedOutType = lastObservedCommand?.type;
   if (timedOutUpdate && timedOutType) {
@@ -680,18 +684,21 @@ export async function executeCommand(
     // (no real user record exists). Detect this by checking if userId equals deviceId.
     const safeUserId = userId && userId !== deviceId ? userId : null;
 
-    // Insert command (device_commands — no RLS)
-    const [command] = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId,
-        type,
-        payload,
-        status: 'pending',
-        createdBy: safeUserId,
-        targetRole,
-      })
-      .returning();
+    // Insert command (device_commands — no RLS, but establish a system context
+    // so it isn't a contextless bare-pool write under runOutsideDbContext, #1375).
+    const [command] = await withSystemDbAccessContext(() =>
+      db
+        .insert(deviceCommands)
+        .values({
+          deviceId,
+          type,
+          payload,
+          status: 'pending',
+          createdBy: safeUserId,
+          targetRole,
+        })
+        .returning(),
+    );
 
     if (!command) {
       return { status: 'failed' as const, error: 'Failed to create command' };
