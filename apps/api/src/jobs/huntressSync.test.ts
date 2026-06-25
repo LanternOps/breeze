@@ -100,6 +100,17 @@ vi.mock('../services/huntressClient', () => ({
     listAgents = listAgents;
     listIncidents = listIncidents;
   },
+  HuntressApiError: class HuntressApiError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = 'HuntressApiError';
+      this.status = status;
+    }
+    get isAuthError(): boolean {
+      return this.status === 401 || this.status === 403;
+    }
+  },
   parseHuntressWebhookPayload: vi.fn(),
 }));
 
@@ -200,6 +211,25 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
     const errorWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'error');
     expect(errorWrite).toBeDefined();
     expect(String(errorWrite!.payload.lastSyncError)).toContain('scheduled:');
+  });
+
+  it('on a 401 auth failure, records the error status and fails UNRECOVERABLY even on a non-final attempt (BREEZE-1: dead credential must not retry/flood)', async () => {
+    const { HuntressApiError } = await import('../services/huntressClient');
+    const { UnrecoverableError } = await import('bullmq');
+    listAgents.mockRejectedValueOnce(
+      new HuntressApiError(401, 'Huntress API request failed (401 Unauthorized): Missing or invalid credentials'),
+    );
+
+    // isFinalAttempt:false would normally leave the row 'running' and let BullMQ
+    // retry — but a 401 is a dead credential: record 'error' and throw an
+    // UnrecoverableError so BullMQ skips the remaining attempts.
+    const rejected = await syncIntegrationById('integration-1', 'scheduled', undefined, { isFinalAttempt: false })
+      .then(() => null, (e: unknown) => e);
+    expect(rejected).toBeInstanceOf(UnrecoverableError);
+
+    const errorWrite = updatePayloads.find((u) => u.payload.lastSyncStatus === 'error');
+    expect(errorWrite).toBeDefined();
+    expect(errorWrite!.depth).toBeGreaterThan(0);
   });
 
   it('on the webhook path, persists without any external fetch', async () => {

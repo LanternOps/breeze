@@ -381,6 +381,23 @@ function isTimeoutError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Thrown on a non-2xx Huntress API response. Carries the HTTP status so callers
+ * can distinguish a dead/invalid credential (401/403 — a config issue, not
+ * transient and not retryable) from transient failures worth retrying.
+ */
+export class HuntressApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'HuntressApiError';
+    this.status = status;
+  }
+  get isAuthError(): boolean {
+    return this.status === 401 || this.status === 403;
+  }
+}
+
 async function fetchJson(
   url: URL,
   init: RequestInit,
@@ -417,7 +434,7 @@ async function fetchJson(
       // redirects) is an error — we never parse it as JSON or chase Location.
       if (!response.ok) {
         const preview = text.trim().slice(0, 400);
-        throw new Error(`Huntress API request failed (${response.status} ${response.statusText}): ${preview || '<empty>'}`);
+        throw new HuntressApiError(response.status, `Huntress API request failed (${response.status} ${response.statusText}): ${preview || '<empty>'}`);
       }
       if (!text.trim()) return {};
       try {
