@@ -174,6 +174,15 @@ var enrollCmd = &cobra.Command{
 	},
 }
 
+var bootstrapCmd = &cobra.Command{
+	Use:    "bootstrap",
+	Short:  "Redeem an installer bootstrap token and enroll (used by the MSI)",
+	Hidden: true,
+	Run: func(cmd *cobra.Command, args []string) {
+		runBootstrap()
+	},
+}
+
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version number",
@@ -218,12 +227,15 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
+	bootstrapCmd.Flags().StringVar(&bootstrapInstallData, "install-data", "", "Packed WiX CustomActionData: <OriginalDatabase>|<BOOTSTRAP_TOKEN>|<SERVER_URL>")
+	bootstrapCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr)")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", "user", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(enrollCmd)
+	rootCmd.AddCommand(bootstrapCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(userHelperCmd)
