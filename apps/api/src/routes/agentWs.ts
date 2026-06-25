@@ -37,6 +37,7 @@ import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
+import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64'] as const;
@@ -1343,6 +1344,14 @@ async function processCommandResult(
   deviceId?: string
 ): Promise<void> {
   try {
+    // Resolve any in-process promise awaiting this command id (e.g. http_request
+    // sent via sendCommandToAgentAwaitResult). No-op for all other result types.
+    resolvePendingAgentCommand(result.commandId, {
+      status: result.status,
+      result: result.result,
+      error: result.error,
+    });
+
     // Non-UUID command IDs (for example mon-* and snmp-*) are dispatched directly
     // over WebSocket and do not have a device_commands row.
     if (!UUID_REGEX.test(result.commandId)) {
