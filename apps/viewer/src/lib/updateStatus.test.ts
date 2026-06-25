@@ -113,6 +113,26 @@ describe('shouldAutoDismiss', () => {
   });
 });
 
+describe('ready phase', () => {
+  const ready: UpdateStatus = { phase: 'ready', version: '1.2.3' };
+
+  it('messages as a downloaded-and-waiting prompt', () => {
+    expect(updateStatusMessage(ready)).toBe('Update 1.2.3 downloaded');
+  });
+
+  it('is not "active" (no progress affordance)', () => {
+    expect(isUpdateActive(ready)).toBe(false);
+  });
+
+  it('does not auto-dismiss (stays pinned until the user acts)', () => {
+    expect(shouldAutoDismiss(ready)).toBe(false);
+  });
+
+  it('is accepted by the IPC-boundary guard', () => {
+    expect(isUpdateStatus({ phase: 'ready', version: '1.2.3' })).toBe(true);
+  });
+});
+
 describe('isUpdateStatus', () => {
   it('accepts every well-formed phase payload', () => {
     const valid: UpdateStatus[] = [
