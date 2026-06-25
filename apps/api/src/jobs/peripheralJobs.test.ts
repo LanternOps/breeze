@@ -92,6 +92,10 @@ describe('schedulePeripheralPolicyDistribution', () => {
     expect(addCall?.[0]).toBe('policy-distribution');
     expect(addCall?.[1]?.changedPolicyIds).toEqual(['pA', 'pB']);
     expect(addCall?.[2]?.jobId).toBe('policy-distribution-org-2');
+    // Retry config is the other half of the race fix: without it the worker's
+    // throw-to-retry would just fail the job permanently. Lock it down.
+    expect(addCall?.[2]?.attempts).toBe(6);
+    expect(addCall?.[2]?.backoff).toEqual({ type: 'exponential', delay: 250 });
   });
 
   it('removes stale completed job before creating a new one', async () => {

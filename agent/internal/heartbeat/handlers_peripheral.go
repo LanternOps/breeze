@@ -55,7 +55,23 @@ func handlePeripheralPolicySync(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// Evaluate detected devices against policies.
 	results := peripheral.Evaluate(detected, payload.Policies)
-	events := peripheral.ToEvents(results)
+
+	// Converge OS enforcement to the desired state (Windows: real block /
+	// read-only; other platforms: alert-only stub). Reversible: classes no
+	// longer covered by a block policy are reverted here.
+	plan := peripheral.Plan(results, payload.Policies)
+	outcome := peripheral.Enforce(peripheral.NewEnforcer(), plan, peripheral.EnforceableClasses())
+	cmdLog.Info("peripheral enforcement applied",
+		"gates", len(plan.BlockGates),
+		"devicesDisabled", len(plan.DisableInstanceIDs),
+		"readOnlyClasses", len(plan.ReadOnlyClasses),
+	)
+	enforcementUnverified := peripheral.CountUnverified(outcome)
+	if enforcementUnverified > 0 {
+		cmdLog.Warn("peripheral enforcement had unverified outcomes", "unverified", enforcementUnverified)
+	}
+
+	events := peripheral.ToEvents(results, outcome)
 
 	// Submit events to the server.
 	if len(events) > 0 {
@@ -72,8 +88,9 @@ func handlePeripheralPolicySync(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	return tools.NewSuccessResult(map[string]any{
-		"policiesSaved":   len(payload.Policies),
-		"devicesFound":    len(detected),
-		"eventsSubmitted": len(events),
+		"policiesSaved":         len(payload.Policies),
+		"devicesFound":          len(detected),
+		"eventsSubmitted":       len(events),
+		"enforcementUnverified": enforcementUnverified,
 	}, time.Since(start).Milliseconds())
 }

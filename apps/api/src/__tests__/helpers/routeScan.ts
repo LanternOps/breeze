@@ -345,6 +345,22 @@ export function analyzeRouteSource(
         )
       : LIVE_PERMS_SOURCE;
 
+  // File-level live source: a wildcard `.use('*', X)` / `.use('/*', X)` mounts X
+  // on EVERY route in the file. When X is a live perms source (inline
+  // requirePermission/getUserPermissions, or a requirePermission-bound const like
+  // `requireVulnerabilityRead`), `c.get('permissions')` is populated for all
+  // routes — but the `.use(...)` call sits ABOVE every per-route slice, so the
+  // per-route scan below can't see it and would false-flag the gate as dead.
+  // Detect it once per file. Only pure-wildcard paths ('*', '/*', '/') count —
+  // `.use('/specific', X)` does not cover all routes and must not suppress the
+  // dead-gate check.
+  const hasFileLevelLivePermsSource = text.split('\n').some((ln) => {
+    const trimmed = ln.trim();
+    // Skip comment lines so a commented-out `.use(...)` can't suppress the check.
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) return false;
+    return /\.use\(\s*(['"`])[/*]+\1\s*,/.test(ln) && livePermsPattern.test(ln);
+  });
+
   // File-level: a non-user-session auth guard anywhere in the file implies the
   // router authenticates a non-user principal (agent/helper/portal/viewer/admin).
   // The whole `routes/agents/` tree is mounted under agentAuthMiddleware at
@@ -401,7 +417,10 @@ export function analyzeRouteSource(
       (PERMS_CONTEXT_READ.test(slice) && PERMS_SITE_TOKEN.test(slice)) ||
       (permsHelperCallPattern !== null && permsHelperCallPattern.test(slice));
     const sitePermsGateDead =
-      permsSiteGate && !livePermsPattern.test(slice) && !FAIL_CLOSED_PERMS.test(slice);
+      permsSiteGate &&
+      !livePermsPattern.test(slice) &&
+      !hasFileLevelLivePermsSource &&
+      !FAIL_CLOSED_PERMS.test(slice);
 
     const line = text.slice(0, cur.index).split('\n').length;
 

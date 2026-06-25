@@ -133,6 +133,75 @@ describe('PatchesPage', () => {
     expect(desktop().getAllByRole('button', { name: 'Review' })).toHaveLength(1);
   });
 
+  it('fetches the ring-scoped patches with ?limit=200 when a ring is selected', async () => {
+    // Regression: selecting a ring previously fetched `/update-rings/:id/patches`
+    // with NO limit, so the endpoint defaulted to a 50-row page and the visible
+    // list collapsed from the all-rings 200 down to 50. The ring path must now
+    // send the same `?limit=200` as the all-rings path.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/update-rings') {
+        return makeJsonResponse({
+          data: [
+            { id: 'ring-1', name: 'Pilot', ringOrder: 1, deferralDays: 0, enabled: true },
+          ],
+        });
+      }
+
+      if (url === '/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'All-Rings Patch',
+              severity: 'critical',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'pending',
+            },
+          ],
+        });
+      }
+
+      if (url === '/update-rings/ring-1/patches?limit=200') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-2',
+              title: 'Ring Scoped Patch',
+              severity: 'important',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-02T00:00:00.000Z',
+              approvalStatus: 'approved',
+            },
+          ],
+          pagination: { page: 1, limit: 200, total: 1 },
+        });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    await screen.findAllByText('All-Rings Patch');
+
+    // The RingSelector's <select> owns the "All Rings" option; switch it to the ring.
+    const ringOption = await screen.findByRole('option', { name: /All Rings/ });
+    const ringSelect = ringOption.closest('select') as HTMLSelectElement;
+    fireEvent.change(ringSelect, { target: { value: 'ring-1' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/update-rings/ring-1/patches?limit=200');
+    });
+    // The ring path must never be fetched without the limit (the old bug).
+    expect(fetchMock).not.toHaveBeenCalledWith('/update-rings/ring-1/patches');
+    await screen.findAllByText('Ring Scoped Patch');
+  });
+
   it('partner scope: allows bulk approve in all-orgs mode (no org, no ring) — request fires partner-wide', async () => {
     // After the partner-scoping migration, the API derives the partner from
     // auth.partnerId. A partner user in all-orgs mode (no org, no ring) is valid —

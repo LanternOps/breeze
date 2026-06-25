@@ -406,7 +406,10 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     // The device-list query must have received a site-narrowing condition
     // (in addition to the org condition) — proves the route applied the axis.
     expect(capturedDeviceListConds.length).toBeGreaterThan(0);
-  });
+    // Borderline-slow under full-suite parallel load (real async MCP resources/read
+    // + permission re-mock); give headroom over the 5s default so it doesn't flake
+    // when the suite is saturated. Passes in well under 1s in isolation.
+  }, 15_000);
 
   // C4 — alerts list site axis. Alert a-a is on site-A device d-a; a-b is on
   // site-B device d-b. A site-A-restricted caller must see a-a but not a-b. We
@@ -484,7 +487,11 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     expect(text).not.toContain('a-b');
     // The alert-list query must have received a site-narrowing condition.
     expect(capturedAlertConds.length).toBeGreaterThan(0);
-  });
+    // Same shape as the devices test above (real async MCP resources/read +
+    // permission re-mock); borderline-slow under full-suite parallel load, so
+    // give the same 15s headroom over the 5s default. Passes well under 1s in
+    // isolation — this only prevents flakes when the suite is saturated.
+  }, 15_000);
 
   // C4 — single-device read breeze://devices/{id}. A site-A-restricted caller
   // reading an out-of-site device id (d-b on site-B) gets 'Device not found'
