@@ -119,10 +119,10 @@ func runBootstrap() {
 	}
 
 	// Hand off to the existing enroll path via the package globals it reads.
+	// siteId is NOT forwarded here: enrollDevice does not read enrollSiteID for
+	// the resolved key — the server derives the site from the (child) key and
+	// returns it in the enroll response (cfg.SiteID = enrollResp.SiteID).
 	serverURL = res.ServerURL
 	enrollmentSecret = res.EnrollmentSecret
-	if res.SiteID != "" {
-		enrollSiteID = res.SiteID
-	}
 	enrollDevice(res.EnrollmentKey)
 }
