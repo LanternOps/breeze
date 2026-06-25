@@ -4,16 +4,25 @@ import { Hono } from 'hono';
 const ORG_A = '22222222-2222-2222-2222-222222222222';
 const ORG_B = '55555555-5555-5555-5555-555555555555';
 
-const { permissionGate, authState } = vi.hoisted(() => ({
-  permissionGate: { deny: false },
-  authState: {
+const { permissionGate, authState, orgConditionSpy } = vi.hoisted(() => {
+  const authState = {
     canAccessOrg: true,
     partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
     scope: 'partner' as 'partner' | 'organization' | 'system',
     // null = system scope (no filter); string[] = partner/org scope accessible orgs
     accessibleOrgIds: ['22222222-2222-2222-2222-222222222222'] as string[] | null,
-  },
-}));
+  };
+  // Single hoisted spy so tests can assert the org-filter branch actually fired
+  // (called with the snapshot orgId column) and what it produced (a filter for
+  // partner scope, undefined for system) — not just that `.where()` was called.
+  const orgConditionSpy = vi.fn((col: any) => {
+    const ids = authState.accessibleOrgIds;
+    if (ids === null) return undefined;
+    if (ids.length === 0) return `${col} = '00000000-0000-0000-0000-000000000000'`;
+    return `${col} IN (${ids.join(',')})`;
+  });
+  return { permissionGate: { deny: false }, authState, orgConditionSpy };
+});
 
 vi.mock('../db', () => ({
   db: {
@@ -101,15 +110,9 @@ vi.mock('../middleware/auth', () => ({
       orgId: authState.scope === 'organization' ? ORG_A : null,
       accessibleOrgIds: ids,
       canAccessOrg: vi.fn(() => authState.canAccessOrg),
-      // Mirror the real orgCondition logic from middleware/auth.ts:
-      // null ids = system scope → undefined (no filter).
-      // empty ids → impossible-match sentinel string.
-      // Otherwise → the ids array (test conditions capture the non-undefined value).
-      orgCondition: vi.fn((col: any) => {
-        if (ids === null) return undefined;
-        if (ids.length === 0) return `${col} = '00000000-0000-0000-0000-000000000000'`;
-        return `${col} IN (${ids.join(',')})`;
-      }),
+      // Hoisted spy (impl mirrors middleware/auth.ts orgCondition) so tests can
+      // assert the org-filter branch fired and what it produced.
+      orgCondition: orgConditionSpy,
       user: { id: '33333333-3333-3333-3333-333333333333', email: 'admin@example.com' },
     });
     return next();
@@ -379,21 +382,15 @@ describe('pax8 routes', () => {
     const res = await app.request('/pax8/subscriptions', { method: 'GET' });
 
     expect(res.status).toBe(200);
-    // orgCondition must have been applied: whereSpy receives the AND(...conditions) call.
-    // The conditions array passed to `and()` includes the org filter (non-undefined).
-    // We verify orgCondition was invoked on the snapshot orgId column.
     expect(whereSpy).toHaveBeenCalled();
-    // The auth mock's orgCondition returns a non-undefined string for non-system callers.
-    // Verify it was called (the route would have pushed it into conditions).
-    const { authMiddleware } = await import('../middleware/auth');
-    const mockMiddleware = vi.mocked(authMiddleware);
-    // The authContext's orgCondition spy would have been called once for the org filter.
-    // Since the mock sets orgCondition as a vi.fn on the auth object, we verify indirectly:
-    // a 200 response with the filter applied means no cross-org data leaked.
+    // Non-vacuous: the org-filter branch must FIRE for a partner caller with no
+    // orgId — orgCondition is invoked on the snapshot orgId column and returns a
+    // truthy filter the route pushes into the WHERE. If that branch were removed
+    // (the cross-org leak), orgCondition would not be called with this column.
+    expect(orgConditionSpy).toHaveBeenCalledWith('pax8_subscription_snapshots.org_id');
+    expect(orgConditionSpy).toHaveReturnedWith(`pax8_subscription_snapshots.org_id IN (${ORG_A})`);
     const body = await res.json();
-    expect(body).toHaveProperty('data');
     expect(body).toHaveProperty('integrationId', integration.id);
-    void mockMiddleware; // used for type-narrowing above
   });
 
   it('GET /subscriptions with inaccessible orgId returns 403', async () => {
@@ -419,8 +416,11 @@ describe('pax8 routes', () => {
 
     expect(res.status).toBe(200);
     expect(whereSpy).toHaveBeenCalled();
+    // System scope: the branch still runs but orgCondition returns undefined, so
+    // NO org filter is pushed and all rows are visible (operators see everything).
+    expect(orgConditionSpy).toHaveBeenCalledWith('pax8_subscription_snapshots.org_id');
+    expect(orgConditionSpy).toHaveReturnedWith(undefined);
     const body = await res.json();
-    // System scope sees all rows (both orgs returned by mock)
     expect(body.data).toHaveLength(2);
   });
 });

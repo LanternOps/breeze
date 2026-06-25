@@ -55,30 +55,28 @@ userRoutes.use('*', async (c, next) => {
     await next();
     return;
   }
-  const accessibleOrgIds = auth.accessibleOrgIds;
 
-  // Read the partner's TRUE org set bypassing RLS. Under the request RLS
-  // context the organizations SELECT policy `breeze_has_org_access(id)` narrows
-  // results to the caller's accessibleOrgIds, which makes
-  // `partnerOrgRows.every(...)` unconditionally true (including `[].every()`
-  // for orgAccess='none') — an RLS-vacuous privilege escalation that lets a
-  // 'selected'/'none' partner-admin manage ALL partner users. Mirror orgs.ts:
-  // partner-scope authority is already enforced above, so escape the request
-  // context to obtain the full org list for the comparison.
-  const partnerOrgRows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, auth.partnerId as string))
+  // Partner-wide user management requires a FULL-access partner membership.
+  // Gate directly on partnerUsers.orgAccess === 'all' — the same field the
+  // middleware uses to compute accessibleOrgIds (auth.ts). Do NOT infer this by
+  // comparing accessibleOrgIds against the partner's org list: accessibleOrgIds
+  // is filtered to active/trial, non-deleted orgs, so a full-access admin of a
+  // partner that has any suspended/soft-deleted org (or zero orgs yet) would be
+  // false-denied, while the org-list read under request RLS is itself narrowed
+  // (the RLS-vacuous trap). orgAccess is the authoritative, status-independent
+  // signal that distinguishes 'all' from the 'selected'/'none' escalation case.
+  const [membership] = await db
+    .select({ orgAccess: partnerUsers.orgAccess })
+    .from(partnerUsers)
+    .where(
+      and(
+        eq(partnerUsers.userId, auth.user.id),
+        eq(partnerUsers.partnerId, auth.partnerId)
+      )
     )
-  );
-  const hasFullPartnerAccess =
-    accessibleOrgIds.length > 0 &&
-    partnerOrgRows.length > 0 &&
-    partnerOrgRows.every((org) => accessibleOrgIds.includes(org.id));
+    .limit(1);
 
-  if (!hasFullPartnerAccess) {
+  if (membership?.orgAccess !== 'all') {
     throw new HTTPException(403, { message: 'Full partner organization access required' });
   }
 
