@@ -5,9 +5,11 @@ import { invoiceLifecycleRoutes } from './lifecycle';
 import { invoicePaymentRoutes } from './payments';
 import { invoicePdfRoutes } from './pdf'; // added in Phase 5
 import { invoiceStripeRoutes } from './stripe';
+import { invoiceBulkRoutes } from './bulk';
 
 export const invoiceRoutes = new Hono();
 invoiceRoutes.use('*', authMiddleware);
+invoiceRoutes.route('/', invoiceBulkRoutes);       // bulk-* before /:id
 invoiceRoutes.route('/', invoiceLifecycleRoutes);  // /:id/issue, /:id/send, /:id/void
 invoiceRoutes.route('/', invoicePaymentRoutes);    // /:id/payments...
 invoiceRoutes.route('/', invoiceStripeRoutes);     // /:id/pay-link
