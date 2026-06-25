@@ -14,6 +14,11 @@ import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
+import {
+  encryptNotificationChannelConfig,
+  decryptNotificationChannelConfig,
+} from './notificationChannelSecrets';
+import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -432,12 +437,18 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (!input.type) return JSON.stringify({ error: 'type is required (email, slack, teams, webhook, pagerduty, sms)' });
         if (!input.config) return JSON.stringify({ error: 'config is required (channel-specific settings)' });
 
+        const channelType = input.type as typeof notificationChannels.type.enumValues[number];
+        const configErrors = validateNotificationChannelConfig(channelType, input.config);
+        if (configErrors.length > 0) {
+          return JSON.stringify({ error: `Invalid ${channelType} channel configuration`, details: configErrors });
+        }
+
         try {
           const [channel] = await db.insert(notificationChannels).values({
             orgId,
             name: input.name as string,
-            type: input.type as typeof notificationChannels.type.enumValues[number],
-            config: input.config as Record<string, unknown>,
+            type: channelType,
+            config: encryptNotificationChannelConfig(channelType, input.config) as Record<string, unknown>,
             enabled: input.enabled !== false,
           }).returning();
           if (!channel) return JSON.stringify({ error: 'Failed to create notification channel' });
@@ -462,7 +473,18 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.type === 'string') updates.type = input.type;
-        if (input.config) updates.config = input.config;
+        if (input.config !== undefined && input.config !== null) {
+          // Mirror the HTTP PUT route: merge incoming config with the existing
+          // encrypted config (preserving masked/preserved secret fields), then
+          // decrypt to validate the resolved config, then re-encrypt for storage.
+          const mergedEncrypted = encryptNotificationChannelConfig(existing.type, input.config, existing.config);
+          const configForValidation = decryptNotificationChannelConfig(existing.type, mergedEncrypted);
+          const configErrors = validateNotificationChannelConfig(existing.type, configForValidation);
+          if (configErrors.length > 0) {
+            return JSON.stringify({ error: `Invalid ${existing.type} channel configuration`, details: configErrors });
+          }
+          updates.config = mergedEncrypted;
+        }
         if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
 
         await db.update(notificationChannels).set(updates).where(eq(notificationChannels.id, existing.id));
