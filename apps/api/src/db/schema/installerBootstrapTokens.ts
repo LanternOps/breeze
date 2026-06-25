@@ -46,6 +46,7 @@ export const installerBootstrapTokens = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
     consumedFromIp: text("consumed_from_ip"),
+    installerPlatform: text("installer_platform"),
   },
   (t) => ({
     expiresIdx: index("idx_installer_bootstrap_tokens_expires").on(t.expiresAt),

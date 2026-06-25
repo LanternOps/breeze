@@ -228,6 +228,82 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(body.enrollmentKey).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("propagates installer_platform from token to child enrollment key", async () => {
+    process.env.PUBLIC_API_URL = "https://us.2breeze.app";
+    process.env.AGENT_ENROLLMENT_SECRET = "shared-secret-test";
+
+    const tokenRow = {
+      id: "t2",
+      token: "FFFFFFFFFF",
+      orgId: "o1",
+      parentEnrollmentKeyId: "pk1",
+      siteId: "s1",
+      maxUsage: 1,
+      createdBy: "u1",
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      installerPlatform: "windows",
+    };
+    const parentKey = {
+      id: "pk1",
+      name: "Acme parent",
+      orgId: "o1",
+      siteId: "s1",
+      keySecretHash: "parent-secret-hash",
+      expiresAt: new Date(Date.now() + 60_000 * 60),
+    };
+    const org = { id: "o1", name: "Acme Corp" };
+
+    // Select call order: (1) token row, (2) parent key, (3) org name
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([tokenRow]) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([org]) }),
+        }),
+      } as any);
+
+    // Capture values passed to INSERT child key
+    let capturedChildKeyValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValue({
+      values: (vals: Record<string, unknown>) => {
+        capturedChildKeyValues = vals;
+        return {
+          returning: () =>
+            Promise.resolve([{ id: "ck2", orgId: "o1", siteId: "s1" }]),
+        };
+      },
+    } as any);
+
+    // UPDATE consume (returns consumed row)
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({
+        where: () => ({
+          returning: () =>
+            Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]),
+        }),
+      }),
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": "FFFFFFFFFF" },
+    });
+    expect(res.status).toBe(200);
+    expect(capturedChildKeyValues).not.toBeNull();
+    expect((capturedChildKeyValues as Record<string, unknown>).installerPlatform).toBe("windows");
+  });
+
   it("rejects legacy GET bootstrap by default", async () => {
     const app = makeApp();
     const res = await app.request("/api/v1/installer/bootstrap/DDDDDDDDDD");

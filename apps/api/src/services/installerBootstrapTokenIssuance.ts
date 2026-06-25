@@ -11,6 +11,7 @@ export interface IssueBootstrapTokenInput {
   parentEnrollmentKeyId: string;
   createdByUserId: string;
   maxUsage?: number;
+  installerPlatform?: "windows" | "macos";
 }
 
 export interface IssuedBootstrapToken {
@@ -77,6 +78,7 @@ export async function issueBootstrapTokenForKey(
     maxUsage: input.maxUsage ?? 1,
     createdBy: input.createdByUserId,
     expiresAt,
+    installerPlatform: input.installerPlatform ?? "macos",
   }).returning();
   if (!row) {
     throw new Error('installerBootstrapTokens insert returned no row');

@@ -167,7 +167,7 @@ async function redeemBootstrapToken(c: Context, token: string) {
         maxUsage: row.maxUsage,
         expiresAt: childExpiresAt,
         createdBy: row.createdBy,
-        installerPlatform: "macos",
+        installerPlatform: row.installerPlatform ?? "macos",
       })
       .returning();
 
