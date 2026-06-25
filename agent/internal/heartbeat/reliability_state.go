@@ -13,6 +13,19 @@ import (
 
 const reliabilityStateFileName = "reliability_state.json"
 
+// reliabilityPostInterval is the minimum spacing between reliability posts —
+// metrics are meant to go out at most once per this window.
+const reliabilityPostInterval = 24 * time.Hour
+
+// reliabilityPostDue reports whether a reliability post is due given the last
+// time one was sent and the current time. A zero `last` (never sent, or an
+// unreadable/corrupt persisted state) is always due, so the first post fails
+// open. Extracted as a pure function so the gate — the heart of #1906 — is
+// unit-testable without driving the long-running heartbeat loop.
+func reliabilityPostDue(last, now time.Time) bool {
+	return now.Sub(last) > reliabilityPostInterval
+}
+
 // reliabilityState persists the last time reliability metrics were posted so
 // the 24h send cadence survives agent restarts. Without it, every restart
 // (crash, auto-update, machine reboot — frequent on POS/checkout boxes) reset
@@ -86,14 +99,13 @@ func (h *Heartbeat) saveLastReliabilityUpdate(t time.Time) error {
 	return nil
 }
 
-// markReliabilitySent records, in memory and on disk, that a reliability post
-// was just initiated so the 24h cadence survives restarts (#1906). A persist
-// failure is logged but non-fatal — the in-memory timer still gates the rest
-// of this process's lifetime.
-func (h *Heartbeat) markReliabilitySent(t time.Time) {
-	h.mu.Lock()
-	h.lastReliabilityUpdate = t
-	h.mu.Unlock()
+// persistReliabilitySent records on disk that a reliability post succeeded at
+// time t, so the 24h cadence survives restarts (#1906). Called only from the
+// success path of sendReliabilityMetrics: a failed upload leaves the persisted
+// timestamp stale so a restart retries, while the in-memory timer (advanced at
+// dispatch under h.mu) still prevents duplicate sends within this process. A
+// persist failure is logged but non-fatal.
+func (h *Heartbeat) persistReliabilitySent(t time.Time) {
 	if err := h.saveLastReliabilityUpdate(t); err != nil {
 		log.Warn("failed to persist reliability send timestamp", "error", err.Error())
 	}

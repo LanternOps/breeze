@@ -59,30 +59,50 @@ func TestLoadLastReliabilityUpdateCorruptIsZero(t *testing.T) {
 	}
 }
 
-// markReliabilitySent must update both the in-memory timer and the persisted
-// file, so a restart that reads the file gets the same gate value.
-func TestMarkReliabilitySentPersistsAndSeeds(t *testing.T) {
+// reliabilityPostDue is the gate that defines #1906's fix: a recently-sent
+// (persisted) timestamp must suppress the next post, while a stale/zero one
+// must let it through. Table-tested directly so a flipped comparison or lost
+// seed is caught without driving the heartbeat loop.
+func TestReliabilityPostDue(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		last time.Time
+		want bool
+	}{
+		{"never sent (zero) → due", time.Time{}, true},
+		{"sent 25h ago → due", now.Add(-25 * time.Hour), true},
+		{"sent just over 24h ago → due", now.Add(-24*time.Hour - time.Second), true},
+		{"sent exactly 24h ago → not due", now.Add(-24 * time.Hour), false},
+		{"sent 1h ago → not due", now.Add(-time.Hour), false},
+		{"sent in the future (clock skew) → not due", now.Add(time.Hour), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reliabilityPostDue(tc.last, now); got != tc.want {
+				t.Fatalf("reliabilityPostDue(%v, now) = %v, want %v", tc.last, got, tc.want)
+			}
+		})
+	}
+}
+
+// persistReliabilitySent must write a timestamp a restart can read back, and
+// that timestamp must gate the next post (reliabilityPostDue == false).
+func TestPersistReliabilitySentSurvivesRestart(t *testing.T) {
 	useTempHome(t)
 	h := &Heartbeat{}
 
 	sentAt := time.Now().UTC().Truncate(time.Second)
-	h.markReliabilitySent(sentAt)
-
-	h.mu.Lock()
-	inMem := h.lastReliabilityUpdate
-	h.mu.Unlock()
-	if !inMem.Equal(sentAt) {
-		t.Fatalf("in-memory timer not updated: want %v, got %v", sentAt, inMem)
-	}
+	h.persistReliabilitySent(sentAt)
 
 	// Simulate a restart: a fresh Heartbeat reading the same file must see it,
-	// and the 24h gate must NOT have elapsed (so no immediate re-post).
+	// and the gate must NOT be due (so no immediate re-post on boot).
 	restarted := &Heartbeat{}
 	persisted := restarted.loadLastReliabilityUpdate()
 	if !persisted.Equal(sentAt) {
 		t.Fatalf("persisted timer not readable after restart: want %v, got %v", sentAt, persisted)
 	}
-	if time.Since(persisted) > 24*time.Hour {
-		t.Fatalf("recently-sent timer should gate the next post, but 24h already elapsed: %v", persisted)
+	if reliabilityPostDue(persisted, time.Now()) {
+		t.Fatalf("recently-sent timer should gate the next post, but it reported due: %v", persisted)
 	}
 }
