@@ -94,6 +94,9 @@ interface Props {
 const STATUS_OPTIONS: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'];
 const PRIORITY_OPTIONS: TicketPriority[] = ['urgent', 'high', 'normal', 'low'];
 
+// Sentinel for the "type a requester manually" choice in the requester editor.
+const MANUAL_REQUESTER = '__manual__';
+
 type TicketTriageSuggestion = {
   modelVersion: string;
   confidence: number;
@@ -125,6 +128,12 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [config, setConfig] = useState<TicketConfig | null>(null);
   const [editingDescription, setEditingDescription] = useState(false);
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Requester editor: picker options (portal users for the org) + edit state.
+  const [requesters, setRequesters] = useState<Array<{ id: string; name: string | null; email: string }>>([]);
+  const [editingRequester, setEditingRequester] = useState(false);
+  const [reqSel, setReqSel] = useState('');
+  const [reqName, setReqName] = useState('');
+  const [reqEmail, setReqEmail] = useState('');
   const [triageSuggestion, setTriageSuggestion] = useState<TicketTriageSuggestion | null>(null);
   const [triageLoading, setTriageLoading] = useState(false);
   const [applyingTriage, setApplyingTriage] = useState(false);
@@ -255,6 +264,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       .catch(() => { /* degrade gracefully */ });
     return () => { cancelled = true; };
   }, []);
+
+  // Requester options track the ticket's org (a portal user is org-scoped).
+  // Failure degrades the editor to free-text only.
+  useEffect(() => {
+    const orgId = ticket?.orgId;
+    if (!orgId) return;
+    let cancelled = false;
+    void fetchWithAuth(`/tickets/requesters?orgId=${orgId}`)
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled || !body) return;
+        const rows = (body as { data?: Array<{ id: string; name: string | null; email: string }> }).data;
+        if (Array.isArray(rows)) setRequesters(rows.filter((u) => u.id));
+      })
+      .catch(() => { /* free-text fallback */ });
+    return () => { cancelled = true; };
+  }, [ticket?.orgId]);
 
   // Fetch ticket config once (module-cached across islands). Failure leaves
   // config null, which keeps the six-core-status fallback select fully working.
@@ -448,6 +474,28 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     }).then(() => afterMutation(patch as Partial<TicketDetail>)).catch((err) => { if (!(err instanceof ActionError)) throw err; });
   }, [ticketId, afterMutation]);
+
+  const openRequesterEditor = useCallback(() => {
+    if (!ticket) return;
+    setReqSel(ticket.submittedBy ?? ((ticket.submitterName || ticket.submitterEmail) ? MANUAL_REQUESTER : ''));
+    setReqName(ticket.submitterName ?? '');
+    setReqEmail(ticket.submitterEmail ?? '');
+    setEditingRequester(true);
+  }, [ticket]);
+
+  const saveRequester = useCallback(() => {
+    if (reqSel && reqSel !== MANUAL_REQUESTER) {
+      // Picked a portal user — send its name/email too so the local optimistic
+      // patch shows the new requester immediately (the API backfills the same).
+      const opt = requesters.find((r) => r.id === reqSel);
+      handleFieldSave({ submittedBy: reqSel, submitterName: opt?.name ?? null, submitterEmail: opt?.email ?? null });
+    } else if (reqSel === MANUAL_REQUESTER) {
+      handleFieldSave({ submittedBy: null, submitterName: reqName.trim() || null, submitterEmail: reqEmail.trim() || null });
+    } else {
+      handleFieldSave({ submittedBy: null, submitterName: null, submitterEmail: null });
+    }
+    setEditingRequester(false);
+  }, [reqSel, reqName, reqEmail, requesters, handleFieldSave]);
 
   const handleEditComment = useCallback((commentId: string, content: string) => {
     void runAction({
@@ -898,7 +946,83 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <TicketTimeBilling ticketId={ticket.id} />
               <TicketPartsCard ticketId={ticket.id} />
               <dl className="space-y-3">
-                <div><dt className="text-xs text-muted-foreground">Requester</dt><dd>{ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}</dd></div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Requester</dt>
+                  <dd>
+                    {editingRequester ? (
+                      <div className="space-y-2">
+                        <select
+                          value={reqSel}
+                          onChange={(e) => setReqSel(e.target.value)}
+                          className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+                          data-testid="ticket-workbench-requester-select"
+                          aria-label="Requester"
+                        >
+                          <option value="">Unknown</option>
+                          {requesters.map((r) => (
+                            <option key={r.id} value={r.id}>{r.name ? `${r.name} (${r.email})` : r.email}</option>
+                          ))}
+                          <option value={MANUAL_REQUESTER}>Someone else…</option>
+                        </select>
+                        {reqSel === MANUAL_REQUESTER && (
+                          <div className="space-y-1">
+                            <input
+                              value={reqName}
+                              onChange={(e) => setReqName(e.target.value)}
+                              maxLength={255}
+                              placeholder="Name"
+                              aria-label="Requester name"
+                              className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+                              data-testid="ticket-workbench-requester-name"
+                            />
+                            <input
+                              type="email"
+                              value={reqEmail}
+                              onChange={(e) => setReqEmail(e.target.value)}
+                              maxLength={255}
+                              placeholder="Email (optional)"
+                              aria-label="Requester email"
+                              className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+                              data-testid="ticket-workbench-requester-email"
+                            />
+                          </div>
+                        )}
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditingRequester(false)}
+                            className="rounded-md border px-2 py-0.5 text-xs hover:bg-muted"
+                            data-testid="ticket-workbench-requester-cancel"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={saveRequester}
+                            className="rounded-md bg-primary px-2 py-0.5 text-xs font-medium text-white"
+                            data-testid="ticket-workbench-requester-save"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="group flex items-start gap-2">
+                        <span className="flex-1" data-testid="ticket-workbench-requester">
+                          {ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={openRequesterEditor}
+                          className="shrink-0 rounded px-1 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
+                          data-testid="ticket-workbench-requester-edit"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    )}
+                  </dd>
+                </div>
                 <div><dt className="text-xs text-muted-foreground">Source</dt><dd className="capitalize">{ticket.source}</dd></div>
                 <div><dt className="text-xs text-muted-foreground">Created</dt><dd>{formatDateTime(ticket.createdAt)}</dd></div>
                 <div>
@@ -929,7 +1053,17 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                   <dt className="text-xs text-muted-foreground">Device</dt>
                   <dd>
                     <div data-testid="ticket-workbench-device" className="flex items-center gap-2 text-xs">
-                      <span>{ticket.deviceHostname ?? 'No device'}</span>
+                      {ticket.deviceId ? (
+                        <a
+                          href={`/devices/${ticket.deviceId}`}
+                          className="text-primary hover:underline"
+                          data-testid="ticket-workbench-device-link"
+                        >
+                          {ticket.deviceHostname ?? ticket.deviceId}
+                        </a>
+                      ) : (
+                        <span>No device</span>
+                      )}
                       {ticket.deviceId && (
                         <button
                           type="button"

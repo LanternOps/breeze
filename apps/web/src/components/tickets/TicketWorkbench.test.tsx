@@ -54,6 +54,7 @@ const makeTicket = (overrides: Partial<TicketDetail> = {}): TicketDetail => ({
   createdAt: '2026-06-01T10:00:00.000Z',
   updatedAt: '2026-06-01T10:00:00.000Z',
   description: null,
+  submittedBy: null,
   submitterName: 'Pat',
   submitterEmail: null,
   pendingReason: null,
@@ -1552,6 +1553,85 @@ describe('TicketWorkbench device link/unlink', () => {
 
     await screen.findByTestId('ticket-workbench-device');
     expect(screen.queryByTestId('ticket-workbench-device-unlink')).toBeNull();
+  });
+});
+
+// ─── Requester editing + clickable device link ────────────────────────────────
+
+describe('TicketWorkbench requester editing + device link', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  function mockApiWithRequesters(
+    ticket: TicketDetail,
+    requesters: Array<{ id: string; name: string | null; email: string }>
+  ) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!init?.method || init.method === 'GET') {
+        if (url.startsWith('/tickets/requesters?orgId=')) {
+          return makeJsonResponse({ data: requesters });
+        }
+        const m = url.match(/^\/tickets\/([^/?]+)$/);
+        if (m && m[1] === ticket.id) return makeJsonResponse({ data: ticket });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('renders the device hostname as a link to the device page', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const link = await screen.findByTestId('ticket-workbench-device-link');
+    expect(link).toHaveAttribute('href', '/devices/dev-1');
+    expect(link).toHaveTextContent('DESKTOP-123');
+  });
+
+  it('renders no device link when the ticket has no device', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.queryByTestId('ticket-workbench-device-link')).toBeNull();
+  });
+
+  it('edits the requester to a picked portal user (PATCHes submittedBy + backfilled name/email)', async () => {
+    mockApiWithRequesters(
+      makeTicket({ submittedBy: null, submitterName: 'Pat', submitterEmail: null }),
+      [{ id: 'pu-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]
+    );
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-edit'));
+    await screen.findByRole('option', { name: 'Gail Goodman (gail@lgpc.com)' });
+    fireEvent.change(screen.getByTestId('ticket-workbench-requester-select'), { target: { value: 'pu-1' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-save'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1', expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ submittedBy: 'pu-1', submitterName: 'Gail Goodman', submitterEmail: 'gail@lgpc.com' })
+      }));
+    });
+  });
+
+  it('edits the requester to free text (PATCHes submittedBy:null + name)', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ submittedBy: null, submitterName: 'Pat', submitterEmail: null }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-edit'));
+    fireEvent.change(screen.getByTestId('ticket-workbench-requester-select'), { target: { value: '__manual__' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-requester-name'), { target: { value: 'Walk-in User' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-save'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1', expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ submittedBy: null, submitterName: 'Walk-in User', submitterEmail: null })
+      }));
+    });
   });
 });
 

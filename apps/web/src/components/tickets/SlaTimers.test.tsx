@@ -26,6 +26,7 @@ const mkTicket = (overrides: Partial<TicketDetail> = {}): TicketDetail => ({
   createdAt: new Date(NOW.getTime() - 10 * 60_000).toISOString(),
   updatedAt: NOW.toISOString(),
   description: null,
+  submittedBy: null,
   submitterName: null,
   submitterEmail: null,
   pendingReason: null,

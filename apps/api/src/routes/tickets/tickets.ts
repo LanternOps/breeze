@@ -16,7 +16,7 @@ import {
 import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, updateTicketFields,
-  editTicketComment, deleteTicketComment,
+  editTicketComment, deleteTicketComment, listRequestersForOrg,
   TicketServiceError
 } from '../../services/ticketService';
 import {
@@ -402,6 +402,25 @@ ticketsRoutes.post(
     } catch (err) {
       return handleServiceError(c, err);
     }
+  }
+);
+
+// GET /tickets/requesters?orgId= — selectable requesters (active portal users)
+// for the ticket create/edit picker. Registered before GET /:id so the static
+// segment isn't captured by the :id param (which would 400 on uuid validation).
+ticketsRoutes.get(
+  '/requesters',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('query', z.object({ orgId: z.string().guid() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId } = c.req.valid('query');
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+    const data = await listRequestersForOrg(orgId);
+    return c.json({ data });
   }
 );
 

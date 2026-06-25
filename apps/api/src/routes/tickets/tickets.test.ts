@@ -16,6 +16,7 @@ const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, l
       getAssigneeForValidation: vi.fn(),
       editTicketComment: vi.fn(),
       deleteTicketComment: vi.fn(),
+      listRequestersForOrg: vi.fn(),
     },
     ticketTriageMocks: {
       getTicketTriageSuggestion: vi.fn(),
@@ -446,6 +447,41 @@ describe('POST /tickets', () => {
     const body = await res.json();
     expect(body).toHaveProperty('error', 'Access to this organization denied');
     expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /tickets/requesters', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('returns the org requesters for an accessible org', async () => {
+    serviceMocks.listRequestersForOrg.mockResolvedValue([
+      { id: 'pu-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }
+    ]);
+    const res = await makeApp().request(`/tickets/requesters?orgId=${ORG_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([{ id: 'pu-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+    expect(serviceMocks.listRequestersForOrg).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it('403s when the caller cannot access the org (cross-tenant)', async () => {
+    authRef.current = { ...DEFAULT_AUTH, canAccessOrg: () => false };
+    const res = await makeApp().request(`/tickets/requesters?orgId=${ORG_ID}`);
+    expect(res.status).toBe(403);
+    expect(serviceMocks.listRequestersForOrg).not.toHaveBeenCalled();
+  });
+
+  it('400s on a missing or malformed orgId', async () => {
+    expect((await makeApp().request('/tickets/requesters')).status).toBe(400);
+    expect((await makeApp().request('/tickets/requesters?orgId=not-a-uuid')).status).toBe(400);
+    expect(serviceMocks.listRequestersForOrg).not.toHaveBeenCalled();
+  });
+
+  it('is not captured by the /:id param route', async () => {
+    serviceMocks.listRequestersForOrg.mockResolvedValue([]);
+    const res = await makeApp().request(`/tickets/requesters?orgId=${ORG_ID}`);
+    // A 200 (not the 400 that an :id uuid-param would produce for "requesters") proves ordering.
+    expect(res.status).toBe(200);
   });
 });
 

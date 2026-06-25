@@ -51,6 +51,10 @@ export interface TicketComment {
 
 export interface TicketDetail extends TicketSummary {
   description: string | null;
+  // Requester. submittedBy links a portal_users row (portal/picked requester);
+  // submitterName/Email are the display name + reply address (also set for
+  // free-text requesters that have no portal account).
+  submittedBy: string | null;
   submitterName: string | null;
   submitterEmail: string | null;
   pendingReason: string | null;

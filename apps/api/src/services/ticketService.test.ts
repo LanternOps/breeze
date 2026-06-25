@@ -112,6 +112,7 @@ vi.mock('../db/schema', () => ({
   devices: { id: 'id', orgId: 'orgId' },
   users: { id: 'id', partnerId: 'partnerId' },
   ticketCategories: { id: 'id', partnerId: 'partnerId', responseSlaMinutes: 'responseSlaMinutes', resolutionSlaMinutes: 'resolutionSlaMinutes' },
+  portalUsers: { id: 'id', orgId: 'orgId', name: 'name', email: 'email', status: 'status' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
@@ -234,6 +235,89 @@ describe('createTicket', () => {
       submitterEmail: null,
       submittedBy: null
     });
+  });
+
+  it('manual ticket with a picked portal-user requester stamps submittedBy + backfilled name/email', async () => {
+    // selects in order: org, portal user
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-6', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-1' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({
+      submittedBy: 'pu-1',
+      submitterName: 'Gail Goodman',
+      submitterEmail: 'gail@lgpc.com'
+    });
+  });
+
+  it('manual ticket with explicit submitterName/email overrides the portal-user backfill', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-7', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket(
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-1', submitterName: 'Gail (front desk)', submitterEmail: 'frontdesk@lgpc.com' },
+      actor
+    );
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: 'pu-1',
+      submitterName: 'Gail (front desk)',
+      submitterEmail: 'frontdesk@lgpc.com'
+    });
+  });
+
+  it('manual ticket with a free-text requester (no portal user) stamps name/email, no submittedBy', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-8', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket(
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', submitterName: 'Walk-in User', submitterEmail: 'walkin@lgpc.com' },
+      actor
+    );
+
+    // Only ONE select consumed (org) — no portal-user lookup for free-text.
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1);
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: null,
+      submitterName: 'Walk-in User',
+      submitterEmail: 'walkin@lgpc.com'
+    });
+  });
+
+  it('rejects a requester portal user from a different org (cross-tenant) and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-x', orgId: 'o-OTHER', name: 'Intruder', email: 'x@evil.com' }]);
+
+    const err = await createTicket(
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-x' }, actor
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/organization/i);
+    expect(allocateMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown requester portal user with a 404', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([]); // portal user lookup: no row
+
+    const err = await createTicket(
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-missing' }, actor
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    expect(valuesMock).not.toHaveBeenCalled();
   });
 
   it('non-portal ticket sets both submitter fields to null when actor has no name/email', async () => {
@@ -972,6 +1056,96 @@ describe('updateTicketFields', () => {
   it('treats deep-equal tags as a no-op', async () => {
     dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, tags: ['vip', 'hardware'] }]);
     await updateTicketFields('t-1', { tags: ['vip', 'hardware'] }, actor);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('editing the requester to a portal user backfills name/email and records a "requester" change', async () => {
+    // selects in order: ticket, portal user
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: 'pu-1' }, actor);
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload).toMatchObject({
+      submittedBy: 'pu-1',
+      submitterName: 'Gail Goodman',
+      submitterEmail: 'gail@lgpc.com'
+    });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated requester' }));
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.updated' }));
+  });
+
+  it('editing the requester to a portal user with explicit name/email overrides the backfill', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields(
+      't-1',
+      { submittedBy: 'pu-1', submitterName: 'Gail (front desk)', submitterEmail: 'frontdesk@lgpc.com' },
+      actor
+    );
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: 'pu-1',
+      submitterName: 'Gail (front desk)',
+      submitterEmail: 'frontdesk@lgpc.com'
+    });
+  });
+
+  it('records a field change AND a requester change in one update (combined feed/event)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Pat', submitterEmail: null }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, priority: 'high', submitterName: 'Walk-in' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { priority: 'high', submittedBy: null, submitterName: 'Walk-in', submitterEmail: null }, actor);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated priority, requester' }));
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      payload: { changed: ['priority', 'requester'] }
+    }));
+  });
+
+  it('editing the requester to free text clears the portal link', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1', submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: null, submitterName: 'Walk-in', submitterEmail: null }, actor);
+
+    // No portal-user lookup needed when clearing — only the ticket select.
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1);
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: null,
+      submitterName: 'Walk-in',
+      submitterEmail: null
+    });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated requester' }));
+  });
+
+  it('rejects a requester portal user from another org on update and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([BASE_TICKET])
+      .mockResolvedValueOnce([{ id: 'pu-x', orgId: 'o-OTHER', name: 'Intruder', email: 'x@evil.com' }]);
+
+    const err = await updateTicketFields('t-1', { submittedBy: 'pu-x' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('no-op when the requester is unchanged', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }]);
+    await updateTicketFields('t-1', { submittedBy: null, submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }, actor);
     expect(setMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
   });

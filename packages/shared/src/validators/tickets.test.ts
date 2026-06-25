@@ -96,6 +96,42 @@ describe('ticket validators', () => {
     expect(() => listTicketsQuerySchema.parse({ slaState: 'nope' })).toThrow();
   });
 
+  describe('requester fields', () => {
+    const ORG = '3f2f1d8e-1111-4222-8333-444455556666';
+    const PORTAL_USER = '5a6b7c8d-1234-4321-abcd-000011112222';
+
+    it('createTicketSchema accepts a portal-user requester (submittedBy)', () => {
+      const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submittedBy: PORTAL_USER });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.submittedBy).toBe(PORTAL_USER);
+    });
+
+    it('createTicketSchema accepts a free-text requester (name + email)', () => {
+      const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' });
+      expect(r.success).toBe(true);
+    });
+
+    it('createTicketSchema rejects a non-uuid submittedBy and a malformed email', () => {
+      expect(createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submittedBy: 'nope' }).success).toBe(false);
+      expect(createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submitterEmail: 'not-an-email' }).success).toBe(false);
+    });
+
+    it('updateTicketSchema accepts requester changes incl null to clear the portal link', () => {
+      expect(updateTicketSchema.safeParse({ submittedBy: PORTAL_USER }).success).toBe(true);
+      expect(updateTicketSchema.safeParse({ submittedBy: null, submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }).success).toBe(true);
+      expect(updateTicketSchema.safeParse({ submitterName: null, submitterEmail: null }).success).toBe(true);
+    });
+
+    it('updateTicketSchema rejects a malformed requester email', () => {
+      expect(updateTicketSchema.safeParse({ submitterEmail: 'bad' }).success).toBe(false);
+    });
+
+    it('updateTicketSchema rejects an empty submitterName (clear via null, not "")', () => {
+      expect(updateTicketSchema.safeParse({ submitterName: '' }).success).toBe(false);
+      expect(updateTicketSchema.safeParse({ submitterName: null }).success).toBe(true);
+    });
+  });
+
   it('updateTicketSchema accepts SLA override minutes', () => {
     expect(updateTicketSchema.parse({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 }))
       .toEqual({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 });

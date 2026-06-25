@@ -1,7 +1,7 @@
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -31,6 +31,8 @@ export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 500;
 export type TicketServiceErrorCode =
   | 'ASSIGNEE_NOT_FOUND'
   | 'ASSIGNEE_WRONG_PARTNER'
+  | 'REQUESTER_NOT_FOUND'
+  | 'REQUESTER_WRONG_ORG'
   | 'CATEGORY_NOT_FOUND'
   | 'CATEGORY_WRONG_PARTNER'
   | 'TICKET_PARTNER_UNRESOLVABLE'
@@ -138,6 +140,63 @@ async function assertAssigneeInPartner(assigneeId: string, partnerId: string | n
 }
 
 /**
+ * Look up a prospective requester (portal user) for tenant validation. Runs in
+ * a system-scope DB context for the same reason as getAssigneeForValidation:
+ * portal_users is org-axis RLS, and the security boundary is the explicit
+ * org comparison the caller makes — not the read. Exported for the route's
+ * pre-validation if ever needed.
+ */
+export async function getPortalUserForValidation(
+  portalUserId: string
+): Promise<{ id: string; orgId: string; name: string | null; email: string } | null> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, email: portalUsers.email })
+        .from(portalUsers)
+        .where(eq(portalUsers.id, portalUserId))
+        .limit(1)
+    )
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * List the selectable requesters (active portal users) for an org. Runs in a
+ * system-scope DB context — the security boundary is the caller's canAccessOrg
+ * check plus the explicit org filter here, mirroring the validation reads above.
+ * Capped at 500; the picker is a convenience, not an exhaustive directory.
+ */
+export async function listRequestersForOrg(
+  orgId: string
+): Promise<Array<{ id: string; name: string | null; email: string }>> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: portalUsers.id, name: portalUsers.name, email: portalUsers.email })
+        .from(portalUsers)
+        .where(and(eq(portalUsers.orgId, orgId), eq(portalUsers.status, 'active')))
+        .orderBy(asc(portalUsers.name))
+        .limit(500)
+    )
+  );
+}
+
+/**
+ * Tenant guard: a requester (portal user) must belong to the ticket's org.
+ * portal_users.org_id scopes every portal account to exactly one organization,
+ * so a same-org equality check is the complete cross-tenant boundary.
+ */
+async function assertRequesterInOrg(portalUserId: string, orgId: string) {
+  const portalUser = await getPortalUserForValidation(portalUserId);
+  if (!portalUser) throw new TicketServiceError('Requester not found', 404, 'REQUESTER_NOT_FOUND');
+  if (portalUser.orgId !== orgId) {
+    throw new TicketServiceError('Requester must belong to the ticket organization', 400, 'REQUESTER_WRONG_ORG');
+  }
+  return portalUser;
+}
+
+/**
  * Tenant guard: a ticket's category must belong to the ticket's partner.
  * The read runs in a system-scope DB context for the same reason as
  * getAssigneeForValidation: ticket_categories is partner-axis RLS, invisible
@@ -181,10 +240,13 @@ interface BaseCreateTicketInput {
 
 // portal source carries the requester; the worker emails submitterEmail on public replies/resolution.
 // email source also carries the sender address so outbound replies/autoresponses (PR3) have a recipient.
+// Other sources (manual/alert/api/ai) may OPTIONALLY name a requester: pick a
+// portal user (submittedBy) and/or supply a free-text name/email. When none are
+// given the requester defaults to the acting staff member's name (no email).
 export type CreateTicketInput =
   | (BaseCreateTicketInput & { source: 'portal'; submittedBy: string; submitterEmail: string; submitterName?: string })
   | (BaseCreateTicketInput & { source: 'email'; submitterEmail: string; submitterName?: string; submittedBy?: string })
-  | (BaseCreateTicketInput & { source: Exclude<TicketSource, 'portal' | 'email'> });
+  | (BaseCreateTicketInput & { source: Exclude<TicketSource, 'portal' | 'email'>; submittedBy?: string; submitterEmail?: string; submitterName?: string });
 
 // NOTE: emitTicketEvent and createAuditLogAsync below are called while the
 // surrounding request transaction is still open. If the transaction later rolls
@@ -225,6 +287,35 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     category = await assertCategoryInPartner(input.categoryId, org.partnerId);
   }
 
+  // Resolve the requester before number allocation (a rejected requester must
+  // not burn a counter value). Portal/email sources carry it via their required
+  // fields. Other sources may name one: a picked portal user (validated same-org,
+  // backfills name/email) and/or free text; otherwise the acting staff member's
+  // name is stamped with NO email (preserves "no external requester" semantics —
+  // the notify worker emails submitterEmail on every public comment/resolution).
+  const isPortalOrEmail = input.source === 'portal' || input.source === 'email';
+  let resolvedSubmittedBy: string | null;
+  let resolvedSubmitterName: string | null;
+  let resolvedSubmitterEmail: string | null;
+  if (isPortalOrEmail) {
+    resolvedSubmittedBy = input.submittedBy ?? null;
+    resolvedSubmitterName = input.submitterName ?? null;
+    resolvedSubmitterEmail = input.submitterEmail ?? null;
+  } else if (input.submittedBy) {
+    const portalUser = await assertRequesterInOrg(input.submittedBy, input.orgId);
+    resolvedSubmittedBy = portalUser.id;
+    resolvedSubmitterName = input.submitterName ?? portalUser.name ?? null;
+    resolvedSubmitterEmail = input.submitterEmail ?? portalUser.email ?? null;
+  } else if (input.submitterName || input.submitterEmail) {
+    resolvedSubmittedBy = null;
+    resolvedSubmitterName = input.submitterName ?? null;
+    resolvedSubmitterEmail = input.submitterEmail ?? null;
+  } else {
+    resolvedSubmittedBy = null;
+    resolvedSubmitterName = actor.name ?? null;
+    resolvedSubmitterEmail = null;
+  }
+
   const priority = input.priority ?? 'normal';
   const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
 
@@ -246,7 +337,6 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 
-  const isPortal = input.source === 'portal';
   const insertValues = {
     orgId: input.orgId,
     partnerId: org.partnerId,
@@ -262,15 +352,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     status: initialCoreStatus,
     statusId: statusId ?? null,
     source: input.source,
-    submittedBy: isPortal ? input.submittedBy : (input.source === 'email' ? (input.submittedBy ?? null) : null),
-    // Non-portal/non-email tickets show the acting user as the requester NAME only (fixes
-    // "Unknown" requester in the UI). submitterEmail deliberately stays null for
-    // those sources: the notify worker emails submitterEmail on every public
-    // comment/resolution with portal-oriented copy and no self-actor suppression,
-    // so staff-created tickets must keep "no external requester" semantics.
-    // Email-sourced tickets carry submitterEmail so outbound replies/autoresponses (PR3) have a recipient.
-    submitterEmail: isPortal ? input.submitterEmail : (input.source === 'email' ? input.submitterEmail : null),
-    submitterName: (isPortal || input.source === 'email') ? (input.submitterName ?? null) : (actor.name ?? null),
+    submittedBy: resolvedSubmittedBy,
+    submitterEmail: resolvedSubmitterEmail,
+    submitterName: resolvedSubmitterName,
     category: null,
     responseSlaMinutes: slaTargets.responseMinutes,
     resolutionSlaMinutes: slaTargets.resolutionMinutes
@@ -500,10 +584,21 @@ export interface UpdateTicketFieldsInput {
   resolutionSlaMinutes?: number | null;
   deviceId?: string | null;
   tags?: string[];
+  // Requester edit. Handled outside UPDATE_FIELD_LABELS' generic diff loop:
+  // picking a portal user (submittedBy) backfills name/email, and the three
+  // columns surface as one "requester" change in the feed. submittedBy=null
+  // clears the portal link (free-text requester).
+  submittedBy?: string | null;
+  submitterName?: string | null;
+  submitterEmail?: string | null;
 }
 
+// Fields handled by the generic diff loop. The requester triple is excluded —
+// it's resolved/diffed separately (portal-user backfill, single "requester" label).
+type DiffFieldKey = Exclude<keyof UpdateTicketFieldsInput, 'submittedBy' | 'submitterName' | 'submitterEmail'>;
+
 /** Humanized labels for the system feed entry, in canonical field order. */
-const UPDATE_FIELD_LABELS: Record<keyof UpdateTicketFieldsInput, string> = {
+const UPDATE_FIELD_LABELS: Record<DiffFieldKey, string> = {
   subject: 'subject',
   description: 'description',
   categoryId: 'category',
@@ -515,7 +610,7 @@ const UPDATE_FIELD_LABELS: Record<keyof UpdateTicketFieldsInput, string> = {
   tags: 'tags'
 };
 
-function ticketFieldChanged(key: keyof UpdateTicketFieldsInput, oldValue: unknown, newValue: unknown): boolean {
+function ticketFieldChanged(key: DiffFieldKey, oldValue: unknown, newValue: unknown): boolean {
   if (key === 'dueDate') {
     const oldMs = oldValue instanceof Date ? oldValue.getTime() : null;
     const newMs = newValue instanceof Date ? newValue.getTime() : null;
@@ -569,21 +664,53 @@ export async function updateTicketFields(
     await assertCategoryInPartner(fields.categoryId, await resolveTicketPartnerId(ticket));
   }
 
+  // Requester edit: resolve (and tenant-validate) before the change diff so a
+  // cross-org portal user is rejected even when nothing else changed. The client
+  // sends a coherent triple — a uuid submittedBy links a portal user (same-org,
+  // backfills name/email); null clears the link for a free-text requester.
+  const requesterEdit =
+    fields.submittedBy !== undefined ||
+    fields.submitterName !== undefined ||
+    fields.submitterEmail !== undefined;
+  const requesterPatch: { submittedBy?: string | null; submitterName?: string | null; submitterEmail?: string | null } = {};
+  if (requesterEdit) {
+    if (typeof fields.submittedBy === 'string') {
+      const portalUser = await assertRequesterInOrg(fields.submittedBy, ticket.orgId);
+      requesterPatch.submittedBy = portalUser.id;
+      requesterPatch.submitterName = fields.submitterName !== undefined ? fields.submitterName : (portalUser.name ?? null);
+      requesterPatch.submitterEmail = fields.submitterEmail !== undefined ? fields.submitterEmail : (portalUser.email ?? null);
+    } else {
+      if (fields.submittedBy === null) requesterPatch.submittedBy = null;
+      if (fields.submitterName !== undefined) requesterPatch.submitterName = fields.submitterName;
+      if (fields.submitterEmail !== undefined) requesterPatch.submitterEmail = fields.submitterEmail;
+    }
+  }
+  const tRow = ticket as Record<string, unknown>;
+  const requesterChanged =
+    ('submittedBy' in requesterPatch && (requesterPatch.submittedBy ?? null) !== (tRow.submittedBy ?? null)) ||
+    ('submitterName' in requesterPatch && (requesterPatch.submitterName ?? null) !== (tRow.submitterName ?? null)) ||
+    ('submitterEmail' in requesterPatch && (requesterPatch.submitterEmail ?? null) !== (tRow.submitterEmail ?? null));
+
   // Compute the actually-changed fields; ignore no-op keys so the feed and
   // event stream don't accumulate noise from idempotent saves.
-  const changed: (keyof UpdateTicketFieldsInput)[] = [];
-  for (const key of Object.keys(UPDATE_FIELD_LABELS) as (keyof UpdateTicketFieldsInput)[]) {
+  const changed: DiffFieldKey[] = [];
+  for (const key of Object.keys(UPDATE_FIELD_LABELS) as DiffFieldKey[]) {
     if (fields[key] === undefined) continue;
     if (ticketFieldChanged(key, (ticket as Record<string, unknown>)[key], fields[key])) {
       changed.push(key);
     }
   }
-  if (changed.length === 0) return ticket;
+  if (changed.length === 0 && !requesterChanged) return ticket;
+
+  // Feed/event labels: typed field keys plus a single "requester" token.
+  const changedForLog: string[] = [...changed, ...(requesterChanged ? ['requester'] : [])];
+  const changedLabels: string[] = [...changed.map((k) => UPDATE_FIELD_LABELS[k]), ...(requesterChanged ? ['requester'] : [])];
 
   const patch: Partial<typeof tickets.$inferInsert> = { updatedAt: new Date() };
   for (const key of changed) {
     (patch as Record<string, unknown>)[key] = fields[key] ?? null;
   }
+  if (requesterChanged) Object.assign(patch, requesterPatch);
 
   const updated = await db
     .update(tickets)
@@ -600,7 +727,7 @@ export async function updateTicketFields(
     authorName: actor.name ?? null,
     authorType: 'internal',
     commentType: 'system',
-    content: `Updated ${changed.map((k) => UPDATE_FIELD_LABELS[k]).join(', ')}`,
+    content: `Updated ${changedLabels.join(', ')}`,
     isPublic: false
   });
 
@@ -610,7 +737,7 @@ export async function updateTicketFields(
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
     actorUserId: actor.userId,
-    payload: { changed }
+    payload: { changed: changedForLog }
   });
   await createAuditLogAsync({
     orgId: ticket.orgId,
@@ -618,7 +745,7 @@ export async function updateTicketFields(
     action: 'ticket.update',
     resourceType: 'ticket',
     resourceId: ticketId,
-    details: { changed },
+    details: { changed: changedForLog },
     result: 'success'
   });
   if (changed.includes('categoryId')) {

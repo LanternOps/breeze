@@ -44,6 +44,9 @@ function mockOptionsApi() {
     if (url.startsWith('/devices?orgId=')) {
       return makeJsonResponse({ data: [{ id: 'dev-1', displayName: 'PC-1' }] });
     }
+    if (url.startsWith('/tickets/requesters?orgId=')) {
+      return makeJsonResponse({ data: [{ id: 'pu-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }] });
+    }
     if (url === '/tickets' && init?.method === 'POST') {
       return makeJsonResponse({ data: { id: 'tk-9', internalNumber: 'T-2026-0009' } });
     }
@@ -141,6 +144,69 @@ describe('CreateTicketPage', () => {
     await screen.findByTestId('create-ticket-form');
     expect(screen.queryByTestId('create-ticket-load-error')).toBeNull();
     expect(screen.getByText('Org A')).toBeInTheDocument();
+  });
+
+  describe('requester picker', () => {
+    it('submits submittedBy when a portal user is picked', async () => {
+      mockOptionsApi();
+      render(<CreateTicketPage />);
+      await screen.findByTestId('create-ticket-form');
+
+      fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      // Requester options load for the org.
+      await screen.findByRole('option', { name: 'Gail Goodman (gail@lgpc.com)' });
+      fireEvent.change(screen.getByTestId('create-ticket-requester-input'), { target: { value: 'pu-1' } });
+      fireEvent.change(screen.getByTestId('create-ticket-subject-input'), { target: { value: 'Crash' } });
+      fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/tickets', expect.objectContaining({ method: 'POST' }));
+      });
+      const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
+      const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
+      expect(body.submittedBy).toBe('pu-1');
+      expect(body).not.toHaveProperty('submitterName');
+    });
+
+    it('submits free-text name/email for "Someone else"', async () => {
+      mockOptionsApi();
+      render(<CreateTicketPage />);
+      await screen.findByTestId('create-ticket-form');
+
+      fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      await screen.findByRole('option', { name: 'Gail Goodman (gail@lgpc.com)' });
+      fireEvent.change(screen.getByTestId('create-ticket-requester-input'), { target: { value: '__manual__' } });
+      fireEvent.change(screen.getByTestId('create-ticket-requester-name-input'), { target: { value: 'Walk-in User' } });
+      fireEvent.change(screen.getByTestId('create-ticket-requester-email-input'), { target: { value: 'walkin@lgpc.com' } });
+      fireEvent.change(screen.getByTestId('create-ticket-subject-input'), { target: { value: 'Crash' } });
+      fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/tickets', expect.objectContaining({ method: 'POST' }));
+      });
+      const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
+      const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
+      expect(body.submitterName).toBe('Walk-in User');
+      expect(body.submitterEmail).toBe('walkin@lgpc.com');
+      expect(body).not.toHaveProperty('submittedBy');
+    });
+
+    it('resets the requester when switching organizations', async () => {
+      mockOptionsApi();
+      render(<CreateTicketPage />);
+      await screen.findByTestId('create-ticket-form');
+
+      fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+      await screen.findByRole('option', { name: 'Gail Goodman (gail@lgpc.com)' });
+      fireEvent.change(screen.getByTestId('create-ticket-requester-input'), { target: { value: 'pu-1' } });
+      expect(screen.getByTestId('create-ticket-requester-input')).toHaveValue('pu-1');
+
+      fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-b' } });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/tickets/requesters?orgId=org-b');
+      });
+      expect(screen.getByTestId('create-ticket-requester-input')).toHaveValue('');
+    });
   });
 
   describe('org-scope fixes', () => {
