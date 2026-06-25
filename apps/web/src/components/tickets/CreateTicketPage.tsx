@@ -7,6 +7,10 @@ import type { TicketPriority } from './ticketConfig';
 
 interface Option { id: string; name: string }
 interface CategoryOption { id: string; name: string; parentId: string | null }
+interface RequesterOption { id: string; name: string | null; email: string }
+
+// Sentinel for the "type a requester manually" choice in the select.
+const MANUAL_REQUESTER = '__manual__';
 
 export default function CreateTicketPage() {
   const [orgs, setOrgs] = useState<Option[]>([]);
@@ -19,6 +23,10 @@ export default function CreateTicketPage() {
   const [deviceId, setDeviceId] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [priority, setPriority] = useState<TicketPriority>('normal');
+  const [requesters, setRequesters] = useState<RequesterOption[]>([]);
+  const [requesterId, setRequesterId] = useState('');
+  const [requesterName, setRequesterName] = useState('');
+  const [requesterEmail, setRequesterEmail] = useState('');
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState(false);
 
@@ -96,6 +104,24 @@ export default function CreateTicketPage() {
     })();
   }, [orgId]);
 
+  // Requester options follow the org (a portal user is scoped to one org). Reset
+  // the selection on org change so a stale requester from the previous org can't
+  // be submitted — the API rejects a cross-org requester, but clear it up front.
+  useEffect(() => {
+    setRequesterId(''); setRequesterName(''); setRequesterEmail('');
+    if (!orgId) { setRequesters([]); return; }
+    void (async () => {
+      const res = await fetchWithAuth(`/tickets/requesters?orgId=${orgId}`);
+      if (res.ok) {
+        const b = await res.json();
+        setRequesters((b.data ?? []) as RequesterOption[]);
+      } else {
+        // Requester is optional — degrade to free-text entry rather than blocking.
+        setRequesters([]);
+      }
+    })();
+  }, [orgId]);
+
   const submit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!orgId || !subject.trim()) return;
@@ -110,7 +136,13 @@ export default function CreateTicketPage() {
             description: description.trim() || undefined,
             deviceId: deviceId || undefined,
             categoryId: categoryId || undefined,
-            priority
+            priority,
+            // Requester: a picked portal user, or a free-text name/email. Omit
+            // everything when left blank — the API then defaults the requester to
+            // the creating staff member (legacy behaviour).
+            ...(requesterId && requesterId !== MANUAL_REQUESTER ? { submittedBy: requesterId } : {}),
+            ...(requesterId === MANUAL_REQUESTER && requesterName.trim() ? { submitterName: requesterName.trim() } : {}),
+            ...(requesterId === MANUAL_REQUESTER && requesterEmail.trim() ? { submitterEmail: requesterEmail.trim() } : {})
           })
         }),
         errorFallback: 'Ticket creation failed. Retry.',
@@ -123,7 +155,7 @@ export default function CreateTicketPage() {
     } finally {
       setSaving(false);
     }
-  }, [orgId, subject, description, deviceId, categoryId, priority]);
+  }, [orgId, subject, description, deviceId, categoryId, priority, requesterId, requesterName, requesterEmail]);
 
   const selectCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 
@@ -158,6 +190,46 @@ export default function CreateTicketPage() {
       <div>
         <label className="text-sm font-medium" htmlFor="ct-desc">Description</label>
         <textarea id="ct-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={5} className={selectCls} data-testid="create-ticket-description-input" />
+      </div>
+      <div>
+        <label className="text-sm font-medium" htmlFor="ct-requester">Requester (optional)</label>
+        <select
+          id="ct-requester"
+          value={requesterId}
+          onChange={(e) => setRequesterId(e.target.value)}
+          disabled={!orgId}
+          className={selectCls}
+          data-testid="create-ticket-requester-input"
+        >
+          <option value="">Default (you)</option>
+          {requesters.map((r) => (
+            <option key={r.id} value={r.id}>{r.name ? `${r.name} (${r.email})` : r.email}</option>
+          ))}
+          <option value={MANUAL_REQUESTER}>Someone else…</option>
+        </select>
+        {requesterId === MANUAL_REQUESTER && (
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <input
+              value={requesterName}
+              onChange={(e) => setRequesterName(e.target.value)}
+              maxLength={255}
+              placeholder="Name"
+              aria-label="Requester name"
+              className={selectCls}
+              data-testid="create-ticket-requester-name-input"
+            />
+            <input
+              type="email"
+              value={requesterEmail}
+              onChange={(e) => setRequesterEmail(e.target.value)}
+              maxLength={255}
+              placeholder="Email (optional)"
+              aria-label="Requester email"
+              className={selectCls}
+              data-testid="create-ticket-requester-email-input"
+            />
+          </div>
+        )}
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div>

@@ -14,7 +14,14 @@ export const createTicketSchema = z.object({
   categoryId: z.string().guid().optional(),
   priority: ticketPrioritySchema.default('normal'),
   dueDate: z.coerce.date().optional(),
-  assigneeId: z.string().guid().optional()
+  assigneeId: z.string().guid().optional(),
+  // Requester: pick an existing portal user (submittedBy) and/or supply a
+  // free-text name/email. When all three are absent the service falls back to
+  // the acting staff member's name (legacy behaviour). Picking a portal user
+  // backfills name/email from that row when they aren't supplied here.
+  submittedBy: z.string().guid().optional(),
+  submitterName: z.string().min(1).max(255).optional(),
+  submitterEmail: z.string().email().max(255).optional()
 });
 
 export const updateTicketSchema = z.object({
@@ -26,7 +33,12 @@ export const updateTicketSchema = z.object({
   responseSlaMinutes: z.number().int().positive().nullable().optional(),
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
   deviceId: z.string().guid().nullable().optional(),
-  tags: z.array(z.string().max(50)).max(20).optional()
+  tags: z.array(z.string().max(50)).max(20).optional(),
+  // Requester edit. submittedBy=null clears the portal link (free-text requester);
+  // a uuid links a portal user and backfills name/email when those are omitted.
+  submittedBy: z.string().guid().nullable().optional(),
+  submitterName: z.string().max(255).nullable().optional(),
+  submitterEmail: z.string().email().max(255).nullable().optional()
 });
 
 export const changeTicketStatusSchema = z.object({
