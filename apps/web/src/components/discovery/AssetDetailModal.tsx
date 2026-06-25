@@ -68,6 +68,8 @@ export default function AssetDetailModal({
   const [proxyError, setProxyError] = useState<string>();
   const [connectingProxy, setConnectingProxy] = useState(false);
   const [selectedProxyPort, setSelectedProxyPort] = useState<number>(0);
+  const [selectedScheme, setSelectedScheme] = useState<'http' | 'https'>('http');
+  const [allowSelfSigned, setAllowSelfSigned] = useState(false);
   // The bridge agent = which managed device's agent dials the target. This is
   // independent of the identity link below — the right bridge is an online agent
   // that can reach this device on the LAN, which may differ from the device you
@@ -90,7 +92,11 @@ export default function AssetDetailModal({
     setSaveSuccess(false);
     setProxyEnabled((asset as any)?.proxyEnabled ?? false);
     setProxyError(undefined);
-    setSelectedProxyPort(asset?.openPorts?.[0]?.port ?? 80);
+    const initialPort = asset?.openPorts?.[0]?.port ?? 80;
+    setSelectedProxyPort(initialPort);
+    const initialScheme = initialPort === 443 ? 'https' : 'http';
+    setSelectedScheme(initialScheme);
+    setAllowSelfSigned(false);
   }, [asset]);
 
   // Default the proxy bridge agent: prefer the linked device when it's online,
@@ -241,6 +247,8 @@ export default function AssetDetailModal({
           type: 'proxy',
           targetHost: asset.ip,
           targetPort: port,
+          scheme: selectedScheme,
+          skipTlsVerify: selectedScheme === 'https' ? allowSelfSigned : false,
         }),
       });
       if (!response.ok) {
@@ -256,7 +264,7 @@ export default function AssetDetailModal({
     } finally {
       setConnectingProxy(false);
     }
-  }, [asset, selectedProxyPort, selectedBridgeDeviceId]);
+  }, [asset, selectedProxyPort, selectedScheme, allowSelfSigned, selectedBridgeDeviceId]);
 
   // No asset record yet: never render nothing while open, or a node click looks
   // like it did nothing. Show a loading state, then a graceful not-found state
@@ -550,7 +558,13 @@ export default function AssetDetailModal({
                       <div className="flex items-center gap-2">
                         <select
                           value={selectedProxyPort}
-                          onChange={e => setSelectedProxyPort(Number(e.target.value))}
+                          onChange={e => {
+                            const port = Number(e.target.value);
+                            setSelectedProxyPort(port);
+                            const newScheme = port === 443 ? 'https' : 'http';
+                            setSelectedScheme(newScheme);
+                            if (newScheme !== 'https') setAllowSelfSigned(false);
+                          }}
                           className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                         >
                           {openPorts.length > 0 ? (
@@ -566,16 +580,41 @@ export default function AssetDetailModal({
                             </>
                           )}
                         </select>
+                        <select
+                          value={selectedScheme}
+                          onChange={e => {
+                            const scheme = e.target.value as 'http' | 'https';
+                            setSelectedScheme(scheme);
+                            if (scheme !== 'https') setAllowSelfSigned(false);
+                          }}
+                          data-testid="proxy-scheme-select"
+                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        >
+                          <option value="http">HTTP</option>
+                          <option value="https">HTTPS</option>
+                        </select>
                         <button
                           type="button"
                           onClick={handleConnectProxy}
                           disabled={connectingProxy || !selectedBridgeDeviceId}
+                          data-testid="proxy-connect-btn"
                           className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-70"
                         >
                           <ExternalLink className="h-3 w-3" />
                           {connectingProxy ? 'Connecting...' : 'Connect'}
                         </button>
                       </div>
+                      {selectedScheme === 'https' && (
+                        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            checked={allowSelfSigned}
+                            onChange={e => setAllowSelfSigned(e.target.checked)}
+                            data-testid="proxy-allow-self-signed"
+                          />
+                          Allow self-signed certificate (common for printers, iLO/IPMI, switches)
+                        </label>
+                      )}
                     </>
                   ) : (
                     <p className="text-xs text-amber-600 dark:text-amber-400">

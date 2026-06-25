@@ -176,6 +176,79 @@ describe('AssetDetailModal — proxy bridge agent (decoupled from link)', () => 
   });
 });
 
+describe('AssetDetailModal — proxy scheme + self-signed certificate (#1916)', () => {
+  const onlineDevices = [{ id: 'dev-online', name: 'FC-ESME', online: true }];
+
+  const assetWithHttpsPort: AssetDetail = {
+    id: 'asset-https',
+    ip: '192.168.1.100',
+    mac: '—',
+    hostname: 'printer-ilo',
+    type: 'unknown',
+    approvalStatus: 'pending',
+    isOnline: true,
+    manufacturer: '—',
+    linkedDeviceId: null,
+    openPorts: [{ port: 443, service: 'https' }],
+    ...({ proxyEnabled: true } as Record<string, unknown>),
+  };
+
+  it('posts scheme + skipTlsVerify when self-signed allowed', async () => {
+    fetchMock.mockResolvedValue(makeResponse({ id: 'tun-1' }));
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(<AssetDetailModal open asset={assetWithHttpsPort} devices={onlineDevices} onClose={() => {}} />);
+
+    fireEvent.change(screen.getByTestId('proxy-scheme-select'), { target: { value: 'https' } });
+    fireEvent.click(screen.getByTestId('proxy-allow-self-signed'));
+    fireEvent.click(screen.getByTestId('proxy-connect-btn'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/tunnels', expect.any(Object)));
+    const call = fetchMock.mock.calls.find(c => c[0] === '/tunnels');
+    expect(call).toBeDefined();
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body).toMatchObject({ type: 'proxy', scheme: 'https', skipTlsVerify: true });
+    openSpy.mockRestore();
+  });
+
+  it('does not send skipTlsVerify:true when scheme is http', async () => {
+    fetchMock.mockResolvedValue(makeResponse({ id: 'tun-2' }));
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(<AssetDetailModal open asset={assetWithHttpsPort} devices={onlineDevices} onClose={() => {}} />);
+
+    // Select http explicitly
+    fireEvent.change(screen.getByTestId('proxy-scheme-select'), { target: { value: 'http' } });
+    fireEvent.click(screen.getByTestId('proxy-connect-btn'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/tunnels', expect.any(Object)));
+    const call = fetchMock.mock.calls.find(c => c[0] === '/tunnels');
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body.scheme).toBe('http');
+    expect(body.skipTlsVerify).toBe(false);
+    openSpy.mockRestore();
+  });
+
+  it('shows self-signed checkbox only when scheme is https', async () => {
+    render(<AssetDetailModal open asset={assetWithHttpsPort} devices={onlineDevices} onClose={() => {}} />);
+
+    // Default is http (or derived from port), checkbox not visible
+    const schemeSelect = screen.getByTestId('proxy-scheme-select');
+
+    // Switch to https → checkbox appears
+    fireEvent.change(schemeSelect, { target: { value: 'https' } });
+    expect(screen.getByTestId('proxy-allow-self-signed')).toBeInTheDocument();
+
+    // Switch back to http → checkbox hidden
+    fireEvent.change(schemeSelect, { target: { value: 'http' } });
+    expect(screen.queryByTestId('proxy-allow-self-signed')).not.toBeInTheDocument();
+  });
+
+  it('defaults scheme to https when the selected port is 443', () => {
+    render(<AssetDetailModal open asset={assetWithHttpsPort} devices={onlineDevices} onClose={() => {}} />);
+    const schemeSelect = screen.getByTestId('proxy-scheme-select') as HTMLSelectElement;
+    expect(schemeSelect.value).toBe('https');
+  });
+});
+
 describe('AssetDetailModal — SNMP data card', () => {
   it('renders collected SNMP fields with friendly labels (#1731)', () => {
     const snmpAsset: AssetDetail = {
