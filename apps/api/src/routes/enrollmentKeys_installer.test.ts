@@ -365,10 +365,10 @@ describe('enrollment key routes — installer download', () => {
       expect(res.status).toBe(404);
     });
 
-    it('windows bootstrap returns 410 when issueBootstrapTokenForKey reports key_expired', async () => {
+    it('windows bootstrap returns 410 when issueBootstrapTokenForKey reports parent_expired', async () => {
       const { BootstrapTokenIssuanceError } = await import('../services/installerBootstrapTokenIssuance');
       vi.mocked(issueBootstrapTokenForKey).mockRejectedValueOnce(
-        new BootstrapTokenIssuanceError('key_expired', 'Key expired'),
+        new BootstrapTokenIssuanceError('parent_expired', 'Key expired'),
       );
 
       mockSelectFromWhereLimit([makeEnrollmentKey()]);

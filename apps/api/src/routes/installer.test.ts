@@ -301,7 +301,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
     });
     expect(res.status).toBe(200);
     expect(capturedChildKeyValues).not.toBeNull();
-    expect((capturedChildKeyValues as Record<string, unknown>).installerPlatform).toBe("windows");
+    expect((capturedChildKeyValues as unknown as Record<string, unknown>).installerPlatform).toBe("windows");
   });
 
   it("rejects legacy GET bootstrap by default", async () => {
