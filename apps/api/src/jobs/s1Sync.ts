@@ -25,11 +25,15 @@ import {
 } from '../services/sentinelOne/metrics';
 
 const { db } = dbModule;
+// Opens a SHORT system DB access context for one read/write group (#1896,
+// mirrors #1894). The worker no longer wraps a whole job in one context — each
+// DB touch gets its own short context so SentinelOne HTTP calls and per-action
+// loops run OUTSIDE any open transaction and never pin a pooled connection
+// idle-in-transaction (#1105). Falls back to `fn()` when the context helper is
+// unavailable (unit tests mock `../db` with `withSystemDbAccessContext: undefined`).
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
-    throw new Error('[S1SyncJob] withSystemDbAccessContext is unavailable');
-  }
-  return dbModule.withSystemDbAccessContext(fn);
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
 const S1_SYNC_QUEUE = 's1-sync';
@@ -520,100 +524,108 @@ async function syncAgentsForIntegration(
     count: info.count,
   }));
 
-  // Step 1: Reconcile provisional mappings BEFORE upsert so carried org_id survives.
-  // Skip sites with no siteName — a null siteName can never match a provisional row
-  // (which is keyed as 'name:<siteName>'), so attempting reconciliation would silently
-  // miss and build a 'name:<siteId>' key that matches nothing.
-  await reconcileProvisionalSiteMappings(
-    integration.id,
-    discoveredSites
-      .filter((s): s is { siteId: string; siteName: string; count: number } => typeof s.siteName === 'string' && s.siteName.length > 0)
-      .map((s) => ({ siteId: s.siteId, siteName: s.siteName }))
-  );
+  // All writes/reads below run in ONE short system context (#1896): the
+  // SentinelOne fetch above already ran OUTSIDE any context, so no transaction
+  // spans the HTTP call. This is pure DB work (reconcile, upsert, lookups, batch
+  // upserts), which is fine to group inside a single short-lived transaction.
+  const { upserted, skipped } = await runWithSystemDbAccess(async () => {
+    // Step 1: Reconcile provisional mappings BEFORE upsert so carried org_id survives.
+    // Skip sites with no siteName — a null siteName can never match a provisional row
+    // (which is keyed as 'name:<siteName>'), so attempting reconciliation would silently
+    // miss and build a 'name:<siteId>' key that matches nothing.
+    await reconcileProvisionalSiteMappings(
+      integration.id,
+      discoveredSites
+        .filter((s): s is { siteId: string; siteName: string; count: number } => typeof s.siteName === 'string' && s.siteName.length > 0)
+        .map((s) => ({ siteId: s.siteId, siteName: s.siteName }))
+    );
 
-  // Step 2: Upsert discovered sites (sets agents_count, last_seen_at; preserves org_id).
-  await upsertDiscoveredSites({
-    integrationId: integration.id,
-    partnerId: integration.partnerId,
-    sites: discoveredSites,
-  });
+    // Step 2: Upsert discovered sites (sets agents_count, last_seen_at; preserves org_id).
+    await upsertDiscoveredSites({
+      integrationId: integration.id,
+      partnerId: integration.partnerId,
+      sites: discoveredSites,
+    });
 
-  // Step 3: Load the org mapping keyed by s1_site_id (only rows with mapped org_id).
-  const siteOrgIds = await mapSiteOrgIds(integration.id);
-  const candidatesByOrg = await mapDeviceCandidatesByOrg([...siteOrgIds.values()]);
+    // Step 3: Load the org mapping keyed by s1_site_id (only rows with mapped org_id).
+    const siteOrgIds = await mapSiteOrgIds(integration.id);
+    const candidatesByOrg = await mapDeviceCandidatesByOrg([...siteOrgIds.values()]);
 
-  let upserted = 0;
-  let skipped = 0;
-  for (let i = 0; i < fetchedAgents.length; i += 300) {
-    const batch = fetchedAgents.slice(i, i + 300);
+    let upserted = 0;
+    let skipped = 0;
+    for (let i = 0; i < fetchedAgents.length; i += 300) {
+      const batch = fetchedAgents.slice(i, i + 300);
 
-    const values: Array<{
-      orgId: string;
-      integrationId: string;
-      s1AgentId: string;
-      deviceId: string | null;
-      status: string;
-      infected: boolean;
-      threatCount: number;
-      policyName: string | null;
-      lastSeenAt: Date | null;
-      metadata: Record<string, unknown>;
-      updatedAt: Date;
-    }> = [];
+      const values: Array<{
+        orgId: string;
+        integrationId: string;
+        s1AgentId: string;
+        deviceId: string | null;
+        status: string;
+        infected: boolean;
+        threatCount: number;
+        policyName: string | null;
+        lastSeenAt: Date | null;
+        metadata: Record<string, unknown>;
+        updatedAt: Date;
+      }> = [];
 
-    for (const agent of batch) {
-      // Resolve the agent to an org via its stable siteId (no fallback default org).
-      const target = resolveAgentSyncTargetById(agent, siteOrgIds, candidatesByOrg);
-      if (!target) {
-        skipped += 1;
-        continue;
+      for (const agent of batch) {
+        // Resolve the agent to an org via its stable siteId (no fallback default org).
+        const target = resolveAgentSyncTargetById(agent, siteOrgIds, candidatesByOrg);
+        if (!target) {
+          skipped += 1;
+          continue;
+        }
+        const threatCount = Number(agent.activeThreats ?? 0);
+        values.push({
+          orgId: target.orgId,
+          integrationId: integration.id,
+          s1AgentId: agent.id,
+          deviceId: target.deviceId,
+          status: agent.isActive === false ? 'offline' : 'online',
+          infected: agent.infected === true,
+          threatCount: Number.isFinite(threatCount) ? Math.max(0, Math.round(threatCount)) : 0,
+          policyName: agent.policyName ?? null,
+          lastSeenAt: toDateOrNull(agent.lastSeen),
+          metadata: {
+            uuid: agent.uuid ?? null,
+            computerName: agent.computerName ?? null,
+            osName: agent.osName ?? null,
+            siteName: agent.siteName ?? null,
+            siteId: agent.siteId ?? null,
+          },
+          updatedAt: new Date()
+        });
       }
-      const threatCount = Number(agent.activeThreats ?? 0);
-      values.push({
-        orgId: target.orgId,
-        integrationId: integration.id,
-        s1AgentId: agent.id,
-        deviceId: target.deviceId,
-        status: agent.isActive === false ? 'offline' : 'online',
-        infected: agent.infected === true,
-        threatCount: Number.isFinite(threatCount) ? Math.max(0, Math.round(threatCount)) : 0,
-        policyName: agent.policyName ?? null,
-        lastSeenAt: toDateOrNull(agent.lastSeen),
-        metadata: {
-          uuid: agent.uuid ?? null,
-          computerName: agent.computerName ?? null,
-          osName: agent.osName ?? null,
-          siteName: agent.siteName ?? null,
-          siteId: agent.siteId ?? null,
-        },
-        updatedAt: new Date()
-      });
+
+      if (values.length === 0) continue;
+
+      const inserted = await db
+        .insert(s1Agents)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [s1Agents.integrationId, s1Agents.s1AgentId],
+          set: {
+            orgId: sql`excluded.org_id`,
+            integrationId: sql`excluded.integration_id`,
+            deviceId: sql`excluded.device_id`,
+            status: sql`excluded.status`,
+            infected: sql`excluded.infected`,
+            threatCount: sql`excluded.threat_count`,
+            policyName: sql`excluded.policy_name`,
+            lastSeenAt: sql`excluded.last_seen_at`,
+            metadata: sql`excluded.metadata`,
+            updatedAt: sql`excluded.updated_at`
+          }
+        })
+        .returning({ id: s1Agents.id });
+
+      upserted += inserted.length;
     }
 
-    if (values.length === 0) continue;
-
-    const inserted = await db
-      .insert(s1Agents)
-      .values(values)
-      .onConflictDoUpdate({
-        target: [s1Agents.integrationId, s1Agents.s1AgentId],
-        set: {
-          orgId: sql`excluded.org_id`,
-          integrationId: sql`excluded.integration_id`,
-          deviceId: sql`excluded.device_id`,
-          status: sql`excluded.status`,
-          infected: sql`excluded.infected`,
-          threatCount: sql`excluded.threat_count`,
-          policyName: sql`excluded.policy_name`,
-          lastSeenAt: sql`excluded.last_seen_at`,
-          metadata: sql`excluded.metadata`,
-          updatedAt: sql`excluded.updated_at`
-        }
-      })
-      .returning({ id: s1Agents.id });
-
-    upserted += inserted.length;
-  }
+    return { upserted, skipped };
+  });
 
   return {
     fetched: fetchedAgents.length,
@@ -630,120 +642,130 @@ async function syncThreatsForIntegration(
   const threatResult = await client.listThreats(integration.lastSyncAt ?? undefined);
   const fetchedThreats = threatResult.results;
 
-  // Load agent contexts from already-synced s1_agents rows.
-  // If an agent was skipped during agent sync (unmapped site), it won't appear here
-  // and its threats will be skipped too — consistent with the partner-wide model.
-  const agentRows = await db
-    .select({
-      s1AgentId: s1Agents.s1AgentId,
-      orgId: s1Agents.orgId,
-      deviceId: s1Agents.deviceId
-    })
-    .from(s1Agents)
-    .where(eq(s1Agents.integrationId, integration.id));
-
-  const agentContextByAgentId = new Map<string, AgentContext>();
-  for (const row of agentRows) {
-    agentContextByAgentId.set(row.s1AgentId, { orgId: row.orgId, deviceId: row.deviceId });
-  }
-
-  const emitSince = integration.lastSyncAt ?? new Date(Date.now() - (24 * 60 * 60 * 1000));
+  // Populated inside the DB context below, consumed by the publishEvent loop
+  // (which runs OUTSIDE any context — Redis work must not hold a transaction).
   const threatsToEmit: Array<{ s1ThreatId: string; orgId: string; severity: string; deviceId: string | null; detectedAt: Date | null }> = [];
 
-  let upserted = 0;
-  let skipped = 0;
-  for (let i = 0; i < fetchedThreats.length; i += 300) {
-    const batch = fetchedThreats.slice(i, i + 300);
-    const values: Array<{
-      orgId: string;
-      integrationId: string;
-      deviceId: string | null;
-      s1ThreatId: string;
-      classification: string | null;
-      severity: string;
-      threatName: string | null;
-      processName: string | null;
-      filePath: string | null;
-      mitreTactics: unknown;
-      status: string;
-      detectedAt: Date | null;
-      resolvedAt: Date | null;
-      details: unknown;
-      updatedAt: Date;
-    }> = [];
+  // One short system context (#1896): the listThreats HTTP fetch above ran
+  // OUTSIDE any context, so no transaction spans it. Group the agent-context
+  // read + threat batch upserts into a single short-lived transaction.
+  const { upserted, skipped } = await runWithSystemDbAccess(async () => {
+    // Load agent contexts from already-synced s1_agents rows.
+    // If an agent was skipped during agent sync (unmapped site), it won't appear here
+    // and its threats will be skipped too — consistent with the partner-wide model.
+    const agentRows = await db
+      .select({
+        s1AgentId: s1Agents.s1AgentId,
+        orgId: s1Agents.orgId,
+        deviceId: s1Agents.deviceId
+      })
+      .from(s1Agents)
+      .where(eq(s1Agents.integrationId, integration.id));
 
-    for (const threat of batch) {
-      const detectedAt = toDateOrNull(threat.detectedAt);
-      const resolvedAt = toDateOrNull(threat.resolvedAt);
-      const status = normalizeThreatStatus(threat.mitigationStatus);
-      const severity = normalizeSeverity(threat.threatSeverity);
+    const agentContextByAgentId = new Map<string, AgentContext>();
+    for (const row of agentRows) {
+      agentContextByAgentId.set(row.s1AgentId, { orgId: row.orgId, deviceId: row.deviceId });
+    }
 
-      // Resolve the threat's org via its parent agent's already-written context.
-      // If the agent has no context (was skipped because its site is unmapped),
-      // skip this threat too — there is no fallback "default org" in the partner-wide model.
-      const agentContext = agentContextByAgentId.get(threat.agentId ?? '');
-      if (!agentContext) {
-        skipped += 1;
-        continue;
-      }
+    const emitSince = integration.lastSyncAt ?? new Date(Date.now() - (24 * 60 * 60 * 1000));
 
-      if (status === 'active' && detectedAt && detectedAt >= emitSince) {
-        threatsToEmit.push({
-          s1ThreatId: threat.id,
+    let upserted = 0;
+    let skipped = 0;
+    for (let i = 0; i < fetchedThreats.length; i += 300) {
+      const batch = fetchedThreats.slice(i, i + 300);
+      const values: Array<{
+        orgId: string;
+        integrationId: string;
+        deviceId: string | null;
+        s1ThreatId: string;
+        classification: string | null;
+        severity: string;
+        threatName: string | null;
+        processName: string | null;
+        filePath: string | null;
+        mitreTactics: unknown;
+        status: string;
+        detectedAt: Date | null;
+        resolvedAt: Date | null;
+        details: unknown;
+        updatedAt: Date;
+      }> = [];
+
+      for (const threat of batch) {
+        const detectedAt = toDateOrNull(threat.detectedAt);
+        const resolvedAt = toDateOrNull(threat.resolvedAt);
+        const status = normalizeThreatStatus(threat.mitigationStatus);
+        const severity = normalizeSeverity(threat.threatSeverity);
+
+        // Resolve the threat's org via its parent agent's already-written context.
+        // If the agent has no context (was skipped because its site is unmapped),
+        // skip this threat too — there is no fallback "default org" in the partner-wide model.
+        const agentContext = agentContextByAgentId.get(threat.agentId ?? '');
+        if (!agentContext) {
+          skipped += 1;
+          continue;
+        }
+
+        if (status === 'active' && detectedAt && detectedAt >= emitSince) {
+          threatsToEmit.push({
+            s1ThreatId: threat.id,
+            orgId: agentContext.orgId,
+            severity,
+            deviceId: agentContext.deviceId,
+            detectedAt
+          });
+        }
+
+        values.push({
           orgId: agentContext.orgId,
-          severity,
+          integrationId: integration.id,
           deviceId: agentContext.deviceId,
-          detectedAt
+          s1ThreatId: threat.id,
+          classification: threat.classification ?? null,
+          severity,
+          threatName: threat.threatName ?? null,
+          processName: threat.processName ?? null,
+          filePath: threat.filePath ?? null,
+          mitreTactics: threat.mitreTechniques ?? null,
+          status,
+          detectedAt,
+          resolvedAt,
+          details: threat,
+          updatedAt: new Date()
         });
       }
 
-      values.push({
-        orgId: agentContext.orgId,
-        integrationId: integration.id,
-        deviceId: agentContext.deviceId,
-        s1ThreatId: threat.id,
-        classification: threat.classification ?? null,
-        severity,
-        threatName: threat.threatName ?? null,
-        processName: threat.processName ?? null,
-        filePath: threat.filePath ?? null,
-        mitreTactics: threat.mitreTechniques ?? null,
-        status,
-        detectedAt,
-        resolvedAt,
-        details: threat,
-        updatedAt: new Date()
-      });
+      if (values.length === 0) continue;
+
+      const inserted = await db
+        .insert(s1Threats)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [s1Threats.integrationId, s1Threats.s1ThreatId],
+          set: {
+            orgId: sql`excluded.org_id`,
+            integrationId: sql`excluded.integration_id`,
+            deviceId: sql`excluded.device_id`,
+            classification: sql`excluded.classification`,
+            severity: sql`excluded.severity`,
+            threatName: sql`excluded.threat_name`,
+            processName: sql`excluded.process_name`,
+            filePath: sql`excluded.file_path`,
+            mitreTactics: sql`excluded.mitre_tactics`,
+            status: sql`excluded.status`,
+            detectedAt: sql`excluded.detected_at`,
+            resolvedAt: sql`excluded.resolved_at`,
+            details: sql`excluded.details`,
+            updatedAt: sql`excluded.updated_at`
+          }
+        })
+        .returning({ id: s1Threats.id });
+
+      upserted += inserted.length;
     }
 
-    if (values.length === 0) continue;
-
-    const inserted = await db
-      .insert(s1Threats)
-      .values(values)
-      .onConflictDoUpdate({
-        target: [s1Threats.integrationId, s1Threats.s1ThreatId],
-        set: {
-          orgId: sql`excluded.org_id`,
-          integrationId: sql`excluded.integration_id`,
-          deviceId: sql`excluded.device_id`,
-          classification: sql`excluded.classification`,
-          severity: sql`excluded.severity`,
-          threatName: sql`excluded.threat_name`,
-          processName: sql`excluded.process_name`,
-          filePath: sql`excluded.file_path`,
-          mitreTactics: sql`excluded.mitre_tactics`,
-          status: sql`excluded.status`,
-          detectedAt: sql`excluded.detected_at`,
-          resolvedAt: sql`excluded.resolved_at`,
-          details: sql`excluded.details`,
-          updatedAt: sql`excluded.updated_at`
-        }
-      })
-      .returning({ id: s1Threats.id });
-
-    upserted += inserted.length;
-  }
+    return { upserted, skipped };
+  });
 
   let emitted = 0;
   let emitFailures = 0;
@@ -787,18 +809,20 @@ async function syncThreatsForIntegration(
 // back to `redactLogMessage(error.responseBody)` would otherwise pass every
 // existing helper-level test.
 export async function processSyncIntegration(data: SyncIntegrationJobData) {
-  const [integration] = await db
-    .select({
-      id: s1Integrations.id,
-      partnerId: s1Integrations.partnerId,
-      managementUrl: s1Integrations.managementUrl,
-      apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
-      isActive: s1Integrations.isActive,
-      lastSyncAt: s1Integrations.lastSyncAt
-    })
-    .from(s1Integrations)
-    .where(eq(s1Integrations.id, data.integrationId))
-    .limit(1);
+  const [integration] = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: s1Integrations.id,
+        partnerId: s1Integrations.partnerId,
+        managementUrl: s1Integrations.managementUrl,
+        apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
+        isActive: s1Integrations.isActive,
+        lastSyncAt: s1Integrations.lastSyncAt
+      })
+      .from(s1Integrations)
+      .where(eq(s1Integrations.id, data.integrationId))
+      .limit(1)
+  );
 
   if (!integration || !integration.isActive) {
     console.warn(`[S1SyncJob] Integration ${data.integrationId} not found or inactive; skipping sync`);
@@ -824,6 +848,8 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
   });
 
   try {
+    // syncAgents/syncThreats make SentinelOne HTTP calls — run them OUTSIDE any
+    // DB access context (#1896); each opens its own short context for its writes.
     const agentResult = data.syncAgents
       ? await syncAgentsForIntegration(integration, client)
       : { fetched: 0, upserted: 0, truncated: false };
@@ -832,15 +858,17 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
       : { fetched: 0, upserted: 0, emitted: 0, emitFailures: 0, truncated: false };
 
     const wasTruncated = agentResult.truncated || threatResult.truncated;
-    await db
-      .update(s1Integrations)
-      .set({
-        lastSyncAt: new Date(),
-        lastSyncStatus: wasTruncated ? 'partial' : 'success',
-        lastSyncError: wasTruncated ? 'Results were truncated due to pagination limits' : null,
-        updatedAt: new Date()
-      })
-      .where(eq(s1Integrations.id, integration.id));
+    await runWithSystemDbAccess(() =>
+      db
+        .update(s1Integrations)
+        .set({
+          lastSyncAt: new Date(),
+          lastSyncStatus: wasTruncated ? 'partial' : 'success',
+          lastSyncError: wasTruncated ? 'Results were truncated due to pagination limits' : null,
+          updatedAt: new Date()
+        })
+        .where(eq(s1Integrations.id, integration.id))
+    );
 
     return {
       integrationId: integration.id,
@@ -857,14 +885,16 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
     // via truncateError — a SentinelOneHttpError's `.message` carries no body.
     logSyncFailureServerSide({ integrationId: integration.id, partnerId: integration.partnerId }, error);
     try {
-      await db
-        .update(s1Integrations)
-        .set({
-          lastSyncStatus: 'error',
-          lastSyncError: truncateError(error),
-          updatedAt: new Date()
-        })
-        .where(eq(s1Integrations.id, integration.id));
+      await runWithSystemDbAccess(() =>
+        db
+          .update(s1Integrations)
+          .set({
+            lastSyncStatus: 'error',
+            lastSyncError: truncateError(error),
+            updatedAt: new Date()
+          })
+          .where(eq(s1Integrations.id, integration.id))
+      );
     } catch (dbError) {
       console.error('[S1SyncJob] Failed to persist sync error status:', dbError);
       captureException(dbError);
@@ -875,7 +905,9 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
 
 async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
   const queue = getS1SyncQueue();
-  const integrations = await listActiveIntegrations();
+  // Read in a short context (#1896); the BullMQ enqueues below are Redis work
+  // and run OUTSIDE any DB transaction.
+  const integrations = await runWithSystemDbAccess(() => listActiveIntegrations());
 
   await Promise.all(
     integrations.map((integration) => addUniqueJob(
@@ -896,23 +928,28 @@ async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
 }
 
 export async function processPollActions() {
-  const pendingActions = await db
-    .select({
-      id: s1Actions.id,
-      orgId: s1Actions.orgId,
-      deviceId: s1Actions.deviceId,
-      action: s1Actions.action,
-      payload: s1Actions.payload,
-      providerActionId: s1Actions.providerActionId
-    })
-    .from(s1Actions)
-    .where(
-      and(
-        inArray(s1Actions.status, ['queued', 'in_progress']),
-        isNotNull(s1Actions.providerActionId)
+  // Read pending actions in a short context (#1896). The per-action
+  // getActivityStatus HTTP calls + writes happen later, each OUTSIDE / in its
+  // own short context, so no transaction spans the up-to-200-action poll loop.
+  const pendingActions = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: s1Actions.id,
+        orgId: s1Actions.orgId,
+        deviceId: s1Actions.deviceId,
+        action: s1Actions.action,
+        payload: s1Actions.payload,
+        providerActionId: s1Actions.providerActionId
+      })
+      .from(s1Actions)
+      .where(
+        and(
+          inArray(s1Actions.status, ['queued', 'in_progress']),
+          isNotNull(s1Actions.providerActionId)
+        )
       )
-    )
-    .limit(200);
+      .limit(200)
+  );
 
   if (pendingActions.length === 0) {
     return { polled: 0, updated: 0 };
@@ -925,32 +962,37 @@ export async function processPollActions() {
   // legacyOrgId is NULL (they would never be found by a legacyOrgId lookup).
   const orgIds = Array.from(new Set(pendingActions.map((row) => row.orgId)));
 
-  // Step 1: Resolve org_id → partner_id
-  const orgRows = await db
-    .select({
-      id: organizations.id,
-      partnerId: organizations.partnerId,
-    })
-    .from(organizations)
-    .where(inArray(organizations.id, orgIds));
+  // Steps 1-2 (one short context): resolve org_id → partner_id, then fetch the
+  // active integration per distinct partner. Pure DB reads — grouping them in a
+  // single short transaction is fine; the slow HTTP work is the per-action loop.
+  const { partnerIdByOrg, partnerIntegrations } = await runWithSystemDbAccess(async () => {
+    const orgRows = await db
+      .select({
+        id: organizations.id,
+        partnerId: organizations.partnerId,
+      })
+      .from(organizations)
+      .where(inArray(organizations.id, orgIds));
 
-  const partnerIdByOrg = new Map<string, string>();
-  for (const row of orgRows) {
-    partnerIdByOrg.set(row.id, row.partnerId);
-  }
+    const partnerIdByOrg = new Map<string, string>();
+    for (const row of orgRows) {
+      partnerIdByOrg.set(row.id, row.partnerId);
+    }
 
-  // Step 2: Fetch the active integration for each distinct partner (deduplicated)
-  const distinctPartnerIds = Array.from(new Set([...partnerIdByOrg.values()]));
-  const partnerIntegrations = distinctPartnerIds.length > 0
-    ? await db
-        .select({
-          partnerId: s1Integrations.partnerId,
-          managementUrl: s1Integrations.managementUrl,
-          apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
-        })
-        .from(s1Integrations)
-        .where(and(inArray(s1Integrations.partnerId, distinctPartnerIds), eq(s1Integrations.isActive, true)))
-    : [];
+    const distinctPartnerIds = Array.from(new Set([...partnerIdByOrg.values()]));
+    const partnerIntegrations = distinctPartnerIds.length > 0
+      ? await db
+          .select({
+            partnerId: s1Integrations.partnerId,
+            managementUrl: s1Integrations.managementUrl,
+            apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
+          })
+          .from(s1Integrations)
+          .where(and(inArray(s1Integrations.partnerId, distinctPartnerIds), eq(s1Integrations.isActive, true)))
+      : [];
+
+    return { partnerIdByOrg, partnerIntegrations };
+  });
 
   // Step 3: Build a reusable client per partner to avoid redundant decrypt + instantiation
   const clientByPartner = new Map<string, SentinelOneClient | null>();
@@ -998,14 +1040,16 @@ export async function processPollActions() {
 
     if (client === undefined) {
       // No integration found for this org
-      await db
-        .update(s1Actions)
-        .set({
-          status: 'failed',
-          error: 'Action status polling failed: no active SentinelOne integration is available for this organization',
-          completedAt: new Date()
-        })
-        .where(eq(s1Actions.id, action.id));
+      await runWithSystemDbAccess(() =>
+        db
+          .update(s1Actions)
+          .set({
+            status: 'failed',
+            error: 'Action status polling failed: no active SentinelOne integration is available for this organization',
+            completedAt: new Date()
+          })
+          .where(eq(s1Actions.id, action.id))
+      );
       recordS1ActionPollTransition('failed');
       updated += 1;
       continue;
@@ -1013,14 +1057,16 @@ export async function processPollActions() {
 
     if (!client) {
       // Client construction failed (bad token)
-      await db
-        .update(s1Actions)
-        .set({
-          status: 'failed',
-          error: `Action status polling failed: ${clientError ?? 'unknown client error'}`,
-          completedAt: new Date()
-        })
-        .where(eq(s1Actions.id, action.id));
+      await runWithSystemDbAccess(() =>
+        db
+          .update(s1Actions)
+          .set({
+            status: 'failed',
+            error: `Action status polling failed: ${clientError ?? 'unknown client error'}`,
+            completedAt: new Date()
+          })
+          .where(eq(s1Actions.id, action.id))
+      );
       recordS1ActionPollTransition('failed');
       updated += 1;
       continue;
@@ -1035,15 +1081,17 @@ export async function processPollActions() {
       nextPayload.lastPollAt = new Date().toISOString();
 
       try {
-        await db
-          .update(s1Actions)
-          .set({
-            status: nextStatus,
-            completedAt: isDone ? new Date() : null,
-            error: nextStatus === 'failed' ? truncateError(activity.details) : null,
-            payload: nextPayload
-          })
-          .where(eq(s1Actions.id, action.id));
+        await runWithSystemDbAccess(() =>
+          db
+            .update(s1Actions)
+            .set({
+              status: nextStatus,
+              completedAt: isDone ? new Date() : null,
+              error: nextStatus === 'failed' ? truncateError(activity.details) : null,
+              payload: nextPayload
+            })
+            .where(eq(s1Actions.id, action.id))
+        );
       } catch (dbError) {
         console.error(`[S1SyncJob] Failed to persist poll result for action ${action.id}:`, dbError);
         captureException(dbError);
@@ -1096,17 +1144,19 @@ export async function processPollActions() {
       const failure = applyPollFailure(action.payload, error);
       const nextStatus: S1ActionStatus = failure.shouldFail ? 'failed' : 'in_progress';
 
-      await db
-        .update(s1Actions)
-        .set({
-          status: nextStatus,
-          payload: failure.payload,
-          error: failure.shouldFail
-            ? `Action status polling failed ${failure.failureCount} times: ${failure.error}`
-            : null,
-          completedAt: failure.shouldFail ? new Date() : null
-        })
-        .where(eq(s1Actions.id, action.id));
+      await runWithSystemDbAccess(() =>
+        db
+          .update(s1Actions)
+          .set({
+            status: nextStatus,
+            payload: failure.payload,
+            error: failure.shouldFail
+              ? `Action status polling failed ${failure.failureCount} times: ${failure.error}`
+              : null,
+            completedAt: failure.shouldFail ? new Date() : null
+          })
+          .where(eq(s1Actions.id, action.id))
+      );
 
       recordS1ActionPollTransition(nextStatus);
       updated += 1;
@@ -1123,56 +1173,59 @@ function createS1SyncWorker(): Worker<S1SyncJobData> {
   return new Worker<S1SyncJobData>(
     S1_SYNC_QUEUE,
     async (job: Job<S1SyncJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const start = Date.now();
-        const syncType = job.data.type;
-        switch (job.data.type) {
-          case 'sync-integration': {
-            try {
-              const result = await processSyncIntegration(job.data);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'sync-all-agents': {
-            try {
-              const result = await processSyncAll(true, false);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'sync-all-threats': {
-            try {
-              const result = await processSyncAll(false, true);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'poll-actions': {
-            try {
-              const result = await processPollActions();
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          default: {
+      // #1896: do NOT wrap the whole job in one withSystemDbAccessContext. The
+      // processors below make SentinelOne HTTP calls and loop over up to 200
+      // actions; holding a single transaction across that work pinned a pooled
+      // connection idle-in-transaction (#1105). Each processor opens its own
+      // short context around its DB touches, with HTTP/Redis run outside.
+      const start = Date.now();
+      const syncType = job.data.type;
+      switch (job.data.type) {
+        case 'sync-integration': {
+          try {
+            const result = await processSyncIntegration(job.data);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
             recordS1SyncRun(syncType, 'failure', Date.now() - start);
-            throw new Error(`Unknown S1 sync job type: ${(job.data as { type?: string }).type ?? 'unknown'}`);
+            throw error;
           }
         }
-      });
+        case 'sync-all-agents': {
+          try {
+            const result = await processSyncAll(true, false);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        case 'sync-all-threats': {
+          try {
+            const result = await processSyncAll(false, true);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        case 'poll-actions': {
+          try {
+            const result = await processPollActions();
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        default: {
+          recordS1SyncRun(syncType, 'failure', Date.now() - start);
+          throw new Error(`Unknown S1 sync job type: ${(job.data as { type?: string }).type ?? 'unknown'}`);
+        }
+      }
     },
     {
       connection: getBullMQConnection(),
