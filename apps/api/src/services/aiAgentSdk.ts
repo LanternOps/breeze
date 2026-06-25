@@ -864,9 +864,41 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
 // ============================================
 
 /**
+ * Canonical (stable-key-ordered) serialization used to deep-compare an approved
+ * plan step's input against the input the model is about to execute. Object keys
+ * are sorted so that key ordering / whitespace can't mask a real argument change.
+ * Mirrors the `stableStringify` helper in `routes/agents/changes.ts`.
+ */
+function canonicalStringify(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalStringify(item)).join(',')}]`;
+  }
+
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort((a, b) => a.localeCompare(b));
+    const entries = keys.map((key) => `${JSON.stringify(key)}:${canonicalStringify(record[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+
+  return JSON.stringify(String(value));
+}
+
+/**
  * Check if the current tool call matches the next expected step in an approved plan.
- * Matches by toolName (exact) + key identifiers (deviceId, action). Allows
- * flexibility in other params since AI may refine based on prior step results.
+ *
+ * SECURITY (TOCTOU / arg-tampering, fail-closed): the executing tool call must
+ * match the approved step by toolName (exact) AND by a canonical deep-equality of
+ * the FULL input object. A previous version only compared a hardcoded subset of
+ * "key fields" and only when both sides defined them — that let a high-impact call
+ * run under a stale approval after its arguments (target/command/scope, or any
+ * field outside the subset) had been mutated, or by omitting a key field entirely.
+ * Any divergence now returns `matches: false`, so the caller falls through to the
+ * per-step approval flow and a fresh approval is required.
  */
 function matchPlanStep(
   session: ActiveSession,
@@ -879,15 +911,11 @@ function matchPlanStep(
   if (!step) return { matches: false, stepIndex: idx };
   if (step.toolName !== toolName) return { matches: false, stepIndex: idx };
 
-  // Only compare when BOTH sides have the field — if AI omits a field the plan
-  // specifies, still match.
-  const keyFields = ['deviceId', 'action', 'scriptId', 'policyId'];
-  for (const key of keyFields) {
-    if (step.input[key] !== undefined && input[key] !== undefined) {
-      if (step.input[key] !== input[key]) {
-        return { matches: false, stepIndex: idx };
-      }
-    }
+  // Require the executing arguments to match the approved step's arguments
+  // exactly (canonical, key-order-independent deep equality). Any added,
+  // removed, or changed field is a deviation that requires re-approval.
+  if (canonicalStringify(step.input) !== canonicalStringify(input)) {
+    return { matches: false, stepIndex: idx };
   }
 
   return { matches: true, stepIndex: idx };
