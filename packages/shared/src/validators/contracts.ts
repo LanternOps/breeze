@@ -65,6 +65,10 @@ export const listContractsQuerySchema = z.object({
   cursor: z.string().guid().optional()
 });
 
+export const bulkContractIdsSchema = z.object({
+  ids: z.array(z.string().guid()).min(1).max(200),
+});
+
 export type ContractLineInput = z.infer<typeof contractLineInputSchema>;
 export type CreateContractInput = z.infer<typeof createContractSchema>;
 export type UpdateContractInput = z.infer<typeof updateContractSchema>;

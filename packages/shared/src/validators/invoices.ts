@@ -108,6 +108,13 @@ export const orgBillingSettingsSchema = z.object({
   billingAddressCountry: z.string().length(2).nullable().optional()
 });
 
+export const bulkInvoiceIdsSchema = z.object({
+  ids: z.array(z.string().guid()).min(1).max(200),
+});
+export const bulkVoidInvoicesSchema = bulkInvoiceIdsSchema.extend({
+  reason: z.string().trim().min(1).max(500),
+});
+
 export type AssembleFromOrgInput = z.infer<typeof assembleFromOrgSchema>;
 export type ManualLineInput = z.infer<typeof manualLineSchema>;
 export type RecordPaymentInput = z.infer<typeof recordPaymentSchema>;

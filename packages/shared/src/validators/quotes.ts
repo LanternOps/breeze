@@ -94,6 +94,10 @@ export const listQuotesQuerySchema = z.object({
   cursor: z.string().guid().optional(),
 });
 
+export const bulkQuoteIdsSchema = z.object({
+  ids: z.array(z.string().guid()).min(1).max(200),
+});
+
 export type QuoteLineInput = z.infer<typeof quoteLineInputSchema>;
 export type QuoteBlockInput = z.infer<typeof quoteBlockInputSchema>;
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
