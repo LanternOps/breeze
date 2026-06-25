@@ -41,8 +41,14 @@ import {
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  // Fail loud if the context helper is missing rather than silently running the
+  // query contextless under the forced-RLS breeze_app role — that is the #1375
+  // silent-0-row vector this worker now relies on NOT hitting (each DB touch is
+  // wrapped per #1896). Mirrors the s1Sync.ts shim; tests pass a passthrough mock.
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error('[PatchScheduler] withSystemDbAccessContext is unavailable');
+  }
+  return dbModule.withSystemDbAccessContext(fn);
 };
 
 function isRelationNotFoundError(error: unknown): boolean {

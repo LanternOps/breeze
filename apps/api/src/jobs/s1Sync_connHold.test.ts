@@ -81,18 +81,20 @@ vi.mock('../services/sentinelOne/metrics', () => ({
 }));
 
 const getActivityStatusMock = vi.fn();
+const listAgentsMock = vi.fn();
+const listThreatsMock = vi.fn();
 
 vi.mock('../services/sentinelOne/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/sentinelOne/client')>();
   class MockSentinelOneClient {
-    listAgents = vi.fn().mockResolvedValue({ results: [], truncated: false });
-    listThreats = vi.fn().mockResolvedValue({ results: [], truncated: false });
+    listAgents = listAgentsMock;
+    listThreats = listThreatsMock;
     getActivityStatus = getActivityStatusMock;
   }
   return { ...actual, SentinelOneClient: MockSentinelOneClient };
 });
 
-const { processPollActions } = await import('./s1Sync');
+const { processPollActions, processSyncIntegration } = await import('./s1Sync');
 
 describe('processPollActions conn-hold phase-split (#1105/#1896)', () => {
   beforeEach(() => {
@@ -144,5 +146,45 @@ describe('processPollActions conn-hold phase-split (#1105/#1896)', () => {
 
     expect(selectContexts.length).toBe(3);
     expect(selectContexts.every((v) => v === true)).toBe(true);
+  });
+});
+
+describe('processSyncIntegration conn-hold phase-split (#1105/#1896)', () => {
+  beforeEach(() => {
+    contextDepth = 0;
+    selectContexts.length = 0;
+    updateContexts.length = 0;
+    httpContexts.length = 0;
+    // Only the initial integration read returns a row; the agent/threat upserts
+    // are skipped (empty results), so remaining selects (mapSiteOrgIds, agentRows)
+    // default to [] and the only write is the final s1_integrations status update.
+    selectRowsQueue = [
+      [{
+        id: 'integration-1',
+        partnerId: 'partner-1',
+        managementUrl: 'https://example.sentinelone.net',
+        apiTokenEncrypted: 'enc',
+        isActive: true,
+        lastSyncAt: null,
+      }],
+    ];
+    for (const mock of [listAgentsMock, listThreatsMock]) {
+      mock.mockReset();
+      mock.mockImplementation(() => {
+        httpContexts.push(inContext());
+        return Promise.resolve({ results: [], truncated: false });
+      });
+    }
+  });
+
+  it('runs listAgents and listThreats OUTSIDE any held DB context, writes status INSIDE one', async () => {
+    await processSyncIntegration({ type: 'sync-integration', integrationId: 'integration-1', syncAgents: true, syncThreats: true });
+
+    // Both SentinelOne fetches ran, and neither was inside a held transaction.
+    expect(httpContexts).toEqual([false, false]);
+    // The integration read + the lastSyncAt/status write each ran inside a context.
+    expect(selectContexts[0]).toBe(true);
+    expect(updateContexts.length).toBeGreaterThan(0);
+    expect(updateContexts.every((v) => v === true)).toBe(true);
   });
 });
