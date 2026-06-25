@@ -18,7 +18,8 @@ export type UpdateStatus =
   | { phase: 'installing'; version: string }
   | { phase: 'restarting'; version: string }
   | { phase: 'deferred'; version: string }
-  | { phase: 'failed'; version: string };
+  | { phase: 'failed'; version: string }
+  | { phase: 'ready'; version: string };
 
 /** Compile-time exhaustiveness guard: a new phase that isn't handled becomes a type error. */
 function assertNever(value: never): never {
@@ -37,6 +38,7 @@ const KNOWN_PHASES: Record<UpdateStatus['phase'], true> = {
   restarting: true,
   deferred: true,
   failed: true,
+  ready: true,
 };
 
 /**
@@ -89,6 +91,8 @@ export function updateStatusMessage(status: UpdateStatus): string {
       return `Update ${status.version} ready — applies when this session ends.`;
     case 'failed':
       return `Update ${status.version} failed — will retry on next launch.`;
+    case 'ready':
+      return `Update ${status.version} downloaded`;
     default:
       return assertNever(status);
   }
@@ -108,6 +112,7 @@ export function isUpdateActive(status: UpdateStatus): boolean {
       return true;
     case 'deferred':
     case 'failed':
+    case 'ready':
       return false;
     default:
       return assertNever(status);

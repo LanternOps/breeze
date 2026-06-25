@@ -62,6 +62,13 @@ struct DeviceMap(Mutex<HashMap<String, String>>);
 /// Monotonic counter for unique window labels.
 struct WindowCounter(Mutex<u32>);
 
+/// A downloaded-but-not-yet-applied update, awaiting the user's choice in the
+/// `Ready` prompt. The `Update` handle is retained because `install()` is a
+/// method on it. Only populated when no remote session was active at download
+/// time (an active session defers instead); a session may start afterwards
+/// while a value is still staged, so `is_some()` does not imply "no session now".
+struct PendingUpdate(Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>);
+
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -298,6 +305,74 @@ fn update_session_hostname(
     }
 }
 
+/// "Restart & update": apply the stashed update now. On macOS/Linux this swaps
+/// the binary and restarts; on Windows `install()` launches the installer and
+/// the process exits. Returns `Err` if nothing is staged (e.g. invoked after
+/// the slot was already taken) or if the install fails, so the caller's promise
+/// rejects instead of silently resolving and stranding the prompt's buttons.
+#[tauri::command]
+fn apply_pending_update(
+    app: tauri::AppHandle,
+    pending: tauri::State<'_, PendingUpdate>,
+) -> Result<(), String> {
+    let taken = {
+        let mut slot = lock_or_recover(&pending.0, "pending_update");
+        slot.take()
+    };
+    let Some((update, bytes)) = taken else {
+        return Err("no pending update to apply".to_string());
+    };
+    let version = update.version.clone();
+
+    // On Windows install() launches the installer and terminates the process,
+    // so emit a labelled "Installing" first — the exit is then a known step,
+    // not a silent crash. (macOS/Linux swap in place and emit "Restarting" below.)
+    #[cfg(target_os = "windows")]
+    emit_update_status(&app, UpdateStatus::Installing { version: version.clone() });
+
+    if let Err(e) = update.install(bytes) {
+        eprintln!("Update install failed: {}", e);
+        emit_update_status(&app, UpdateStatus::Failed { version });
+        return Err(e.to_string());
+    }
+
+    // macOS/Linux: the binary was swapped on disk but the running process still
+    // holds the old version — restart to apply. (On Windows the line above
+    // already exited the process on success.)
+    #[cfg(not(target_os = "windows"))]
+    {
+        emit_update_status(&app, UpdateStatus::Restarting { version });
+        app.restart()
+    }
+    #[cfg(target_os = "windows")]
+    Ok(())
+}
+
+/// "Remind me later": discard the prompt. On macOS/Linux swap the binary on
+/// disk so the next launch is updated; on Windows drop the download (re-checks
+/// next launch). Idempotent — `Ok` even when nothing is staged. The disk-swap
+/// is best-effort: a failure is logged but not surfaced, since the next launch
+/// re-checks regardless.
+#[tauri::command]
+fn dismiss_pending_update(pending: tauri::State<'_, PendingUpdate>) -> Result<(), String> {
+    let taken = {
+        let mut slot = lock_or_recover(&pending.0, "pending_update");
+        slot.take()
+    };
+    let Some((update, bytes)) = taken else {
+        return Ok(());
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    if let Err(e) = update.install(bytes) {
+        eprintln!("Deferred update disk-swap failed: {}", e);
+    }
+    #[cfg(target_os = "windows")]
+    drop((update, bytes));
+
+    Ok(())
+}
+
 /// Focus the highest-numbered session window, or do nothing if none exist.
 fn focus_any_session_window(app: &tauri::AppHandle) {
     let counter = app.state::<WindowCounter>();
@@ -460,6 +535,9 @@ enum UpdateStatus {
     Restarting { version: String },
     Deferred { version: String },
     Failed { version: String },
+    /// Downloaded and waiting for the user to choose Restart & update or
+    /// Remind me later. Only emitted when no remote session is active.
+    Ready { version: String },
 }
 
 /// Best-effort broadcast of update status. Emit failures are non-fatal — the
@@ -562,47 +640,50 @@ async fn auto_update(app: tauri::AppHandle) {
         }
     };
 
-    eprintln!("Update {} downloaded, installing...", update.version);
-    // On Windows install() does not return (process exits after launching the
-    // installer), so this "Installing…" notice is the last thing the user sees
-    // — which is exactly the point: a labelled exit, not a silent crash.
-    emit_update_status(&app, UpdateStatus::Installing { version: version.clone() });
+    eprintln!("Update {} downloaded", update.version);
 
-    // install() behaviour varies by platform — see doc comment above.
-    // On Windows this call does not return (process exits after launching installer).
-    if let Err(e) = update.install(bytes) {
-        eprintln!("Update install failed: {}", e);
-        // On Windows install() doesn't return on success; reaching here means it
-        // failed, so clear the pinned "Installing…" banner with a failure notice.
-        emit_update_status(&app, UpdateStatus::Failed { version: version.clone() });
+    // Decide what to do with the download based on whether a remote session is
+    // live. Restarting/installing mid-session would kill it, so an active
+    // session always defers; otherwise we hand the choice to the user.
+    let has_active_sessions = app
+        .try_state::<SessionMap>()
+        .map(|s| {
+            let map = lock_or_recover(&s.0, "session_map");
+            !map.is_empty()
+        })
+        .unwrap_or(false);
+
+    if has_active_sessions {
+        // Don't interrupt a live session. macOS/Linux can swap the binary on
+        // disk now (takes effect next launch); Windows can't install without
+        // exiting, so drop the download and re-check on next launch.
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Err(e) = update.install(bytes) {
+                eprintln!("Deferred update disk-swap failed: {}", e);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            drop((update, bytes));
+        }
+        eprintln!("Active remote session — deferring update to next launch");
+        emit_update_status(&app, UpdateStatus::Deferred { version });
         return;
     }
 
-    eprintln!("Update {} installed successfully", update.version);
-
-    // On macOS/Linux, the binary is replaced on disk but the running process
-    // continues with the old version in memory. Restart automatically so the
-    // user gets the new version without manual intervention.
-    // If a remote desktop session is active, skip the restart to avoid
-    // interrupting the user — they'll pick up the update on next launch.
-    #[cfg(not(target_os = "windows"))]
-    {
-        let has_active_sessions = app
-            .try_state::<SessionMap>()
-            .map(|s| {
-                let map = lock_or_recover(&s.0, "session_map");
-                !map.is_empty()
-            })
-            .unwrap_or(false);
-
-        if has_active_sessions {
-            eprintln!("Active remote session detected — deferring restart to next launch");
-            emit_update_status(&app, UpdateStatus::Deferred { version: version.clone() });
-        } else {
-            eprintln!("No active sessions — restarting to apply update");
-            emit_update_status(&app, UpdateStatus::Restarting { version: version.clone() });
-            app.restart();
-        }
+    // No active session — stash the download and let the user choose via the
+    // Ready prompt (apply_pending_update / dismiss_pending_update).
+    if let Some(pending) = app.try_state::<PendingUpdate>() {
+        *lock_or_recover(&pending.0, "pending_update") = Some((update, bytes));
+        eprintln!("Update {} ready — awaiting user choice", version);
+        emit_update_status(&app, UpdateStatus::Ready { version });
+    } else {
+        eprintln!("PendingUpdate state missing; cannot present update prompt");
+        // Defensive: clear the banner so a (theoretically impossible) missing
+        // state doesn't leave it pinned on "Downloading…" — the silent-look
+        // this feature exists to remove.
+        emit_update_status(&app, UpdateStatus::Failed { version });
     }
 }
 
@@ -621,6 +702,8 @@ pub fn run() {
             unregister_session,
             register_device,
             update_session_hostname,
+            apply_pending_update,
+            dismiss_pending_update,
         ]);
 
     // Single instance plugin (desktop only) — ensures deep links open in existing
@@ -680,6 +763,7 @@ pub fn run() {
             app.manage(SessionMap(Mutex::new(HashMap::new())));
             app.manage(DeviceMap(Mutex::new(HashMap::new())));
             app.manage(WindowCounter(Mutex::new(0)));
+            app.manage(PendingUpdate(Mutex::new(None)));
 
             // If launched with a deep link, defer session window creation to
             // the first event loop tick (setup runs before the loop starts).
@@ -844,6 +928,10 @@ mod tests {
             (
                 UpdateStatus::Failed { version: v.clone() },
                 json!({ "phase": "failed", "version": "1.2.3" }),
+            ),
+            (
+                UpdateStatus::Ready { version: v.clone() },
+                json!({ "phase": "ready", "version": "1.2.3" }),
             ),
         ];
         for (status, expected) in cases {
