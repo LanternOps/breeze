@@ -1346,11 +1346,15 @@ async function processCommandResult(
   try {
     // Resolve any in-process promise awaiting this command id (e.g. http_request
     // sent via sendCommandToAgentAwaitResult). No-op for all other result types.
-    resolvePendingAgentCommand(result.commandId, {
+    // When consumed, the result has no device_commands row and needs no further
+    // dispatch — short-circuit to avoid 3 needless DB lookups + a console.warn
+    // per result (matters for a proxy issuing many http_request commands).
+    const consumed = resolvePendingAgentCommand(result.commandId, {
       status: result.status,
       result: result.result,
       error: result.error,
     });
+    if (consumed) return;
 
     // Non-UUID command IDs (for example mon-* and snmp-*) are dispatched directly
     // over WebSocket and do not have a device_commands row.

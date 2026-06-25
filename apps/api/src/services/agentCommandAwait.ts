@@ -62,14 +62,21 @@ export function sendCommandToAgentAwaitResult(
  * Called from agentWs.processCommandResult for every incoming command_result
  * message. Is a no-op when nobody is awaiting that id (the common case for
  * non-awaited fire-and-forget commands).
+ *
+ * Returns true if a pending entry was found and resolved, false otherwise.
+ * Callers use this to short-circuit further dispatch when the result has been
+ * fully consumed by an awaiting promise (e.g. http_request proxy commands that
+ * have no device_commands row and would otherwise trigger needless DB lookups
+ * plus a console.warn per result).
  */
 export function resolvePendingAgentCommand(
   commandId: string,
   result: AgentCommandAwaitResult,
-): void {
+): boolean {
   const entry = pending.get(commandId);
-  if (!entry) return;
+  if (!entry) return false;
   clearTimeout(entry.timer);
   pending.delete(commandId);
   entry.resolve(result);
+  return true;
 }

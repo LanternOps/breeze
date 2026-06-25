@@ -28,7 +28,8 @@ describe('agentCommandAwait', () => {
     const promise = sendCommandToAgentAwaitResult('agent-001', testCommand, 5000);
 
     const expectedResult = { status: 'completed', result: { statusCode: 200, body: 'ok' } };
-    resolvePendingAgentCommand(testCommand.id, expectedResult);
+    const consumed = resolvePendingAgentCommand(testCommand.id, expectedResult);
+    expect(consumed).toBe(true);
 
     await expect(promise).resolves.toEqual(expectedResult);
   });
@@ -54,10 +55,12 @@ describe('agentCommandAwait', () => {
     expect(result.error).toMatch(/offline/i);
   });
 
-  it('resolvePendingAgentCommand for unknown id is a no-op and does not throw', () => {
+  it('resolvePendingAgentCommand for unknown id is a no-op, returns false, and does not throw', () => {
+    let returned: boolean | undefined;
     expect(() => {
-      resolvePendingAgentCommand('no-such-id', { status: 'completed' });
+      returned = resolvePendingAgentCommand('no-such-id', { status: 'completed' });
     }).not.toThrow();
+    expect(returned).toBe(false);
   });
 
   it('does not leak timers — calling resolve before timeout clears the timer', async () => {
@@ -67,11 +70,12 @@ describe('agentCommandAwait', () => {
     const promise = sendCommandToAgentAwaitResult('agent-001', cmd, 10000);
 
     resolvePendingAgentCommand(cmd.id, { status: 'completed' });
-    await promise;
+    // Positive assertion: it resolves with the supplied result (not the timeout value)
+    await expect(promise).resolves.toEqual({ status: 'completed' });
 
     // Advance past the timeout — should not resolve again or throw
     vi.advanceTimersByTime(15000);
-    // No assertions needed: test passes if no unhandled rejection or double-resolve
+    // The timer was cleared on resolve, so advancing does nothing (no double-resolve).
   });
 
   it('passes the agentId and command through to sendCommandToAgent', async () => {
