@@ -60,6 +60,7 @@
     <?else?>
     <Property Id="ENROLLMENT_SECRET" Secure="yes" Hidden="yes" />
     <?endif?>
+    <Property Id="BOOTSTRAP_TOKEN" Secure="yes" Hidden="yes" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
     <Property Id="BREEZE_KILL_CMD" Secure="yes" />
@@ -296,6 +297,25 @@
       Return="check"
       HideTarget="yes" />
 
+    <!-- Capture the launched MSI path + bootstrap inputs while the original
+         session properties are still readable (immediate CA). OriginalDatabase
+         points at the user's downloaded file here; by deferred execution the
+         package is cached to C:\Windows\Installer and the [TOKEN@HOST] name is
+         gone. Packed pipe-delimited because deferred CAs only see CustomActionData. -->
+    <CustomAction
+      Id="SetBootstrapData"
+      Property="BootstrapEnroll"
+      Value="[OriginalDatabase]|[BOOTSTRAP_TOKEN]|[SERVER_URL]" />
+
+    <CustomAction
+      Id="BootstrapEnroll"
+      FileRef="filBreezeAgentExe"
+      ExeCommand="bootstrap --install-data &quot;[CustomActionData]&quot; --quiet"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check"
+      HideTarget="yes" />
+
     <InstallExecuteSequence>
       <!-- Run on every install path EXCEPT uninstall. Broadened from the
            original `WIX_UPGRADE_DETECTED OR Installed` (which skipped fresh
@@ -344,6 +364,12 @@
            restart. This is the intended flow for imaged/sysprep'd
            deployments. -->
       <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
+      <!-- Filename/property bootstrap enrollment: only when explicit
+           SERVER_URL+ENROLLMENT_KEY were NOT supplied (those take the
+           EnrollAgent path above). SetBootstrapData (immediate) must run before
+           the deferred BootstrapEnroll so CustomActionData is populated. -->
+      <Custom Action="SetBootstrapData" Before="BootstrapEnroll" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
+      <Custom Action="BootstrapEnroll" Before="InstallServices" After="EnrollAgent" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
