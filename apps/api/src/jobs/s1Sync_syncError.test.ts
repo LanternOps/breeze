@@ -37,7 +37,7 @@ const mockDb = vi.hoisted(() => ({
 
 vi.mock('../db', () => ({
   db: mockDb,
-  withSystemDbAccessContext: undefined,
+  withSystemDbAccessContext: <T>(fn: () => Promise<T> | T): Promise<T> | T => fn(),
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
   assertOutsideHeldDbContext: vi.fn(),
 }));
