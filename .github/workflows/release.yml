@@ -541,19 +541,7 @@ jobs:
           $msiPath = Join-Path $root "dist\breeze-agent.msi"
           & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -UserHelperExePath $userHelperExe -OutputPath $msiPath
 
-      - name: Build Template MSI
-        shell: pwsh
-        run: |
-          $root = $env:GITHUB_WORKSPACE
-          $version = "${{ steps.version.outputs.version }}"
-          $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
-          $backupExe = Join-Path $root "dist\breeze-backup-windows-amd64.exe"
-          $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
-          $userHelperExe = Join-Path $root "dist\breeze-user-helper-windows-amd64.exe"
-          $msiPath = Join-Path $root "dist\breeze-agent-template.msi"
-          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -UserHelperExePath $userHelperExe -OutputPath $msiPath -Template
-
-      # Only sign the regular MSI — template MSI is re-signed server-side by jsign after patching
+      # Sign the agent MSI (Azure Trusted Signing).
       - name: Sign MSI (stable profile)
         if: ${{ !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
@@ -627,13 +615,6 @@ jobs:
         with:
           name: breeze-agent-windows-msi
           path: dist/breeze-agent.msi
-          retention-days: 30
-
-      - name: Upload Template MSI artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: breeze-agent-template-msi
-          path: dist/breeze-agent-template.msi
           retention-days: 30
 
       - name: Upload signed backup EXE artifact
@@ -2029,11 +2010,6 @@ jobs:
           )
 
           def platform_trust(name):
-              # *-template.msi is intentionally unsigned here; per-tenant
-              # property injection happens server-side and the resulting
-              # MSI is signed there.
-              if name.endswith("-template.msi"):
-                  return "release-workflow-produced"
               if name.endswith(".msi") or name.endswith(".exe"):
                   return "windows-authenticode-required"
               if (

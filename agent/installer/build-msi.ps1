@@ -15,9 +15,7 @@ param(
     [string]$UserHelperExePath = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath = "",
-
-    [switch]$Template
+    [string]$OutputPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,20 +81,6 @@ if (-not (Test-Path $outputDir)) {
     New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
 }
 
-$templateArgs = @()
-if ($Template) {
-    $pad = 512
-    # Pad with spaces (not nulls) — MSI string pool strips null bytes but preserves spaces
-    $serverPlaceholder = "@@BREEZE_SERVER_URL@@".PadRight($pad, ' ')
-    $keyPlaceholder = "@@BREEZE_ENROLLMENT_KEY@@".PadRight($pad, ' ')
-    $secretPlaceholder = "@@BREEZE_ENROLLMENT_SECRET@@".PadRight($pad, ' ')
-    $templateArgs = @(
-        "-d", "ServerUrlDefault=$serverPlaceholder",
-        "-d", "EnrollmentKeyDefault=$keyPlaceholder",
-        "-d", "EnrollmentSecretDefault=$secretPlaceholder"
-    )
-}
-
 $wixArgs = @(
     "build",
     "$installerPath",
@@ -110,7 +94,7 @@ $wixArgs = @(
     "-d", "InstallUserHelperScriptPath=$installUserHelperScriptPath",
     "-d", "RemoveUserHelperScriptPath=$removeUserHelperScriptPath",
     "-o", "$OutputPath"
-) + $templateArgs
+)
 
 & wix @wixArgs
 if ($LASTEXITCODE -ne 0) {
