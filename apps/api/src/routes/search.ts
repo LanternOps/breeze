@@ -1,12 +1,12 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, ilike, isNull, or } from 'drizzle-orm';
+import { and, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import { alerts, devices, scripts } from '../db/schema';
 import { authMiddleware, type AuthContext } from '../middleware/auth';
-import { getUserPermissions, hasPermission, PERMISSIONS } from '../services/permissions';
+import { getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 
 const searchQuerySchema = z.object({
   q: z.string().trim().min(1).max(100),
@@ -79,6 +79,15 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
     return auth.orgCondition(column);
   };
 
+  // Site-axis narrowing (app-layer only; RLS does NOT enforce site isolation).
+  // mirrors core.ts:~424-435 / reports/data.ts:~67-72.
+  const allowedSiteIds = (userPerms as UserPermissions | null)?.allowedSiteIds;
+  const deviceSiteCondition = allowedSiteIds
+    ? allowedSiteIds.length > 0
+      ? inArray(devices.siteId, allowedSiteIds)
+      : sql`false`
+    : undefined;
+
   const deviceQuery = or(
     ilike(devices.hostname, searchTerm),
     ilike(devices.displayName, searchTerm),
@@ -96,6 +105,12 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
     ilike(alerts.message, searchTerm)
   );
 
+  const deviceWhereCondition = and(
+    orgConditionFor(devices.orgId),
+    deviceSiteCondition,
+    deviceQuery,
+  );
+
   const [deviceRows, scriptRows, alertRows] = await Promise.all([
     canReadDevices
       ? db
@@ -107,7 +122,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
             lastUser: devices.lastUser
           })
           .from(devices)
-          .where(orgConditionFor(devices.orgId) ? and(orgConditionFor(devices.orgId) as never, deviceQuery as never) : deviceQuery)
+          .where(deviceWhereCondition)
           .limit(perCategoryLimit)
       : Promise.resolve([]),
     canReadScripts

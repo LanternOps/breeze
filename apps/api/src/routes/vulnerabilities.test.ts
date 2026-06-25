@@ -5,6 +5,8 @@ import { Hono } from 'hono';
 // the repo's usual pass-through mock, this one actually consults the set so the
 // test faithfully verifies WHICH permission gates WHICH route.
 const granted = new Set<string>();
+// Mutable permissions object set by requirePermission (mirrors authMiddleware production behaviour).
+const permissionsState: { allowedSiteIds?: string[] } = {};
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: (c: any, next: any) => {
@@ -21,7 +23,11 @@ vi.mock('../middleware/auth', () => ({
   requireScope: () => (_c: any, next: any) => next(),
   requireMfa: () => (_c: any, next: any) => next(),
   requirePermission: (resource: string, action: string) => (c: any, next: any) => {
-    if (granted.has(`${resource}:${action}`) || granted.has('*:*')) return next();
+    if (granted.has(`${resource}:${action}`) || granted.has('*:*')) {
+      // Mirror prod: requirePermission populates the `permissions` context variable.
+      c.set('permissions', { ...permissionsState });
+      return next();
+    }
     return c.json({ error: 'Forbidden' }, 403);
   },
 }));
@@ -77,6 +83,8 @@ const future = new Date(Date.now() + 7 * 864e5).toISOString();
 
 beforeEach(() => {
   granted.clear();
+  // Reset site-restriction state (unrestricted by default).
+  delete permissionsState.allowedSiteIds;
   // Reaching any route requires the router-level devices:read gate.
   granted.add('devices:read');
 });
@@ -110,5 +118,74 @@ describe('vulnerability accept-risk / reopen RBAC', () => {
     granted.add('devices:write');
     const res = await post(`/${ID}/mitigate`, { note: 'compensating control' });
     expect(res.status).toBe(404);
+  });
+});
+
+import { db } from '../db';
+
+describe('vulnerability fleet GET / — site-axis narrowing', () => {
+  function fleetApp() {
+    const a = new Hono();
+    a.route('/vulnerabilities', vulnerabilityRoutes);
+    return a;
+  }
+
+  beforeEach(() => {
+    granted.clear();
+    delete permissionsState.allowedSiteIds;
+    granted.add('devices:read');
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('returns empty fleet for site-restricted caller with empty allowedSiteIds (fail-closed)', async () => {
+    permissionsState.allowedSiteIds = [];
+    // listVulnerabilities short-circuits before querying when allowedSiteIds is empty.
+    const res = await fleetApp().request('/vulnerabilities');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.items).toEqual([]);
+    // db.select should not have been called (early return path).
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('queries allowed device ids by site then filters deviceVulnerabilities for a site-restricted caller', async () => {
+    permissionsState.allowedSiteIds = ['site-1'];
+    const selectMock = vi.mocked(db.select);
+
+    // First call: resolve device IDs in the allowed site.
+    selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: 'dev-abc' }]),
+      }),
+    } as never);
+    // Second call: query deviceVulnerabilities (returns empty → no findings).
+    selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    const res = await fleetApp().request('/vulnerabilities');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.items).toEqual([]);
+    // Both the device-id resolution query and the vulnerabilities query were issued.
+    expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips site narrowing for unrestricted caller (no allowedSiteIds)', async () => {
+    // No allowedSiteIds set → no device-id resolution query.
+    const selectMock = vi.mocked(db.select);
+    // Only one select: deviceVulnerabilities (no site device-id lookup).
+    selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    const res = await fleetApp().request('/vulnerabilities');
+    expect(res.status).toBe(200);
+    // Only one db.select call: the deviceVulnerabilities query, no site-device lookup.
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 });

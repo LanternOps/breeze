@@ -74,6 +74,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 import { db } from '../db';
+import { getUserPermissions } from '../services/permissions';
 
 describe('search routes', () => {
   let app: Hono;
@@ -209,5 +210,126 @@ describe('search routes', () => {
   it('validates required query parameter', async () => {
     const res = await app.request('/search');
     expect(res.status).toBe(400);
+  });
+
+  describe('site-axis narrowing for device search', () => {
+    it('returns empty device results when site-restricted caller has empty allowedSiteIds (fail-closed)', async () => {
+      // Override getUserPermissions to simulate a site-restricted caller with no in-scope sites.
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [
+          { resource: 'devices', action: 'read' },
+          { resource: 'scripts', action: 'read' },
+          { resource: 'alerts', action: 'read' },
+          { resource: 'users', action: 'read' },
+        ],
+        allowedSiteIds: [],
+        partnerId: null,
+        orgId: 'org-1',
+        roleId: 'role-1',
+        scope: 'organization',
+      } as any);
+
+      // scripts and alerts return empty; device query must include sql`false` site condition
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as never);
+
+      const res = await app.request('/search?q=host');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // No device results — site filter is sql`false` for empty allowedSiteIds
+      expect(body.results.filter((r: { type?: string }) => r.type === 'devices')).toHaveLength(0);
+    });
+
+    it('passes allowedSiteIds condition through to device query for site-restricted callers', async () => {
+      // Override getUserPermissions to simulate a site-restricted caller with one allowed site.
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [
+          { resource: 'devices', action: 'read' },
+          { resource: 'scripts', action: 'read' },
+          { resource: 'alerts', action: 'read' },
+        ],
+        allowedSiteIds: ['site-abc'],
+        partnerId: null,
+        orgId: 'org-1',
+        roleId: 'role-1',
+        scope: 'organization',
+      } as any);
+
+      const selectSpy = vi.mocked(db.select);
+      let capturedDeviceWhere: unknown;
+      selectSpy
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: unknown) => {
+              capturedDeviceWhere = condition;
+              return { limit: vi.fn().mockResolvedValue([]) };
+            })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        } as never);
+
+      const res = await app.request('/search?q=anything');
+      expect(res.status).toBe(200);
+      // A non-null where condition was passed (includes the site inArray filter)
+      expect(capturedDeviceWhere).toBeDefined();
+    });
+
+    it('unrestricted caller (no allowedSiteIds) returns device results normally', async () => {
+      // Default mock has no allowedSiteIds — no site restriction.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: 'dev-1', title: 'Workstation', hostname: 'ws-01', status: 'online', lastUser: null }
+              ])
+            })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        } as never);
+
+      const res = await app.request('/search?q=ws');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results.some((r: { type?: string }) => r.type === 'devices')).toBe(true);
+    });
   });
 });

@@ -171,6 +171,27 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
+      /**
+       * Site-axis check for a loaded monitor (app-layer; RLS does NOT enforce
+       * site isolation). Mirrors hasMonitorSiteAccess in routes/monitors.ts:
+       * resolve the monitor's linked asset's siteId, then check canAccessSite.
+       * A monitor with no linked asset is denied for a site-restricted caller
+       * (fail-closed — same as query_monitors list handler ~101-113).
+       * Unrestricted callers (canAccessSite undefined) always pass.
+       */
+      async function assertMonitorSiteAccess(
+        monitor: { id: string; assetId: string | null; orgId: string },
+      ): Promise<boolean> {
+        if (!auth.canAccessSite) return true; // unrestricted caller
+        if (!monitor.assetId) return false;   // no asset → fail-closed
+        const [asset] = await db
+          .select({ siteId: discoveredAssets.siteId })
+          .from(discoveredAssets)
+          .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
+          .limit(1);
+        return typeof asset?.siteId === 'string' && auth.canAccessSite(asset.siteId);
+      }
+
       if (action === 'get') {
         if (!input.monitorId) return JSON.stringify({ error: 'monitorId is required' });
 
@@ -180,6 +201,11 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
         const [monitor] = await db.select().from(networkMonitors).where(and(...conditions)).limit(1);
         if (!monitor) return JSON.stringify({ error: 'Monitor not found or access denied' });
+
+        // Site-axis gate — deny same as "not found" (no oracle).
+        if (!(await assertMonitorSiteAccess(monitor))) {
+          return JSON.stringify({ error: 'Monitor not found or access denied' });
+        }
 
         // Get recent check results
         const historyLimit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
@@ -240,6 +266,11 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(networkMonitors).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Monitor not found or access denied' });
 
+        // Site-axis gate — deny same as "not found" (no oracle).
+        if (!(await assertMonitorSiteAccess(existing))) {
+          return JSON.stringify({ error: 'Monitor not found or access denied' });
+        }
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.target === 'string') updates.target = input.target;
@@ -261,6 +292,11 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(networkMonitors).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Monitor not found or access denied' });
+
+        // Site-axis gate — deny same as "not found" (no oracle).
+        if (!(await assertMonitorSiteAccess(existing))) {
+          return JSON.stringify({ error: 'Monitor not found or access denied' });
+        }
 
         // Cascade delete handles results and alert rules via FK onDelete: 'cascade'
         await db.delete(networkMonitors).where(eq(networkMonitors.id, existing.id));

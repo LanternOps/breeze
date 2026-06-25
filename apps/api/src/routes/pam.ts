@@ -946,21 +946,47 @@ const previewRuleSchema = z
 
 pamRoutes.get('/rules', requirePamRead, async (c) => {
   const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
+
+  // Site narrowing for site-restricted technicians (pam_rules is RLS Shape-1
+  // org-only, so the site axis is app-layer-only). Mirrors siteScopeCondition,
+  // bound to pamRules.siteId. Org-wide rules (siteId IS NULL) are hidden from a
+  // restricted caller since they govern every site, including ones it can't reach.
+  const where = and(
+    ...[
+      auth.orgCondition(pamRules.orgId),
+      !perms?.allowedSiteIds
+        ? undefined
+        : perms.allowedSiteIds.length === 0
+          ? sql`false`
+          : inArray(pamRules.siteId, perms.allowedSiteIds),
+    ].filter((cond): cond is SQL => cond !== undefined),
+  );
+
   const rows = await db
     .select()
     .from(pamRules)
-    .where(auth.orgCondition(pamRules.orgId))
+    .where(where)
     .orderBy(pamRules.priority, pamRules.createdAt);
   return c.json({ success: true, rules: rows });
 });
 
 pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', createRuleSchema), async (c) => {
   const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
   const payload = c.req.valid('json');
 
   const resolvedOrg = resolveOrgIdForWrite(auth, payload.orgId ?? c.req.query('orgId') ?? undefined);
   if (!resolvedOrg.orgId) {
     return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
+  }
+
+  // Site axis is app-layer-only for pam_rules (RLS Shape-1 org-only). A
+  // site-restricted tech must not author org-wide (siteId null → '') or
+  // other-site rules. Unrestricted callers (no allowedSiteIds) keep org-wide
+  // ability. Mirrors the canAccessSite gate on the elevation handlers.
+  if (perms?.allowedSiteIds && !canAccessSite(perms, payload.siteId ?? '')) {
+    return c.json({ error: 'Site access denied' }, 403);
   }
 
   const [created] = await db
@@ -1159,6 +1185,7 @@ const updateRuleSchema = ruleBaseSchema.partial().omit({ orgId: true });
 
 pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', updateRuleSchema), async (c) => {
   const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
   const id = c.req.param('id');
   const payload = c.req.valid('json');
   if (!z.string().guid().safeParse(id).success) {
@@ -1168,6 +1195,19 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
   const [existing] = await db.select().from(pamRules).where(eq(pamRules.id, id!)).limit(1);
   if (!existing || !auth.canAccessOrg(existing.orgId)) {
     return c.json({ error: 'Rule not found' }, 404);
+  }
+
+  // Site axis is app-layer-only (pam_rules RLS Shape-1 org-only). A site-restricted
+  // tech must be able to reach BOTH the existing rule's site and any new target
+  // site (org-wide null → '' which a restricted caller never holds). Unrestricted
+  // callers keep org-wide ability. Mirrors canAccessSite on the elevation handlers.
+  if (perms?.allowedSiteIds) {
+    if (!canAccessSite(perms, existing.siteId ?? '')) {
+      return c.json({ error: 'Site access denied' }, 403);
+    }
+    if (payload.siteId !== undefined && !canAccessSite(perms, payload.siteId ?? '')) {
+      return c.json({ error: 'Site access denied' }, 403);
+    }
   }
 
   // The merged result must still be a valid rule shape (criterion present,
@@ -1230,6 +1270,7 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
 
 pamRoutes.delete('/rules/:id', requirePamWrite, requireMfa(), async (c) => {
   const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
   const id = c.req.param('id');
   if (!z.string().guid().safeParse(id).success) {
     return c.json({ error: 'Invalid rule id' }, 400);
@@ -1238,6 +1279,13 @@ pamRoutes.delete('/rules/:id', requirePamWrite, requireMfa(), async (c) => {
   const [existing] = await db.select().from(pamRules).where(eq(pamRules.id, id!)).limit(1);
   if (!existing || !auth.canAccessOrg(existing.orgId)) {
     return c.json({ error: 'Rule not found' }, 404);
+  }
+
+  // Site axis is app-layer-only (pam_rules RLS Shape-1 org-only). A site-restricted
+  // tech must reach the target rule's site (org-wide null → '' which a restricted
+  // caller never holds). Unrestricted callers keep org-wide ability.
+  if (perms?.allowedSiteIds && !canAccessSite(perms, existing.siteId ?? '')) {
+    return c.json({ error: 'Site access denied' }, 403);
   }
 
   await db.delete(pamRules).where(eq(pamRules.id, id!));

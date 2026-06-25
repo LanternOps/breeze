@@ -1161,6 +1161,19 @@ mobileRoutes.get(
       deviceConditions.push(inArray(devices.orgId, orgCheck.orgIds));
     }
 
+    // Site-axis narrowing (app-layer only; RLS does NOT enforce site isolation).
+    // Mirrors /devices list (~891-897) and /alerts/inbox (~595-601) in this file.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({
+          devices: { total: 0, online: 0, offline: 0, maintenance: 0 },
+          alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
+        });
+      }
+      deviceConditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+    }
+
     const deviceWhere = deviceConditions.length > 0 ? and(...deviceConditions) : undefined;
 
     const deviceStats = await db
@@ -1176,6 +1189,23 @@ mobileRoutes.get(
     const alertConditions: ReturnType<typeof eq>[] = [];
     if (orgCheck.orgIds !== null) {
       alertConditions.push(inArray(alerts.orgId, orgCheck.orgIds));
+    }
+    // Alert site-axis: use resolveSiteAllowedDeviceIds (mirrors /alerts/inbox).
+    // Only restrict when we have an org context (partner/system spans multiple orgs).
+    if (perms?.allowedSiteIds && auth.orgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+        return c.json({
+          devices: {
+            total: Number(deviceStats[0]?.total ?? 0),
+            online: Number(deviceStats[0]?.online ?? 0),
+            offline: Number(deviceStats[0]?.offline ?? 0),
+            maintenance: Number(deviceStats[0]?.maintenance ?? 0)
+          },
+          alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
+        });
+      }
+      alertConditions.push(inArray(alerts.deviceId, allowedDeviceIds));
     }
     const alertWhere = alertConditions.length > 0 ? and(...alertConditions) : undefined;
 
