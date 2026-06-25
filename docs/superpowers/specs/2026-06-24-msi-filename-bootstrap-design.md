@@ -63,6 +63,9 @@ This spec ports that pattern to Windows.
 - Changing macOS behavior.
 - Adding new CI signing infrastructure (it already exists).
 - Rotating or migrating Azure Trusted Signing credentials.
+- Deleting the dormant `MsiSigningService` / its env vars, or decommissioning the signing VM —
+  deferred to a follow-up PR. This effort only removes the call site so the download path stops
+  using it.
 
 ## Architecture
 
@@ -141,10 +144,12 @@ capture-then-defer pattern:
 
 ### 4. Retire the per-download signing path
 
-- **API:** delete the `buildAndSignMsi` call site; the `MsiSigningService` and its env vars
-  (`MSI_SIGNING_URL`, `MSI_SIGNING_CF_ACCESS_ID`, `MSI_SIGNING_CF_ACCESS_SECRET`) become dead.
-  Remove the service and its references once the call site is gone. The on-prem signing VM and
-  its Cloudflare tunnel are no longer in the download path (decommission tracked separately).
+- **API:** remove the `buildAndSignMsi` **call site** in the Windows download branch so the
+  download path no longer hits the signing VM. **Leave `MsiSigningService` and its env vars
+  (`MSI_SIGNING_URL`, `MSI_SIGNING_CF_ACCESS_ID`, `MSI_SIGNING_CF_ACCESS_SECRET`) in place but
+  dormant** — deleting the now-unused service, its references, and the env vars is deferred to a
+  follow-up PR. The on-prem signing VM and its Cloudflare tunnel are no longer in the download
+  path (decommission tracked separately).
 - **CI:** stop building and publishing `breeze-agent-template.msi` in `release.yml`; remove the
   `-Template` branch from `agent/installer/build-msi.ps1`. The signed `breeze-agent.msi` step is
   unchanged.
