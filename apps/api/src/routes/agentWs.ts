@@ -1352,6 +1352,7 @@ async function processCommandResult(
     const consumed = resolvePendingAgentCommand(result.commandId, {
       status: result.status,
       result: result.result,
+      stdout: result.stdout,
       error: result.error,
     });
     if (consumed) return;

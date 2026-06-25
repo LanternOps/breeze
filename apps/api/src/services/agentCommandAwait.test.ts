@@ -27,11 +27,19 @@ describe('agentCommandAwait', () => {
 
     const promise = sendCommandToAgentAwaitResult('agent-001', testCommand, 5000);
 
-    const expectedResult = { status: 'completed', result: { statusCode: 200, body: 'ok' } };
+    // Agents put structured output as a JSON string in `stdout` — assert it
+    // survives the round-trip so awaited callers can read the response body.
+    const expectedResult = {
+      status: 'completed',
+      result: { statusCode: 200 },
+      stdout: JSON.stringify({ status: 200, headers: {}, bodyB64: 'b2s=', truncated: false }),
+    };
     const consumed = resolvePendingAgentCommand(testCommand.id, expectedResult);
     expect(consumed).toBe(true);
 
-    await expect(promise).resolves.toEqual(expectedResult);
+    const resolved = await promise;
+    expect(resolved).toEqual(expectedResult);
+    expect(resolved.stdout).toBe(expectedResult.stdout);
   });
 
   it('returns {status:"failed"} on timeout without actually sleeping', async () => {

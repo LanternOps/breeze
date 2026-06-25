@@ -18,6 +18,10 @@ import { sendCommandToAgent } from '../routes/agentWs';
 export type AgentCommandAwaitResult = {
   status: string;
   result?: unknown;
+  // Agents put structured command output as a JSON string in `stdout`
+  // (Go CommandResult.Stdout via NewSuccessResult) — e.g. http_request returns
+  // {status,headers,bodyB64,truncated}. Forwarded so awaited callers can read it.
+  stdout?: string;
   error?: string;
 };
 
