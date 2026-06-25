@@ -41,10 +41,14 @@ Entirely frontend. Every backend route already exists and is **unchanged**:
 
 | Route | Method | Purpose | Auth |
 |---|---|---|---|
-| `/distributors/td-synnex-ec/status` | GET | gate (`{ configured, enabled }`) | partner/system + `catalog:read` |
-| `/distributors/td-synnex-ec/lookup?q=` | GET | live SKU lookup → `TdSynnexEcProduct[]` | partner/system + `catalog:read` |
-| `/distributors/td-synnex-ec/import` | POST | create `catalog_items` row → `CatalogItem` | partner/system + `catalog:write` + **MFA** |
+| `/catalog/distributors/td-synnex-ec/status` | GET | gate (`{ configured, enabled, settings, … }`) | partner/system + `catalog:read` |
+| `/catalog/distributors/td-synnex-ec/lookup?q=` | GET | live SKU lookup → `TdSynnexEcProduct[]` | partner/system + `catalog:read` |
+| `/catalog/distributors/td-synnex-ec/import` | POST | create `catalog_items` row → `CatalogItem` | partner/system + `catalog:write` + **MFA** |
 | `/quotes/:id/lines/catalog` | POST | add catalog-sourced quote line | quotes:write |
+
+(The distributor routes are mounted under `/catalog`, so the full prefix is
+`/catalog/distributors/td-synnex-ec/…` — same paths the existing
+`TdSynnexEcExpressPanel` already calls.)
 
 (Routes defined in `apps/api/src/routes/catalog/distributors.ts`; lookup/import
 service logic in `apps/api/src/services/tdSynnexEcExpress.ts`.)
@@ -85,21 +89,22 @@ who can't import.
 1. Editor mounts → `ecExpressStatus()` → set `ecActive`.
 2. Tech selects "Search distributor", types a SKU, submits → `ecExpressLookup(q)`
    → render `TdSynnexEcProduct[]`.
-3. Sell price defaults to `product.msrp ?? product.cost` (editable). The EC
-   `defaultMarkupPercent` setting is **not** returned by the `status` route
-   today, so applying it client-side would require a one-field additive change
-   to `getEcExpressStatus` (return `defaultMarkupPercent`). **Decision:** ship
-   v1 with `msrp ?? cost` and leave markup to the tech; the markup default is a
-   noted follow-up so the backend stays untouched for this change.
-4. "Import & add" builds:
+3. Sell price defaults to `product.msrp ?? product.cost` (editable) — exactly
+   the existing `sellPriceDefault()` in `TdSynnexEcExpressPanel`. The `status`
+   route *does* return `settings.defaultMarkupPercent`, but the settings panel
+   deliberately ignores it for the default sell price, so v1 matches that
+   established behavior for consistency. Honoring the configured markup as the
+   default is a **cross-surface follow-up** (apply to both the panel and the
+   quote lookup together); it is out of scope here and needs no backend change.
+4. "Import & add" builds the same `item` shape the settings panel sends
+   (omitting `taxable`, which the import schema treats as optional):
    ```
    item = {
      name: product.name,
-     sku: product.synnexSku,
+     sku: product.synnexSku || product.mfgPartNo || null,
      description: product.description ?? null,
      unitPrice: sellPrice,
-     costBasis: product.cost ?? null,
-     taxable: true,
+     costBasis: product.cost != null ? round2(product.cost) : null,
    }
    ```
    → `ecExpressImport({ product, item })` → new `CatalogItem`.
@@ -112,10 +117,12 @@ who can't import.
 
 - **Duplicate SKU.** `import` surfaces a typed `CatalogServiceError`
   (duplicate-SKU) which the route already maps to a 4xx. On that specific code,
-  resolve the existing catalog item by SKU (from the loaded catalog list, or a
-  targeted `listCatalog({ sku })`) and add **that** line instead — re-importing a
-  known SKU just adds it, no error toast. If it can't be resolved, surface the
-  error.
+  resolve the existing catalog item by SKU — first from the already-loaded
+  catalog list, else `listCatalog({ search: sku })` matched on
+  `item.sku === product.synnexSku` — and add **that** line instead, so
+  re-importing a known SKU just adds it (no error toast). If it can't be
+  resolved, surface the error. (`ListCatalogQuery` exposes `search`, not a `sku`
+  filter; the client-side `item.sku` match keeps it exact.)
 - **MFA required (403).** `import` is MFA-gated server-side. Mirror the Pax8
   pattern: `runAction` surfaces a friendly "MFA required" hint; the tech
   re-authenticates and retries.
