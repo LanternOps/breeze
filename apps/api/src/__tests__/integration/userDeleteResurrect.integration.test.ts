@@ -32,6 +32,11 @@ type AuthCtx = {
   orgId: string | null;
   accessibleOrgIds: string[] | null;
   accessiblePartnerIds: string[] | null;
+  // The id of the user MAKING the request. The partner-wide user-management
+  // gate in users.ts (#1887) looks the caller up in partnerUsers and 403s
+  // unless they hold an orgAccess='all' membership, so partner-scope cases
+  // must seed a real full-access caller and pass its id here.
+  userId?: string | null;
 };
 
 let activeAuthContext: AuthCtx | null = null;
@@ -49,7 +54,7 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
         partnerId: ctx.partnerId,
         orgId: ctx.orgId,
         accessibleOrgIds: ctx.accessibleOrgIds ?? [],
-        user: { id: null, email: 'integration@test' },
+        user: { id: ctx.userId ?? null, email: 'integration@test' },
       });
       return withDbAccessContext(
         {
@@ -57,7 +62,7 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
           orgId: ctx.orgId,
           accessibleOrgIds: ctx.accessibleOrgIds,
           accessiblePartnerIds: ctx.accessiblePartnerIds,
-          userId: null,
+          userId: ctx.userId ?? null,
         },
         () => next(),
       );
@@ -112,6 +117,14 @@ describe('user delete → neutralize orphan (#1367)', () => {
   it('neutralizes the orphaned users row when the last membership is deleted', async () => {
     const partner = await createPartner();
     const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    // The caller making the DELETE: a full-access (orgAccess='all') partner
+    // admin, as required by the partner-wide user-management gate (#1887).
+    const caller = await createUser({
+      partnerId: partner.id,
+      email: `caller-${Date.now()}@example.com`,
+      status: 'active',
+    });
+    await assignUserToPartner(caller.id, partner.id, role.id, 'all');
     const target = await createUser({
       partnerId: partner.id,
       email: `orphan-${Date.now()}@example.com`,
@@ -125,6 +138,7 @@ describe('user delete → neutralize orphan (#1367)', () => {
       orgId: null,
       accessibleOrgIds: [],
       accessiblePartnerIds: [partner.id],
+      userId: caller.id,
     };
 
     const app = await buildApp();
@@ -194,6 +208,13 @@ describe('user re-invite → resurrect tombstone (#1367)', () => {
   it('resets a neutralized tombstone to a clean invited state on re-invite', async () => {
     const partner = await createPartner();
     const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    // Full-access partner admin issuing the re-invite (gate requirement, #1887).
+    const caller = await createUser({
+      partnerId: partner.id,
+      email: `caller-${Date.now()}@example.com`,
+      status: 'active',
+    });
+    await assignUserToPartner(caller.id, partner.id, role.id, 'all');
     const email = `revive-${Date.now()}@example.com`;
 
     // Seed a tombstone directly: the state a prior delete (or the backfill
@@ -217,6 +238,7 @@ describe('user re-invite → resurrect tombstone (#1367)', () => {
       orgId: null,
       accessibleOrgIds: [],
       accessiblePartnerIds: [partner.id],
+      userId: caller.id,
     };
 
     const app = await buildApp();
