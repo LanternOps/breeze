@@ -58,6 +58,43 @@ const HOP_BY_HOP = new Set([
   'host',
 ]);
 
+// Request headers we forward to the LAN device. ALLOWLIST, not denylist — the
+// device is untrusted and must never receive the user's Breeze credentials
+// (`cookie`, `authorization`). Device session cookies are handled separately via
+// the prefixed jar below so they round-trip without leaking app cookies.
+const FORWARDABLE_REQUEST_HEADERS = new Set([
+  'accept',
+  'accept-language',
+  'accept-encoding',
+  'user-agent',
+  'content-type',
+  'content-length',
+  'range',
+  'if-modified-since',
+  'if-none-match',
+  'cache-control',
+]);
+
+// The device's own cookies are stored in the browser under this prefix so they
+// are namespaced away from (and never confused with) Breeze app cookies. We
+// de-prefix on the way to the device and re-prefix on the way back.
+const DEVICE_COOKIE_PREFIX = 'bzdev_';
+
+// Restrictive CSP applied to every proxied response: sandbox the device content
+// (null origin — can't read app cookies/storage or reach the parent) while still
+// letting the device's own scripts/forms run, and forbid third-party framing.
+const PROXY_RESPONSE_CSP = "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'";
+
+/** Rebuild a Cookie header containing only the device's own (prefixed) cookies, de-prefixed. */
+function extractDeviceCookies(cookieHeader: string): string {
+  return cookieHeader
+    .split(';')
+    .map((s) => s.trim())
+    .filter((c) => c.startsWith(DEVICE_COOKIE_PREFIX))
+    .map((c) => c.slice(DEVICE_COOKIE_PREFIX.length))
+    .join('; ');
+}
+
 // ---------------------------------------------------------------------------
 // Cookie signing (reuses the JWT keyring from services/jwt.ts — no bespoke
 // crypto). Distinct audience so a tunnel cookie can never be replayed as an API
@@ -155,12 +192,23 @@ function rewriteLocation(loc: string, basePath: string): string {
   }
 }
 
-/** Force an upstream Set-Cookie's Path onto the proxy base so it scopes here. */
-function scopeCookiePath(value: string, basePath: string): string {
-  if (/;\s*path=/i.test(value)) {
-    return value.replace(/;\s*path=[^;]*/i, `; Path=${basePath}`);
+/**
+ * Rewrite an upstream Set-Cookie so it (a) is namespaced under the device-cookie
+ * prefix and (b) scopes to the proxy base path. Namespacing keeps device cookies
+ * from colliding with — or being mistaken for — Breeze app cookies, and lets the
+ * forward path send ONLY device cookies to the device.
+ */
+function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
+  // Prefix the cookie name (everything before the first '=').
+  const eq = value.indexOf('=');
+  let out = eq > 0 ? `${DEVICE_COOKIE_PREFIX}${value}` : value;
+  // Force Path onto the proxy base.
+  if (/;\s*path=/i.test(out)) {
+    out = out.replace(/;\s*path=[^;]*/i, `; Path=${basePath}`);
+  } else {
+    out = `${out}; Path=${basePath}`;
   }
-  return `${value}; Path=${basePath}`;
+  return out;
 }
 
 /** Inject `<base href>` so relative URLs in the framed page resolve via proxy. */
@@ -172,15 +220,6 @@ function injectBaseTag(html: string, basePath: string): string {
     return html.slice(0, idx) + tag + html.slice(idx);
   }
   return tag + html;
-}
-
-/** Drop our own auth cookie from a forwarded Cookie header; keep the rest. */
-function stripAuthCookie(cookieHeader: string, authCookieName: string): string {
-  return cookieHeader
-    .split(';')
-    .map((s) => s.trim())
-    .filter((c) => c.length > 0 && !c.startsWith(`${authCookieName}=`))
-    .join('; ');
 }
 
 // ---------------------------------------------------------------------------
@@ -250,16 +289,19 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   const qs = new URL(c.req.url).search;
   const path = '/' + wildcard + qs;
 
+  // Forward ONLY allowlisted content-negotiation headers — never the user's
+  // `cookie`/`authorization` (which would leak Breeze session credentials to the
+  // untrusted device). The device's own cookies are reconstructed from the
+  // prefixed jar so its session round-trips without exposing app cookies.
   const headers: Record<string, string[]> = {};
   for (const [k, v] of Object.entries(c.req.header())) {
-    const lk = k.toLowerCase();
-    if (HOP_BY_HOP.has(lk)) continue;
-    if (lk === 'cookie') {
-      const stripped = stripAuthCookie(v, authCookieName);
-      if (stripped.length > 0) headers[k] = [stripped];
-      continue;
+    if (FORWARDABLE_REQUEST_HEADERS.has(k.toLowerCase())) {
+      headers[k] = [v];
     }
-    headers[k] = [v];
+  }
+  const deviceCookies = extractDeviceCookies(c.req.header('cookie') ?? '');
+  if (deviceCookies) {
+    headers['cookie'] = [deviceCookies];
   }
 
   const method = c.req.method.toUpperCase();
@@ -315,9 +357,15 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   for (const [k, values] of Object.entries(upstream.headers ?? {})) {
     const lk = k.toLowerCase();
     if (HOP_BY_HOP.has(lk)) continue;
-    // content-length is recomputed by the runtime; CSP would block the framed
-    // page from rendering, so both are stripped.
-    if (lk === 'content-length' || lk === 'content-security-policy' || lk === 'content-security-policy-report-only') {
+    // content-length is recomputed by the runtime. We drop the device's CSP and
+    // x-frame-options and impose our own restrictive sandbox CSP below — the
+    // device's policy must not govern content rendered on our origin.
+    if (
+      lk === 'content-length' ||
+      lk === 'content-security-policy' ||
+      lk === 'content-security-policy-report-only' ||
+      lk === 'x-frame-options'
+    ) {
       continue;
     }
     if (lk === 'content-type') {
@@ -330,11 +378,15 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       continue;
     }
     if (lk === 'set-cookie') {
-      for (const v of values) respHeaders.append('set-cookie', scopeCookiePath(v, basePath));
+      for (const v of values) respHeaders.append('set-cookie', prefixAndScopeDeviceCookie(v, basePath));
       continue;
     }
     for (const v of values) respHeaders.append(k, v);
   }
+
+  // Sandbox the proxied (untrusted) device content so its scripts run in a null
+  // origin and cannot read app cookies/storage or reach the parent frame.
+  respHeaders.set('content-security-policy', PROXY_RESPONSE_CSP);
 
   if (contentType.toLowerCase().includes('text/html')) {
     body = injectBaseTag(body.toString('utf8'), basePath);

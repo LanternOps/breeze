@@ -286,20 +286,49 @@ describe('tunnelHttp dispatch (cookie-authed)', () => {
 });
 
 describe('tunnelHttp response rewriting', () => {
-  it('strips CSP and content-length headers', async () => {
+  it('replaces the device CSP with a restrictive sandbox CSP and drops content-length', async () => {
     sendCommandMock.mockResolvedValue(
       okAgentResult({
         headers: {
           'content-type': ['text/plain'],
           'content-security-policy': ["default-src 'self'"],
           'content-length': ['5'],
+          'x-frame-options': ['SAMEORIGIN'],
         },
       }),
     );
     const app = makeApp();
     const cookie = await mintCookie(app);
     const res = await app.request(`${BASE}/`, { headers: { cookie } });
-    expect(res.headers.get('content-security-policy')).toBeNull();
+    // The device's own CSP must not survive; we impose our own sandbox policy.
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).not.toContain("default-src 'self'");
+    expect(csp).toContain('sandbox');
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(res.headers.get('x-frame-options')).toBeNull();
+  });
+
+  it('does not forward the user app cookies/authorization to the device, only device-prefixed cookies', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    // Browser sends: the proxy auth cookie, a leaked app cookie, and a device cookie.
+    const res = await app.request(`${BASE}/`, {
+      headers: {
+        cookie: `${cookie}; breeze_refresh=SECRET; bzdev_session=devsid`,
+        authorization: 'Bearer USER-API-TOKEN',
+      },
+    });
+    expect(res.status).toBe(200);
+    const [, command] = sendCommandMock.mock.calls.at(-1)!;
+    const fwd = JSON.stringify(command.payload.headers);
+    // App credentials must NOT reach the device.
+    expect(fwd).not.toContain('breeze_refresh');
+    expect(fwd).not.toContain('SECRET');
+    expect(fwd.toLowerCase()).not.toContain('authorization');
+    expect(fwd).not.toContain('USER-API-TOKEN');
+    expect(fwd).not.toContain('bz_tunnel');
+    // The device's own cookie round-trips, de-prefixed.
+    expect(command.payload.headers.cookie?.[0]).toBe('session=devsid');
   });
 
   it('injects <base> tag into text/html responses', async () => {
@@ -344,7 +373,7 @@ describe('tunnelHttp response rewriting', () => {
     expect(res.headers.get('location')).toBe(`/api/v1/tunnel-http/${TUNNEL_ID}/login`);
   });
 
-  it('rewrites Set-Cookie Path to the proxy base', async () => {
+  it('namespaces + path-scopes the device Set-Cookie so it round-trips without colliding with app cookies', async () => {
     sendCommandMock.mockResolvedValue(
       okAgentResult({
         headers: { 'content-type': ['text/plain'], 'set-cookie': ['sid=abc; Path=/; HttpOnly'] },
@@ -354,6 +383,7 @@ describe('tunnelHttp response rewriting', () => {
     const cookie = await mintCookie(app);
     const res = await app.request(`${BASE}/`, { headers: { cookie } });
     const sc = res.headers.get('set-cookie') ?? '';
+    expect(sc).toContain('bzdev_sid=abc');
     expect(sc).toContain(`Path=/api/v1/tunnel-http/${TUNNEL_ID}/`);
   });
 });

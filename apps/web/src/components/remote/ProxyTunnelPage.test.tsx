@@ -42,6 +42,10 @@ describe('ProxyTunnelPage', () => {
     expect(frame.getAttribute('src')).toContain(
       `/api/v1/tunnel-http/${TUNNEL_ID}/?__bzt=TKT-abc`,
     );
+    // Untrusted device content must be sandboxed without allow-same-origin.
+    const sandbox = frame.getAttribute('sandbox') ?? '';
+    expect(sandbox).toContain('allow-scripts');
+    expect(sandbox).not.toContain('allow-same-origin');
 
     // The mint call was actually made with POST.
     expect(fetchMock).toHaveBeenCalledWith(

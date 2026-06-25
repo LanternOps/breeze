@@ -171,6 +171,12 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
           src={proxyUrl}
           title="Proxied service"
           data-testid="network-proxy-frame"
+          // The proxied device is untrusted. Omitting `allow-same-origin` forces
+          // the framed content into a null origin so its scripts cannot read this
+          // app's cookies/storage or reach the parent frame (defense-in-depth with
+          // the server-set sandbox CSP). The proxy auth cookie is HttpOnly and
+          // attaches by site, so auth still works.
+          sandbox="allow-scripts allow-forms allow-popups"
           className="w-full flex-1 border-0"
           onLoad={() => setStatus((s) => (s === 'failed' || s === 'disconnected' ? s : 'active'))}
         />
