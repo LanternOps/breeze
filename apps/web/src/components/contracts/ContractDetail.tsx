@@ -129,6 +129,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
         successMessage: 'Draft deleted',
         onUnauthorized: UNAUTHORIZED,
       });
+      setDelOpen(false);
       void navigateTo('/contracts');
     } catch (err) {
       handleActionError(err, 'Could not delete the draft.');
