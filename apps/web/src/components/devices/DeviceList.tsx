@@ -797,7 +797,7 @@ export default function DeviceList({
       header: () => sortHeader('status', 'Status', 'Sort by status'),
       cell: (device) => (
         <td key="status" className="px-3 py-3 text-sm">
-          <div className="flex flex-wrap items-center gap-1">
+          <div className="flex items-center gap-1">
             <span
               className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
               title={statusFullLabels[device.status]}
@@ -813,7 +813,10 @@ export default function DeviceList({
                 Agent silent · {formatSilentDuration(device.mainAgentSilentSince!)}
               </span>
             )}
-            {device.pendingReboot && (
+            {/* Pending-reboot is only actionable while the box is reachable. On an
+                offline device the flag is stale and unactionable, so suppress the
+                dot rather than wrap it under the wider "Down" pill. */}
+            {device.pendingReboot && device.status !== 'offline' && (
               <span
                 data-testid={`device-${device.id}-pending-reboot-badge`}
                 title="The OS reports a pending reboot (Windows registry / Linux reboot-required markers)."

@@ -652,4 +652,18 @@ describe('DeviceList — pending reboot badge', () => {
     expect(screen.queryByTestId(`device-${explicitFalse.id}-pending-reboot-badge`)).toBeNull();
     expect(screen.queryByTestId(`device-${baseDevice.id}-pending-reboot-badge`)).toBeNull();
   });
+
+  it('suppresses the dot on an offline device even when pendingReboot is true (stale/unactionable)', () => {
+    const device: Device = {
+      ...baseDevice,
+      id: '55555555-5555-5555-5555-555555555555',
+      hostname: 'host-offline-needs-reboot',
+      status: 'offline',
+      pendingReboot: true,
+    };
+
+    render(<DeviceList devices={[device]} />);
+
+    expect(screen.queryByTestId(`device-${device.id}-pending-reboot-badge`)).toBeNull();
+  });
 });
