@@ -47,6 +47,20 @@ userRoutes.use('*', async (c, next) => {
     return;
   }
 
+  // Self-service routes (own profile + own/displayed avatar) must stay accessible
+  // to EVERY partner user regardless of org-access level. This gate governs
+  // partner-wide user MANAGEMENT only — without this exemption a 'selected'/'none'
+  // partner admin would be 403'd on GET/PATCH /me and the top-bar avatar
+  // (GET /:id/avatar runs its own scope check in the handler).
+  const path = c.req.path;
+  const isSelfServiceRoute =
+    /\/me(\/avatar)?$/.test(path) ||
+    (c.req.method === 'GET' && /\/avatar$/.test(path));
+  if (isSelfServiceRoute) {
+    await next();
+    return;
+  }
+
   if (!auth.partnerId) {
     throw new HTTPException(403, { message: 'Partner context required' });
   }

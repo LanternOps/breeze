@@ -2032,5 +2032,31 @@ describe('user routes', () => {
 
       expect(res.status).toBe(200);
     });
+
+    it('exempts self-service GET /me from the management gate for non-all admins', async () => {
+      // A 'selected'/'none' partner admin (accessibleOrgIds IS an array, so the
+      // shape early-return does NOT fire) must still reach their own profile —
+      // the gate governs partner-wide MANAGEMENT only. Without the self-service
+      // exemption this route would 403 (regression the cross-org fix introduced).
+      authAsPartner();
+      const userRow = {
+        id: 'user-123', email: 'test@example.com', name: 'Test', avatarUrl: null,
+        status: 'active', mfaEnabled: false, isPlatformAdmin: false,
+        createdAt: new Date(), lastLoginAt: null, setupCompletedAt: new Date(),
+        passwordChangedAt: null, preferences: {},
+      };
+      // Gate must NOT issue a partnerUsers membership query for a self-service
+      // path; the only select is the /me user lookup.
+      vi.mocked(db.select).mockReset().mockReturnValue({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([userRow])) })) })),
+      } as any);
+
+      const res = await app.request('/users/me', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+    });
   });
 });
