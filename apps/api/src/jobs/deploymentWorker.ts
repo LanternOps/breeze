@@ -582,167 +582,14 @@ export function createDeploymentWorker(): Worker {
 export function createDeploymentDeviceWorker(): Worker {
   return new Worker<ProcessDeploymentDeviceJob>(
     DEPLOYMENT_DEVICE_QUEUE,
-    // System DB context for the whole processor — same rationale as the
-    // deployment worker above (#1375 class). Device-status transitions,
-    // claim/release, retry counting and the failure-threshold auto-pause all
-    // write RLS-forced tables and would silently no-op without it.
-    async (job: Job<ProcessDeploymentDeviceJob>) => withSystemDbAccessContext(async () => {
-      const { deploymentId, deviceId, batchNumber } = assertDeploymentDeviceJobData(job.data);
-
-      // Get deployment
-      const [deployment] = await db
-        .select()
-        .from(deployments)
-        .where(eq(deployments.id, deploymentId))
-        .limit(1);
-
-      if (!deployment) {
-        throw new Error(`Deployment ${deploymentId} not found`);
-      }
-
-      if (!['pending', 'running', 'paused', 'cancelled'].includes(deployment.status)) {
-        return { skipped: true, reason: `Deployment status is ${deployment.status}` };
-      }
-
-      const claim = await claimDeploymentDeviceJob(deployment, { deploymentId, deviceId, batchNumber });
-      if (claim.claimed === false) {
-        return { skipped: true, reason: claim.reason };
-      }
-
-      if (deployment.status === 'paused' || deployment.status === 'cancelled') {
-        // Skip if deployment is paused or cancelled
-        await updateDeploymentDeviceStatus(deploymentId, deviceId, 'skipped', {
-          success: false,
-          error: `Deployment ${deployment.status}`
-        });
-        return { skipped: true, reason: deployment.status };
-      }
-
-      // Check maintenance window
-      const rolloutConfig = deployment.rolloutConfig as RolloutConfig;
-      if (rolloutConfig.respectMaintenanceWindows) {
-        const inMaintenance = await isDeviceInMaintenanceWindow(deviceId);
-        if (!inMaintenance) {
-          await releaseDeploymentDeviceClaim(deploymentId, deviceId);
-
-          // Re-queue for later
-          const queue = getDeploymentDeviceQueue();
-          const deferredJobId = getDeploymentDeferredDeviceJobId(
-            deploymentId,
-            deviceId
-          );
-          const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
-          if (!existing) {
-            await queue.add(
-              'process-device',
-              job.data,
-              {
-                delay: 5 * 60 * 1000,
-                jobId: deferredJobId,
-                removeOnComplete: { count: 100 },
-                removeOnFail: { count: 200 }
-              }
-            );
-          }
-          return { delayed: true, reason: 'waiting for maintenance window' };
-        }
-      }
-
-      try {
-        // Execute the deployment payload
-        const result = await executeDeploymentPayload(
-          deployment.payload as DeploymentPayload,
-          deviceId
-        );
-
-        // Update status based on result
-        if (result.success) {
-          await updateDeploymentDeviceStatus(deploymentId, deviceId, 'completed', result);
-        } else {
-          // Check if we should retry
-          const { canRetry, retryCount } = await incrementRetryCount(deploymentId, deviceId);
-          if (canRetry) {
-            const backoffMs = getRetryBackoffMs(retryCount, rolloutConfig);
-            const queue = getDeploymentDeviceQueue();
-            const deferredJobId = getDeploymentDeferredDeviceJobId(
-              deploymentId,
-              deviceId
-            );
-            const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
-            if (!existing) {
-              await queue.add(
-                'process-device',
-                job.data,
-                {
-                  delay: backoffMs,
-                  jobId: deferredJobId,
-                  removeOnComplete: { count: 100 },
-                  removeOnFail: { count: 200 }
-                }
-              );
-            }
-            return { retrying: true, retryCount, backoffMs };
-          } else {
-            await updateDeploymentDeviceStatus(deploymentId, deviceId, 'failed', result);
-          }
-        }
-
-        // Check if deployment should be paused due to failures
-        const { pause, reason } = await shouldPauseDeployment(deploymentId, rolloutConfig);
-        if (pause) {
-          await pauseDeployment(deploymentId);
-          
-          // Send notifications to relevant users (push and email)
-          await sendDeploymentPausedNotifications({
-            deploymentId,
-            deploymentName: deployment.name,
-            orgId: deployment.orgId,
-            reason: reason ?? undefined,
-            dashboardUrl: process.env.DASHBOARD_URL 
-              ? `${process.env.DASHBOARD_URL}/deployments/${deploymentId}`
-              : undefined
-          });
-          
-          return { completed: true, deploymentPaused: true, pauseReason: reason };
-        }
-
-        return { completed: true, success: result.success };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-        // Check if we should retry
-        const { canRetry, retryCount } = await incrementRetryCount(deploymentId, deviceId);
-        if (canRetry) {
-          const backoffMs = getRetryBackoffMs(retryCount, rolloutConfig);
-          const queue = getDeploymentDeviceQueue();
-          const deferredJobId = getDeploymentDeferredDeviceJobId(
-            deploymentId,
-            deviceId
-          );
-          const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
-          if (!existing) {
-            await queue.add(
-              'process-device',
-              job.data,
-              {
-                delay: backoffMs,
-                jobId: deferredJobId,
-                removeOnComplete: { count: 100 },
-                removeOnFail: { count: 200 }
-              }
-            );
-          }
-          return { retrying: true, retryCount, error: errorMessage };
-        }
-
-        await updateDeploymentDeviceStatus(deploymentId, deviceId, 'failed', {
-          success: false,
-          error: errorMessage
-        });
-
-        throw error;
-      }
-    }),
+    // NOT wrapped in one withSystemDbAccessContext: processDeploymentDevice
+    // manages its own short contexts so the up-to-30-min payload completion
+    // poll never holds a pooled connection in an open transaction (#1105
+    // conn-hold that starved the DB pool under concurrency 10 → user 503s).
+    // The setup/record DB ops each still run under a short system context so
+    // RLS-forced device-status/claim/retry/auto-pause writes don't silently
+    // no-op under breeze_app (#1375 class).
+    async (job: Job<ProcessDeploymentDeviceJob>) => processDeploymentDevice(job.data),
     {
       connection: getBullMQConnection(),
       concurrency: 10,
@@ -751,6 +598,207 @@ export function createDeploymentDeviceWorker(): Worker {
       maxStalledCount: 2,
     }
   );
+}
+
+type PrepareDeploymentDeviceResult =
+  | { skipped: true; reason: string }
+  | { delayed: true; reason: string }
+  | { deployment: typeof deployments.$inferSelect; rolloutConfig: RolloutConfig };
+
+async function processDeploymentDevice(jobData: ProcessDeploymentDeviceJob): Promise<unknown> {
+  // Phased so the up-to-30-min payload completion poll never holds a pooled
+  // connection in an open transaction (#1105 conn-hold). Setup and record each
+  // run in their own SHORT system context; the executors poll OUTSIDE any
+  // held transaction.
+  const data = assertDeploymentDeviceJobData(jobData);
+
+  const prep = await withSystemDbAccessContext(() => prepareDeploymentDevice(data, jobData));
+  if (!('deployment' in prep)) return prep; // early skip/delayed result — return as-is
+
+  let result: ExecutionResult | undefined;
+  let executionError: unknown;
+  try {
+    // No held transaction here: the executors self-manage short contexts around
+    // each DB touch and sleep between polls without a pooled connection.
+    result = await executeDeploymentPayload(prep.deployment.payload as DeploymentPayload, data.deviceId);
+  } catch (error) {
+    executionError = error;
+  }
+
+  return withSystemDbAccessContext(() =>
+    recordDeploymentOutcome(data, jobData, prep, result, executionError)
+  );
+}
+
+async function prepareDeploymentDevice(
+  data: ProcessDeploymentDeviceJob,
+  jobData: ProcessDeploymentDeviceJob
+): Promise<PrepareDeploymentDeviceResult> {
+  const { deploymentId, deviceId, batchNumber } = data;
+
+  // Get deployment
+  const [deployment] = await db
+    .select()
+    .from(deployments)
+    .where(eq(deployments.id, deploymentId))
+    .limit(1);
+
+  if (!deployment) {
+    throw new Error(`Deployment ${deploymentId} not found`);
+  }
+
+  if (!['pending', 'running', 'paused', 'cancelled'].includes(deployment.status)) {
+    return { skipped: true, reason: `Deployment status is ${deployment.status}` };
+  }
+
+  const claim = await claimDeploymentDeviceJob(deployment, { deploymentId, deviceId, batchNumber });
+  if (claim.claimed === false) {
+    return { skipped: true, reason: claim.reason };
+  }
+
+  if (deployment.status === 'paused' || deployment.status === 'cancelled') {
+    // Skip if deployment is paused or cancelled
+    await updateDeploymentDeviceStatus(deploymentId, deviceId, 'skipped', {
+      success: false,
+      error: `Deployment ${deployment.status}`
+    });
+    return { skipped: true, reason: deployment.status };
+  }
+
+  // Check maintenance window
+  const rolloutConfig = deployment.rolloutConfig as RolloutConfig;
+  if (rolloutConfig.respectMaintenanceWindows) {
+    const inMaintenance = await isDeviceInMaintenanceWindow(deviceId);
+    if (!inMaintenance) {
+      await releaseDeploymentDeviceClaim(deploymentId, deviceId);
+
+      // Re-queue for later
+      const queue = getDeploymentDeviceQueue();
+      const deferredJobId = getDeploymentDeferredDeviceJobId(
+        deploymentId,
+        deviceId
+      );
+      const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
+      if (!existing) {
+        await queue.add(
+          'process-device',
+          jobData,
+          {
+            delay: 5 * 60 * 1000,
+            jobId: deferredJobId,
+            removeOnComplete: { count: 100 },
+            removeOnFail: { count: 200 }
+          }
+        );
+      }
+      return { delayed: true, reason: 'waiting for maintenance window' };
+    }
+  }
+
+  return { deployment, rolloutConfig };
+}
+
+async function recordDeploymentOutcome(
+  data: ProcessDeploymentDeviceJob,
+  jobData: ProcessDeploymentDeviceJob,
+  prep: { deployment: typeof deployments.$inferSelect; rolloutConfig: RolloutConfig },
+  result: ExecutionResult | undefined,
+  executionError: unknown
+): Promise<unknown> {
+  const { deploymentId, deviceId } = data;
+  const { deployment, rolloutConfig } = prep;
+
+  if (executionError !== undefined) {
+    const errorMessage = executionError instanceof Error ? executionError.message : 'Unknown error';
+
+    // Check if we should retry
+    const { canRetry, retryCount } = await incrementRetryCount(deploymentId, deviceId);
+    if (canRetry) {
+      const backoffMs = getRetryBackoffMs(retryCount, rolloutConfig);
+      const queue = getDeploymentDeviceQueue();
+      const deferredJobId = getDeploymentDeferredDeviceJobId(
+        deploymentId,
+        deviceId
+      );
+      const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
+      if (!existing) {
+        await queue.add(
+          'process-device',
+          jobData,
+          {
+            delay: backoffMs,
+            jobId: deferredJobId,
+            removeOnComplete: { count: 100 },
+            removeOnFail: { count: 200 }
+          }
+        );
+      }
+      return { retrying: true, retryCount, error: errorMessage };
+    }
+
+    await updateDeploymentDeviceStatus(deploymentId, deviceId, 'failed', {
+      success: false,
+      error: errorMessage
+    });
+
+    throw executionError;
+  }
+
+  // result is defined whenever executionError is undefined
+  const executionResult = result as ExecutionResult;
+
+  // Update status based on result
+  if (executionResult.success) {
+    await updateDeploymentDeviceStatus(deploymentId, deviceId, 'completed', executionResult);
+  } else {
+    // Check if we should retry
+    const { canRetry, retryCount } = await incrementRetryCount(deploymentId, deviceId);
+    if (canRetry) {
+      const backoffMs = getRetryBackoffMs(retryCount, rolloutConfig);
+      const queue = getDeploymentDeviceQueue();
+      const deferredJobId = getDeploymentDeferredDeviceJobId(
+        deploymentId,
+        deviceId
+      );
+      const existing = await resolveActiveQueueJob(queue, [deferredJobId]);
+      if (!existing) {
+        await queue.add(
+          'process-device',
+          jobData,
+          {
+            delay: backoffMs,
+            jobId: deferredJobId,
+            removeOnComplete: { count: 100 },
+            removeOnFail: { count: 200 }
+          }
+        );
+      }
+      return { retrying: true, retryCount, backoffMs };
+    } else {
+      await updateDeploymentDeviceStatus(deploymentId, deviceId, 'failed', executionResult);
+    }
+  }
+
+  // Check if deployment should be paused due to failures
+  const { pause, reason } = await shouldPauseDeployment(deploymentId, rolloutConfig);
+  if (pause) {
+    await pauseDeployment(deploymentId);
+
+    // Send notifications to relevant users (push and email)
+    await sendDeploymentPausedNotifications({
+      deploymentId,
+      deploymentName: deployment.name,
+      orgId: deployment.orgId,
+      reason: reason ?? undefined,
+      dashboardUrl: process.env.DASHBOARD_URL
+        ? `${process.env.DASHBOARD_URL}/deployments/${deploymentId}`
+        : undefined
+    });
+
+    return { completed: true, deploymentPaused: true, pauseReason: reason };
+  }
+
+  return { completed: true, success: executionResult.success };
 }
 
 // ============================================
@@ -793,6 +841,46 @@ export function isSuccessfulAgentCommand(
   return true;
 }
 
+type DeviceCommandRow = typeof deviceCommands.$inferSelect;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll device_commands for the agent's result OUTSIDE any held transaction:
+ * each status check is its own short system context, and the sleeps between
+ * polls hold NO pooled connection. Previously the executors polled inside the
+ * worker's single open transaction for up to 30 min, starving the DB pool under
+ * concurrency 10 (#1105 conn-hold → user 503s). Returns the terminal command
+ * row (status 'completed'|'failed'), or null on timeout / row-not-found.
+ */
+async function pollDeploymentCommandResult(
+  commandId: string,
+  timeoutMs: number,
+  pollInterval: number
+): Promise<DeviceCommandRow | null> {
+  let elapsed = 0;
+  while (elapsed < timeoutMs) {
+    await sleep(pollInterval);
+    elapsed += pollInterval;
+
+    const [updated] = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(deviceCommands)
+        .where(eq(deviceCommands.id, commandId))
+        .limit(1)
+    );
+
+    if (!updated) return null;
+    if (updated.status === 'completed' || updated.status === 'failed') {
+      return updated;
+    }
+  }
+  return null;
+}
+
 async function executeDeploymentPayload(
   payload: DeploymentPayload,
   deviceId: string
@@ -830,92 +918,79 @@ async function executeScriptPayload(
   deviceId: string,
   startTime: number
 ): Promise<ExecutionResult> {
-  // Get the script
-  const [script] = await db
-    .select()
-    .from(scripts)
-    .where(and(eq(scripts.id, payload.scriptId), isNull(scripts.deletedAt)))
-    .limit(1);
-
-  if (!script) {
-    return {
-      success: false,
-      error: 'Script not found',
-      durationMs: Date.now() - startTime
-    };
-  }
-
-  // Create command for the device
-  const [command] = await db
-    .insert(deviceCommands)
-    .values({
-      deviceId,
-      type: 'run_script',
-      payload: {
-        scriptId: payload.scriptId,
-        content: script.content,
-        language: script.language,
-        parameters: payload.parameters || {},
-        timeoutSeconds: script.timeoutSeconds,
-        runAs: script.runAs
-      },
-      status: 'pending'
-    })
-    .returning();
-
-  if (!command) {
-    return {
-      success: false,
-      error: 'Failed to create command',
-      durationMs: Date.now() - startTime
-    };
-  }
-
-  // Wait for command to complete (with timeout)
-  const timeoutMs = (script.timeoutSeconds + 60) * 1000; // Add 60s buffer
-  const pollInterval = 1000;
-  let elapsed = 0;
-
-  while (elapsed < timeoutMs) {
-    const [updatedCommand] = await db
+  const prep = await withSystemDbAccessContext(async () => {
+    // Get the script
+    const [script] = await db
       .select()
-      .from(deviceCommands)
-      .where(eq(deviceCommands.id, command.id))
+      .from(scripts)
+      .where(and(eq(scripts.id, payload.scriptId), isNull(scripts.deletedAt)))
       .limit(1);
 
-    if (!updatedCommand) {
-      return {
-        success: false,
-        error: 'Command not found',
-        durationMs: Date.now() - startTime
-      };
+    if (!script) {
+      return { error: 'Script not found' as const };
     }
 
-    if (updatedCommand.status === 'completed') {
-      const result = updatedCommand.result as { exitCode?: number; stdout?: string; stderr?: string } | null;
-      return {
-        success: result?.exitCode === 0,
-        exitCode: result?.exitCode,
-        output: result?.stdout,
-        error: result?.stderr,
-        durationMs: Date.now() - startTime
-      };
+    // Create command for the device
+    const [command] = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type: 'run_script',
+        payload: {
+          scriptId: payload.scriptId,
+          content: script.content,
+          language: script.language,
+          parameters: payload.parameters || {},
+          timeoutSeconds: script.timeoutSeconds,
+          runAs: script.runAs
+        },
+        status: 'pending'
+      })
+      .returning();
+
+    if (!command) {
+      return { error: 'Failed to create command' as const };
     }
 
-    if (updatedCommand.status === 'failed') {
-      const result = updatedCommand.result as { error?: string } | null;
-      return {
-        success: false,
-        error: result?.error || 'Command failed',
-        durationMs: Date.now() - startTime
-      };
-    }
+    return {
+      commandId: command.id,
+      // Wait for command to complete (with timeout)
+      timeoutMs: (script.timeoutSeconds + 60) * 1000, // Add 60s buffer
+      pollInterval: 1000
+    };
+  });
 
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-    elapsed += pollInterval;
+  if ('error' in prep) {
+    return {
+      success: false,
+      error: prep.error,
+      durationMs: Date.now() - startTime
+    };
   }
 
-  // Timeout
+  const finalCommand = await pollDeploymentCommandResult(prep.commandId, prep.timeoutMs, prep.pollInterval);
+
+  if (finalCommand?.status === 'completed') {
+    const result = finalCommand.result as { exitCode?: number; stdout?: string; stderr?: string } | null;
+    return {
+      success: result?.exitCode === 0,
+      exitCode: result?.exitCode,
+      output: result?.stdout,
+      error: result?.stderr,
+      durationMs: Date.now() - startTime
+    };
+  }
+
+  if (finalCommand?.status === 'failed') {
+    const result = finalCommand.result as { error?: string } | null;
+    return {
+      success: false,
+      error: result?.error || 'Command failed',
+      durationMs: Date.now() - startTime
+    };
+  }
+
+  // Timeout (or command row vanished mid-poll)
   return {
     success: false,
     error: 'Command timed out',
@@ -928,87 +1003,78 @@ async function executePatchPayload(
   deviceId: string,
   startTime: number
 ): Promise<ExecutionResult> {
-  const patchRecords = payload.patchIds.length > 0
-    ? await db
-      .select({
-        id: patches.id,
-        source: patches.source,
-        externalId: patches.externalId,
-        title: patches.title
+  const prep = await withSystemDbAccessContext(async () => {
+    const patchRecords = payload.patchIds.length > 0
+      ? await db
+        .select({
+          id: patches.id,
+          source: patches.source,
+          externalId: patches.externalId,
+          title: patches.title
+        })
+        .from(patches)
+        .where(inArray(patches.id, payload.patchIds))
+      : [];
+
+    // Create command for the device to install patches
+    const [command] = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type: 'install_patches',
+        payload: {
+          patchIds: payload.patchIds,
+          patches: patchRecords
+        },
+        status: 'pending'
       })
-      .from(patches)
-      .where(inArray(patches.id, payload.patchIds))
-    : [];
+      .returning();
 
-  // Create command for the device to install patches
-  const [command] = await db
-    .insert(deviceCommands)
-    .values({
-      deviceId,
-      type: 'install_patches',
-      payload: {
-        patchIds: payload.patchIds,
-        patches: patchRecords
-      },
-      status: 'pending'
-    })
-    .returning();
+    if (!command) {
+      return { error: 'Failed to create command' as const };
+    }
 
-  if (!command) {
+    return {
+      commandId: command.id,
+      // Wait for command to complete (patches can take a while)
+      timeoutMs: 30 * 60 * 1000, // 30 minutes
+      pollInterval: 5000
+    };
+  });
+
+  if ('error' in prep) {
     return {
       success: false,
-      error: 'Failed to create command',
+      error: prep.error,
       durationMs: Date.now() - startTime
     };
   }
 
-  // Wait for command to complete (patches can take a while)
-  const timeoutMs = 30 * 60 * 1000; // 30 minutes
-  const pollInterval = 5000;
-  let elapsed = 0;
+  const finalCommand = await pollDeploymentCommandResult(prep.commandId, prep.timeoutMs, prep.pollInterval);
 
-  while (elapsed < timeoutMs) {
-    const [updatedCommand] = await db
-      .select()
-      .from(deviceCommands)
-      .where(eq(deviceCommands.id, command.id))
-      .limit(1);
-
-    if (!updatedCommand) {
-      return {
-        success: false,
-        error: 'Command not found',
-        durationMs: Date.now() - startTime
-      };
-    }
-
-    if (updatedCommand.status === 'completed' || updatedCommand.status === 'failed') {
-      const result = updatedCommand.result as { exitCode?: number; stdout?: string; stderr?: string; error?: string } | null;
-      let parsedStdout: { success?: boolean; installedCount?: number; failedCount?: number; error?: string } | null = null;
-      if (result?.stdout) {
-        try {
-          parsedStdout = JSON.parse(result.stdout);
-        } catch {
-          parsedStdout = null;
-        }
+  if (finalCommand && (finalCommand.status === 'completed' || finalCommand.status === 'failed')) {
+    const result = finalCommand.result as { exitCode?: number; stdout?: string; stderr?: string; error?: string } | null;
+    let parsedStdout: { success?: boolean; installedCount?: number; failedCount?: number; error?: string } | null = null;
+    if (result?.stdout) {
+      try {
+        parsedStdout = JSON.parse(result.stdout);
+      } catch {
+        parsedStdout = null;
       }
-
-      const success = updatedCommand.status === 'completed' &&
-        (parsedStdout?.success ?? true) &&
-        (typeof result?.exitCode !== 'number' || result.exitCode === 0);
-
-      return {
-        success,
-        output: typeof parsedStdout?.installedCount === 'number'
-          ? `Installed ${parsedStdout.installedCount} patches`
-          : undefined,
-        error: result?.error || result?.stderr || parsedStdout?.error,
-        durationMs: Date.now() - startTime
-      };
     }
 
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-    elapsed += pollInterval;
+    const success = finalCommand.status === 'completed' &&
+      (parsedStdout?.success ?? true) &&
+      (typeof result?.exitCode !== 'number' || result.exitCode === 0);
+
+    return {
+      success,
+      output: typeof parsedStdout?.installedCount === 'number'
+        ? `Installed ${parsedStdout.installedCount} patches`
+        : undefined,
+      error: result?.error || result?.stderr || parsedStdout?.error,
+      durationMs: Date.now() - startTime
+    };
   }
 
   return {
@@ -1023,59 +1089,50 @@ async function executeSoftwarePayload(
   deviceId: string,
   startTime: number
 ): Promise<ExecutionResult> {
-  // Create command for the device
-  const [command] = await db
-    .insert(deviceCommands)
-    .values({
-      deviceId,
-      type: `software_${payload.action}`,
-      payload: {
-        packageId: payload.packageId
-      },
-      status: 'pending'
-    })
-    .returning();
+  const prep = await withSystemDbAccessContext(async () => {
+    // Create command for the device
+    const [command] = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type: `software_${payload.action}`,
+        payload: {
+          packageId: payload.packageId
+        },
+        status: 'pending'
+      })
+      .returning();
 
-  if (!command) {
+    if (!command) {
+      return { error: 'Failed to create command' as const };
+    }
+
+    return {
+      commandId: command.id,
+      // Wait for command to complete
+      timeoutMs: 15 * 60 * 1000, // 15 minutes
+      pollInterval: 3000
+    };
+  });
+
+  if ('error' in prep) {
     return {
       success: false,
-      error: 'Failed to create command',
+      error: prep.error,
       durationMs: Date.now() - startTime
     };
   }
 
-  // Wait for command to complete
-  const timeoutMs = 15 * 60 * 1000; // 15 minutes
-  const pollInterval = 3000;
-  let elapsed = 0;
+  const finalCommand = await pollDeploymentCommandResult(prep.commandId, prep.timeoutMs, prep.pollInterval);
 
-  while (elapsed < timeoutMs) {
-    const [updatedCommand] = await db
-      .select()
-      .from(deviceCommands)
-      .where(eq(deviceCommands.id, command.id))
-      .limit(1);
-
-    if (!updatedCommand) {
-      return {
-        success: false,
-        error: 'Command not found',
-        durationMs: Date.now() - startTime
-      };
-    }
-
-    if (updatedCommand.status === 'completed' || updatedCommand.status === 'failed') {
-      const result = updatedCommand.result as AgentCommandResult;
-      return {
-        success: isSuccessfulAgentCommand(updatedCommand.status, result),
-        output: result?.stdout,
-        error: result?.error || result?.stderr,
-        durationMs: Date.now() - startTime
-      };
-    }
-
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-    elapsed += pollInterval;
+  if (finalCommand && (finalCommand.status === 'completed' || finalCommand.status === 'failed')) {
+    const result = finalCommand.result as AgentCommandResult;
+    return {
+      success: isSuccessfulAgentCommand(finalCommand.status, result),
+      output: result?.stdout,
+      error: result?.error || result?.stderr,
+      durationMs: Date.now() - startTime
+    };
   }
 
   return {
@@ -1090,62 +1147,53 @@ async function executePolicyPayload(
   deviceId: string,
   startTime: number
 ): Promise<ExecutionResult> {
-  // Create command for the device to apply policy
-  const [command] = await db
-    .insert(deviceCommands)
-    .values({
-      deviceId,
-      type: 'apply_policy',
-      payload: {
-        policyId: payload.policyId
-      },
-      status: 'pending'
-    })
-    .returning();
+  const prep = await withSystemDbAccessContext(async () => {
+    // Create command for the device to apply policy
+    const [command] = await db
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type: 'apply_policy',
+        payload: {
+          policyId: payload.policyId
+        },
+        status: 'pending'
+      })
+      .returning();
 
-  if (!command) {
+    if (!command) {
+      return { error: 'Failed to create command' as const };
+    }
+
+    return {
+      commandId: command.id,
+      // Wait for command to complete
+      timeoutMs: 10 * 60 * 1000, // 10 minutes
+      pollInterval: 2000
+    };
+  });
+
+  if ('error' in prep) {
     return {
       success: false,
-      error: 'Failed to create command',
+      error: prep.error,
       durationMs: Date.now() - startTime
     };
   }
 
-  // Wait for command to complete
-  const timeoutMs = 10 * 60 * 1000; // 10 minutes
-  const pollInterval = 2000;
-  let elapsed = 0;
+  const finalCommand = await pollDeploymentCommandResult(prep.commandId, prep.timeoutMs, prep.pollInterval);
 
-  while (elapsed < timeoutMs) {
-    const [updatedCommand] = await db
-      .select()
-      .from(deviceCommands)
-      .where(eq(deviceCommands.id, command.id))
-      .limit(1);
-
-    if (!updatedCommand) {
-      return {
-        success: false,
-        error: 'Command not found',
-        durationMs: Date.now() - startTime
-      };
-    }
-
-    if (updatedCommand.status === 'completed' || updatedCommand.status === 'failed') {
-      const result = updatedCommand.result as AgentCommandResult;
-      const success = isSuccessfulAgentCommand(updatedCommand.status, result);
-      return {
-        success,
-        output: typeof result?.compliant === 'boolean'
-          ? (result.compliant ? 'Device is compliant' : 'Device is non-compliant')
-          : undefined,
-        error: result?.error || result?.stderr,
-        durationMs: Date.now() - startTime
-      };
-    }
-
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-    elapsed += pollInterval;
+  if (finalCommand && (finalCommand.status === 'completed' || finalCommand.status === 'failed')) {
+    const result = finalCommand.result as AgentCommandResult;
+    const success = isSuccessfulAgentCommand(finalCommand.status, result);
+    return {
+      success,
+      output: typeof result?.compliant === 'boolean'
+        ? (result.compliant ? 'Device is compliant' : 'Device is non-compliant')
+        : undefined,
+      error: result?.error || result?.stderr,
+      durationMs: Date.now() - startTime
+    };
   }
 
   return {
