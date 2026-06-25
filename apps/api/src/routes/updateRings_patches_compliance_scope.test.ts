@@ -228,6 +228,82 @@ describe('updateRings routes', () => {
       expect(body.pagination).toBeDefined();
     });
 
+    // Pagination regression (#1316 follow-up): the ring endpoint must share the
+    // /patches getPagination — default 50, capped at 200 (not the old local 100).
+    // Selecting a ring previously collapsed the visible list because the web sent
+    // no `limit` and this endpoint defaulted to 50. The web now sends ?limit=200.
+    function mockRingPatchesQuery() {
+      const limitSpy = vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue([]) // empty page → skips approval lookup
+      });
+      vi.mocked(db.select)
+        // ring lookup
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+            })
+          })
+        } as any)
+        // patches list
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: limitSpy })
+            })
+          })
+        } as any)
+        // count
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }])
+          })
+        } as any);
+      return limitSpy;
+    }
+
+    it('honors an explicit ?limit=200 (matches the web ring fetch)', async () => {
+      const limitSpy = mockRingPatchesQuery();
+
+      const res = await app.request(`/update-rings/${RING_ID}/patches?limit=200`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(limitSpy).toHaveBeenCalledWith(200);
+      const body = await res.json();
+      expect(body.pagination.limit).toBe(200);
+    });
+
+    it('caps ?limit at the shared 200, not the old local 100', async () => {
+      const limitSpy = mockRingPatchesQuery();
+
+      const res = await app.request(`/update-rings/${RING_ID}/patches?limit=500`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(limitSpy).toHaveBeenCalledWith(200);
+      const body = await res.json();
+      expect(body.pagination.limit).toBe(200);
+    });
+
+    it('defaults to a 50-row page when no ?limit is given', async () => {
+      const limitSpy = mockRingPatchesQuery();
+
+      const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(limitSpy).toHaveBeenCalledWith(50);
+      const body = await res.json();
+      expect(body.pagination.limit).toBe(50);
+    });
+
     it('should return 404 for non-existent ring', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
