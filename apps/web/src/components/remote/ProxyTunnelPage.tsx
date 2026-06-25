@@ -8,6 +8,9 @@ interface Props {
   target: string;
 }
 
+const TLS_UNTRUSTED_MSG =
+  'This device presented an untrusted or self-signed certificate. Recreate the proxy session with "Allow self-signed certificate" enabled to proceed.';
+
 /**
  * Network Proxy page. Renders the proxied device's web UI in an iframe served
  * through the API HTTP reverse proxy (`/api/v1/tunnel-http/:id/*`). A one-time
@@ -39,7 +42,13 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
         const data = await res.json();
         if (data.status === 'failed' || data.status === 'disconnected') {
           setStatus(data.status);
-          if (data.status === 'failed') setError(extractApiError(data, 'Tunnel failed'));
+          if (data.status === 'failed') {
+            setError(
+              data.errorMessage === 'tls_cert_untrusted'
+                ? TLS_UNTRUSTED_MSG
+                : extractApiError(data, 'Tunnel failed'),
+            );
+          }
         }
       }
     } catch { /* ignore */ }

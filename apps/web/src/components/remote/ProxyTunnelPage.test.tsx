@@ -89,4 +89,21 @@ describe('ProxyTunnelPage', () => {
       expect(screen.getByText('Tunnel open failed on agent')).toBeInTheDocument();
     });
   });
+
+  it('shows the recreate-with-self-signed banner on tls_cert_untrusted', async () => {
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
+        return makeResponse({ ticket: { ticket: 'TKT-abc', expiresInSeconds: 300 } });
+      }
+      if (url === `/tunnels/${TUNNEL_ID}`) {
+        return makeResponse({ status: 'failed', errorMessage: 'tls_cert_untrusted' });
+      }
+      return makeResponse({});
+    });
+
+    render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:8443" />);
+
+    await screen.findByText(/self-signed certificate/i);
+    expect(screen.getByText(/recreate the proxy session/i)).toBeInTheDocument();
+  });
 });
