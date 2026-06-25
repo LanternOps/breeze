@@ -7,7 +7,7 @@ import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { captureException } from '../services/sentry';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
-import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import { getTrustedClientIp } from '../services/clientIp';
 import { createAuditLogAsync } from '../services/auditService';
 import { getRedis } from '../services/redis';
@@ -284,6 +284,111 @@ async function closeTunnelLifecycle(tunnelId: string, options: { notifyAgent: bo
 }
 
 /**
+ * Mid-session revalidation: re-check that an active tunnel's user is still
+ * active, still owns the session, the device is still online, and the
+ * remote-access policy still permits the relay. Mirrors the connect-time
+ * checks in `validateTunnelAccess` minus the one-time ticket (already
+ * consumed). Returns `{ ok: false, reason }` when access has been revoked
+ * so the caller can tear the socket down fail-closed.
+ *
+ * Ticket consumption is the only connect-time auth boundary for a tunnel WS,
+ * and the user↔agent relay re-checks nothing once forwarding — so without
+ * this a revoke (operator suspended, device offline/quarantined, policy
+ * disabled, session ended elsewhere) keeps traffic flowing to the agent until
+ * the pong timeout, or indefinitely while the client stays live.
+ */
+export async function revalidateTunnelSession(
+  tunnelId: string,
+  conn: Pick<TunnelConnection, 'userId' | 'deviceId' | 'tunnelType'>,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  return withSystemDbAccessContext(async () => {
+    const [user] = await db
+      .select({ id: users.id, status: users.status })
+      .from(users)
+      .where(eq(users.id, conn.userId))
+      .limit(1);
+
+    if (!user || user.status !== 'active') {
+      return { ok: false as const, reason: 'User no longer active' };
+    }
+
+    const [result] = await db
+      .select({ session: tunnelSessions, device: devices })
+      .from(tunnelSessions)
+      .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
+      .where(eq(tunnelSessions.id, tunnelId))
+      .limit(1);
+
+    if (!result) {
+      return { ok: false as const, reason: 'Tunnel session not found' };
+    }
+
+    const { session, device } = result;
+
+    if (session.userId !== user.id) {
+      return { ok: false as const, reason: 'Tunnel session no longer owned by user' };
+    }
+
+    if (!['pending', 'connecting', 'active'].includes(session.status)) {
+      return { ok: false as const, reason: `Tunnel session is ${session.status}` };
+    }
+
+    if (device.status !== 'online') {
+      return { ok: false as const, reason: 'Device is no longer online' };
+    }
+
+    const tunnelCapability = conn.tunnelType === 'vnc' ? 'vncRelay' as const : 'proxy' as const;
+    const policyCheck = await checkRemoteAccess(device.id, tunnelCapability);
+    if (!policyCheck.allowed) {
+      return { ok: false as const, reason: policyCheck.reason ?? 'Tunnel access disabled by policy' };
+    }
+
+    return { ok: true as const };
+  });
+}
+
+/**
+ * Mid-session revocation gate for a live tunnel socket. Combines the
+ * cross-instance Redis revoke flag (`isViewerSessionRevoked`, set by
+ * `revokeViewerSession` on teardown elsewhere) with the DB revalidation
+ * above. Fails CLOSED: any thrown error or revoked/invalid state tears the
+ * socket down so a revoked user/device cannot keep forwarding traffic.
+ * Returns `true` when the socket was closed.
+ */
+async function enforceTunnelRevocation(tunnelId: string, ws: WSContext): Promise<boolean> {
+  const conn = activeTunnelConnections.get(tunnelId);
+  if (!conn) return false;
+
+  try {
+    const revoked = await isViewerSessionRevoked(tunnelId);
+    if (revoked) {
+      console.warn(`[TunnelWs] Tunnel ${tunnelId} revoked mid-session, closing socket`);
+      await closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Tunnel revoked' });
+      try { ws.close(4003, 'Tunnel revoked'); } catch { /* already closing */ }
+      return true;
+    }
+
+    const check = await revalidateTunnelSession(tunnelId, conn);
+    if (!check.ok) {
+      console.warn(`[TunnelWs] Tunnel ${tunnelId} access revoked mid-session (${check.reason}), closing socket`);
+      await closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: check.reason });
+      try { ws.close(4003, 'Access revoked'); } catch { /* already closing */ }
+      return true;
+    }
+
+    return false;
+  } catch (err) {
+    // Fail CLOSED: a thrown error (Redis down already resolves `true` above,
+    // but a DB error here must not leave the tunnel relaying) tears the
+    // socket down this tick.
+    console.error(`[TunnelWs] Revocation check failed for tunnel ${tunnelId}, closing socket (fail-closed):`, err);
+    await closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Revocation check failed' });
+    try { ws.close(4003, 'Revocation check failed'); } catch { /* already closing */ }
+    return true;
+  }
+}
+
+/**
  * Create WebSocket handlers for a tunnel session.
  */
 function createTunnelWsHandlers(
@@ -372,11 +477,19 @@ function createTunnelWsHandlers(
             return;
           }
 
-          try {
-            ws.send(JSON.stringify({ type: 'ping' }));
-          } catch {
-            void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Relay ping failed' });
-          }
+          // Mid-session revocation enforcement: re-check user/device/session/
+          // policy on each ping interval and tear the socket down fail-closed
+          // if access is gone. A revoked tunnel closes within at most one ping
+          // interval (~PING_INTERVAL_MS). Nothing else re-checks authorization
+          // once the relay is forwarding.
+          void enforceTunnelRevocation(tunnelId, ws).then((closed) => {
+            if (closed) return;
+            try {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            } catch {
+              void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Relay ping failed' });
+            }
+          });
         }, PING_INTERVAL_MS);
 
         // Only transition to active if the tunnel_open succeeded (status = connecting).

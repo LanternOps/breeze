@@ -9,6 +9,37 @@ vi.mock('../services/redis', () => ({
   resolveRedisUrl: vi.fn(() => 'redis://localhost:6379'),
 }));
 
+// DB mock — `isEventWsUserActive` selects the user's status under system
+// scope. Tests drive the returned row via `setUserStatusRow`.
+let userStatusRow: { status: string } | undefined = { status: 'active' };
+function setUserStatusRow(row: { status: string } | undefined) {
+  userStatusRow = row;
+}
+let throwOnSelect = false;
+function setThrowOnSelect(v: boolean) {
+  throwOnSelect = v;
+}
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => {
+            if (throwOnSelect) throw new Error('db down');
+            return userStatusRow ? [userStatusRow] : [];
+          }),
+        })),
+      })),
+    })),
+  },
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+}));
+
+vi.mock('../db/schema', () => ({
+  users: {},
+}));
+
 vi.mock('../services/eventDispatcher', () => {
   const register = vi.fn();
   const unregister = vi.fn();
@@ -38,6 +69,8 @@ import {
   consumeTicket,
   createEventWsTicketRoute,
   buildSiteFilter,
+  isEventWsUserActive,
+  createEventWsHandlers,
   _clearTicketStore,
 } from './eventWs';
 
@@ -48,6 +81,137 @@ import {
 beforeEach(() => {
   _clearTicketStore();
   vi.clearAllMocks();
+  setUserStatusRow({ status: 'active' });
+  setThrowOnSelect(false);
+});
+
+// -------------------------------------------------------------------
+// Tests: mid-session user revalidation (revocation gap)
+//
+// The WS ticket snapshots the user's org access at consume time; the
+// connection then delivers events indefinitely. `isEventWsUserActive` is the
+// authoritative recheck used by the revalidation interval to tear the socket
+// down once a user is deactivated/suspended/deleted. It must FAIL CLOSED.
+// -------------------------------------------------------------------
+
+describe('isEventWsUserActive', () => {
+  it('returns true while the user is still active', async () => {
+    setUserStatusRow({ status: 'active' });
+    await expect(isEventWsUserActive('user-1')).resolves.toBe(true);
+  });
+
+  it('returns false when the user has been deactivated/suspended', async () => {
+    setUserStatusRow({ status: 'suspended' });
+    await expect(isEventWsUserActive('user-1')).resolves.toBe(false);
+  });
+
+  it('returns false when the user row no longer exists (deleted)', async () => {
+    setUserStatusRow(undefined);
+    await expect(isEventWsUserActive('user-1')).resolves.toBe(false);
+  });
+});
+
+describe('event WS mid-session revocation (handler interval)', () => {
+  function makeWs() {
+    return {
+      send: vi.fn(),
+      close: vi.fn(),
+      readyState: 1,
+    } as any;
+  }
+
+  async function openConnection(ws: any) {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1');
+    const handlers = createEventWsHandlers(ticket);
+    await handlers.onOpen(undefined, ws);
+    return handlers;
+  }
+
+  it('closes the socket fail-closed once the user is revoked, and unregisters from the dispatcher (stops delivery)', async () => {
+    const { getEventDispatcher } = await import('../services/eventDispatcher');
+    const dispatcher = getEventDispatcher() as any;
+
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      await openConnection(ws);
+
+      // Registered for delivery on open.
+      expect(dispatcher.register).toHaveBeenCalledWith('org-1', expect.anything());
+      expect(ws.close).not.toHaveBeenCalled();
+
+      // User is revoked mid-session.
+      setUserStatusRow({ status: 'suspended' });
+
+      // Advance to the revalidation tick and flush the async check.
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // Socket torn down fail-closed and delivery stopped (unregistered).
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+      expect(dispatcher.unregister).toHaveBeenCalledWith('org-1', expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed when the revalidation DB check throws', async () => {
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      await openConnection(ws);
+
+      setThrowOnSelect(true);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a still-valid connection open and registered across revalidation ticks', async () => {
+    const { getEventDispatcher } = await import('../services/eventDispatcher');
+    const dispatcher = getEventDispatcher() as any;
+
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      await openConnection(ws);
+
+      // User stays active across multiple revalidation ticks.
+      setUserStatusRow({ status: 'active' });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(dispatcher.unregister).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the revalidation interval on close (no leak, no post-close revocation)', async () => {
+    const { getEventDispatcher } = await import('../services/eventDispatcher');
+    const dispatcher = getEventDispatcher() as any;
+
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      const handlers = await openConnection(ws);
+
+      await handlers.onClose(undefined, ws);
+      expect(dispatcher.unregister).toHaveBeenCalledWith('org-1', expect.anything());
+
+      // After close, a revoked user must not trigger another close() call —
+      // the interval was cleared.
+      setUserStatusRow({ status: 'suspended' });
+      ws.close.mockClear();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(ws.close).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // -------------------------------------------------------------------

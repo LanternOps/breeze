@@ -1,7 +1,10 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { randomBytes } from 'crypto';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { db, withSystemDbAccessContext } from '../db';
+import { users } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { getEventDispatcher, type ClientEntry } from '../services/eventDispatcher';
 import { authMiddleware, resolveOrgAccess } from '../middleware/auth';
@@ -14,6 +17,14 @@ const TICKET_TTL_MS = 30 * 1000; // 30 seconds
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const REDIS_KEY_PREFIX = 'event:ws_ticket:';
 const EVENT_TYPE_RE = /^(\*|[a-z]+\.\*|[a-z]+\.[a-z_]+)$/;
+
+// Mid-session revalidation cadence. The ticket snapshots the user's org access
+// at consume time and the connection then delivers events indefinitely with no
+// further authorization check — so a user whose status/access is revoked keeps
+// receiving live org events until idle/disconnect. Re-check the user is still
+// active on this interval and tear the socket down fail-closed if not. Matches
+// the desktop/terminal WS ~30s revocation cadence.
+const REVALIDATE_INTERVAL_MS = 30 * 1000; // 30 seconds
 
 // ---------------------------------------------------------------------------
 // Ticket store (in-memory for dev, Redis for production)
@@ -249,6 +260,30 @@ function extractEventSiteId(event: Record<string, unknown>): string | undefined 
   return undefined;
 }
 
+/**
+ * Mid-session revalidation: confirm the connection's user is still active.
+ *
+ * The WS ticket carries only `userId` + the org set captured at mint time, so
+ * we re-check the authoritative "access revoked" signal the rest of the system
+ * uses — `users.status === 'active'` (see `authMiddleware`, which 403s an
+ * inactive user). A deactivated/suspended user, or a deleted row, must stop
+ * receiving events. Runs under system DB scope because the WS path bypasses
+ * JWT middleware (no RLS context set).
+ *
+ * Fails CLOSED: a thrown DB error resolves to `false` (revoked) at the call
+ * site so a transient failure tears the socket down rather than leaking events.
+ */
+export async function isEventWsUserActive(userId: string): Promise<boolean> {
+  return withSystemDbAccessContext(async () => {
+    const [user] = await db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return !!user && user.status === 'active';
+  });
+}
+
 function sendJson(ws: WSContext, payload: Record<string, unknown>): void {
   try {
     ws.send(JSON.stringify(payload));
@@ -332,10 +367,13 @@ export function createEventWsRoutes(upgradeWebSocket: Function): Hono {
 // WebSocket handler factory
 // ---------------------------------------------------------------------------
 
-function createEventWsHandlers(ticket: string | undefined) {
+// Exported for tests: drives the WS lifecycle (onOpen/onClose) so the
+// mid-session revalidation interval can be exercised without a real socket.
+export function createEventWsHandlers(ticket: string | undefined) {
   let client: ClientEntry | null = null;
   let registeredOrgIds: string[] = [];
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let revalidateTimer: ReturnType<typeof setInterval> | null = null;
 
   function resetIdleTimer(ws: WSContext) {
     if (idleTimer) clearTimeout(idleTimer);
@@ -350,6 +388,10 @@ function createEventWsHandlers(ticket: string | undefined) {
       clearTimeout(idleTimer);
       idleTimer = null;
     }
+    if (revalidateTimer) {
+      clearInterval(revalidateTimer);
+      revalidateTimer = null;
+    }
     if (client && registeredOrgIds.length > 0) {
       const dispatcher = getEventDispatcher();
       for (const id of registeredOrgIds) {
@@ -358,6 +400,43 @@ function createEventWsHandlers(ticket: string | undefined) {
       client = null;
       registeredOrgIds = [];
     }
+  }
+
+  /**
+   * Tear the connection down because the user's access was revoked
+   * mid-session. Unregisters from the dispatcher FIRST (stops delivery
+   * synchronously — the dispatch loop can't pick a client it no longer holds),
+   * then closes the socket fail-closed.
+   */
+  function closeRevoked(ws: WSContext, reason: string) {
+    console.warn(`[EventWs] Connection revoked mid-session (${reason}), closing socket`);
+    cleanup(ws);
+    try {
+      sendJson(ws, { type: 'error', message: 'Access revoked' });
+      ws.close(4003, 'Access revoked');
+    } catch (err) {
+      console.error('[EventWs] Failed to close revoked socket:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  function startRevalidation(ws: WSContext, userId: string) {
+    revalidateTimer = setInterval(() => {
+      // Fail CLOSED: any inactive/deleted user OR a thrown DB error closes the
+      // socket within at most one revalidation interval. Nothing else
+      // re-checks authorization once the connection is delivering events.
+      void isEventWsUserActive(userId)
+        .then((active) => {
+          if (!active && client) {
+            closeRevoked(ws, 'User no longer active');
+          }
+        })
+        .catch((err) => {
+          if (client) {
+            console.error('[EventWs] Revalidation check failed, closing socket (fail-closed):', err instanceof Error ? err.message : err);
+            closeRevoked(ws, 'Revalidation check failed');
+          }
+        });
+    }, REVALIDATE_INTERVAL_MS);
   }
 
   return {
@@ -391,10 +470,16 @@ function createEventWsHandlers(ticket: string | undefined) {
           dispatcher.register(id, client);
         }
         resetIdleTimer(ws);
+        // Mid-session revalidation: stop delivering and close fail-closed once
+        // the user's access is revoked (status flipped inactive / row deleted).
+        startRevalidation(ws, identity.userId);
 
         sendJson(ws, { type: 'connected', userId: identity.userId, orgIds: registeredOrgIds });
       } catch (err) {
         console.error('[EventWs] onOpen error:', err);
+        // Tear down any partial state (dispatcher registration, timers) so a
+        // throw after register() doesn't leak a delivering client / interval.
+        cleanup(ws);
         sendJson(ws, { type: 'error', message: 'Internal error' });
         ws.close(4001, 'Internal error');
       }
