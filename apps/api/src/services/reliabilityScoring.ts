@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, desc, eq, gt, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -557,28 +557,120 @@ function eventLastOccurrence(events: Array<{ timestamp: string }>, fallback: str
   return latest ?? fallback;
 }
 
-function mergeRowsIntoDailyBuckets(map: Map<string, DailyAggregateBucket>, rows: HistoryRow[]): void {
+// Issue #1904: reliability is POSTed many times/day and each post re-reads an
+// overlapping last-50-events window, so the SAME event lands verbatim in
+// multiple `device_reliability_history` rows. The previous aggregation summed
+// `array.length` per row, counting each duplicated event N times (~1.37×
+// inflation in prod). We now count DISTINCT events across the whole window.
+//
+// Dedup keys are built from the event's own identifying fields (per the schema
+// in db/schema/reliability.ts). Optional fields (errorCode, eventId) are
+// included with an explicit empty-string slot so a missing field can't merge
+// two genuinely-distinct events nor split one event reported with vs without an
+// undefined field. When every structured field is empty we fall back to a
+// JSON-stringify of the whole event so two truly-different events never
+// collapse onto the same key.
+const KEY_SEP = ' ';
+
+function eventKeyOrJson(prefix: string, parts: Array<string | undefined>, event: unknown): string {
+  const normalized = parts.map((part) => part ?? '');
+  // If nothing structural identifies the event, fall back to its full JSON so
+  // distinct events can't collapse to one empty key.
+  if (normalized.every((part) => part === '')) {
+    return `${prefix}${KEY_SEP}json${KEY_SEP}${JSON.stringify(event)}`;
+  }
+  return `${prefix}${KEY_SEP}${normalized.join(KEY_SEP)}`;
+}
+
+function crashEventKey(event: HistoryRow['crashEvents'][number]): string {
+  return eventKeyOrJson('crash', [event.type, event.timestamp], event);
+}
+
+function appHangKey(event: HistoryRow['appHangs'][number]): string {
+  return eventKeyOrJson('hang', [event.processName, event.timestamp], event);
+}
+
+function serviceFailureKey(event: HistoryRow['serviceFailures'][number]): string {
+  return eventKeyOrJson('service', [event.serviceName, event.timestamp, event.errorCode], event);
+}
+
+function hardwareErrorKey(event: HistoryRow['hardwareErrors'][number]): string {
+  return eventKeyOrJson('hardware', [event.source, event.eventId, event.timestamp, event.type], event);
+}
+
+// The day bucket an event belongs to is the day of the EVENT's own timestamp,
+// not the row's collectedAt. An event near midnight can be re-reported in rows
+// on either side of a day boundary; anchoring on the event timestamp keeps the
+// distinct event in exactly one bucket regardless of which rows reported it.
+function eventDayKey(eventTimestamp: string | undefined, fallback: Date): string {
+  if (eventTimestamp) {
+    const ms = Date.parse(eventTimestamp);
+    if (!Number.isNaN(ms)) return toDayKey(new Date(ms));
+  }
+  return toDayKey(fallback);
+}
+
+// Merge raw history rows into per-day aggregate buckets, deduplicating events
+// across the WHOLE set of rows passed in. `seenKeys` is shared across every row
+// so the same event re-reported in multiple rows is counted exactly once. Pass
+// the full window's rows in a single call so dedup is global, not per-row.
+//
+// sampleCount / uptimeSecondsMax / lastXAt remain anchored to the row's
+// collectedAt (they describe the posting, not the event), but all event COUNTS
+// are derived from the deduped set and bucketed by the event's own timestamp.
+function mergeRowsIntoDailyBuckets(
+  map: Map<string, DailyAggregateBucket>,
+  rows: HistoryRow[],
+  seenKeys: Set<string> = new Set<string>()
+): void {
   for (const row of rows) {
-    const dayKey = toDayKey(row.collectedAt);
-    const bucket = upsertBucket(map, dayKey);
+    const rowDayKey = toDayKey(row.collectedAt);
+    const rowBucket = upsertBucket(map, rowDayKey);
     const fallbackTimestamp = row.collectedAt.toISOString();
 
-    bucket.sampleCount += 1;
-    bucket.uptimeSecondsMax = Math.max(bucket.uptimeSecondsMax, Math.max(0, row.uptimeSeconds));
-    bucket.crashCount += row.crashEvents.length;
-    bucket.hangCount += row.appHangs.length;
-    bucket.unresolvedHangCount += row.appHangs.filter((entry) => !entry.resolved).length;
-    bucket.serviceFailureCount += row.serviceFailures.length;
-    bucket.recoveredServiceCount += row.serviceFailures.filter((entry) => entry.recovered).length;
-    bucket.hardwareErrorCount += row.hardwareErrors.length;
-    bucket.hardwareCriticalCount += row.hardwareErrors.filter((entry) => entry.severity === 'critical').length;
-    bucket.hardwareErrorSeverityCount += row.hardwareErrors.filter((entry) => entry.severity === 'error').length;
-    bucket.hardwareWarningCount += row.hardwareErrors.filter((entry) => entry.severity === 'warning').length;
+    rowBucket.sampleCount += 1;
+    rowBucket.uptimeSecondsMax = Math.max(rowBucket.uptimeSecondsMax, Math.max(0, row.uptimeSeconds));
 
-    bucket.lastCrashAt = maxTimestamp([bucket.lastCrashAt, eventLastOccurrence(row.crashEvents, fallbackTimestamp)]);
-    bucket.lastHangAt = maxTimestamp([bucket.lastHangAt, eventLastOccurrence(row.appHangs, fallbackTimestamp)]);
-    bucket.lastServiceFailureAt = maxTimestamp([bucket.lastServiceFailureAt, eventLastOccurrence(row.serviceFailures, fallbackTimestamp)]);
-    bucket.lastHardwareErrorAt = maxTimestamp([bucket.lastHardwareErrorAt, eventLastOccurrence(row.hardwareErrors, fallbackTimestamp)]);
+    // Returns true (and records the key) the first time an event is seen; false
+    // for any later re-report of the same event across the window.
+    const isNewEvent = (key: string): boolean => {
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    };
+
+    for (const event of row.crashEvents) {
+      if (!isNewEvent(crashEventKey(event))) continue;
+      const bucket = upsertBucket(map, eventDayKey(event.timestamp, row.collectedAt));
+      bucket.crashCount += 1;
+      bucket.lastCrashAt = maxTimestamp([bucket.lastCrashAt, event.timestamp ?? fallbackTimestamp]);
+    }
+
+    for (const event of row.appHangs) {
+      if (!isNewEvent(appHangKey(event))) continue;
+      const bucket = upsertBucket(map, eventDayKey(event.timestamp, row.collectedAt));
+      bucket.hangCount += 1;
+      if (!event.resolved) bucket.unresolvedHangCount += 1;
+      bucket.lastHangAt = maxTimestamp([bucket.lastHangAt, event.timestamp ?? fallbackTimestamp]);
+    }
+
+    for (const event of row.serviceFailures) {
+      if (!isNewEvent(serviceFailureKey(event))) continue;
+      const bucket = upsertBucket(map, eventDayKey(event.timestamp, row.collectedAt));
+      bucket.serviceFailureCount += 1;
+      if (event.recovered) bucket.recoveredServiceCount += 1;
+      bucket.lastServiceFailureAt = maxTimestamp([bucket.lastServiceFailureAt, event.timestamp ?? fallbackTimestamp]);
+    }
+
+    for (const event of row.hardwareErrors) {
+      if (!isNewEvent(hardwareErrorKey(event))) continue;
+      const bucket = upsertBucket(map, eventDayKey(event.timestamp, row.collectedAt));
+      bucket.hardwareErrorCount += 1;
+      if (event.severity === 'critical') bucket.hardwareCriticalCount += 1;
+      else if (event.severity === 'error') bucket.hardwareErrorSeverityCount += 1;
+      else if (event.severity === 'warning') bucket.hardwareWarningCount += 1;
+      bucket.lastHardwareErrorAt = maxTimestamp([bucket.lastHardwareErrorAt, event.timestamp ?? fallbackTimestamp]);
+    }
   }
 }
 
@@ -891,22 +983,6 @@ async function getHistoryForDevice(deviceId: string, days: number): Promise<Hist
     .orderBy(asc(deviceReliabilityHistory.collectedAt));
 }
 
-async function getHistoryForDeviceAfter(
-  deviceId: string,
-  sinceExclusive: Date,
-  floorInclusive: Date
-): Promise<HistoryRow[]> {
-  return db
-    .select()
-    .from(deviceReliabilityHistory)
-    .where(and(
-      eq(deviceReliabilityHistory.deviceId, deviceId),
-      gt(deviceReliabilityHistory.collectedAt, sinceExclusive),
-      gte(deviceReliabilityHistory.collectedAt, floorInclusive)
-    ))
-    .orderBy(asc(deviceReliabilityHistory.collectedAt));
-}
-
 async function getLatestHistoryForDevice(deviceId: string): Promise<LatestHistorySnapshot | null> {
   const [row] = await db
     .select({
@@ -923,18 +999,6 @@ async function getLatestHistoryForDevice(deviceId: string): Promise<LatestHistor
   return row;
 }
 
-async function getAggregateStateForDevice(deviceId: string, now: Date): Promise<AggregateState | null> {
-  const [row] = await db
-    .select({
-      details: deviceReliability.details,
-    })
-    .from(deviceReliability)
-    .where(eq(deviceReliability.deviceId, deviceId))
-    .limit(1);
-
-  if (!row) return null;
-  return parseAggregateState(row.details, now);
-}
 
 function getLatestCollectedAt(rows: HistoryRow[]): Date | null {
   if (rows.length === 0) return null;
@@ -967,31 +1031,20 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   const now = new Date();
   const lookbackStart = getSince(90);
 
-  const [latest, existingState] = await Promise.all([
-    getLatestHistoryForDevice(deviceId),
-    getAggregateStateForDevice(deviceId, now),
-  ]);
+  const latest = await getLatestHistoryForDevice(deviceId);
 
-  let dailyBucketMap = new Map<string, DailyAggregateBucket>();
-  let newlyProcessedRows: HistoryRow[] = [];
+  const dailyBucketMap = new Map<string, DailyAggregateBucket>();
 
-  const cacheCursor = existingState?.lastProcessedAt ?? null;
-  const reusableCache = cacheCursor !== null && cacheCursor.getTime() >= lookbackStart.getTime();
-
-  if (reusableCache && existingState) {
-    dailyBucketMap = new Map(
-      Array.from(existingState.dailyBuckets.entries()).map(([date, bucket]) => [date, { ...bucket }])
-    );
-    newlyProcessedRows = await getHistoryForDeviceAfter(deviceId, cacheCursor, lookbackStart);
-  } else {
-    newlyProcessedRows = await getHistoryForDevice(deviceId, 90);
-  }
-
-  if (!reusableCache) {
-    dailyBucketMap.clear();
-  }
-
-  mergeRowsIntoDailyBuckets(dailyBucketMap, newlyProcessedRows);
+  // Issue #1904: event counts must be deduplicated across the WHOLE window, so
+  // we always rebuild buckets from the full 90-day raw history in a single
+  // deduping pass. The previous incremental cache (reuse cached buckets, merge
+  // only rows after `lastProcessedAt`) is incompatible with global dedup: the
+  // cached buckets hold collapsed counts without the per-event keys, so a
+  // duplicate event re-reported in a row past the cursor would be counted again
+  // on top of the cached count. Rebuilding from raw rows is cheap (history is a
+  // bounded 90-day window) and is exactly what the old cold path already did.
+  const allRows = await getHistoryForDevice(deviceId, 90);
+  mergeRowsIntoDailyBuckets(dailyBucketMap, allRows);
   pruneDailyBuckets(dailyBucketMap, lookbackStart, now);
   const dailyBuckets = sortDailyBuckets(dailyBucketMap);
 
@@ -1058,8 +1111,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   });
 
   const latestProcessedAt = maxTimestamp([
-    getLatestCollectedAt(newlyProcessedRows)?.toISOString(),
-    existingState?.lastProcessedAt?.toISOString(),
+    getLatestCollectedAt(allRows)?.toISOString(),
     latest?.collectedAt.toISOString(),
   ]) ?? now.toISOString();
 

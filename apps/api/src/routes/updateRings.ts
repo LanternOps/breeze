@@ -11,6 +11,7 @@ import {
   devicePatches,
 } from '../db/schema';
 import { resolveRingDeviceCounts, resolveRingDeviceIds } from './updateRingsHelpers';
+import { getPagination } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -30,11 +31,10 @@ updateRingRoutes.use('*', authMiddleware);
 // Helpers
 // ============================================
 
-function getPagination(query: { page?: string; limit?: string }) {
-  const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
-  return { page, limit, offset: (page - 1) * limit };
-}
+// Pagination is shared with the /patches list endpoints (patches/helpers.ts):
+// default 50, capped at MAX_PAGE_LIMIT (200). Previously a local copy here
+// capped at 100 and the web's ring path sent no `limit`, so selecting a ring
+// silently collapsed the visible patch list from the all-rings 200 down to 50.
 
 function resolvePartnerId(
   auth: { scope: 'system' | 'partner' | 'organization'; partnerId: string | null },

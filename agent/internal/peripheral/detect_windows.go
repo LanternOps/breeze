@@ -55,6 +55,7 @@ func DetectPeripherals() ([]DetectedPeripheral, error) {
 			PeripheralType: pType,
 			Vendor:         e.Manufacturer,
 			Product:        e.Name,
+			SerialNumber:   parseSerial(e.DeviceID),
 			DeviceClass:    dClass,
 			DeviceID:       e.DeviceID,
 		})

@@ -125,6 +125,290 @@ describe('reliabilityScoringInternals', () => {
   });
 });
 
+// Issue #1904: reliability is POSTed many times/day, each re-reading an
+// overlapping last-50-events window, so the SAME event lands verbatim in
+// multiple history rows. mergeRowsIntoDailyBuckets must count each DISTINCT
+// event exactly once across the WHOLE window (not sum array lengths per row,
+// and not dedup only within a single day bucket).
+describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
+  const { mergeRowsIntoDailyBuckets, sortDailyBuckets, sumBucketsInWindow } = reliabilityScoringInternals;
+
+  function totalCount(map: Map<string, any>, getter: (bucket: any) => number): number {
+    return sortDailyBuckets(map).reduce((sum, bucket) => sum + getter(bucket), 0);
+  }
+
+  it('counts the same service-failure event present in N overlapping rows exactly once', () => {
+    const failure = {
+      serviceName: 'Service Control Manager',
+      timestamp: '2026-02-20T06:59:39.315Z',
+      errorCode: '7000:abc',
+      recovered: false,
+    };
+    // Five separate posts, each re-grabbing the identical event (the prod case:
+    // one event byte-identical in 5 history rows).
+    const rows = [0, 1, 2, 3, 4].map((i) =>
+      makeHistoryRow({
+        id: `history-${i}`,
+        collectedAt: new Date(`2026-02-20T0${i}:00:00.000Z`),
+        serviceFailures: [{ ...failure }],
+      })
+    ) as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.serviceFailureCount)).toBe(1);
+  });
+
+  it('counts genuinely-distinct events fully (no over-dedup)', () => {
+    const rows = [
+      makeHistoryRow({
+        serviceFailures: [
+          { serviceName: 'Spooler', timestamp: '2026-02-20T10:00:00.000Z', errorCode: '7000', recovered: false },
+          { serviceName: 'Spooler', timestamp: '2026-02-20T11:00:00.000Z', errorCode: '7000', recovered: false }, // diff time
+          { serviceName: 'W32Time', timestamp: '2026-02-20T10:00:00.000Z', errorCode: '7000', recovered: true }, // diff name
+          { serviceName: 'Spooler', timestamp: '2026-02-20T10:00:00.000Z', errorCode: '7031', recovered: false }, // diff code
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.serviceFailureCount)).toBe(4);
+    expect(totalCount(map, (b) => b.recoveredServiceCount)).toBe(1);
+  });
+
+  it('dedups an event re-reported in rows on opposite sides of a day boundary', () => {
+    // Event at 23:30 on the 20th, re-reported by a row collected on the 21st.
+    const hwError = {
+      type: 'disk',
+      severity: 'critical',
+      timestamp: '2026-02-20T23:30:00.000Z',
+      source: 'disk',
+      eventId: '7',
+    };
+    const rows = [
+      makeHistoryRow({
+        id: 'row-day1',
+        collectedAt: new Date('2026-02-20T23:45:00.000Z'),
+        hardwareErrors: [{ ...hwError }],
+      }),
+      makeHistoryRow({
+        id: 'row-day2',
+        collectedAt: new Date('2026-02-21T00:15:00.000Z'),
+        hardwareErrors: [{ ...hwError }],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    // Counted once, in the event's own-timestamp day (the 20th), despite being
+    // reported by rows collected on two different calendar days.
+    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(1);
+    expect(totalCount(map, (b) => b.hardwareCriticalCount)).toBe(1);
+    const day20 = sortDailyBuckets(map).find((b) => b.date === '2026-02-20');
+    expect(day20?.hardwareErrorCount).toBe(1);
+    // lastXAt is recorded against the event's own timestamp/day, not the row's.
+    expect(day20?.lastHardwareErrorAt).toBe('2026-02-20T23:30:00.000Z');
+  });
+
+  it('derives hardware severity sub-counts from the deduped set, not double-summed', () => {
+    const critical = { type: 'mce', severity: 'critical', timestamp: '2026-02-20T10:00:00.000Z', source: 'cpu', eventId: '1' };
+    const warning = { type: 'disk', severity: 'warning', timestamp: '2026-02-20T11:00:00.000Z', source: 'disk', eventId: '2' };
+    // critical reported in 3 rows, warning in 2 rows.
+    const rows = [
+      makeHistoryRow({ id: 'r1', collectedAt: new Date('2026-02-20T10:05:00.000Z'), hardwareErrors: [{ ...critical }] }),
+      makeHistoryRow({ id: 'r2', collectedAt: new Date('2026-02-20T11:05:00.000Z'), hardwareErrors: [{ ...critical }, { ...warning }] }),
+      makeHistoryRow({ id: 'r3', collectedAt: new Date('2026-02-20T12:05:00.000Z'), hardwareErrors: [{ ...critical }, { ...warning }] }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(2);
+    expect(totalCount(map, (b) => b.hardwareCriticalCount)).toBe(1);
+    expect(totalCount(map, (b) => b.hardwareWarningCount)).toBe(1);
+    expect(totalCount(map, (b) => b.hardwareErrorSeverityCount)).toBe(0);
+  });
+
+  it('derives unresolved-hang and recovered-service sub-counts from the deduped set', () => {
+    const hang = { processName: 'chrome.exe', timestamp: '2026-02-20T10:00:00.000Z', duration: 5000, resolved: false };
+    const recovered = { serviceName: 'Spooler', timestamp: '2026-02-20T10:00:00.000Z', errorCode: '7000', recovered: true };
+    const rows = [
+      makeHistoryRow({ id: 'r1', appHangs: [{ ...hang }], serviceFailures: [{ ...recovered }] }),
+      makeHistoryRow({ id: 'r2', appHangs: [{ ...hang }], serviceFailures: [{ ...recovered }] }), // dup
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.hangCount)).toBe(1);
+    expect(totalCount(map, (b) => b.unresolvedHangCount)).toBe(1);
+    expect(totalCount(map, (b) => b.serviceFailureCount)).toBe(1);
+    expect(totalCount(map, (b) => b.recoveredServiceCount)).toBe(1);
+  });
+
+  it('does not regress crash counting (distinct crashes counted, dups collapsed)', () => {
+    const crashA = { type: 'bsod', timestamp: '2026-02-20T10:00:00.000Z' };
+    const crashB = { type: 'kernel_panic', timestamp: '2026-02-21T10:00:00.000Z' };
+    const rows = [
+      makeHistoryRow({ id: 'r1', collectedAt: new Date('2026-02-20T10:30:00.000Z'), crashEvents: [{ ...crashA }] }),
+      makeHistoryRow({ id: 'r2', collectedAt: new Date('2026-02-21T10:30:00.000Z'), crashEvents: [{ ...crashA }, { ...crashB }] }), // crashA dup
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.crashCount)).toBe(2);
+  });
+
+  it('keeps two distinct events with all-empty structured keys separate via JSON fallback', () => {
+    // No type/source/eventId/serviceName/timestamp — only distinguishable by a
+    // non-keyed field. JSON fallback must keep them as two events.
+    const rows = [
+      makeHistoryRow({
+        hardwareErrors: [
+          { severity: 'error', source: '', details: { a: 1 } },
+          { severity: 'error', source: '', details: { a: 2 } },
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(2);
+  });
+
+  it('matches a count(DISTINCT ...) over a window with heavy overlap (inflation guard)', () => {
+    // Simulate the prod pattern: 1 distinct event reported across 4 rows, plus
+    // 3 other distinct events. Summed lengths would be 7; distinct is 4.
+    const dup = { serviceName: 'SCM', timestamp: '2026-02-20T06:59:39.315Z', errorCode: '7000:x', recovered: false };
+    const rows = [
+      makeHistoryRow({ id: 'r1', collectedAt: new Date('2026-02-20T07:00:00.000Z'), serviceFailures: [{ ...dup }, { serviceName: 'A', timestamp: '2026-02-20T01:00:00.000Z', errorCode: '1', recovered: false }] }),
+      makeHistoryRow({ id: 'r2', collectedAt: new Date('2026-02-20T08:00:00.000Z'), serviceFailures: [{ ...dup }, { serviceName: 'B', timestamp: '2026-02-20T02:00:00.000Z', errorCode: '2', recovered: false }] }),
+      makeHistoryRow({ id: 'r3', collectedAt: new Date('2026-02-20T09:00:00.000Z'), serviceFailures: [{ ...dup }, { serviceName: 'C', timestamp: '2026-02-20T03:00:00.000Z', errorCode: '3', recovered: false }] }),
+      makeHistoryRow({ id: 'r4', collectedAt: new Date('2026-02-20T10:00:00.000Z'), serviceFailures: [{ ...dup }] }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+    const now = new Date('2026-02-21T00:00:00.000Z');
+
+    // Summed array lengths = 7; distinct = 4.
+    expect(sumBucketsInWindow(sortDailyBuckets(map), 30, now, (b) => b.serviceFailureCount)).toBe(4);
+  });
+
+  it('buckets a timestamp-less event by the row collectedAt day and still dedups it', () => {
+    // Real agent payloads can omit `timestamp`; eventDayKey then falls back to
+    // the row's collectedAt day. The same timestamp-less event re-reported in a
+    // later row must still count once (JSON-fallback key), bucketed by the
+    // FIRST-seen row's day.
+    const noTs = { serviceName: 'Spooler', errorCode: '7000', recovered: false };
+    const rows = [
+      makeHistoryRow({ id: 'r1', collectedAt: new Date('2026-02-20T05:00:00.000Z'), serviceFailures: [{ ...noTs }] }),
+      makeHistoryRow({ id: 'r2', collectedAt: new Date('2026-02-21T05:00:00.000Z'), serviceFailures: [{ ...noTs }] }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.serviceFailureCount)).toBe(1);
+    const day20 = sortDailyBuckets(map).find((b) => b.date === '2026-02-20');
+    expect(day20?.serviceFailureCount).toBe(1);
+    // Two genuinely-distinct timestamp-less events in the same row stay separate.
+    const two = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(two, [
+      makeHistoryRow({
+        serviceFailures: [
+          { serviceName: 'Spooler', errorCode: '7000', recovered: false },
+          { serviceName: 'W32Time', errorCode: '7000', recovered: false },
+        ],
+      }),
+    ] as any[]);
+    expect(totalCount(two, (b) => b.serviceFailureCount)).toBe(2);
+  });
+
+  it('advances lastXAt to the newest occurrence even when later rows are deduped', () => {
+    // Same service event re-reported; a later distinct event in the same family
+    // carries a newer timestamp. lastServiceFailureAt must track the newest.
+    const rows = [
+      makeHistoryRow({
+        id: 'r1',
+        collectedAt: new Date('2026-02-20T07:00:00.000Z'),
+        serviceFailures: [{ serviceName: 'SCM', timestamp: '2026-02-20T06:00:00.000Z', errorCode: '1', recovered: false }],
+      }),
+      makeHistoryRow({
+        id: 'r2',
+        collectedAt: new Date('2026-02-20T09:00:00.000Z'),
+        serviceFailures: [
+          { serviceName: 'SCM', timestamp: '2026-02-20T06:00:00.000Z', errorCode: '1', recovered: false }, // dup of r1
+          { serviceName: 'SCM', timestamp: '2026-02-20T08:00:00.000Z', errorCode: '1', recovered: false }, // newer, distinct
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.serviceFailureCount)).toBe(2);
+    const day20 = sortDailyBuckets(map).find((b) => b.date === '2026-02-20');
+    expect(day20?.lastServiceFailureAt).toBe('2026-02-20T08:00:00.000Z');
+  });
+
+  it('is first-seen-wins for status flags (flipped resolved/recovered re-report does not re-count)', () => {
+    // A hang detected then later resolved, and a service failure failed then
+    // recovered. Status fields are intentionally NOT part of the dedup key, so
+    // the event counts once and its sub-count reflects the first-seen status.
+    // Pins the contract so a future key change can't silently flip it.
+    const rows = [
+      makeHistoryRow({
+        id: 'r1',
+        collectedAt: new Date('2026-02-20T07:00:00.000Z'),
+        appHangs: [{ processName: 'chrome.exe', timestamp: '2026-02-20T06:00:00.000Z', duration: 5000, resolved: false }],
+        serviceFailures: [{ serviceName: 'SCM', timestamp: '2026-02-20T06:00:00.000Z', errorCode: '1', recovered: false }],
+      }),
+      makeHistoryRow({
+        id: 'r2',
+        collectedAt: new Date('2026-02-20T09:00:00.000Z'),
+        appHangs: [{ processName: 'chrome.exe', timestamp: '2026-02-20T06:00:00.000Z', duration: 5000, resolved: true }],
+        serviceFailures: [{ serviceName: 'SCM', timestamp: '2026-02-20T06:00:00.000Z', errorCode: '1', recovered: true }],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    expect(totalCount(map, (b) => b.hangCount)).toBe(1);
+    expect(totalCount(map, (b) => b.unresolvedHangCount)).toBe(1); // first-seen: unresolved
+    expect(totalCount(map, (b) => b.serviceFailureCount)).toBe(1);
+    expect(totalCount(map, (b) => b.recoveredServiceCount)).toBe(0); // first-seen: not recovered
+  });
+
+  it('is idempotent across repeated full-window passes (cache-removal guarantee)', () => {
+    // computeAndPersistDeviceReliability now rebuilds from the full raw window
+    // every run. Running the merge twice over the same rows (each with its own
+    // fresh seenKeys, as the orchestrator does) must yield identical counts —
+    // i.e. no per-call mutation of the input rows.
+    const rows = [
+      makeHistoryRow({ id: 'r1', collectedAt: new Date('2026-02-20T07:00:00.000Z'), serviceFailures: [{ serviceName: 'SCM', timestamp: '2026-02-20T06:00:00.000Z', errorCode: '1', recovered: false }] }),
+      makeHistoryRow({ id: 'r2', collectedAt: new Date('2026-02-20T08:00:00.000Z'), serviceFailures: [{ serviceName: 'SCM', timestamp: '2026-02-20T06:00:00.000Z', errorCode: '1', recovered: false }] }),
+    ] as any[];
+
+    const first = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(first, rows as any);
+    const second = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(second, rows as any);
+
+    expect(totalCount(first, (b) => b.serviceFailureCount)).toBe(1);
+    expect(totalCount(second, (b) => b.serviceFailureCount)).toBe(
+      totalCount(first, (b) => b.serviceFailureCount)
+    );
+  });
+});
+
 describe('scoreUptime', () => {
   const { scoreUptime } = reliabilityScoringInternals;
 

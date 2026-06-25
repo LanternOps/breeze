@@ -854,12 +854,31 @@ func (h *Heartbeat) Start() {
 
 	// Send initial inventory in background
 	go h.sendInventory()
-	go h.sendReliabilityMetrics()
 	go h.runProcessSampler()
+
+	// Reliability cadence persists across restarts (#1906). Seed the in-memory
+	// timer from the last persisted post instead of "now", and only post on
+	// startup if at least 24h have actually elapsed since then. Without this, a
+	// restart-prone device (POS/checkout box, crash, auto-update) re-posted an
+	// overlapping event-log window on every boot → duplicate reliability rows.
+	// A zero persisted time (first-ever run / unreadable state) is older than
+	// any threshold, so the very first post still goes out. The persisted
+	// timestamp is advanced only on a confirmed send (see sendReliabilityMetrics),
+	// so a failed startup post still retries after the next restart.
+	startupNow := time.Now()
+	persistedReliability := h.loadLastReliabilityUpdate()
+	postReliability := reliabilityPostDue(persistedReliability, startupNow)
 	h.mu.Lock()
-	h.lastPostureUpdate = time.Now()
-	h.lastReliabilityUpdate = time.Now()
+	h.lastPostureUpdate = startupNow
+	if postReliability {
+		h.lastReliabilityUpdate = startupNow
+	} else {
+		h.lastReliabilityUpdate = persistedReliability
+	}
 	h.mu.Unlock()
+	if postReliability {
+		go h.sendReliabilityMetrics(startupNow)
+	}
 
 	for {
 		select {
@@ -896,9 +915,9 @@ func (h *Heartbeat) Start() {
 			if shouldSendPosture {
 				h.lastPostureUpdate = now
 			}
-			shouldSendReliability := time.Since(h.lastReliabilityUpdate) > 24*time.Hour
+			shouldSendReliability := reliabilityPostDue(h.lastReliabilityUpdate, now)
 			if shouldSendReliability {
-				h.lastReliabilityUpdate = time.Now()
+				h.lastReliabilityUpdate = now
 			}
 			h.mu.Unlock()
 
@@ -961,7 +980,9 @@ func (h *Heartbeat) Start() {
 				go h.sendManagementPosture()
 			}
 			if shouldSendReliability {
-				go h.sendReliabilityMetrics()
+				// `now` was captured under the lock above; the persisted gate is
+				// advanced to it only on a confirmed send (#1906).
+				go h.sendReliabilityMetrics(now)
 			}
 		case <-h.stopChan:
 			return
@@ -2152,7 +2173,11 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 	}
 }
 
-func (h *Heartbeat) sendReliabilityMetrics() {
+// sendReliabilityMetrics collects and uploads reliability metrics. On a
+// confirmed 2xx it persists sentAt as the last-send time so the 24h cadence
+// survives restarts (#1906); on any failure the persisted gate is left stale
+// so the next restart retries.
+func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 	if h.reliabilityCol == nil {
 		return
 	}
@@ -2192,6 +2217,9 @@ func (h *Heartbeat) sendReliabilityMetrics() {
 			"body", string(errBody))
 		return
 	}
+
+	// Confirmed success — advance the persisted 24h gate (#1906).
+	h.persistReliabilitySent(sentAt)
 
 	log.Info("reliability metrics uploaded successfully",
 		"crashes", len(metrics.CrashEvents),

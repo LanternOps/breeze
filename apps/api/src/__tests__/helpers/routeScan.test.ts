@@ -292,6 +292,55 @@ describe('analyzeRouteSource — dead permissions-sourced site gate detector', (
     expect(route.sitePermsGateDead).toBe(false);
   });
 
+  it('does NOT flag when a requirePermission-bound const is mounted file-level via .use(\'*\', …)', () => {
+    // The vulnerabilities.ts idiom (#1889): apply the perms middleware once as
+    // file-level `router.use('*', requireXRead)` instead of inline per-route.
+    // It populates c.get('permissions') for EVERY route, but the `.use(...)` call
+    // sits above each per-route slice — so the per-route scan must consult the
+    // file-level source or it false-flags the gate as dead.
+    const src = [
+      `const requireVulnRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);`,
+      `router.use('*', authMiddleware);`,
+      `router.use('*', requireScope('organization', 'partner', 'system'));`,
+      `router.use('*', requireVulnRead);`,
+      `router.get(`,
+      `  '/',`,
+      `  async (c) => {`,
+      `    const perms = c.get('permissions') as UserPermissions | undefined;`,
+      `    if (perms?.allowedSiteIds && !canAccessSite(perms, asset.siteId)) return c.json({}, 403);`,
+      `    return c.json(results);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES).find(
+      (r) => r.id === "routes/x.ts:GET /",
+    )!;
+    expect(route.sitePermsGateDead).toBe(false);
+  });
+
+  it('STILL flags when the file-level .use() is a non-wildcard path (does not cover all routes)', () => {
+    // `.use('/admin', requireXRead)` only mounts on the /admin subtree, so a
+    // sibling route reading `permissions` is still ungated — must NOT be
+    // suppressed by the file-level source.
+    const src = [
+      `const requireVulnRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);`,
+      `router.use('/admin', requireVulnRead);`,
+      `router.get(`,
+      `  '/',`,
+      `  requireScope('organization', 'partner', 'system'),`,
+      `  async (c) => {`,
+      `    const perms = c.get('permissions') as UserPermissions | undefined;`,
+      `    if (perms?.allowedSiteIds && !canAccessSite(perms, asset.siteId)) return c.json({}, 403);`,
+      `    return c.json(results);`,
+      `  }`,
+      `);`,
+    ].join('\n');
+    const route = analyzeRouteSource('routes/x.ts', src, DEVICE_TABLES).find(
+      (r) => r.id === "routes/x.ts:GET /",
+    )!;
+    expect(route.sitePermsGateDead).toBe(true);
+  });
+
   it('does NOT flag when requireSiteAccess middleware is in the chain', () => {
     // requireSiteAccess self-resolves perms (getUserPermissions fallback) and
     // does its own canAccessSite check — so the route is gated live.
