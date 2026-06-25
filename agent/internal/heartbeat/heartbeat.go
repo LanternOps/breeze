@@ -162,6 +162,8 @@ type Heartbeat struct {
 	lastSessionUpdate     time.Time
 	lastPostureUpdate     time.Time
 	lastReliabilityUpdate time.Time
+	lastHardwareUpdate    time.Time // zero-value fires on first tick, then every 24 h
+	lastPatchUpdate       time.Time // zero-value fires on first tick, then per PatchScanIntervalHours
 
 	// User session helper (IPC)
 	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
@@ -852,8 +854,13 @@ func (h *Heartbeat) Start() {
 	// Send initial heartbeat after jitter
 	h.sendHeartbeatWithWatchdog()
 
-	// Send initial inventory in background
+	// Send initial inventory in background. Hardware and patch inventory are not
+	// part of the sendInventory fan-out (they run on a daily cadence), so kick
+	// them off here too — a freshly started/enrolled agent should report hardware
+	// and pending patches promptly rather than waiting for the first daily tick.
 	go h.sendInventory()
+	go h.sendHardwareInventory()
+	go h.sendPatchInventory()
 	go h.runProcessSampler()
 
 	// Reliability cadence persists across restarts (#1906). Seed the in-memory
@@ -875,6 +882,8 @@ func (h *Heartbeat) Start() {
 	} else {
 		h.lastReliabilityUpdate = persistedReliability
 	}
+	h.lastHardwareUpdate = startupNow
+	h.lastPatchUpdate = startupNow
 	h.mu.Unlock()
 	if postReliability {
 		go h.sendReliabilityMetrics(startupNow)
@@ -918,6 +927,20 @@ func (h *Heartbeat) Start() {
 			shouldSendReliability := reliabilityPostDue(h.lastReliabilityUpdate, now)
 			if shouldSendReliability {
 				h.lastReliabilityUpdate = now
+			}
+			// Hardware identity rarely changes; collect once per day.
+			// Zero-value lastHardwareUpdate fires immediately on the first tick after
+			// startup so the server always gets fresh hardware data on reconnect.
+			shouldSendHardware := now.Sub(h.lastHardwareUpdate) > 24*time.Hour
+			if shouldSendHardware {
+				h.lastHardwareUpdate = now
+			}
+			// Patch scan cadence is configurable (PatchScanIntervalHours, default 24 h).
+			// Zero-value lastPatchUpdate fires on first tick after startup.
+			patchIntervalHours := clampPatchScanIntervalHours(h.config.PatchScanIntervalHours)
+			shouldSendPatch := now.Sub(h.lastPatchUpdate) > time.Duration(patchIntervalHours)*time.Hour
+			if shouldSendPatch {
+				h.lastPatchUpdate = now
 			}
 			h.mu.Unlock()
 
@@ -983,6 +1006,12 @@ func (h *Heartbeat) Start() {
 				// `now` was captured under the lock above; the persisted gate is
 				// advanced to it only on a confirmed send (#1906).
 				go h.sendReliabilityMetrics(now)
+			}
+			if shouldSendHardware {
+				go h.sendHardwareInventory()
+			}
+			if shouldSendPatch {
+				go h.sendPatchInventory()
 			}
 		case <-h.stopChan:
 			return
@@ -1082,21 +1111,23 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 	}
 }
 
-// sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory.
-// All goroutines are tracked via inventoryWg for graceful shutdown.
+// sendInventory collects and sends the 15-minute inventory set: software, disk,
+// network, configuration changes, connections, policy registry/config state, and
+// Apple warranty info. All goroutines are tracked via inventoryWg for graceful shutdown.
+//
+// Note: hardware inventory, patch inventory, security status, and session inventory
+// are intentionally absent here — each runs on its own independent cadence:
+//   - hardware / patch:   daily (or configured), dispatched from the tick gate
+//   - security / sessions: every 5 minutes, dispatched from their own tick gates
 func (h *Heartbeat) sendInventory() {
 	fns := []func(){
-		h.sendHardwareInventory,
 		h.sendSoftwareInventory,
 		h.sendDiskInventory,
 		h.sendNetworkInventory,
 		h.sendConfigurationChanges,
-		h.sendSessionInventory,
 		h.sendConnectionsInventory,
-		h.sendPatchInventory,
 		h.sendPolicyRegistryState,
 		h.sendPolicyConfigState,
-		h.sendSecurityStatus,
 		h.sendAppleWarrantyInfo,
 	}
 	for _, fn := range fns {
@@ -1170,6 +1201,19 @@ func clampProcessSampleInterval(secs int) int {
 		return 3600
 	}
 	return secs
+}
+
+// clampPatchScanIntervalHours bounds the configured patch scan interval to
+// [1, 168] hours (1 hour to 7 days). Pure (no side effects) so it can be
+// unit-tested independently. A value ≤0 (unset/zero) returns the default 24 h.
+func clampPatchScanIntervalHours(hours int) int {
+	if hours <= 0 {
+		return 24
+	}
+	if hours > 168 {
+		return 168
+	}
+	return hours
 }
 
 // runProcessSampler periodically captures a top-N process snapshot and POSTs it,
@@ -3271,6 +3315,10 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 			case <-time.After(60 * time.Second):
 				log.Info("post-install patch rescan triggered", "successCount", successCount)
 				h.sendPatchInventory()
+				// Reset the daily gate so the scheduler doesn't re-scan immediately.
+				h.mu.Lock()
+				h.lastPatchUpdate = time.Now()
+				h.mu.Unlock()
 			case <-h.stopChan:
 				log.Info("post-install patch rescan cancelled — agent shutting down")
 			}

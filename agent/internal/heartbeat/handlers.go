@@ -246,6 +246,20 @@ func handleRefreshInventory(h *Heartbeat, _ Command) tools.CommandResult {
 		h.sendInventoryFn()
 	} else {
 		h.sendInventory()
+		// Hardware, patch, security, and session inventory run on their own
+		// cadences (daily / 5-min) and are no longer part of the sendInventory
+		// fan-out, so dispatch them explicitly here to keep "Refresh Inventory" a
+		// full refresh of everything in the dispatched list below.
+		go h.sendHardwareInventory()
+		go h.sendPatchInventory()
+		go h.sendSecurityStatus()
+		go h.sendSessionInventory()
+		// Reset the daily gates so the scheduler doesn't immediately re-run the
+		// hardware/patch scans right after this manual refresh.
+		h.mu.Lock()
+		h.lastHardwareUpdate = time.Now()
+		h.lastPatchUpdate = time.Now()
+		h.mu.Unlock()
 	}
 	return tools.NewSuccessResult(map[string]any{
 		"dispatched": []string{

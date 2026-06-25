@@ -51,6 +51,7 @@ type Config struct {
 	HeartbeatIntervalSeconds     int      `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int      `mapstructure:"metrics_interval_seconds"`
 	ProcessSampleIntervalSeconds int      `mapstructure:"process_sample_interval_seconds"`
+	PatchScanIntervalHours       int      `mapstructure:"patch_scan_interval_hours"`
 	EnabledCollectors            []string `mapstructure:"enabled_collectors"`
 	BackupEnabled                bool     `mapstructure:"backup_enabled"`
 	BackupPaths                  []string `mapstructure:"backup_paths"`
@@ -194,6 +195,7 @@ func Default() *Config {
 		HeartbeatIntervalSeconds:     60,
 		MetricsIntervalSeconds:       30,
 		ProcessSampleIntervalSeconds: 180,
+		PatchScanIntervalHours:       24,
 		EnabledCollectors:            []string{"hardware", "software", "metrics", "network"},
 		LogLevel:                     "info",
 		LogFormat:                    "text",

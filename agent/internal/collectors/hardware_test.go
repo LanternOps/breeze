@@ -1,6 +1,8 @@
 package collectors
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestNormalizeOSVersionBuild(t *testing.T) {
 	tests := []struct {
@@ -171,6 +173,113 @@ func TestFirstCleanHardwareIdentityValue(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := firstCleanHardwareIdentityValue(tt.values...); got != tt.want {
 				t.Errorf("firstCleanHardwareIdentityValue(%q) = %q, want %q", tt.values, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseHardwareJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    windowsHardwareJSON
+		wantErr bool
+	}{
+		{
+			name:  "full valid response with two GPUs",
+			input: `{"BiosSerial":"SN123","BiosVersion":"1.2.3","BoardSerial":"BS456","BoardManufacturer":"ASUS","BoardProduct":"Z790","BoardVersion":"Rev 1.0","SysManufacturer":"Dell","SysModel":"XPS 15","GPUNames":["NVIDIA RTX 4090","Intel UHD 770"]}`,
+			want: windowsHardwareJSON{
+				BiosSerial:        "SN123",
+				BiosVersion:       "1.2.3",
+				BoardSerial:       "BS456",
+				BoardManufacturer: "ASUS",
+				BoardProduct:      "Z790",
+				BoardVersion:      "Rev 1.0",
+				SysManufacturer:   "Dell",
+				SysModel:          "XPS 15",
+				GPUNames:          []string{"NVIDIA RTX 4090", "Intel UHD 770"},
+			},
+		},
+		{
+			name:  "single GPU as array",
+			input: `{"BiosSerial":"","BiosVersion":"","BoardSerial":"","BoardManufacturer":"","BoardProduct":"","BoardVersion":"","SysManufacturer":"","SysModel":"","GPUNames":["AMD Radeon RX 7900"]}`,
+			want: windowsHardwareJSON{
+				GPUNames: []string{"AMD Radeon RX 7900"},
+			},
+		},
+		{
+			name:  "empty GPU array",
+			input: `{"BiosSerial":"SN1","BiosVersion":"1.0","BoardSerial":"","BoardManufacturer":"","BoardProduct":"","BoardVersion":"","SysManufacturer":"","SysModel":"","GPUNames":[]}`,
+			want: windowsHardwareJSON{
+				BiosSerial:  "SN1",
+				BiosVersion: "1.0",
+				GPUNames:    []string{},
+			},
+		},
+		{
+			// PowerShell 5.1 serializes an empty @() as JSON null, not []. Go
+			// decodes null into a nil slice, which the caller treats the same as
+			// an empty list (no GPU model recorded).
+			name:  "null GPU list (PS 5.1 serializes empty @() as null)",
+			input: `{"BiosSerial":"SN1","BiosVersion":"1.0","BoardSerial":"","BoardManufacturer":"","BoardProduct":"","BoardVersion":"","SysManufacturer":"","SysModel":"","GPUNames":null}`,
+			want: windowsHardwareJSON{
+				BiosSerial:  "SN1",
+				BiosVersion: "1.0",
+				GPUNames:    nil,
+			},
+		},
+		{
+			name:  "trailing newline in output is tolerated",
+			input: `{"BiosSerial":"X","BiosVersion":"","BoardSerial":"","BoardManufacturer":"","BoardProduct":"","BoardVersion":"","SysManufacturer":"","SysModel":"","GPUNames":["GPU1"]}` + "\n",
+			want: windowsHardwareJSON{
+				BiosSerial: "X",
+				GPUNames:   []string{"GPU1"},
+			},
+		},
+		{
+			name:    "invalid JSON returns error",
+			input:   `not json`,
+			wantErr: true,
+		},
+		{
+			name:    "empty input returns error",
+			input:   ``,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseHardwareJSON([]byte(tt.input))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseHardwareJSON() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			checkStr := func(field, got, want string) {
+				t.Helper()
+				if got != want {
+					t.Errorf("%s = %q, want %q", field, got, want)
+				}
+			}
+			checkStr("BiosSerial", got.BiosSerial, tt.want.BiosSerial)
+			checkStr("BiosVersion", got.BiosVersion, tt.want.BiosVersion)
+			checkStr("BoardSerial", got.BoardSerial, tt.want.BoardSerial)
+			checkStr("BoardManufacturer", got.BoardManufacturer, tt.want.BoardManufacturer)
+			checkStr("BoardProduct", got.BoardProduct, tt.want.BoardProduct)
+			checkStr("BoardVersion", got.BoardVersion, tt.want.BoardVersion)
+			checkStr("SysManufacturer", got.SysManufacturer, tt.want.SysManufacturer)
+			checkStr("SysModel", got.SysModel, tt.want.SysModel)
+			if len(got.GPUNames) != len(tt.want.GPUNames) {
+				t.Errorf("GPUNames len = %d, want %d: got %v, want %v",
+					len(got.GPUNames), len(tt.want.GPUNames), got.GPUNames, tt.want.GPUNames)
+				return
+			}
+			for i, name := range got.GPUNames {
+				if name != tt.want.GPUNames[i] {
+					t.Errorf("GPUNames[%d] = %q, want %q", i, name, tt.want.GPUNames[i])
+				}
 			}
 		})
 	}

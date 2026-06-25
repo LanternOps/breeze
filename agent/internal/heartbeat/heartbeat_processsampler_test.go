@@ -21,3 +21,23 @@ func TestClampProcessSampleInterval(t *testing.T) {
 		}
 	}
 }
+
+func TestClampPatchScanIntervalHours(t *testing.T) {
+	cases := []struct {
+		in   int
+		want int
+	}{
+		{in: 0, want: 24},    // unset/zero → default 24 h
+		{in: -1, want: 24},   // negative → default 24 h
+		{in: 1, want: 1},     // min boundary
+		{in: 24, want: 24},   // default, in range
+		{in: 48, want: 48},   // arbitrary in-range value
+		{in: 168, want: 168}, // max boundary (7 days)
+		{in: 500, want: 168}, // above max → ceiling
+	}
+	for _, c := range cases {
+		if got := clampPatchScanIntervalHours(c.in); got != c.want {
+			t.Errorf("clampPatchScanIntervalHours(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
