@@ -18,6 +18,8 @@ let joinRow:
         type: string;
         targetHost: string;
         targetPort: number;
+        scheme: string | null;
+        skipTlsVerify: boolean;
       };
       device: { id: string; status: string; agentId: string | null };
     }
@@ -27,7 +29,9 @@ function setJoinRow(row: typeof joinRow) {
   joinRow = row;
 }
 
-function defaultJoinRow(over: Partial<{ port: number; deviceStatus: string; ownerId: string; status: string }> = {}) {
+function defaultJoinRow(
+  over: Partial<{ port: number; deviceStatus: string; ownerId: string; status: string; scheme: string | null; skipTlsVerify: boolean }> = {},
+) {
   return {
     session: {
       userId: over.ownerId ?? USER_ID,
@@ -36,10 +40,15 @@ function defaultJoinRow(over: Partial<{ port: number; deviceStatus: string; owne
       type: 'proxy',
       targetHost: '192.168.1.50',
       targetPort: over.port ?? 80,
+      scheme: 'scheme' in over ? (over.scheme ?? null) : null,
+      skipTlsVerify: over.skipTlsVerify ?? false,
     },
     device: { id: DEVICE_ID, status: over.deviceStatus ?? 'online', agentId: AGENT_ID },
   };
 }
+
+// Captures the values passed to db.update(...).set(values) for assertion.
+let capturedSessionUpdate: Record<string, unknown> | null = null;
 
 vi.mock('../db', () => ({
   db: {
@@ -51,6 +60,12 @@ vi.mock('../db', () => ({
           })),
         })),
       })),
+    })),
+    update: vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        capturedSessionUpdate = values;
+        return { where: vi.fn(async () => {}) };
+      }),
     })),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
@@ -117,6 +132,7 @@ function okAgentResult(over: Partial<{ status: number; headers: Record<string, s
 
 beforeEach(() => {
   vi.clearAllMocks();
+  capturedSessionUpdate = null;
   setJoinRow(defaultJoinRow());
   isAgentConnectedMock.mockReturnValue(true);
   checkRemoteAccessMock.mockResolvedValue({ allowed: true });
@@ -384,5 +400,44 @@ describe('tunnelHttp response rewriting', () => {
     const sc = res.headers.get('set-cookie') ?? '';
     expect(sc).toContain('bzdev_sid=abc');
     expect(sc).toContain(`Path=/api/v1/tunnel-http/${TUNNEL_ID}/`);
+  });
+});
+
+describe('tunnelHttp TLS + skipTlsVerify (#1916)', () => {
+  it('maps a tls_cert_untrusted agent result to session-failed + 502', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    sendCommandMock.mockResolvedValueOnce({ status: 'failed', error: 'tls_cert_untrusted' });
+    const res = await app.request(`${BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(502);
+    expect(await res.text()).toContain('Untrusted');
+    expect(capturedSessionUpdate).toMatchObject({
+      status: 'failed',
+      errorMessage: 'tls_cert_untrusted',
+    });
+    // endedAt must be a Date (not null/undefined)
+    expect(capturedSessionUpdate?.endedAt).toBeInstanceOf(Date);
+  });
+
+  it('forwards session.scheme and skipTlsVerify in the http_request payload', async () => {
+    setJoinRow(defaultJoinRow({ scheme: 'https', skipTlsVerify: true }));
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    setJoinRow(defaultJoinRow({ scheme: 'https', skipTlsVerify: true }));
+    const res = await app.request(`${BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const [, command] = sendCommandMock.mock.calls.at(-1)!;
+    expect(command.payload.scheme).toBe('https');
+    expect(command.payload.skipTlsVerify).toBe(true);
+  });
+
+  it('falls back to port-based scheme when session.scheme is null', async () => {
+    setJoinRow(defaultJoinRow({ port: 443, scheme: null }));
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    setJoinRow(defaultJoinRow({ port: 443, scheme: null }));
+    await app.request(`${BASE}/`, { headers: { cookie } });
+    const [, command] = sendCommandMock.mock.calls.at(-1)!;
+    expect(command.payload.scheme).toBe('https');
   });
 });

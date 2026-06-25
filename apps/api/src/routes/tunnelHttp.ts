@@ -139,6 +139,8 @@ interface UsableTunnel {
   deviceStatus: string;
   targetHost: string;
   targetPort: number;
+  scheme: string | null;
+  skipTlsVerify: boolean;
   orgId: string;
   type: string;
 }
@@ -170,6 +172,8 @@ async function loadOwnedTunnelSession(tunnelId: string, userId: string): Promise
       deviceStatus: device.status,
       targetHost: session.targetHost,
       targetPort: session.targetPort,
+      scheme: session.scheme ?? null,
+      skipTlsVerify: session.skipTlsVerify ?? false,
       orgId: session.orgId,
       type: session.type,
     };
@@ -311,7 +315,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     bodyB64 = buf.toString('base64');
   }
 
-  const scheme: 'http' | 'https' = session.targetPort === 443 ? 'https' : 'http';
+  const scheme: 'http' | 'https' = (session.scheme as 'http' | 'https' | null) ?? (session.targetPort === 443 ? 'https' : 'http');
 
   const awaitResult = await sendCommandToAgentAwaitResult(
     session.agentId,
@@ -327,6 +331,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
         path,
         headers,
         bodyB64,
+        skipTlsVerify: session.skipTlsVerify,
         allowlistRules: await getActiveAllowlistPatterns(session.orgId),
       },
     },
@@ -337,6 +342,15 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     const err = awaitResult.error ?? '';
     if (/timeout/i.test(err)) {
       return c.text('Upstream timeout', 504);
+    }
+    if (err === 'tls_cert_untrusted') {
+      // Surface via the session row so ProxyTunnelPage's existing poll renders
+      // the "recreate with self-signed allowed" banner. A cert failure on load
+      // is terminal for the session — the cert won't become trusted on retry.
+      await db.update(tunnelSessions)
+        .set({ status: 'failed', errorMessage: 'tls_cert_untrusted', endedAt: new Date() })
+        .where(eq(tunnelSessions.id, tunnelId));
+      return c.text('Untrusted upstream certificate', 502);
     }
     return c.text('Bridge agent error', 502);
   }
