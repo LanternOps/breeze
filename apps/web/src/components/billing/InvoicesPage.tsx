@@ -4,6 +4,9 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { Dialog } from '../shared/Dialog';
+import { showToast } from '../shared/Toast';
+import { useBulkSelection } from './bulk/useBulkSelection';
+import { BulkActionBar } from './bulk/BulkActionBar';
 import AccessDenied from '../shared/AccessDenied';
 import {
   type InvoiceStatus,
@@ -69,8 +72,9 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 const num = (s: string | null | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
 const ts = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
 
-export default function InvoicesPage() {
+export function InvoicesPage() {
   const { can } = usePermissions();
+  const bulk = useBulkSelection();
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,6 +85,10 @@ export default function InvoicesPage() {
   const [filters, setFilters] = useState<Filters>(() => readFilters());
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
+
+  // Bulk void dialog state
+  const [voidOpen, setVoidOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
 
   // New-invoice dialog state
   const [assembleOpen, setAssembleOpen] = useState(false);
@@ -208,6 +216,31 @@ export default function InvoicesPage() {
 
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
+
+  const runBulkInvoices = useCallback(
+    async (path: string, verb: string, extraBody?: Record<string, unknown>) => {
+      const ids = Array.from(bulk.selectedIds);
+      if (ids.length === 0) return;
+      try {
+        const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number } }>({
+          request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids, ...extraBody }) }),
+          errorFallback: `Bulk ${verb} failed. Retry.`,
+          onUnauthorized: UNAUTHORIZED,
+        });
+        const { succeeded, skipped, failed } = result.data;
+        showToast(
+          skipped + failed > 0
+            ? { type: 'warning', message: `${succeeded} ${verb}, ${skipped} skipped${failed ? `, ${failed} failed` : ''}` }
+            : { type: 'success', message: `${succeeded} ${verb}` },
+        );
+        bulk.clear();
+        void loadInvoices(filters);
+      } catch (err) {
+        handleActionError(err, `Bulk ${verb} failed. Retry.`);
+      }
+    },
+    [bulk, loadInvoices, filters],
+  );
 
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
@@ -408,65 +441,135 @@ export default function InvoicesPage() {
             No invoices match these filters.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" data-testid="invoices-table">
-              <thead>
-                <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-3 font-medium">Number</th>
-                  <th className="px-3 py-3 font-medium">Organization</th>
-                  <SortHeaderLeft label="Issued" sortKey="issued" sort={sort} onSort={toggleSort} />
-                  <SortHeaderLeft label="Due" sortKey="due" sort={sort} onSort={toggleSort} />
-                  <SortHeader label="Total" sortKey="total" />
-                  <SortHeader label="Balance" sortKey="balance" />
-                  <th className="px-3 py-3 font-medium">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((inv) => {
-                  const overdue = inv.status === 'overdue';
-                  const hasBalance = num(inv.balance) > 0 && inv.status !== 'void';
-                  return (
-                    <tr
-                      key={inv.id}
-                      onClick={() => void navigateTo(`/billing/invoices/${inv.id}`)}
-                      data-testid={`invoices-row-${inv.id}`}
-                      className="cursor-pointer border-t transition hover:bg-muted/40"
-                    >
-                      <td className="px-3 py-3 font-medium">
-                        <span className="flex items-center gap-2">
-                          <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-red-500' : 'bg-transparent'}`} aria-hidden="true" />
-                          {inv.invoiceNumber ?? (
-                            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Draft
-                            </span>
-                          )}
-                        </span>
-                      </td>
-                      <td className="px-3 py-3">{orgName(inv.orgId)}</td>
-                      <td className="px-3 py-3 text-muted-foreground">{formatDate(inv.issueDate)}</td>
-                      <td className={`px-3 py-3 ${overdue ? 'font-medium text-red-700 dark:text-red-400' : 'text-muted-foreground'}`}>
-                        {formatDate(inv.dueDate)}
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums">{formatMoney(inv.total, inv.currencyCode)}</td>
-                      <td className={`px-3 py-3 text-right tabular-nums ${hasBalance ? 'font-medium' : 'text-muted-foreground'}`}>
-                        {formatMoney(inv.balance, inv.currencyCode)}
-                      </td>
-                      <td className="px-3 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
-                          data-testid={`invoices-status-${inv.id}`}
-                        >
-                          {statusLabel(inv)}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="relative">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" data-testid="invoices-table">
+                <thead>
+                  <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="w-8 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all invoices"
+                        data-testid="invoices-select-all"
+                        checked={rows.length > 0 && rows.every((r) => bulk.has(r.id))}
+                        onChange={(e) => (e.target.checked ? bulk.selectAll(rows.map((r) => r.id)) : bulk.clear())}
+                      />
+                    </th>
+                    <th className="px-3 py-3 font-medium">Number</th>
+                    <th className="px-3 py-3 font-medium">Organization</th>
+                    <SortHeaderLeft label="Issued" sortKey="issued" sort={sort} onSort={toggleSort} />
+                    <SortHeaderLeft label="Due" sortKey="due" sort={sort} onSort={toggleSort} />
+                    <SortHeader label="Total" sortKey="total" />
+                    <SortHeader label="Balance" sortKey="balance" />
+                    <th className="px-3 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((inv) => {
+                    const overdue = inv.status === 'overdue';
+                    const hasBalance = num(inv.balance) > 0 && inv.status !== 'void';
+                    return (
+                      <tr
+                        key={inv.id}
+                        onClick={() => void navigateTo(`/billing/invoices/${inv.id}`)}
+                        data-testid={`invoices-row-${inv.id}`}
+                        className="cursor-pointer border-t transition hover:bg-muted/40"
+                      >
+                        <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select invoice ${inv.invoiceNumber ?? inv.id}`}
+                            data-testid={`invoices-select-${inv.id}`}
+                            checked={bulk.has(inv.id)}
+                            onChange={() => bulk.toggle(inv.id)}
+                          />
+                        </td>
+                        <td className="px-3 py-3 font-medium">
+                          <span className="flex items-center gap-2">
+                            <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-red-500' : 'bg-transparent'}`} aria-hidden="true" />
+                            {inv.invoiceNumber ?? (
+                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Draft
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3">{orgName(inv.orgId)}</td>
+                        <td className="px-3 py-3 text-muted-foreground">{formatDate(inv.issueDate)}</td>
+                        <td className={`px-3 py-3 ${overdue ? 'font-medium text-red-700 dark:text-red-400' : 'text-muted-foreground'}`}>
+                          {formatDate(inv.dueDate)}
+                        </td>
+                        <td className="px-3 py-3 text-right tabular-nums">{formatMoney(inv.total, inv.currencyCode)}</td>
+                        <td className={`px-3 py-3 text-right tabular-nums ${hasBalance ? 'font-medium' : 'text-muted-foreground'}`}>
+                          {formatMoney(inv.balance, inv.currencyCode)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
+                            data-testid={`invoices-status-${inv.id}`}
+                          >
+                            {statusLabel(inv)}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <BulkActionBar
+              count={bulk.size}
+              onClear={bulk.clear}
+              testIdPrefix="invoices"
+              actions={[
+                ...(can('invoices', 'send') ? [{ key: 'issue', label: 'Issue', onClick: () => void runBulkInvoices('/invoices/bulk-issue', 'issued') }] : []),
+                ...(can('invoices', 'send') ? [{ key: 'void', label: 'Void', variant: 'destructive' as const, onClick: () => { setVoidReason(''); setVoidOpen(true); } }] : []),
+                ...(can('invoices', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, onClick: () => void runBulkInvoices('/invoices/bulk-delete', 'deleted') }] : []),
+              ]}
+            />
           </div>
         )}
       </div>
+
+      {/* Bulk void dialog */}
+      <Dialog open={voidOpen} onClose={() => setVoidOpen(false)} title="Void invoices" maxWidth="md" className="p-6">
+        <div className="space-y-4" data-testid="invoices-bulk-void-dialog">
+          <div>
+            <h2 className="text-lg font-semibold">Void invoices</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Voiding releases billed work so it can be re-invoiced. This cannot be undone.
+            </p>
+          </div>
+          <label className="flex flex-col gap-1 text-sm">
+            Reason
+            <textarea
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              rows={3}
+              data-testid="invoices-bulk-void-reason"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setVoidOpen(false)}
+              className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={async () => { await runBulkInvoices('/invoices/bulk-void', 'voided', { reason: voidReason.trim() }); setVoidOpen(false); }}
+              disabled={!voidReason.trim()}
+              data-testid="invoices-bulk-void-submit"
+              className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              Void invoices
+            </button>
+          </div>
+        </div>
+      </Dialog>
 
       {/* New-invoice dialog (assemble | blank) */}
       <Dialog
@@ -605,3 +708,5 @@ function SortHeaderLeft({
 
 // re-exported for tests that need the error type
 export { ActionError };
+
+export default InvoicesPage;
