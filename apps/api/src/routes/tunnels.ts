@@ -8,7 +8,7 @@ import { captureException } from '../services/sentry';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
-import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
+import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds, HTTP_TICKET_TTL_MS } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 import { getTrustedClientIp } from '../services/clientIp';
 import { getRedis } from '../services/redis';
@@ -804,6 +804,64 @@ tunnelRoutes.post(
 
     await logTunnelAudit(
       'tunnel.ws_ticket.mint',
+      'tunnel_session',
+      id,
+      auth.user.id,
+      session.orgId,
+      { deviceId: session.deviceId, type: session.type },
+      getClientIp(c),
+    );
+
+    return c.json({ ticket });
+  }
+);
+
+// POST /tunnels/:id/http-ticket — Issue a one-time HTTP proxy ticket (5-min TTL for proxy page load)
+tunnelRoutes.post(
+  '/:id/http-ticket',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { id } = c.req.valid('param');
+
+    const conditions = [eq(tunnelSessions.id, id)];
+    if (auth.orgId) {
+      conditions.push(eq(tunnelSessions.orgId, auth.orgId));
+    }
+
+    const [session] = await db
+      .select()
+      .from(tunnelSessions)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Tunnel session not found' }, 404);
+    }
+
+    if (session.userId !== auth.user.id) {
+      return c.json({ error: 'Not the session owner' }, 403);
+    }
+
+    if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
+      return c.json({
+        error: 'Cannot mint HTTP ticket for tunnel in current state',
+        status: session.status,
+      }, 400);
+    }
+
+    const ticket = await createWsTicket({
+      sessionId: id,
+      sessionType: 'tunnel-http',
+      userId: auth.user.id,
+      ip: getTrustedClientIp(c),
+      userAgent: c.req.header('user-agent') ?? '',
+      ttlMs: HTTP_TICKET_TTL_MS,
+    });
+
+    await logTunnelAudit(
+      'tunnel.http_ticket.mint',
       'tunnel_session',
       id,
       auth.user.id,
