@@ -369,7 +369,7 @@
            EnrollAgent path above). SetBootstrapData (immediate) must run before
            the deferred BootstrapEnroll so CustomActionData is populated. -->
       <Custom Action="SetBootstrapData" Before="BootstrapEnroll" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
-      <Custom Action="BootstrapEnroll" Before="InstallServices" After="EnrollAgent" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
+      <Custom Action="BootstrapEnroll" Before="InstallServices" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
