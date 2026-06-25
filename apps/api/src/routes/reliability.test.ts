@@ -12,6 +12,7 @@ vi.mock('../services/reliabilityScoring', () => ({
   listReliabilityDevices: vi.fn(),
   getOrgReliabilitySummary: vi.fn(),
   getDeviceReliabilityHistory: vi.fn(),
+  getDeviceReliabilityOffenders: vi.fn(),
   getDeviceReliability: vi.fn(),
   evaluateReliabilityScores: vi.fn(),
 }));
@@ -30,6 +31,7 @@ import {
   listReliabilityDevices,
   getOrgReliabilitySummary,
   getDeviceReliabilityHistory,
+  getDeviceReliabilityOffenders,
   getDeviceReliability,
   evaluateReliabilityScores,
 } from '../services/reliabilityScoring';
@@ -462,6 +464,70 @@ describe('public reliability routes', () => {
       expect(body.days).toBe(30);
 
       expect(vi.mocked(getDeviceReliabilityHistory)).toHaveBeenCalledWith(DEVICE_ID, 30);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // GET /:deviceId/offenders
+  // ──────────────────────────────────────────────────────────
+  describe('GET /:deviceId/offenders', () => {
+    const offenders = {
+      services: [{ key: 'Spooler', label: 'Spooler', count: 3, lastOccurrence: '2026-06-20T10:00:00.000Z' }],
+      hardware: [],
+      hangs: [],
+    };
+
+    it('returns 404 when device not found', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null);
+
+      const app = buildApp();
+      const res = await app.request(`/reliability/${DEVICE_ID}/offenders`);
+      expect(res.status).toBe(404);
+      expect(vi.mocked(getDeviceReliabilityOffenders)).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 when device site is denied', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
+
+      const app = buildApp();
+      const res = await app.request(`/reliability/${DEVICE_ID}/offenders`);
+      expect(res.status).toBe(403);
+      expect(vi.mocked(getDeviceReliabilityOffenders)).not.toHaveBeenCalled();
+    });
+
+    it('returns offenders with default window and limit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: ORG_ID } as any);
+      vi.mocked(getDeviceReliabilityOffenders).mockResolvedValue(offenders as any);
+
+      const app = buildApp();
+      const res = await app.request(`/reliability/${DEVICE_ID}/offenders`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body).toEqual({ deviceId: DEVICE_ID, days: 30, offenders });
+      expect(vi.mocked(getDeviceReliabilityOffenders)).toHaveBeenCalledWith(DEVICE_ID, 30, 5);
+    });
+
+    it('passes custom days and limit through to the service', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: ORG_ID } as any);
+      vi.mocked(getDeviceReliabilityOffenders).mockResolvedValue(offenders as any);
+
+      const app = buildApp();
+      const res = await app.request(`/reliability/${DEVICE_ID}/offenders?days=7&limit=3`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.days).toBe(7);
+      expect(vi.mocked(getDeviceReliabilityOffenders)).toHaveBeenCalledWith(DEVICE_ID, 7, 3);
+    });
+
+    it('rejects an out-of-range limit through validation', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: ORG_ID } as any);
+
+      const app = buildApp();
+      const res = await app.request(`/reliability/${DEVICE_ID}/offenders?limit=50`);
+      expect(res.status).toBe(400);
+      expect(vi.mocked(getDeviceReliabilityOffenders)).not.toHaveBeenCalled();
     });
   });
 });

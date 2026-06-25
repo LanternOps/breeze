@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ChevronDown, RefreshCw, ShieldCheck, Sparkles, Wrench, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, ChevronDown, Cpu, RefreshCw, Settings, ShieldCheck, Sparkles, Wrench, XCircle } from 'lucide-react';
 
 import type { AiPageContext } from '@breeze/shared';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -43,7 +43,52 @@ type ReliabilitySnapshot = {
   topIssues: ReliabilityTopIssue[];
   drivers?: ReliabilityDriver[];
   computedAt: string;
+  enrolledAt?: string | null;
 };
+
+type ReliabilityOffender = {
+  key: string;
+  label: string;
+  count: number;
+  lastOccurrence: string | null;
+  detail?: string;
+};
+
+type ReliabilityOffenders = {
+  services: ReliabilityOffender[];
+  hardware: ReliabilityOffender[];
+  hangs: ReliabilityOffender[];
+};
+
+// The window the panel summarizes events over (matches the API offenders default).
+const OFFENDER_WINDOW_DAYS = 30;
+// Counts at or above this read as "machine on fire / number is broken" noise in a
+// summary tile (issue #1907); cap the tile and keep the exact figure in the
+// title + the per-offender drill-down.
+const COUNT_CAP = 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Cap large summary counts so a tile shows "999+" instead of a 4-digit wall.
+function formatCount(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  if (value >= COUNT_CAP) return `${COUNT_CAP - 1}+`;
+  return value.toLocaleString();
+}
+
+// Observed device age in whole days, or null when enrollment time is unknown.
+function deviceAgeDays(enrolledAt?: string | null): number | null {
+  if (!enrolledAt) return null;
+  const ms = Date.parse(enrolledAt);
+  if (Number.isNaN(ms)) return null;
+  return Math.max(0, Math.floor((Date.now() - ms) / DAY_MS));
+}
+
+// Relabel a fixed window ("30d") to the actually-observed age on a device younger
+// than the window ("since enroll · 13d"), so counts aren't read as a full month.
+function windowLabel(windowDays: number, ageDays: number | null): string {
+  if (ageDays !== null && ageDays < windowDays) return `since enroll · ${ageDays}d`;
+  return `${windowDays}d`;
+}
 
 type DeviceReliabilityPanelProps = {
   deviceId: string;
@@ -128,7 +173,60 @@ function formatEvidenceKey(value: string): string {
 
 function formatEvidenceValue(key: string, value: number): string {
   if (key.toLowerCase().includes('uptime')) return `${value.toFixed(1)}%`;
-  return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(1);
+  return Number.isInteger(value) ? formatCount(value) : value.toFixed(1);
+}
+
+function formatOffenderWhen(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return formatDateTime(date, { month: 'short', day: 'numeric' });
+}
+
+function OffenderGroup({
+  title,
+  Icon,
+  offenders,
+  testId,
+}: {
+  title: string;
+  Icon: typeof Wrench;
+  offenders: ReliabilityOffender[];
+  testId: string;
+}) {
+  if (offenders.length === 0) return null;
+  return (
+    <div data-testid={testId}>
+      <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" />
+        {title}
+      </div>
+      <ul className="mt-2 space-y-1.5">
+        {offenders.map((offender) => {
+          const when = formatOffenderWhen(offender.lastOccurrence);
+          return (
+            <li key={offender.key} className="flex items-center justify-between gap-3 text-sm">
+              <span className="min-w-0 truncate">
+                <span className="font-medium">{offender.label}</span>
+                {offender.detail && (
+                  <span className="ml-2 text-xs text-muted-foreground">{offender.detail}</span>
+                )}
+              </span>
+              <span className="flex shrink-0 items-center gap-2 text-xs tabular-nums text-muted-foreground">
+                {when && <span>{when}</span>}
+                <span
+                  className="rounded bg-muted px-1.5 py-0.5 font-semibold text-foreground"
+                  title={offender.count.toLocaleString()}
+                >
+                  {formatCount(offender.count)}×
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPanelProps) {
@@ -188,6 +286,37 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const [outcomeMenuOpen, setOutcomeMenuOpen] = useState(false);
   const outcomeMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(outcomeMenuOpen, outcomeMenuRef, () => setOutcomeMenuOpen(false));
+
+  // Offenders drill-down (issue #1907): lazily fetched on first expand so the
+  // initial panel render stays a single request and healthy devices pay nothing.
+  const [offendersOpen, setOffendersOpen] = useState(false);
+  const [offenders, setOffenders] = useState<ReliabilityOffenders | null>(null);
+  const [offendersLoading, setOffendersLoading] = useState(false);
+  const [offendersError, setOffendersError] = useState<string>();
+  const offendersFetchedRef = useRef(false);
+
+  const loadOffenders = useCallback(async () => {
+    offendersFetchedRef.current = true;
+    setOffendersLoading(true);
+    setOffendersError(undefined);
+    try {
+      const response = await fetchWithAuth(`/reliability/${deviceId}/offenders`);
+      if (!response.ok) throw new Error('Failed to load reliability detail');
+      const json = await response.json();
+      setOffenders((json?.offenders as ReliabilityOffenders | undefined) ?? null);
+    } catch (err) {
+      offendersFetchedRef.current = false; // allow a retry on next expand
+      setOffendersError(err instanceof Error ? err.message : 'Failed to load reliability detail');
+    } finally {
+      setOffendersLoading(false);
+    }
+  }, [deviceId]);
+
+  const toggleOffenders = useCallback(() => {
+    const next = !offendersOpen;
+    setOffendersOpen(next);
+    if (next && !offendersFetchedRef.current) void loadOffenders();
+  }, [offendersOpen, loadOffenders]);
 
   function handleOutcome(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
     setOutcomeMenuOpen(false);
@@ -273,6 +402,11 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     );
   }
 
+  const ageDays = deviceAgeDays(snapshot.enrolledAt);
+  const uptimeWindow = windowLabel(OFFENDER_WINDOW_DAYS, ageDays);
+  const offenderEventTotal =
+    snapshot.serviceFailureCount30d + snapshot.hardwareErrorCount30d + snapshot.hangCount30d;
+
   return (
     <div className="rounded-lg border bg-card p-5 shadow-sm">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -313,7 +447,14 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               <div className="text-sm font-medium capitalize">{snapshot.trendDirection}</div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">30d uptime</div>
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span data-testid="reliability-uptime-window">{uptimeWindow} uptime</span>
+                {ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS && (
+                  <HelpTooltip
+                    text={`This device enrolled ${ageDays} day${ageDays === 1 ? '' : 's'} ago, so the ${OFFENDER_WINDOW_DAYS}-day windows only span its lifetime so far.`}
+                  />
+                )}
+              </div>
               <div className="text-sm font-medium tabular-nums">{snapshot.uptime30d.toFixed(1)}%</div>
             </div>
             <div>
@@ -419,10 +560,82 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
           <div key={issue.type} className="rounded-md border p-3">
             <p className="text-sm font-medium">{issueLabels[issue.type]}</p>
             <p className="mt-1 text-xs capitalize text-muted-foreground">{issue.severity}</p>
-            <p className="mt-3 text-lg font-semibold tabular-nums">{issue.count}</p>
+            <p className="mt-3 text-lg font-semibold tabular-nums" title={issue.count.toLocaleString()}>
+              {formatCount(issue.count)}
+            </p>
           </div>
         ))}
       </div>
+
+      {offenderEventTotal > 0 && (
+        <div className="mt-4 border-t pt-3">
+          <button
+            type="button"
+            data-testid="reliability-offenders-toggle"
+            aria-expanded={offendersOpen}
+            onClick={toggleOffenders}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ChevronDown className={`h-4 w-4 transition-transform ${offendersOpen ? 'rotate-180' : ''}`} />
+            {offendersOpen ? 'Hide' : 'Show'} offending services &amp; components
+          </button>
+
+          {offendersOpen && (
+            <div data-testid="reliability-offenders" className="mt-3 space-y-4">
+              {offendersLoading && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  Loading detail…
+                </div>
+              )}
+              {offendersError && (
+                <div className="flex flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+                  <span className="text-destructive">{offendersError}</span>
+                  <button
+                    type="button"
+                    onClick={() => void loadOffenders()}
+                    className="inline-flex items-center gap-1.5 self-start rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Retry
+                  </button>
+                </div>
+              )}
+              {!offendersLoading && !offendersError && offenders && (
+                offenders.services.length + offenders.hardware.length + offenders.hangs.length > 0 ? (
+                  <>
+                    <OffenderGroup
+                      testId="reliability-offenders-services"
+                      title="Top services"
+                      Icon={Settings}
+                      offenders={offenders.services}
+                    />
+                    <OffenderGroup
+                      testId="reliability-offenders-hardware"
+                      title="Top hardware components"
+                      Icon={Cpu}
+                      offenders={offenders.hardware}
+                    />
+                    <OffenderGroup
+                      testId="reliability-offenders-hangs"
+                      title="Top processes"
+                      Icon={Activity}
+                      offenders={offenders.hangs}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Distinct events over the last {OFFENDER_WINDOW_DAYS} days.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No offending services or components recorded in the last {OFFENDER_WINDOW_DAYS} days.
+                  </p>
+                )
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

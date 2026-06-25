@@ -7,6 +7,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/pe
 import {
   getDeviceReliability,
   getDeviceReliabilityHistory,
+  getDeviceReliabilityOffenders,
   getOrgReliabilitySummary,
   evaluateReliabilityScores,
   listReliabilityDevices,
@@ -37,6 +38,11 @@ const orgIdParamSchema = z.object({
 
 const historyQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(365).default(90),
+});
+
+const offendersQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(365).default(30),
+  limit: z.coerce.number().int().min(1).max(20).default(5),
 });
 
 const evaluationQuerySchema = z.object({
@@ -244,6 +250,37 @@ reliabilityRoutes.get(
       deviceId,
       days,
       points,
+    });
+  }
+);
+
+// Issue #1907: drill-down behind the count tiles — the top offending services,
+// hardware components, and processes (distinct-deduped, consistent with #1905),
+// so a tech can see *which* service is flapping rather than a bare total.
+reliabilityRoutes.get(
+  '/:deviceId/offenders',
+  requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
+  zValidator('param', deviceIdParamSchema),
+  zValidator('query', offendersQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceId } = c.req.valid('param');
+    const { days, limit } = c.req.valid('query');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const offenders = await getDeviceReliabilityOffenders(deviceId, days, limit);
+    return c.json({
+      deviceId,
+      days,
+      offenders,
     });
   }
 );

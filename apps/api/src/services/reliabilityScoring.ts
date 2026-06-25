@@ -159,6 +159,9 @@ export interface ReliabilityListItem {
   topIssues: ReliabilityTopIssue[];
   computedAt: string;
   drivers?: ReliabilityFactorDriver[];
+  // Device enrollment time (ISO). Lets the UI relabel fixed windows ("30d") to
+  // the actually-observed age on young devices ("since enroll · 13d"). Issue #1907.
+  enrolledAt?: string | null;
 }
 
 export interface DeviceReliabilityHistoryPoint {
@@ -170,6 +173,30 @@ export interface DeviceReliabilityHistoryPoint {
   serviceFailureCount: number;
   hardwareErrorCount: number;
   reliabilityEstimate: number;
+}
+
+// Issue #1907: per-device drill-down. A count tile ("service failure count 30d:
+// 900") tells a tech nothing actionable; the offender breakdown answers *which*
+// service is flapping / *which* component is throwing errors. Counts here are
+// DISTINCT across the window (same dedup keys as #1905) so they line up with the
+// headline tiles instead of re-inflating.
+export interface ReliabilityOffender {
+  /** Stable identity used for de-duplication and as the React key. */
+  key: string;
+  /** Human label (service name, hardware source, or process name). */
+  label: string;
+  /** Distinct event count attributed to this offender within the window. */
+  count: number;
+  /** ISO timestamp of the most recent attributed event, when known. */
+  lastOccurrence: string | null;
+  /** Optional qualifier (worst hardware severity, recovered/unresolved counts). */
+  detail?: string;
+}
+
+export interface DeviceReliabilityOffenders {
+  services: ReliabilityOffender[];
+  hardware: ReliabilityOffender[];
+  hangs: ReliabilityOffender[];
 }
 
 export type ReliabilityFactorName = 'uptime' | 'crashes' | 'hangs' | 'serviceFailures' | 'hardwareErrors';
@@ -1388,6 +1415,7 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
       topIssues: deviceReliability.topIssues,
       details: deviceReliability.details,
       computedAt: deviceReliability.computedAt,
+      enrolledAt: devices.enrolledAt,
     })
     .from(deviceReliability)
     .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
@@ -1414,6 +1442,7 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
     topIssues: Array.isArray(row.topIssues) ? row.topIssues : [],
     computedAt: row.computedAt.toISOString(),
     drivers: buildReliabilityDrivers(row.details),
+    enrolledAt: row.enrolledAt ? row.enrolledAt.toISOString() : null,
   };
 }
 
@@ -1560,6 +1589,123 @@ export async function getDeviceReliabilityHistory(deviceId: string, days: number
     });
 }
 
+const DEFAULT_OFFENDER_LIMIT = 5;
+
+const HARDWARE_SEVERITY_RANK: Record<string, number> = { critical: 3, error: 2, warning: 1 };
+
+interface OffenderAccumulator {
+  key: string;
+  label: string;
+  count: number;
+  lastOccurrence: string | undefined;
+  worstSeverity?: string;
+  recovered: number;
+  unresolved: number;
+}
+
+function upsertOffender(map: Map<string, OffenderAccumulator>, id: string): OffenderAccumulator {
+  let entry = map.get(id);
+  if (!entry) {
+    entry = { key: id, label: id, count: 0, lastOccurrence: undefined, recovered: 0, unresolved: 0 };
+    map.set(id, entry);
+  }
+  return entry;
+}
+
+function offenderTimestampMs(value: string | null): number {
+  if (!value) return 0;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function finalizeOffenders(
+  map: Map<string, OffenderAccumulator>,
+  limit: number,
+  toDetail: (entry: OffenderAccumulator) => string | undefined
+): ReliabilityOffender[] {
+  return Array.from(map.values())
+    .sort((left, right) => (
+      right.count - left.count
+      || offenderTimestampMs(right.lastOccurrence ?? null) - offenderTimestampMs(left.lastOccurrence ?? null)
+      || left.label.localeCompare(right.label)
+    ))
+    .slice(0, Math.max(1, limit))
+    .map((entry) => {
+      const detail = toDetail(entry);
+      return {
+        key: entry.key,
+        label: entry.label,
+        count: entry.count,
+        lastOccurrence: entry.lastOccurrence ?? null,
+        ...(detail ? { detail } : {}),
+      };
+    });
+}
+
+// Pure: aggregate the top offending services / hardware components / processes
+// from raw history rows. Events are de-duplicated across the WHOLE row set with
+// the same keys the score aggregation uses (#1905), so an event re-reported in
+// overlapping windows is attributed to its offender exactly once.
+function aggregateReliabilityOffenders(rows: HistoryRow[], limit = DEFAULT_OFFENDER_LIMIT): DeviceReliabilityOffenders {
+  const seen = new Set<string>();
+  const services = new Map<string, OffenderAccumulator>();
+  const hardware = new Map<string, OffenderAccumulator>();
+  const hangs = new Map<string, OffenderAccumulator>();
+
+  const isNewEvent = (key: string): boolean => {
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  };
+
+  for (const row of rows) {
+    for (const event of row.serviceFailures) {
+      if (!isNewEvent(serviceFailureKey(event))) continue;
+      const entry = upsertOffender(services, event.serviceName?.trim() || 'Unknown service');
+      entry.count += 1;
+      if (event.recovered) entry.recovered += 1;
+      entry.lastOccurrence = maxTimestamp([entry.lastOccurrence, event.timestamp]);
+    }
+
+    for (const event of row.hardwareErrors) {
+      if (!isNewEvent(hardwareErrorKey(event))) continue;
+      const entry = upsertOffender(hardware, event.source?.trim() || 'Unknown component');
+      entry.count += 1;
+      entry.lastOccurrence = maxTimestamp([entry.lastOccurrence, event.timestamp]);
+      const rank = HARDWARE_SEVERITY_RANK[event.severity] ?? 0;
+      const currentRank = entry.worstSeverity ? (HARDWARE_SEVERITY_RANK[entry.worstSeverity] ?? 0) : 0;
+      if (rank > currentRank) entry.worstSeverity = event.severity;
+    }
+
+    for (const event of row.appHangs) {
+      if (!isNewEvent(appHangKey(event))) continue;
+      const entry = upsertOffender(hangs, event.processName?.trim() || 'Unknown process');
+      entry.count += 1;
+      if (!event.resolved) entry.unresolved += 1;
+      entry.lastOccurrence = maxTimestamp([entry.lastOccurrence, event.timestamp]);
+    }
+  }
+
+  return {
+    services: finalizeOffenders(services, limit, (entry) => (
+      entry.recovered > 0 ? `${entry.recovered}/${entry.count} recovered` : undefined
+    )),
+    hardware: finalizeOffenders(hardware, limit, (entry) => entry.worstSeverity),
+    hangs: finalizeOffenders(hangs, limit, (entry) => (
+      entry.unresolved > 0 ? `${entry.unresolved} unresolved` : undefined
+    )),
+  };
+}
+
+export async function getDeviceReliabilityOffenders(
+  deviceId: string,
+  days: number,
+  limit: number = DEFAULT_OFFENDER_LIMIT
+): Promise<DeviceReliabilityOffenders> {
+  const rows = await getHistoryForDevice(deviceId, days);
+  return aggregateReliabilityOffenders(rows, limit);
+}
+
 export async function getOrgReliabilitySummary(orgId: string, options: { siteIds?: string[] } = {}): Promise<{
   orgId: string;
   devices: number;
@@ -1651,6 +1797,7 @@ export const reliabilityScoringInternals = {
   scoreBand,
   computeTopIssues,
   buildReliabilityDrivers,
+  aggregateReliabilityOffenders,
   computeReliabilityEvaluationSummary,
   resolveWeightProfile,
   isWorkstationRole,
