@@ -162,8 +162,8 @@ type Heartbeat struct {
 	lastSessionUpdate     time.Time
 	lastPostureUpdate     time.Time
 	lastReliabilityUpdate time.Time
-	lastHardwareUpdate    time.Time // zero-value fires on first tick, then every 24 h
-	lastPatchUpdate       time.Time // zero-value fires on first tick, then per PatchScanIntervalHours
+	lastHardwareUpdate    time.Time // stamped at startup; gate then re-runs every 24 h
+	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
 
 	// User session helper (IPC)
 	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
@@ -928,17 +928,17 @@ func (h *Heartbeat) Start() {
 			if shouldSendReliability {
 				h.lastReliabilityUpdate = now
 			}
-			// Hardware identity rarely changes; collect once per day.
-			// Zero-value lastHardwareUpdate fires immediately on the first tick after
-			// startup so the server always gets fresh hardware data on reconnect.
-			shouldSendHardware := now.Sub(h.lastHardwareUpdate) > 24*time.Hour
+			// Hardware identity rarely changes; collect once per day. The initial
+			// send happens via the explicit startup dispatch (see Start), which
+			// stamps lastHardwareUpdate; this gate handles every subsequent day.
+			shouldSendHardware := dueForRun(now, h.lastHardwareUpdate, 24*time.Hour)
 			if shouldSendHardware {
 				h.lastHardwareUpdate = now
 			}
 			// Patch scan cadence is configurable (PatchScanIntervalHours, default 24 h).
-			// Zero-value lastPatchUpdate fires on first tick after startup.
+			// Initial send is the explicit startup dispatch; this gate handles the rest.
 			patchIntervalHours := clampPatchScanIntervalHours(h.config.PatchScanIntervalHours)
-			shouldSendPatch := now.Sub(h.lastPatchUpdate) > time.Duration(patchIntervalHours)*time.Hour
+			shouldSendPatch := dueForRun(now, h.lastPatchUpdate, time.Duration(patchIntervalHours)*time.Hour)
 			if shouldSendPatch {
 				h.lastPatchUpdate = now
 			}
@@ -1205,15 +1205,22 @@ func clampProcessSampleInterval(secs int) int {
 
 // clampPatchScanIntervalHours bounds the configured patch scan interval to
 // [1, 168] hours (1 hour to 7 days). Pure (no side effects) so it can be
-// unit-tested independently. A value ≤0 (unset/zero) returns the default 24 h.
+// unit-tested independently. A value ≤0 (unset/zero) returns the default.
 func clampPatchScanIntervalHours(hours int) int {
 	if hours <= 0 {
-		return 24
+		return config.DefaultPatchScanIntervalHours
 	}
 	if hours > 168 {
 		return 168
 	}
 	return hours
+}
+
+// dueForRun reports whether a periodic task is due — true once at least interval
+// has elapsed since its last run. A zero-value last (never run) is always due.
+// Pure, so the cadence math can be unit-tested independently of the tick loop.
+func dueForRun(now, last time.Time, interval time.Duration) bool {
+	return now.Sub(last) > interval
 }
 
 // runProcessSampler periodically captures a top-N process snapshot and POSTs it,

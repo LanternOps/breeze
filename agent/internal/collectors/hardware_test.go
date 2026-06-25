@@ -217,6 +217,19 @@ func TestParseHardwareJSON(t *testing.T) {
 			},
 		},
 		{
+			// PowerShell 5.1 collapses a single-element array to a bare scalar in
+			// ConvertTo-Json, so a one-GPU host (the common case) emits a string,
+			// not an array. The custom unmarshaler must normalize it to a slice —
+			// otherwise the whole hardware record would be dropped on most hosts.
+			name:  "single GPU collapsed to scalar (PS 5.1 ConvertTo-Json)",
+			input: `{"BiosSerial":"SN1","BiosVersion":"1.0","BoardSerial":"","BoardManufacturer":"","BoardProduct":"","BoardVersion":"","SysManufacturer":"","SysModel":"","GPUNames":"Intel(R) UHD Graphics"}`,
+			want: windowsHardwareJSON{
+				BiosSerial:  "SN1",
+				BiosVersion: "1.0",
+				GPUNames:    gpuNameList{"Intel(R) UHD Graphics"},
+			},
+		},
+		{
 			// PowerShell 5.1 serializes an empty @() as JSON null, not []. Go
 			// decodes null into a nil slice, which the caller treats the same as
 			// an empty list (no GPU model recorded).

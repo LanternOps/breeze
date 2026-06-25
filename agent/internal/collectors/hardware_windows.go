@@ -120,13 +120,16 @@ $gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
 
 	out, err := runCollectorOutput(wmicTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(script))
 	if err != nil {
-		slog.Debug("hardware WMI batch query failed", "error", err.Error())
+		// Whole-scan failure (powershell blocked by WDAC/AppLocker, WMI repository
+		// corruption, timeout, …) leaves every WMI-derived field empty this cycle,
+		// so log at Warn — Debug is suppressed at the default "info" level.
+		slog.Warn("hardware WMI batch query failed; WMI-derived hardware fields empty this cycle", "error", err.Error())
 		return
 	}
 
 	parsed, err := parseHardwareJSON(out)
 	if err != nil {
-		slog.Debug("hardware WMI batch query JSON parse failed", "error", err.Error())
+		slog.Warn("hardware WMI batch query JSON parse failed; WMI-derived hardware fields empty this cycle", "error", err.Error(), "bytes", len(out))
 		return
 	}
 
@@ -138,9 +141,9 @@ $gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
 	hw.MotherboardVersion = cleanHardwareIdentityValue(parsed.BoardVersion)
 	hw.BIOSVersion = truncateCollectorString(strings.TrimSpace(parsed.BiosVersion))
 
-	// Join GPU names exactly as before: unique, non-empty, separated by "; ".
-	// De-duplication was handled in PowerShell (Select-Object -Unique); trim
-	// any stray whitespace that slipped through and drop empty strings.
+	// Join GPU names in the same shape as before: unique, non-empty, "; "-joined.
+	// De-duplication is handled in PowerShell (Select-Object -Unique, which is
+	// case-insensitive); here we just trim stray whitespace and drop empties.
 	gpuParts := make([]string, 0, len(parsed.GPUNames))
 	for _, name := range parsed.GPUNames {
 		if name = strings.TrimSpace(name); name != "" {

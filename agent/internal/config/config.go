@@ -51,7 +51,9 @@ type Config struct {
 	HeartbeatIntervalSeconds     int      `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int      `mapstructure:"metrics_interval_seconds"`
 	ProcessSampleIntervalSeconds int      `mapstructure:"process_sample_interval_seconds"`
-	PatchScanIntervalHours       int      `mapstructure:"patch_scan_interval_hours"`
+	// PatchScanIntervalHours is the cadence of the (expensive) patch scan, in
+	// hours. Clamped to [1, 168] at the use site; defaults to DefaultPatchScanIntervalHours.
+	PatchScanIntervalHours int `mapstructure:"patch_scan_interval_hours"`
 	EnabledCollectors            []string `mapstructure:"enabled_collectors"`
 	BackupEnabled                bool     `mapstructure:"backup_enabled"`
 	BackupPaths                  []string `mapstructure:"backup_paths"`
@@ -190,12 +192,16 @@ func ConfigDir() string {
 	return configDir()
 }
 
+// DefaultPatchScanIntervalHours is the default patch-scan cadence. Shared so the
+// config default and the heartbeat clamp don't drift apart.
+const DefaultPatchScanIntervalHours = 24
+
 func Default() *Config {
 	return &Config{
 		HeartbeatIntervalSeconds:     60,
 		MetricsIntervalSeconds:       30,
 		ProcessSampleIntervalSeconds: 180,
-		PatchScanIntervalHours:       24,
+		PatchScanIntervalHours:       DefaultPatchScanIntervalHours,
 		EnabledCollectors:            []string{"hardware", "software", "metrics", "network"},
 		LogLevel:                     "info",
 		LogFormat:                    "text",
