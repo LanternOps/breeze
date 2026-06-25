@@ -112,4 +112,39 @@ describe('InvoicesPage bulk actions', () => {
       expect(body.reason).toBe('duplicate');
     });
   });
+
+  it('keeps void dialog open and preserves reason when bulk-void fails', async () => {
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+    fireEvent.click(screen.getByTestId('invoices-bulk-action-void'));
+
+    await screen.findByTestId('invoices-bulk-void-dialog');
+
+    const textarea = screen.getByTestId('invoices-bulk-void-reason');
+    fireEvent.change(textarea, { target: { value: 'client requested' } });
+    expect(screen.getByTestId('invoices-bulk-void-submit')).not.toBeDisabled();
+
+    // Wire bulk-void to return HTTP 500 so runAction throws.
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (String(url).includes('/bulk-void'))
+        return Promise.resolve(json({ error: 'Internal server error' }, 500));
+      if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
+      if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
+      return Promise.resolve(json({}, 404));
+    });
+
+    fireEvent.click(screen.getByTestId('invoices-bulk-void-submit'));
+
+    // Dialog must remain open and reason must be preserved.
+    await waitFor(() => {
+      expect(screen.getByTestId('invoices-bulk-void-dialog')).toBeInTheDocument();
+      expect(screen.getByTestId('invoices-bulk-void-reason')).toHaveValue('client requested');
+    });
+
+    // Clearing the reason re-disables the submit button.
+    fireEvent.change(screen.getByTestId('invoices-bulk-void-reason'), { target: { value: '' } });
+    expect(screen.getByTestId('invoices-bulk-void-submit')).toBeDisabled();
+  });
 });

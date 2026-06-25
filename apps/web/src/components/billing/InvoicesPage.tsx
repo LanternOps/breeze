@@ -218,9 +218,9 @@ export function InvoicesPage() {
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
 
   const runBulkInvoices = useCallback(
-    async (path: string, verb: string, extraBody?: Record<string, unknown>) => {
+    async (path: string, verb: string, extraBody?: Record<string, unknown>): Promise<boolean> => {
       const ids = Array.from(bulk.selectedIds);
-      if (ids.length === 0) return;
+      if (ids.length === 0) return false;
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number } }>({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids, ...extraBody }) }),
@@ -235,8 +235,10 @@ export function InvoicesPage() {
         );
         bulk.clear();
         void loadInvoices(filters);
+        return true;
       } catch (err) {
         handleActionError(err, `Bulk ${verb} failed. Retry.`);
+        return false;
       }
     },
     [bulk, loadInvoices, filters],
@@ -560,7 +562,7 @@ export function InvoicesPage() {
             </button>
             <button
               type="button"
-              onClick={async () => { await runBulkInvoices('/invoices/bulk-void', 'voided', { reason: voidReason.trim() }); setVoidOpen(false); }}
+              onClick={async () => { const ok = await runBulkInvoices('/invoices/bulk-void', 'voided', { reason: voidReason.trim() }); if (ok) setVoidOpen(false); }}
               disabled={!voidReason.trim()}
               data-testid="invoices-bulk-void-submit"
               className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
