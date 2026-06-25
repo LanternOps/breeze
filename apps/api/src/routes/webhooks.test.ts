@@ -646,4 +646,86 @@ describe('webhook routes', () => {
 
     expect(res.status).toBe(403);
   });
+
+  // -------------------------------------------------------------------------
+  // Cross-org isolation tests
+  //
+  // getWebhookWithOrgCheck fetches the webhook by id unconditionally, then
+  // gates on auth.canAccessOrg(webhook.orgId). A foreign-org webhook must
+  // never leak its contents — the only acceptable response is 404.
+  // -------------------------------------------------------------------------
+
+  const FOREIGN_ORG_ID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+  const FOREIGN_WEBHOOK_ID = '55555555-5555-5555-5555-555555555555';
+
+  const foreignWebhookRow = {
+    id: FOREIGN_WEBHOOK_ID,
+    orgId: FOREIGN_ORG_ID,
+    name: 'Foreign Hook',
+    url: 'https://attacker:secret@foreign.example.com/hook?token=leak-me',
+    secret: 'foreign-secret-should-not-leak',
+    events: ['device.created'],
+    headers: [],
+    status: 'active',
+    createdBy: 'foreign-user',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    lastDeliveryAt: null,
+    retryPolicy: null,
+    successCount: 0,
+    failureCount: 0,
+    lastSuccessAt: null
+  };
+
+  it('GET /:id — returns 404 and leaks nothing for a webhook belonging to a different org', async () => {
+    // getWebhookWithOrgCheck calls .select().from().where().limit(1)
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([foreignWebhookRow]) as any);
+
+    const res = await app.request(`/webhooks/${FOREIGN_WEBHOOK_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(404);
+    const text = await res.text();
+    expect(text).not.toContain('attacker');
+    expect(text).not.toContain('leak-me');
+    expect(text).not.toContain('foreign-secret-should-not-leak');
+    expect(text).not.toContain(FOREIGN_ORG_ID);
+  });
+
+  it('PATCH /:id — returns 404 and leaks nothing for a webhook belonging to a different org', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([foreignWebhookRow]) as any);
+
+    const res = await app.request(`/webhooks/${FOREIGN_WEBHOOK_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ name: 'Renamed' })
+    });
+
+    expect(res.status).toBe(404);
+    const text = await res.text();
+    expect(text).not.toContain('attacker');
+    expect(text).not.toContain('leak-me');
+    expect(text).not.toContain('foreign-secret-should-not-leak');
+    // db.update must not have been called — no mutation on foreign resource
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /:id — returns 404 and leaks nothing for a webhook belonging to a different org', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([foreignWebhookRow]) as any);
+
+    const res = await app.request(`/webhooks/${FOREIGN_WEBHOOK_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(404);
+    const text = await res.text();
+    expect(text).not.toContain('attacker');
+    expect(text).not.toContain('leak-me');
+    expect(text).not.toContain('foreign-secret-should-not-leak');
+    // db.delete must not have been called — no mutation on foreign resource
+    expect(db.delete).not.toHaveBeenCalled();
+  });
 });
