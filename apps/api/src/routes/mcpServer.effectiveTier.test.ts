@@ -487,7 +487,11 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     expect(text).not.toContain('a-b');
     // The alert-list query must have received a site-narrowing condition.
     expect(capturedAlertConds.length).toBeGreaterThan(0);
-  });
+    // Same shape as the devices test above (real async MCP resources/read +
+    // permission re-mock); borderline-slow under full-suite parallel load, so
+    // give the same 15s headroom over the 5s default. Passes well under 1s in
+    // isolation — this only prevents flakes when the suite is saturated.
+  }, 15_000);
 
   // C4 — single-device read breeze://devices/{id}. A site-A-restricted caller
   // reading an out-of-site device id (d-b on site-B) gets 'Device not found'
