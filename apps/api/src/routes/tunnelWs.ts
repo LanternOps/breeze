@@ -355,7 +355,7 @@ export async function revalidateTunnelSession(
  * socket down so a revoked user/device cannot keep forwarding traffic.
  * Returns `true` when the socket was closed.
  */
-async function enforceTunnelRevocation(tunnelId: string, ws: WSContext): Promise<boolean> {
+export async function enforceTunnelRevocation(tunnelId: string, ws: WSContext): Promise<boolean> {
   const conn = activeTunnelConnections.get(tunnelId);
   if (!conn) return false;
 
@@ -385,6 +385,24 @@ async function enforceTunnelRevocation(tunnelId: string, ws: WSContext): Promise
     await closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Revocation check failed' });
     try { ws.close(4003, 'Revocation check failed'); } catch { /* already closing */ }
     return true;
+  }
+}
+
+/**
+ * Test-only seam: register/clear an entry in the module-private
+ * `activeTunnelConnections` map so unit tests can drive
+ * `enforceTunnelRevocation` (which only acts on a registered connection)
+ * without standing up the full `onOpen` validation flow. Not used by any
+ * production code path.
+ */
+export function __setTunnelConnectionForTest(
+  tunnelId: string,
+  conn: TunnelConnection | undefined,
+): void {
+  if (conn) {
+    activeTunnelConnections.set(tunnelId, conn);
+  } else {
+    activeTunnelConnections.delete(tunnelId);
   }
 }
 

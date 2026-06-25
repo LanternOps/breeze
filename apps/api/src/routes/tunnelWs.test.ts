@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // DB mock supporting both the simple user-status select and the
 // tunnelSessions⋈devices join used by `revalidateTunnelSession`. Tests drive
@@ -90,13 +90,41 @@ vi.mock('../services/rate-limit', () => ({
   })),
 }));
 
+import { sendCommandToAgent } from './agentWs';
 import { rateLimiter } from '../services/rate-limit';
 import { getRedis } from '../services/redis';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
-import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
-import { isUserTunnelWsRateLimited, revalidateTunnelSession, validateTunnelTextRelayFrame } from './tunnelWs';
+import { isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
+import {
+  __setTunnelConnectionForTest,
+  enforceTunnelRevocation,
+  isUserTunnelWsRateLimited,
+  revalidateTunnelSession,
+  validateTunnelTextRelayFrame,
+} from './tunnelWs';
 
 const liveConn = { userId: 'user-1', deviceId: 'dev-1', tunnelType: 'vnc' as const };
+
+// Minimal fake WSContext: only `close` is exercised by enforceTunnelRevocation.
+function makeFakeWs() {
+  return { close: vi.fn(), send: vi.fn() } as const;
+}
+
+// A registered active connection, as `onOpen` would have stored. The revocation
+// gate only acts when a connection is present in the module map, so tests seed
+// one via the test-only helper.
+function registerLiveConnection(tunnelId: string, ws: { close: ReturnType<typeof vi.fn> }) {
+  __setTunnelConnectionForTest(tunnelId, {
+    userWs: ws as never,
+    agentId: 'agent-1',
+    userId: 'user-1',
+    deviceId: 'dev-1',
+    orgId: 'org-1',
+    tunnelType: 'vnc',
+    startedAt: new Date(),
+    lastPongAt: Date.now(),
+  });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -221,5 +249,115 @@ describe('revalidateTunnelSession', () => {
     vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: false, reason: 'Disabled by policy' });
     await revalidateTunnelSession('tunnel-1', { ...liveConn, tunnelType: 'proxy' });
     expect(checkRemoteAccess).toHaveBeenCalledWith('dev-1', 'proxy');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mid-session revocation TEARDOWN: enforceTunnelRevocation is what the ping
+// loop actually calls each interval to close a live socket. It must close with
+// 4003 and run the lifecycle teardown (notify agent + revoke viewer session)
+// for ALL THREE triggers, and FAIL CLOSED if the check throws. A still-valid
+// tunnel must be left open.
+// ---------------------------------------------------------------------------
+
+describe('enforceTunnelRevocation', () => {
+  afterEach(() => {
+    // Drop any seeded connection so cross-test state never leaks.
+    __setTunnelConnectionForTest('tunnel-1', undefined);
+  });
+
+  it('returns false and leaves the socket open when access is still valid', async () => {
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws);
+
+    const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
+
+    expect(closed).toBe(false);
+    expect(ws.close).not.toHaveBeenCalled();
+    // No teardown: agent is not notified and the viewer session is not revoked.
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(revokeViewerSession).not.toHaveBeenCalled();
+  });
+
+  it('returns false without closing when no connection is registered', async () => {
+    const ws = makeFakeWs();
+    // No registerLiveConnection — the map has no entry for this tunnel.
+
+    const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
+
+    expect(closed).toBe(false);
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
+  it('closes 4003 and tears down on the cross-instance Redis revoke flag', async () => {
+    // The currently-dead branch: isViewerSessionRevoked → true. This must close
+    // even though the DB revalidation would otherwise pass.
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(true);
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws);
+
+    const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
+
+    expect(closed).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Tunnel revoked');
+    // Lifecycle teardown fired: agent notified of close + viewer session revoked.
+    expect(sendCommandToAgent).toHaveBeenCalledWith(
+      'agent-1',
+      expect.objectContaining({ type: 'tunnel_close', payload: { tunnelId: 'tunnel-1' } }),
+    );
+    expect(revokeViewerSession).toHaveBeenCalledWith('tunnel-1');
+  });
+
+  it('closes 4003 and tears down when the DB predicate revokes (device offline)', async () => {
+    // Redis flag clear, but revalidateTunnelSession returns not-ok.
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+    setJoinRow({
+      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1' },
+      device: { id: 'dev-1', status: 'offline' },
+    });
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws);
+
+    const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
+
+    expect(closed).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+    expect(sendCommandToAgent).toHaveBeenCalledWith(
+      'agent-1',
+      expect.objectContaining({ type: 'tunnel_close', payload: { tunnelId: 'tunnel-1' } }),
+    );
+    expect(revokeViewerSession).toHaveBeenCalledWith('tunnel-1');
+  });
+
+  it('closes 4003 and tears down when the DB predicate revokes (user inactive)', async () => {
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+    setUserRow({ id: 'user-1', status: 'suspended' });
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws);
+
+    const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
+
+    expect(closed).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+    expect(revokeViewerSession).toHaveBeenCalledWith('tunnel-1');
+  });
+
+  it('FAILS CLOSED: closes 4003 when the revalidation lookup throws', async () => {
+    // A DB error mid-check must NOT leave the tunnel relaying.
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+    setThrowOnJoin(true);
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws);
+
+    const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
+
+    expect(closed).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Revocation check failed');
+    // Even on the fail-closed path the lifecycle teardown runs.
+    expect(sendCommandToAgent).toHaveBeenCalledWith(
+      'agent-1',
+      expect.objectContaining({ type: 'tunnel_close', payload: { tunnelId: 'tunnel-1' } }),
+    );
+    expect(revokeViewerSession).toHaveBeenCalledWith('tunnel-1');
   });
 });
