@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -56,14 +58,39 @@ func Fetch(ctx context.Context, req FetchRequest, timeout time.Duration, maxBody
 		}
 	}
 
-	rawURL := fmt.Sprintf("%s://%s%s", scheme, net.JoinHostPort(req.Host, fmt.Sprintf("%d", req.Port)), req.Path)
+	// SECURITY: build the URL with net/url and pin the host to req.Host.
+	// A browser-supplied path like "@evil.com/x" or "//evil.com/x" would, if
+	// string-concatenated, re-parse so the host becomes evil.com — bypassing the
+	// IsBlocked/IsAllowed checks (which only validated req.Host). Reject anything
+	// that is not a plain relative path before constructing the request.
+	if !strings.HasPrefix(req.Path, "/") {
+		return nil, fmt.Errorf("path must start with /")
+	}
+	ref, err := url.Parse(req.Path)
+	if err != nil {
+		return nil, err
+	}
+	if ref.IsAbs() || ref.Host != "" || ref.User != nil || ref.Scheme != "" {
+		return nil, fmt.Errorf("path must be a relative path, not a URL")
+	}
+	u := &url.URL{
+		Scheme:   scheme,
+		Host:     net.JoinHostPort(req.Host, strconv.Itoa(req.Port)),
+		Path:     ref.Path,
+		RawQuery: ref.RawQuery,
+	}
+	// Defense-in-depth: the constructed URL must still target exactly req.Host
+	// with no userinfo component.
+	if u.User != nil || !strings.EqualFold(u.Hostname(), req.Host) {
+		return nil, fmt.Errorf("refusing to fetch: host/userinfo mismatch")
+	}
 
 	var bodyReader io.Reader
 	if len(req.Body) > 0 {
 		bodyReader = bytes.NewReader(req.Body)
 	}
 
-	hreq, err := http.NewRequestWithContext(ctx, req.Method, rawURL, bodyReader)
+	hreq, err := http.NewRequestWithContext(ctx, req.Method, u.String(), bodyReader)
 	if err != nil {
 		return nil, err
 	}

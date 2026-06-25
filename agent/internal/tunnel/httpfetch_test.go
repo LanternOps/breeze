@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -148,6 +149,54 @@ func TestFetch(t *testing.T) {
 		}
 		if !resp.Truncated || len(resp.Body) != 4 {
 			t.Fatalf("expected truncated 4 bytes, got %d trunc=%v", len(resp.Body), resp.Truncated)
+		}
+	})
+
+	// SECURITY: a malicious path must never subvert the pinned host. Each of
+	// these would, under naive string concatenation, re-parse so the host
+	// becomes evil.example (host-injection SSRF / allowlist bypass). Fetch must
+	// reject them with an error and perform NO request against the real target.
+	t.Run("malicious paths are rejected without a request", func(t *testing.T) {
+		var hits int32
+		guard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			atomic.AddInt32(&hits, 1)
+			w.Write([]byte("should-not-be-reached"))
+		}))
+		defer guard.Close()
+		h, p := hostPort(guard.URL)
+
+		for _, badPath := range []string{
+			"@evil.example/x",       // userinfo injection → host becomes evil.example
+			"http://evil.example/x", // absolute URL
+			"//evil.example/x",      // scheme-relative URL → host becomes evil.example
+			"x/y",                   // no leading slash
+		} {
+			resp, err := Fetch(context.Background(), FetchRequest{
+				Scheme: "http", Host: h, Port: p, Method: "GET", Path: badPath,
+			}, 5*time.Second, 1<<20)
+			if err == nil {
+				t.Fatalf("path %q: expected error, got nil (resp=%+v)", badPath, resp)
+			}
+			if resp != nil {
+				t.Fatalf("path %q: expected nil response on rejection, got %+v", badPath, resp)
+			}
+		}
+
+		if n := atomic.LoadInt32(&hits); n != 0 {
+			t.Fatalf("expected 0 requests to the target for malicious paths, got %d", n)
+		}
+	})
+
+	t.Run("normal path with query still works", func(t *testing.T) {
+		h, p := hostPort(plain.URL)
+		resp, err := Fetch(context.Background(), FetchRequest{
+			Scheme: "http", Host: h, Port: p, Method: "GET", Path: "/?q=1",
+		}, 5*time.Second, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != 200 || string(resp.Body) != "hello-plain" {
+			t.Fatalf("got %d %q", resp.Status, resp.Body)
 		}
 	})
 }

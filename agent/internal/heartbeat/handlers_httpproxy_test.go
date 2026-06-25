@@ -140,6 +140,29 @@ func TestHandleHttpRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("host-injection path is rejected", func(t *testing.T) {
+		// A path of "@evil.example/x" would, under naive string concat, re-parse
+		// so the host becomes evil.example — bypassing the allowlist. The handler
+		// must reject it before any fetch.
+		result := handleHttpRequest(&Heartbeat{}, Command{
+			Payload: map[string]any{
+				"targetHost":     "203.0.113.5",
+				"targetPort":     float64(80),
+				"scheme":         "http",
+				"method":         "GET",
+				"path":           "@evil.example/x",
+				"allowlistRules": []any{"203.0.113.5/32:80"},
+			},
+		})
+
+		if result.Status != "failed" {
+			t.Fatalf("status = %q, want failed", result.Status)
+		}
+		if !strings.Contains(result.Error, "path must start with /") {
+			t.Fatalf("error = %q, want 'path must start with /' mention", result.Error)
+		}
+	})
+
 	t.Run("allowed target returns completed result with decoded body", func(t *testing.T) {
 		const responseBody = "hello from proxy"
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -37,6 +38,18 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 	}
 	if path == "" {
 		path = "/"
+	}
+
+	// SECURITY: reject any path that is not a plain relative path. A value like
+	// "@evil.com/x" or "//evil.com/x" would otherwise re-parse to a different
+	// host and bypass the IsBlocked/IsAllowed checks below (which validate
+	// targetHost only). Defense-in-depth — tunnel.Fetch enforces this too.
+	if !strings.HasPrefix(path, "/") {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "path must start with /",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
 	}
 
 	// Decode optional request body (arrives base64-encoded).
