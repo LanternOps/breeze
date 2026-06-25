@@ -519,8 +519,9 @@ export default function RemoteToolsPage({
   const fetchServices = useCallback(async () => {
     setServiceLoading(true);
     try {
-      // Fetch the full list (pagination/filtering happens client-side in ServicesManager).
-      // 500 matches the agent's per-page maximum so all services are returned.
+      // Fetch with a high limit; ServicesManager paginates/filters client-side.
+      // 500 is the agent's max accepted page size (same as the Processes tab) and
+      // covers realistic Windows service counts (the agent caps the list at 512).
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services?limit=500`);
       if (!res.ok) throw new Error('Failed to fetch services');
       const json = await res.json();
