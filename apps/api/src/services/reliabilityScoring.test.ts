@@ -933,4 +933,60 @@ describe('aggregateReliabilityOffenders', () => {
     expect(result.services).toHaveLength(2);
     expect(result.services.map((offender) => offender.label)).not.toContain('');
   });
+
+  it('keeps the worst hardware severity even when a lower one is reported later', () => {
+    const rows = [
+      makeHistoryRow({
+        hardwareErrors: [
+          { type: 'disk', severity: 'critical', source: 'disk0', timestamp: '2026-02-20T10:00:00.000Z' },
+          { type: 'disk', severity: 'warning', source: 'disk0', timestamp: '2026-02-20T11:00:00.000Z' },
+          { type: 'disk', severity: 'bogus' as never, source: 'disk0', timestamp: '2026-02-20T12:00:00.000Z' },
+        ],
+      }),
+    ];
+
+    const result = aggregateReliabilityOffenders(rows);
+
+    // critical reported first must not be downgraded by a later warning / unknown severity.
+    expect(result.hardware[0]).toMatchObject({ key: 'disk0', count: 3, detail: 'critical' });
+  });
+
+  it('breaks count ties by most-recent occurrence', () => {
+    const rows = [
+      makeHistoryRow({
+        serviceFailures: [
+          { serviceName: 'Older', timestamp: '2026-02-20T08:00:00.000Z', recovered: false },
+          { serviceName: 'Newer', timestamp: '2026-02-20T20:00:00.000Z', recovered: false },
+        ],
+      }),
+    ];
+
+    const result = aggregateReliabilityOffenders(rows, 1);
+
+    // Equal counts (1 each) → the more recent offender ranks first and survives the top-1 slice.
+    expect(result.services).toEqual([
+      { key: 'Newer', label: 'Newer', count: 1, lastOccurrence: '2026-02-20T20:00:00.000Z' },
+    ]);
+  });
+
+  it('excludes events whose day falls outside the supplied window', () => {
+    const rows = [
+      makeHistoryRow({
+        collectedAt: new Date('2026-02-20T10:00:00.000Z'),
+        serviceFailures: [
+          { serviceName: 'InWindow', timestamp: '2026-02-19T10:00:00.000Z', recovered: false },
+          // Re-reported in a recent row but its own day is well before the window start.
+          { serviceName: 'OldReReport', timestamp: '2026-01-01T10:00:00.000Z', recovered: false },
+        ],
+      }),
+    ];
+    const window = { sinceKey: '2026-02-13', todayKey: '2026-02-20' };
+
+    const filtered = aggregateReliabilityOffenders(rows, 5, window);
+    expect(filtered.services.map((offender) => offender.label)).toEqual(['InWindow']);
+
+    // Without a window the old re-report is still counted (pure aggregation).
+    const unfiltered = aggregateReliabilityOffenders(rows);
+    expect(unfiltered.services.map((offender) => offender.label).sort()).toEqual(['InWindow', 'OldReReport']);
+  });
 });

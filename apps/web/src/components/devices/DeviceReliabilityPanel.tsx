@@ -303,13 +303,33 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
       const response = await fetchWithAuth(`/reliability/${deviceId}/offenders`);
       if (!response.ok) throw new Error('Failed to load reliability detail');
       const json = await response.json();
-      setOffenders((json?.offenders as ReliabilityOffenders | undefined) ?? null);
+      // A 200 with a missing/malformed body must not render a blank, retry-less
+      // panel — treat it as a failure so the existing error+retry path handles it.
+      const data = json?.offenders;
+      if (!data || typeof data !== 'object') {
+        throw new Error('Reliability detail response was malformed');
+      }
+      setOffenders({
+        services: Array.isArray(data.services) ? data.services : [],
+        hardware: Array.isArray(data.hardware) ? data.hardware : [],
+        hangs: Array.isArray(data.hangs) ? data.hangs : [],
+      });
     } catch (err) {
       offendersFetchedRef.current = false; // allow a retry on next expand
       setOffendersError(err instanceof Error ? err.message : 'Failed to load reliability detail');
     } finally {
       setOffendersLoading(false);
     }
+  }, [deviceId]);
+
+  // Reset the drill-down when the panel is pointed at a different device, so a
+  // stale offender list (and the fetched-once guard) can't bleed across devices.
+  useEffect(() => {
+    setOffendersOpen(false);
+    setOffenders(null);
+    setOffendersError(undefined);
+    setOffendersLoading(false);
+    offendersFetchedRef.current = false;
   }, [deviceId]);
 
   const toggleOffenders = useCallback(() => {
@@ -404,6 +424,12 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
 
   const ageDays = deviceAgeDays(snapshot.enrolledAt);
   const uptimeWindow = windowLabel(OFFENDER_WINDOW_DAYS, ageDays);
+  // Phrase the drill-down window the same way as the tiles: observed age on a
+  // young device, otherwise the fixed window.
+  const offenderWindowText =
+    ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS
+      ? `since enroll (${ageDays}d)`
+      : `last ${OFFENDER_WINDOW_DAYS} days`;
   const offenderEventTotal =
     snapshot.serviceFailureCount30d + snapshot.hardwareErrorCount30d + snapshot.hangCount30d;
 
@@ -623,12 +649,12 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                       offenders={offenders.hangs}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Distinct events over the last {OFFENDER_WINDOW_DAYS} days.
+                      Distinct events from the {offenderWindowText}.
                     </p>
                   </>
                 ) : (
                   <p className="text-sm text-muted-foreground">
-                    No offending services or components recorded in the last {OFFENDER_WINDOW_DAYS} days.
+                    No offending services or components recorded in the {offenderWindowText}.
                   </p>
                 )
               )}

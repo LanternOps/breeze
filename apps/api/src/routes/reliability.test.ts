@@ -529,5 +529,14 @@ describe('public reliability routes', () => {
       expect(res.status).toBe(400);
       expect(vi.mocked(getDeviceReliabilityOffenders)).not.toHaveBeenCalled();
     });
+
+    it('rejects an out-of-range days through validation', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: ORG_ID } as any);
+
+      const app = buildApp();
+      const res = await app.request(`/reliability/${DEVICE_ID}/offenders?days=400`);
+      expect(res.status).toBe(400);
+      expect(vi.mocked(getDeviceReliabilityOffenders)).not.toHaveBeenCalled();
+    });
   });
 });

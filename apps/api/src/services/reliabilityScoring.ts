@@ -1642,11 +1642,27 @@ function finalizeOffenders(
     });
 }
 
+// Optional event-day window for the offender aggregation. When supplied, an
+// event is only counted if its own day (event timestamp, falling back to the
+// row's collectedAt — the same `eventDayKey` rule the score buckets use) lies
+// within [sinceKey, todayKey]. This makes the drill-down counts reconcile with
+// the headline tiles, which window by event day via `bucketsInWindow`, rather
+// than counting every event a recent row happens to re-report from deeper
+// history (a row's collectedAt is always >= its events' timestamps).
+interface OffenderWindow {
+  sinceKey: string;
+  todayKey: string;
+}
+
 // Pure: aggregate the top offending services / hardware components / processes
 // from raw history rows. Events are de-duplicated across the WHOLE row set with
 // the same keys the score aggregation uses (#1905), so an event re-reported in
 // overlapping windows is attributed to its offender exactly once.
-function aggregateReliabilityOffenders(rows: HistoryRow[], limit = DEFAULT_OFFENDER_LIMIT): DeviceReliabilityOffenders {
+function aggregateReliabilityOffenders(
+  rows: HistoryRow[],
+  limit = DEFAULT_OFFENDER_LIMIT,
+  window?: OffenderWindow
+): DeviceReliabilityOffenders {
   const seen = new Set<string>();
   const services = new Map<string, OffenderAccumulator>();
   const hardware = new Map<string, OffenderAccumulator>();
@@ -1658,8 +1674,15 @@ function aggregateReliabilityOffenders(rows: HistoryRow[], limit = DEFAULT_OFFEN
     return true;
   };
 
+  const inWindow = (eventTimestamp: string | undefined, collectedAt: Date): boolean => {
+    if (!window) return true;
+    const dayKey = eventDayKey(eventTimestamp, collectedAt);
+    return dayKey >= window.sinceKey && dayKey <= window.todayKey;
+  };
+
   for (const row of rows) {
     for (const event of row.serviceFailures) {
+      if (!inWindow(event.timestamp, row.collectedAt)) continue;
       if (!isNewEvent(serviceFailureKey(event))) continue;
       const entry = upsertOffender(services, event.serviceName?.trim() || 'Unknown service');
       entry.count += 1;
@@ -1668,6 +1691,7 @@ function aggregateReliabilityOffenders(rows: HistoryRow[], limit = DEFAULT_OFFEN
     }
 
     for (const event of row.hardwareErrors) {
+      if (!inWindow(event.timestamp, row.collectedAt)) continue;
       if (!isNewEvent(hardwareErrorKey(event))) continue;
       const entry = upsertOffender(hardware, event.source?.trim() || 'Unknown component');
       entry.count += 1;
@@ -1678,6 +1702,7 @@ function aggregateReliabilityOffenders(rows: HistoryRow[], limit = DEFAULT_OFFEN
     }
 
     for (const event of row.appHangs) {
+      if (!inWindow(event.timestamp, row.collectedAt)) continue;
       if (!isNewEvent(appHangKey(event))) continue;
       const entry = upsertOffender(hangs, event.processName?.trim() || 'Unknown process');
       entry.count += 1;
@@ -1702,8 +1727,15 @@ export async function getDeviceReliabilityOffenders(
   days: number,
   limit: number = DEFAULT_OFFENDER_LIMIT
 ): Promise<DeviceReliabilityOffenders> {
+  const now = new Date();
   const rows = await getHistoryForDevice(deviceId, days);
-  return aggregateReliabilityOffenders(rows, limit);
+  // Mirror the headline tiles' event-day window (bucketsInWindow) so the
+  // drill-down counts reconcile with the tile they sit under.
+  const window: OffenderWindow = {
+    sinceKey: toDayKey(new Date(now.getTime() - days * DAY_MS)),
+    todayKey: toDayKey(now),
+  };
+  return aggregateReliabilityOffenders(rows, limit, window);
 }
 
 export async function getOrgReliabilitySummary(orgId: string, options: { siteIds?: string[] } = {}): Promise<{
