@@ -148,9 +148,11 @@ export default function PatchesPage() {
       // are never fetched. Note: this never sends sortBy/sortDir, so the
       // server-side sort added to the API (list.ts / schemas.ts) is NOT yet
       // consumed by the web; wiring it up is a follow-up (see list.ts comment).
-      // Ring-scoped patches use a dedicated endpoint with its own bounded set.
+      // Ring-scoped patches use a dedicated endpoint; send the same `limit=200`
+      // so selecting a ring doesn't collapse the list to the endpoint's default
+      // page of 50 (the ring endpoint now shares the /patches 200 cap).
       const url = selectedRingId
-        ? `/update-rings/${selectedRingId}/patches`
+        ? `/update-rings/${selectedRingId}/patches?limit=200`
         : '/patches?limit=200';
       const response = await fetchWithAuth(url);
       if (!response.ok) {
