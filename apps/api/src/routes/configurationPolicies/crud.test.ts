@@ -40,6 +40,7 @@ import { requireScope } from '../../middleware/auth';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
+const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
 
 function makeAuth(overrides: Record<string, unknown> = {}): any {
   return {
@@ -51,6 +52,18 @@ function makeAuth(overrides: Record<string, unknown> = {}): any {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: () => undefined,
+    ...overrides,
+  };
+}
+
+function makePermissions(overrides: Record<string, unknown> = {}): any {
+  return {
+    permissions: [{ resource: 'devices', action: 'write' }],
+    partnerId: null,
+    orgId: ORG_ID,
+    roleId: 'role-1',
+    scope: 'organization',
+    orgAccess: undefined,
     ...overrides,
   };
 }
@@ -220,13 +233,14 @@ describe('configurationPolicies CRUD routes', () => {
     });
 
     it('creates a partner-wide policy with server-derived partner for partner scope (#1724)', async () => {
-      const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
       const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
       createConfigPolicyMock.mockResolvedValue(policy);
 
       const appPartner = new Hono();
       appPartner.use('*', async (c, next) => {
         c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+        // requirePermission populates permissions; simulate orgAccess='all' (full partner admin)
+        c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
         await next();
       });
       appPartner.route('/', crudRoutes);
@@ -261,6 +275,112 @@ describe('configurationPolicies CRUD routes', () => {
       });
       expect(res.status).toBe(403);
       expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    // ============================================================
+    // Security: orgAccess escalation guard (partner org-reach fix)
+    // ============================================================
+
+    it('denies partner-wide policy create when orgAccess is "selected" (attacker fails-closed)', async () => {
+      // A partner user with orgAccess='selected' (limited to orgA) must NOT be
+      // allowed to create a partner-wide policy that would push config to orgs
+      // they cannot access.
+      const appPartnerSelected = new Hono();
+      appPartnerSelected.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID] }));
+        // permissions reflect orgAccess='selected' — as set by requirePermission
+        c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'selected', allowedOrgIds: [ORG_ID] }));
+        await next();
+      });
+      appPartnerSelected.route('/', crudRoutes);
+
+      const res = await appPartnerSelected.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Escalation attempt', ownerScope: 'partner' }),
+      });
+      expect(res.status).toBe(403);
+      const json = await res.json();
+      expect(json.error).toMatch(/full partner org access/);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('denies partner-wide policy create when orgAccess is "none"', async () => {
+      const appPartnerNone = new Hono();
+      appPartnerNone.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [] }));
+        c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'none' }));
+        await next();
+      });
+      appPartnerNone.route('/', crudRoutes);
+
+      const res = await appPartnerNone.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Escalation attempt', ownerScope: 'partner' }),
+      });
+      expect(res.status).toBe(403);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('allows partner-wide policy create when orgAccess is "all" (legit partner admin)', async () => {
+      const ORG_B = '55555555-5555-5555-5555-555555555555';
+      const policy = { id: POLICY_ID, name: 'Wide Policy', orgId: null, partnerId: PARTNER_ID, status: 'active' };
+      createConfigPolicyMock.mockResolvedValue(policy);
+
+      const appPartnerAll = new Hono();
+      appPartnerAll.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID, ORG_B] }));
+        c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
+        await next();
+      });
+      appPartnerAll.route('/', crudRoutes);
+
+      const res = await appPartnerAll.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Wide Policy', ownerScope: 'partner' }),
+      });
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalledWith(
+        { partnerId: PARTNER_ID },
+        expect.objectContaining({ name: 'Wide Policy' }),
+        'user-1'
+      );
+    });
+
+    it('org-scoped policy create is unaffected by the partner-wide guard', async () => {
+      // Verify the guard does NOT fire for org-scoped policy creation — even for
+      // a partner user with orgAccess='selected'.
+      const policy = { id: POLICY_ID, name: 'Org Policy', orgId: ORG_ID, status: 'active' };
+      createConfigPolicyMock.mockResolvedValue(policy);
+
+      const appPartnerSelected = new Hono();
+      appPartnerSelected.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (id: string) => id === ORG_ID,
+        }));
+        c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'selected', allowedOrgIds: [ORG_ID] }));
+        await next();
+      });
+      appPartnerSelected.route('/', crudRoutes);
+
+      // ownerScope defaults to 'org' — no partner-wide guard applies
+      const res = await appPartnerSelected.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Org Policy', orgId: ORG_ID }),
+      });
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalledWith(
+        { orgId: ORG_ID },
+        expect.objectContaining({ name: 'Org Policy' }),
+        'user-1'
+      );
     });
   });
 

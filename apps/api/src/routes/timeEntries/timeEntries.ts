@@ -93,13 +93,20 @@ timeEntriesApiRoutes.get('/timesheet', scopes, readPerm, zValidator('query', tim
   if (targetUserId !== actor.userId && !actor.manageAll) {
     return c.json({ error: 'Viewing other timesheets requires an admin role' }, 403);
   }
-  const timesheet = await getTimesheet(targetUserId, q.weekStart);
+  const timesheet = await getTimesheet(targetUserId, q.weekStart, actor.accessibleOrgIds);
   return c.json({ data: timesheet });
 });
 
 timeEntriesApiRoutes.get('/', scopes, readPerm, zValidator('query', listTimeEntriesQuerySchema), async (c) => {
   const q = c.req.valid('query');
   const actor = timeActorFrom(c);
+  // Guard: if the caller supplies an explicit orgId it must be in their
+  // accessible set; otherwise they could bypass the accessibleOrgIds narrowing
+  // in listConditions (supplying orgId skips the org-axis filter there).
+  // Mirrors the pattern from tickets/export.ts:~25. (#sec-review-1)
+  if (q.orgId && !c.get('auth').canAccessOrg(q.orgId)) {
+    return c.json({ error: 'Access to this organization denied' }, 403);
+  }
   // D5: non-admins see only their own entries through the standalone list.
   // Org-axis allowlist confines partner-scope admins to granted orgs (the
   // partner-axis time_entries RLS does not). (#sec-review-1)

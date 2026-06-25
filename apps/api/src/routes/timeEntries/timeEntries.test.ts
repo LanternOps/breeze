@@ -82,6 +82,25 @@ describe('GET /time-entries', () => {
     expect(res.status).toBe(200);
     expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ userId: '1f2f1d8e-0001-4000-8000-000000000002' }));
   });
+
+  it('403s when caller supplies a foreign orgId not in their accessible set (#sec-review-1)', async () => {
+    // canAccessOrg returns false for this org — simulates orgAccess='selected' partner user
+    authRef.current.canAccessOrg = (_id: string) => false;
+    const res = await timeEntriesRoutes.request('/?orgId=1f2f1d8e-ffff-4000-8000-000000000099');
+    expect(res.status).toBe(403);
+    expect(serviceMocks.listTimeEntries).not.toHaveBeenCalled();
+    // restore
+    authRef.current.canAccessOrg = (_id: string) => true;
+  });
+
+  it('passes orgId through and calls the service when org is accessible', async () => {
+    // canAccessOrg returns true (default) — caller has access to this org
+    const GRANTED_ORG = '1f2f1d8e-aaaa-4000-8000-000000000010';
+    serviceMocks.listTimeEntries.mockResolvedValue({ entries: [], total: 0 });
+    const res = await timeEntriesRoutes.request(`/?orgId=${GRANTED_ORG}`);
+    expect(res.status).toBe(200);
+    expect(serviceMocks.listTimeEntries).toHaveBeenCalledWith(expect.objectContaining({ orgId: GRANTED_ORG }));
+  });
 });
 
 describe('timer endpoints', () => {
@@ -188,10 +207,27 @@ describe('GET /timesheet', () => {
     expect(res.status).toBe(403);
   });
 
-  it('defaults to own timesheet', async () => {
+  it('defaults to own timesheet and passes null accessibleOrgIds', async () => {
     serviceMocks.getTimesheet.mockResolvedValue({ weekStart: '2026-06-08', days: [], totals: { totalMinutes: 0, billableMinutes: 0 } });
     const res = await timeEntriesRoutes.request('/timesheet?weekStart=2026-06-08');
     expect(res.status).toBe(200);
-    expect(serviceMocks.getTimesheet).toHaveBeenCalledWith('1f2f1d8e-0001-4000-8000-000000000001', expect.any(Date));
+    expect(serviceMocks.getTimesheet).toHaveBeenCalledWith('1f2f1d8e-0001-4000-8000-000000000001', expect.any(Date), null);
+  });
+
+  it('threads accessibleOrgIds to getTimesheet for org-axis narrowing (#sec-review-1)', async () => {
+    // Simulate orgAccess='selected': only two granted orgs
+    const grantedOrgs = ['1f2f1d8e-aaaa-4000-8000-000000000010', '1f2f1d8e-bbbb-4000-8000-000000000011'];
+    authRef.current.accessibleOrgIds = grantedOrgs;
+    serviceMocks.getTimesheet.mockResolvedValue({ weekStart: '2026-06-08', days: [], totals: { totalMinutes: 0, billableMinutes: 0 } });
+    const res = await timeEntriesRoutes.request('/timesheet?weekStart=2026-06-08');
+    expect(res.status).toBe(200);
+    // Third argument must be the org allowlist so the service can apply orgAxisSql
+    expect(serviceMocks.getTimesheet).toHaveBeenCalledWith(
+      '1f2f1d8e-0001-4000-8000-000000000001',
+      expect.any(Date),
+      grantedOrgs
+    );
+    // restore
+    authRef.current.accessibleOrgIds = null;
   });
 });

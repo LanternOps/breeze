@@ -57,11 +57,26 @@ userRoutes.use('*', async (c, next) => {
   }
   const accessibleOrgIds = auth.accessibleOrgIds;
 
-  const partnerOrgRows = await db
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.partnerId, auth.partnerId));
-  const hasFullPartnerAccess = partnerOrgRows.every((org) => accessibleOrgIds.includes(org.id));
+  // Read the partner's TRUE org set bypassing RLS. Under the request RLS
+  // context the organizations SELECT policy `breeze_has_org_access(id)` narrows
+  // results to the caller's accessibleOrgIds, which makes
+  // `partnerOrgRows.every(...)` unconditionally true (including `[].every()`
+  // for orgAccess='none') — an RLS-vacuous privilege escalation that lets a
+  // 'selected'/'none' partner-admin manage ALL partner users. Mirror orgs.ts:
+  // partner-scope authority is already enforced above, so escape the request
+  // context to obtain the full org list for the comparison.
+  const partnerOrgRows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.partnerId, auth.partnerId as string))
+    )
+  );
+  const hasFullPartnerAccess =
+    accessibleOrgIds.length > 0 &&
+    partnerOrgRows.length > 0 &&
+    partnerOrgRows.every((org) => accessibleOrgIds.includes(org.id));
 
   if (!hasFullPartnerAccess) {
     throw new HTTPException(403, { message: 'Full partner organization access required' });

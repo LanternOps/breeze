@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   createConfigPolicy,
   getConfigPolicy,
@@ -62,6 +62,17 @@ crudRoutes.post(
     if (data.ownerScope === 'partner') {
       if (!auth.partnerId) {
         return c.json({ error: 'Partner-wide policies require partner scope' }, 403);
+      }
+      // Guard: partner-wide policies affect devices in ALL orgs under the partner.
+      // A user with orgAccess='selected' or 'none' only has visibility into a
+      // subset of orgs — granting them partner-wide policy create would silently
+      // push config (remote_access, PAM, monitoring, patch) to orgs they cannot
+      // access. Only orgAccess='all' partner users (and system scope) may create
+      // partner-wide policies. requireConfigPolicyWrite (requirePermission)
+      // already populated c.get('permissions') with the caller's orgAccess.
+      const userPerms = c.get('permissions') as UserPermissions | undefined;
+      if (auth.scope !== 'system' && userPerms?.orgAccess !== 'all') {
+        return c.json({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' }, 403);
       }
       const policy = await createConfigPolicy({ partnerId: auth.partnerId }, data, auth.user.id);
       writeRouteAudit(c, {

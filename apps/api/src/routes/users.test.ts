@@ -210,7 +210,7 @@ vi.mock('../services/remoteSessionTeardown', () => ({
   TEARDOWN_FAILED: -1,
 }));
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
@@ -1936,6 +1936,118 @@ describe('user routes', () => {
         const bytes = Buffer.from(await res.arrayBuffer());
         expect(bytes.equals(PNG_BYTES)).toBe(true);
       });
+    });
+  });
+
+  // Regression: the "full partner access" gate must read the partner's TRUE org
+  // set bypassing RLS. Reading it under the request RLS context narrows the
+  // result to the caller's accessibleOrgIds, making `partnerOrgRows.every(...)`
+  // vacuously true (incl. `[].every()` for orgAccess='none') and letting a
+  // 'selected'/'none' partner-admin manage ALL partner users.
+  describe('full partner access gate (RLS-vacuous escalation)', () => {
+    const ORG_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const ORG_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const ORG_C = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+    // Drive the gate's `db.select().from().where()` (awaited directly) to the
+    // partner's full, un-narrowed org list. The route's GET handler that runs
+    // after the gate also issues selects, so back them with an empty list so
+    // the request resolves cleanly to 200 when the gate passes.
+    function seedPartnerOrgs(fullOrgIds: string[]) {
+      const gateWhere = vi.fn(() => Promise.resolve(fullOrgIds.map((id) => ({ id }))));
+      const handlerWhere = vi.fn(() => Promise.resolve([]));
+      let firstCall = true;
+      vi.mocked(db.select).mockReset().mockImplementation(() => {
+        const where = firstCall ? gateWhere : handlerWhere;
+        firstCall = false;
+        return {
+          from: vi.fn(() => ({
+            where,
+            innerJoin: vi.fn(() => ({
+              innerJoin: vi.fn(() => ({ where: handlerWhere })),
+              where: handlerWhere,
+            })),
+          })),
+        } as any;
+      });
+    }
+
+    function authWith(accessibleOrgIds: string[]) {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          orgId: null,
+          accessibleOrgIds,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+    }
+
+    it("denies a 'selected' partner-admin whose orgs are a strict subset (403)", async () => {
+      // Partner truly owns A, B, C; this admin can only see A.
+      seedPartnerOrgs([ORG_A, ORG_B, ORG_C]);
+      authWith([ORG_A]);
+
+      const res = await app.request('/users', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it("denies a 'none' partner-admin with an empty accessible set (403)", async () => {
+      // Partner owns orgs, but this admin has org access 'none' → empty array.
+      // `[].every()` would pass without the length guards.
+      seedPartnerOrgs([ORG_A, ORG_B]);
+      authWith([]);
+
+      const res = await app.request('/users', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it("denies when the partner has zero orgs even if accessible set is non-empty (403)", async () => {
+      // partnerOrgRows.length === 0 must fail closed.
+      seedPartnerOrgs([]);
+      authWith([ORG_A]);
+
+      const res = await app.request('/users', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it("allows an 'all' partner-admin covering every partner org (200)", async () => {
+      seedPartnerOrgs([ORG_A, ORG_B]);
+      authWith([ORG_A, ORG_B]);
+
+      const res = await app.request('/users', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('reads the partner org set via runOutsideDbContext + withSystemDbAccessContext (RLS bypass)', async () => {
+      seedPartnerOrgs([ORG_A]);
+      authWith([ORG_A]);
+
+      await app.request('/users', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(runOutsideDbContext).toHaveBeenCalled();
+      expect(withSystemDbAccessContext).toHaveBeenCalled();
     });
   });
 });

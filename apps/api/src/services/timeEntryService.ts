@@ -724,18 +724,26 @@ export interface TimesheetDay {
   entries: Awaited<ReturnType<typeof listTimeEntries>>['entries'];
 }
 
-export async function getTimesheet(userId: string, weekStart: Date) {
+export async function getTimesheet(userId: string, weekStart: Date, accessibleOrgIds: string[] | null = null) {
   const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60_000);
+  // Org-axis allowlist: time_entries is partner-axis RLS only, so an
+  // orgAccess='selected' partner user would otherwise see timesheet entries
+  // across all orgs under the partner. Apply the same orgAxisSql predicate used
+  // in listConditions / approveTimeEntries. `null` = system scope (no filter).
+  // (#sec-review-1)
+  const orgAxis = orgAxisSql(accessibleOrgIds);
+  const baseCondition = and(
+    eq(timeEntries.userId, userId),
+    gte(timeEntries.startedAt, weekStart),
+    lt(timeEntries.startedAt, weekEnd),
+    ...(orgAxis ? [orgAxis] : [])
+  );
   const entries = await db
     .select(entrySelection())
     .from(timeEntries)
     .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
     .leftJoin(users, eq(timeEntries.userId, users.id))
-    .where(and(
-      eq(timeEntries.userId, userId),
-      gte(timeEntries.startedAt, weekStart),
-      lt(timeEntries.startedAt, weekEnd)
-    ))
+    .where(baseCondition)
     .orderBy(asc(timeEntries.startedAt));
 
   const days = new Map<string, TimesheetDay>();

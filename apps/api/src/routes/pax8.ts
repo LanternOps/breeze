@@ -22,7 +22,7 @@ import { captureException } from '../services/sentry';
 
 export const pax8Routes = new Hono();
 
-type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'canAccessOrg' | 'accessibleOrgIds'>;
+type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'canAccessOrg' | 'accessibleOrgIds' | 'orgCondition'>;
 
 function requestedPartnerId(c: { req: { query: (key: string) => string | undefined } }): string | undefined {
   return c.req.query('partnerId');
@@ -350,6 +350,14 @@ pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', su
   if (query.orgId) {
     if (!auth.canAccessOrg(query.orgId)) return c.json({ error: 'Access to organization denied' }, 403);
     conditions.push(eq(pax8SubscriptionSnapshots.orgId, query.orgId));
+  } else if (!query.unmappedOnly) {
+    // No specific orgId requested and not filtering to unmapped (NULL-org) rows:
+    // apply the caller's org allowlist so a partner member cannot enumerate
+    // subscription snapshots (including unitPrice/unitCost/margin) for orgs
+    // outside their accessibleOrgIds. System-scope callers get undefined (no
+    // filter), which is the intended "see all" behaviour for operators.
+    const orgFilter = auth.orgCondition(pax8SubscriptionSnapshots.orgId);
+    if (orgFilter !== undefined) conditions.push(orgFilter);
   }
   if (query.unmappedOnly) conditions.push(sql`${pax8SubscriptionSnapshots.orgId} is null`);
 
