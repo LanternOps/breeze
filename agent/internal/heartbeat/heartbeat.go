@@ -854,12 +854,24 @@ func (h *Heartbeat) Start() {
 
 	// Send initial inventory in background
 	go h.sendInventory()
-	go h.sendReliabilityMetrics()
 	go h.runProcessSampler()
+
+	// Reliability cadence persists across restarts (#1906). Seed the in-memory
+	// timer from the last persisted post instead of "now", and only post on
+	// startup if at least 24h have actually elapsed since then. Without this, a
+	// restart-prone device (POS/checkout box, crash, auto-update) re-posted an
+	// overlapping event-log window on every boot → duplicate reliability rows.
+	// A zero persisted time (first-ever run / unreadable state) is older than
+	// any threshold, so the very first post still goes out.
+	persistedReliability := h.loadLastReliabilityUpdate()
 	h.mu.Lock()
 	h.lastPostureUpdate = time.Now()
-	h.lastReliabilityUpdate = time.Now()
+	h.lastReliabilityUpdate = persistedReliability
 	h.mu.Unlock()
+	if time.Since(persistedReliability) > 24*time.Hour {
+		h.markReliabilitySent(time.Now())
+		go h.sendReliabilityMetrics()
+	}
 
 	for {
 		select {
@@ -898,7 +910,7 @@ func (h *Heartbeat) Start() {
 			}
 			shouldSendReliability := time.Since(h.lastReliabilityUpdate) > 24*time.Hour
 			if shouldSendReliability {
-				h.lastReliabilityUpdate = time.Now()
+				h.lastReliabilityUpdate = now
 			}
 			h.mu.Unlock()
 
@@ -961,6 +973,11 @@ func (h *Heartbeat) Start() {
 				go h.sendManagementPosture()
 			}
 			if shouldSendReliability {
+				// Persist the new send time (captured as `now` under the lock
+				// above) so the 24h gate survives the next restart (#1906).
+				if err := h.saveLastReliabilityUpdate(now); err != nil {
+					log.Warn("failed to persist reliability send timestamp", "error", err.Error())
+				}
 				go h.sendReliabilityMetrics()
 			}
 		case <-h.stopChan:
