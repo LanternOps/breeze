@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError } from '../../lib/runAction';
 import {
   listContracts,
   formatCadence,
@@ -13,6 +13,10 @@ import {
 } from '../../lib/api/contracts';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
+import { showToast } from '../shared/Toast';
+import { useBulkSelection } from '../billing/bulk/useBulkSelection';
+import { BulkActionBar } from '../billing/bulk/BulkActionBar';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 interface Organization {
   id: string;
@@ -71,8 +75,9 @@ interface Props {
   lockedOrgId?: string;
 }
 
-export default function ContractsList({ lockedOrgId }: Props = {}) {
+export function ContractsList({ lockedOrgId }: Props = {}) {
   const { can } = usePermissions();
+  const bulk = useBulkSelection();
   const [contracts, setContracts] = useState<ContractSummary[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,6 +85,7 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
   const [filters, setFilters] = useState<Filters>(() =>
     lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : readFilters(),
   );
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   const orgName = useCallback(
     (id: string) => orgs.find((o) => o.id === id)?.name ?? id.slice(0, 8),
@@ -142,6 +148,31 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
     const total = active.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
     return { total, count: active.length, ccy: contracts[0]?.currencyCode || 'USD' };
   }, [contracts]);
+
+  const runBulkContracts = useCallback(
+    async (path: string, verb: string) => {
+      const ids = Array.from(bulk.selectedIds);
+      if (ids.length === 0) return;
+      try {
+        const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number; skippedReasons?: Record<string, number> } }>({
+          request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids }) }),
+          errorFallback: `Bulk ${verb} failed. Retry.`,
+          onUnauthorized: UNAUTHORIZED,
+        });
+        const { succeeded, skipped, failed } = result.data;
+        showToast(
+          skipped + failed > 0
+            ? { type: 'warning', message: `${succeeded} ${verb}, ${skipped} skipped${failed ? `, ${failed} failed` : ''}` }
+            : { type: 'success', message: `${succeeded} ${verb}` }
+        );
+        bulk.clear();
+        void loadContracts(filters);
+      } catch (err) {
+        handleActionError(err, `Bulk ${verb} failed. Retry.`);
+      }
+    },
+    [bulk, loadContracts, filters],
+  );
 
   return (
     <div className="space-y-6" data-testid="contracts-page">
@@ -233,48 +264,89 @@ export default function ContractsList({ lockedOrgId }: Props = {}) {
             No contracts match these filters.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" data-testid="contracts-list">
-              <thead>
-                <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-3 font-medium">Name</th>
-                  <th className="px-3 py-3 font-medium">Organization</th>
-                  <th className="px-3 py-3 font-medium">Status</th>
-                  <th className="px-3 py-3 font-medium">Cadence</th>
-                  <th className="px-3 py-3 font-medium">Next bill</th>
-                  <th className="px-3 py-3 text-right font-medium">Est. / period</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((ctr) => (
-                  <tr
-                    key={ctr.id}
-                    onClick={() => void navigateTo(`/contracts/${ctr.id}`)}
-                    data-testid={`contract-row-${ctr.id}`}
-                    className="cursor-pointer border-t transition hover:bg-muted/40"
-                  >
-                    <td className="px-3 py-3 font-medium">{ctr.name}</td>
-                    <td className="px-3 py-3">{orgName(ctr.orgId)}</td>
-                    <td className="px-3 py-3">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[ctr.status]}`}
-                        data-testid={`contract-status-${ctr.id}`}
-                      >
-                        {CONTRACT_STATUS_LABELS[ctr.status]}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3">{formatCadence(ctr.intervalMonths)}</td>
-                    <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
-                    <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>
-                      {ctr.estimatedPeriodValue != null ? formatMoney(ctr.estimatedPeriodValue, ctr.currencyCode) : '—'}
-                    </td>
+          <div className="relative">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" data-testid="contracts-list">
+                <thead>
+                  <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="w-8 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all contracts"
+                        data-testid="contracts-select-all"
+                        checked={rows.length > 0 && rows.every((r) => bulk.has(r.id))}
+                        onChange={(e) => (e.target.checked ? bulk.selectAll(rows.map((r) => r.id)) : bulk.clear())}
+                      />
+                    </th>
+                    <th className="px-3 py-3 font-medium">Name</th>
+                    <th className="px-3 py-3 font-medium">Organization</th>
+                    <th className="px-3 py-3 font-medium">Status</th>
+                    <th className="px-3 py-3 font-medium">Cadence</th>
+                    <th className="px-3 py-3 font-medium">Next bill</th>
+                    <th className="px-3 py-3 text-right font-medium">Est. / period</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {rows.map((ctr) => (
+                    <tr
+                      key={ctr.id}
+                      onClick={() => void navigateTo(`/contracts/${ctr.id}`)}
+                      data-testid={`contract-row-${ctr.id}`}
+                      className="cursor-pointer border-t transition hover:bg-muted/40"
+                    >
+                      <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select contract ${ctr.name}`}
+                          data-testid={`contract-select-${ctr.id}`}
+                          checked={bulk.has(ctr.id)}
+                          onChange={() => bulk.toggle(ctr.id)}
+                        />
+                      </td>
+                      <td className="px-3 py-3 font-medium">{ctr.name}</td>
+                      <td className="px-3 py-3">{orgName(ctr.orgId)}</td>
+                      <td className="px-3 py-3">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[ctr.status]}`}
+                          data-testid={`contract-status-${ctr.id}`}
+                        >
+                          {CONTRACT_STATUS_LABELS[ctr.status]}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">{formatCadence(ctr.intervalMonths)}</td>
+                      <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>
+                        {ctr.estimatedPeriodValue != null ? formatMoney(ctr.estimatedPeriodValue, ctr.currencyCode) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <BulkActionBar
+              count={bulk.size}
+              onClear={bulk.clear}
+              testIdPrefix="contracts"
+              actions={[
+                ...(can('contracts', 'manage') ? [{ key: 'cancel', label: 'Cancel', variant: 'destructive' as const, onClick: () => setCancelOpen(true) }] : []),
+                ...(can('contracts', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, onClick: () => void runBulkContracts('/contracts/bulk-delete', 'deleted') }] : []),
+              ]}
+            />
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        onConfirm={() => { setCancelOpen(false); void runBulkContracts('/contracts/bulk-cancel', 'cancelled'); }}
+        title="Cancel contracts"
+        message={`Cancel ${bulk.size} selected contract(s)? Active and paused contracts will be cancelled; this cannot be undone.`}
+        confirmLabel="Cancel contracts"
+        confirmTestId="contracts-bulk-cancel-confirm"
+      />
     </div>
   );
 }
+
+export default ContractsList;
