@@ -5,6 +5,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// Partial-mock drizzle-orm so `inArray` is a spy while every other operator
+// (and/or/eq/sql/...) stays real. The GET /rules site-narrowing test asserts
+// inArray(pamRules.siteId, allowedSiteIds) was actually built — removing the
+// production narrowing line makes that assertion fail.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)),
+  };
+});
+
 const authMocks = vi.hoisted(() => ({
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
@@ -173,6 +185,7 @@ vi.mock('./softwarePolicies', () => ({
 }));
 
 import { db } from '../db';
+import { inArray } from 'drizzle-orm';
 import { pamRoutes } from './pam';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
@@ -1597,6 +1610,7 @@ describe('PAM rules — site-axis enforcement', () => {
 
   it('site-restricted tech GET /rules narrows to allowed sites (other-site/org-wide hidden)', async () => {
     setSiteRestrictedAuth();
+    vi.mocked(inArray).mockClear();
     // The mock db ignores the WHERE predicate; assert the route builds a where
     // (inArray on pamRules.siteId) and returns the rows the DB layer would yield.
     const allowedRule = { id: RULE_ID, orgId: ORG_ID, siteId: ALLOWED_SITE, name: 'mine' };
@@ -1613,10 +1627,16 @@ describe('PAM rules — site-axis enforcement', () => {
     expect(body.rules).toEqual([allowedRule]);
     // A site-scoping WHERE predicate was applied (not just the bare org condition).
     expect(chain.where).toHaveBeenCalled();
+    // Load-bearing: the narrowing MUST be inArray(pamRules.siteId, allowedSiteIds).
+    // The schema mock exposes pamRules.siteId as the literal 'siteId'. If the
+    // production `inArray(pamRules.siteId, perms.allowedSiteIds)` line were
+    // removed, inArray would never be called with the site column and this fails.
+    expect(inArray).toHaveBeenCalledWith('siteId', [ALLOWED_SITE]);
   });
 
   it('unrestricted caller GET /rules returns rules without a site filter', async () => {
     // Default setAuth() => no allowedSiteIds.
+    vi.mocked(inArray).mockClear();
     const orgWide = { id: RULE_ID, orgId: ORG_ID, siteId: null, name: 'org-wide' };
     const chain: any = Promise.resolve([orgWide]);
     chain.from = vi.fn(() => chain);
@@ -1628,6 +1648,9 @@ describe('PAM rules — site-axis enforcement', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.rules).toEqual([orgWide]);
+    // No site narrowing for an unrestricted caller: inArray is never invoked
+    // with the pam_rules site column.
+    expect(inArray).not.toHaveBeenCalledWith('siteId', expect.anything());
   });
 });
 

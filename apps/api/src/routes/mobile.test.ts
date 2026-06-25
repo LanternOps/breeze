@@ -2,6 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { mobileRoutes } from './mobile';
 
+// Partial-mock drizzle-orm so `inArray` is a spy while every other operator
+// (and/eq/sql/...) stays real. The /summary site-narrowing tests assert that
+// device stats build inArray(devices.siteId, allowedSiteIds) and alert stats
+// build inArray(alerts.deviceId, resolvedDeviceIds). Removing either production
+// narrowing line makes the matching assertion fail.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)),
+  };
+});
+
 const { publishEventMock, setCooldownMock, emitAlertStateFeedbackMock, rateLimitState, authState } = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1'),
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
@@ -78,6 +91,8 @@ vi.mock('../middleware/userRateLimit', () => ({
 }));
 
 import { db } from '../db';
+import { inArray } from 'drizzle-orm';
+import { devices, alerts } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 
 const mockSelectLimitChain = (result: unknown) => ({
@@ -1429,6 +1444,7 @@ describe('mobile routes', () => {
 
       it('applies siteId inArray to device stats and uses resolveSiteAllowedDeviceIds for alert stats when site-restricted', async () => {
         authState.permissions = { allowedSiteIds: ['site-1'] };
+        vi.mocked(inArray).mockClear();
 
         const selectMock = vi.mocked(db.select);
         // Call order:
@@ -1449,6 +1465,14 @@ describe('mobile routes', () => {
         expect(body.alerts.total).toBe(1);
         // Three db.select calls: device-agg, device-site-lookup, alert-agg
         expect(selectMock).toHaveBeenCalledTimes(3);
+
+        // Load-bearing site narrowing. These prove the actual filters were built;
+        // deleting either production line drops the matching inArray call.
+        //   - device stats narrow on the real devices.siteId column with the allowlist
+        //   - alert stats narrow on the real alerts.deviceId column with the device IDs
+        //     resolveSiteAllowedDeviceIds yields for the allowed site (['dev-1'])
+        expect(inArray).toHaveBeenCalledWith(devices.siteId, ['site-1']);
+        expect(inArray).toHaveBeenCalledWith(alerts.deviceId, ['dev-1']);
       });
 
       it('returns zero alerts (but real device counts) when resolveSiteAllowedDeviceIds returns empty', async () => {

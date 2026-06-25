@@ -2,6 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { searchRoutes } from './search';
 
+// Partial-mock drizzle-orm so `inArray` is a spy while every other operator
+// (and/or/ilike/isNull/sql) stays real. This lets the site-narrowing tests
+// prove that the device branch actually calls inArray(devices.siteId,
+// allowedSiteIds) — deleting that production line makes the assertion fail.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)),
+  };
+});
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -15,6 +27,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
     hostname: 'devices.hostname',
     displayName: 'devices.displayName',
     status: 'devices.status'
@@ -74,6 +87,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 import { db } from '../db';
+import { inArray } from 'drizzle-orm';
 import { getUserPermissions } from '../services/permissions';
 
 describe('search routes', () => {
@@ -260,7 +274,8 @@ describe('search routes', () => {
       expect(body.results.filter((r: { type?: string }) => r.type === 'devices')).toHaveLength(0);
     });
 
-    it('passes allowedSiteIds condition through to device query for site-restricted callers', async () => {
+    it('narrows the device query with inArray(devices.siteId, allowedSiteIds) for site-restricted callers', async () => {
+      vi.mocked(inArray).mockClear();
       // Override getUserPermissions to simulate a site-restricted caller with one allowed site.
       vi.mocked(getUserPermissions).mockResolvedValueOnce({
         permissions: [
@@ -301,6 +316,10 @@ describe('search routes', () => {
       expect(res.status).toBe(200);
       // A non-null where condition was passed (includes the site inArray filter)
       expect(capturedDeviceWhere).toBeDefined();
+      // Load-bearing: the device branch MUST narrow on the site column. If the
+      // production `inArray(devices.siteId, allowedSiteIds)` line were removed,
+      // this assertion fails (inArray would never be called with the site column).
+      expect(inArray).toHaveBeenCalledWith('devices.siteId', ['site-abc']);
     });
 
     it('unrestricted caller (no allowedSiteIds) returns device results normally', async () => {
