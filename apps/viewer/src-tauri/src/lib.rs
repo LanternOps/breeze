@@ -64,7 +64,9 @@ struct WindowCounter(Mutex<u32>);
 
 /// A downloaded-but-not-yet-applied update, awaiting the user's choice in the
 /// `Ready` prompt. The `Update` handle is retained because `install()` is a
-/// method on it. Only ever holds a value when no remote session is active.
+/// method on it. Only populated when no remote session was active at download
+/// time (an active session defers instead); a session may start afterwards
+/// while a value is still staged, so `is_some()` does not imply "no session now".
 struct PendingUpdate(Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>);
 
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
@@ -305,64 +307,70 @@ fn update_session_hostname(
 
 /// "Restart & update": apply the stashed update now. On macOS/Linux this swaps
 /// the binary and restarts; on Windows `install()` launches the installer and
-/// the process exits. No-op if nothing is pending (e.g. a double click).
+/// the process exits. Returns `Err` if nothing is staged (e.g. invoked after
+/// the slot was already taken) or if the install fails, so the caller's promise
+/// rejects instead of silently resolving and stranding the prompt's buttons.
 #[tauri::command]
-fn apply_pending_update(app: tauri::AppHandle, pending: tauri::State<'_, PendingUpdate>) {
+fn apply_pending_update(
+    app: tauri::AppHandle,
+    pending: tauri::State<'_, PendingUpdate>,
+) -> Result<(), String> {
     let taken = {
         let mut slot = lock_or_recover(&pending.0, "pending_update");
         slot.take()
     };
     let Some((update, bytes)) = taken else {
-        return;
+        return Err("no pending update to apply".to_string());
     };
     let version = update.version.clone();
 
+    // On Windows install() launches the installer and terminates the process,
+    // so emit a labelled "Installing" first — the exit is then a known step,
+    // not a silent crash. (macOS/Linux swap in place and emit "Restarting" below.)
     #[cfg(target_os = "windows")]
-    {
-        emit_update_status(&app, UpdateStatus::Installing { version: version.clone() });
-        // install() launches the installer and terminates the process; on
-        // success nothing after this runs. Reaching past it means it failed.
-        if let Err(e) = update.install(bytes) {
-            eprintln!("Update install failed: {}", e);
-            emit_update_status(&app, UpdateStatus::Failed { version });
-        }
+    emit_update_status(&app, UpdateStatus::Installing { version: version.clone() });
+
+    if let Err(e) = update.install(bytes) {
+        eprintln!("Update install failed: {}", e);
+        emit_update_status(&app, UpdateStatus::Failed { version });
+        return Err(e.to_string());
     }
 
+    // macOS/Linux: the binary was swapped on disk but the running process still
+    // holds the old version — restart to apply. (On Windows the line above
+    // already exited the process on success.)
     #[cfg(not(target_os = "windows"))]
     {
-        if let Err(e) = update.install(bytes) {
-            eprintln!("Update install failed: {}", e);
-            emit_update_status(&app, UpdateStatus::Failed { version });
-            return;
-        }
         emit_update_status(&app, UpdateStatus::Restarting { version });
-        app.restart();
+        app.restart()
     }
+    #[cfg(target_os = "windows")]
+    Ok(())
 }
 
 /// "Remind me later": discard the prompt. On macOS/Linux swap the binary on
 /// disk so the next launch is updated; on Windows drop the download (re-checks
-/// next launch). No-op if nothing is pending.
+/// next launch). Idempotent — `Ok` even when nothing is staged. The disk-swap
+/// is best-effort: a failure is logged but not surfaced, since the next launch
+/// re-checks regardless.
 #[tauri::command]
-fn dismiss_pending_update(pending: tauri::State<'_, PendingUpdate>) {
+fn dismiss_pending_update(pending: tauri::State<'_, PendingUpdate>) -> Result<(), String> {
     let taken = {
         let mut slot = lock_or_recover(&pending.0, "pending_update");
         slot.take()
     };
     let Some((update, bytes)) = taken else {
-        return;
+        return Ok(());
     };
 
     #[cfg(not(target_os = "windows"))]
-    {
-        if let Err(e) = update.install(bytes) {
-            eprintln!("Deferred update disk-swap failed: {}", e);
-        }
+    if let Err(e) = update.install(bytes) {
+        eprintln!("Deferred update disk-swap failed: {}", e);
     }
     #[cfg(target_os = "windows")]
-    {
-        drop((update, bytes));
-    }
+    drop((update, bytes));
+
+    Ok(())
 }
 
 /// Focus the highest-numbered session window, or do nothing if none exist.

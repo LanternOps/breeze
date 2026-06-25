@@ -93,6 +93,11 @@ export default function UpdateIndicator() {
               setActing(true);
               applyPendingUpdate().catch((e) => {
                 console.error('Failed to apply update', e);
+                // The command rejected (install failed, or nothing staged) and
+                // may not have emitted a status event — surface a failure notice
+                // so the user isn't stranded on a dead prompt. It auto-dismisses
+                // and the update retries on next launch.
+                setStatus({ phase: 'failed', version: status.version });
                 setActing(false);
               });
             }}
