@@ -1597,3 +1597,101 @@ describe('POST /tunnels/:id/http-ticket', () => {
     expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID }));
   });
 });
+
+// ─── POST /tunnels — proxy scheme/skipTlsVerify persistence (#1916) ──────────
+
+describe('POST /tunnels — proxy scheme/skipTlsVerify persistence', () => {
+  let app: Hono;
+
+  // Allowlist rule that permits any port on 10.0.0.0/8
+  const destAllowlistRule = {
+    id: 'r1r1r1r1-r1r1-4r1r-8r1r-r1r1r1r1r1r1',
+    orgId: ORG_ID,
+    direction: 'destination',
+    enabled: true,
+    pattern: '10.0.0.0/8:*',
+  };
+
+  // Return the non-audit values payload from the session insert call.
+  // Mirrors auditCalls() but selects rows WITHOUT an `action` field.
+  function sessionInsertValues(insertMock: any): any[] {
+    const calls: any[] = [];
+    const seen = new Set<any>();
+    for (const result of insertMock.mock.results) {
+      const chain = result.value;
+      if (!chain?.values?.mock || seen.has(chain)) continue;
+      seen.add(chain);
+      for (const call of chain.values.mock.calls) {
+        const arg = call[0];
+        if (arg && typeof arg === 'object' && !('action' in arg)) calls.push(arg);
+      }
+    }
+    return calls;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('persists resolved scheme + skipTlsVerify for an https proxy session', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)       // device lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any)                   // source-IP allowlist (no rules = allowed)
+      .mockReturnValueOnce(makeSelectChain([destAllowlistRule]) as any)  // destination allowlist
+      .mockReturnValueOnce(makeSelectChain([]) as any);                  // getActiveAllowlistPatterns
+    const proxySession = { ...sessionRecord, type: 'proxy', targetHost: '10.0.0.5', targetPort: 8443, scheme: 'https', skipTlsVerify: true };
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([proxySession]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        type: 'proxy',
+        targetHost: '10.0.0.5',
+        targetPort: 8443,
+        scheme: 'https',
+        skipTlsVerify: true,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const sessionVals = sessionInsertValues(insertMock);
+    expect(sessionVals).toHaveLength(1);
+    expect(sessionVals[0]).toMatchObject({ scheme: 'https', skipTlsVerify: true });
+  });
+
+  it('forces skipTlsVerify false when scheme is http', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)       // device lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any)                   // source-IP allowlist
+      .mockReturnValueOnce(makeSelectChain([destAllowlistRule]) as any)  // destination allowlist
+      .mockReturnValueOnce(makeSelectChain([]) as any);                  // getActiveAllowlistPatterns
+    const proxySession = { ...sessionRecord, type: 'proxy', targetHost: '10.0.0.5', targetPort: 80, scheme: 'http', skipTlsVerify: false };
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([proxySession]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        type: 'proxy',
+        targetHost: '10.0.0.5',
+        targetPort: 80,
+        scheme: 'http',
+        skipTlsVerify: true, // should be normalized away
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const sessionVals = sessionInsertValues(insertMock);
+    expect(sessionVals).toHaveLength(1);
+    expect(sessionVals[0]).toMatchObject({ scheme: 'http', skipTlsVerify: false });
+  });
+});

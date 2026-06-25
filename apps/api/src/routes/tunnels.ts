@@ -39,6 +39,8 @@ const createTunnelSchema = z.discriminatedUnion('type', [
     type: z.literal('proxy'),
     targetHost: z.string().max(255),
     targetPort: z.number().int().min(1).max(65535),
+    scheme: z.enum(['http', 'https']).optional(),
+    skipTlsVerify: z.boolean().optional(),
   }),
 ]);
 
@@ -330,6 +332,14 @@ tunnelRoutes.post(
     const targetHost = isVNC ? '127.0.0.1' : body.targetHost;
     const targetPort = isVNC ? 5900 : body.targetPort;
 
+    // Resolve scheme (explicit, else infer from port) and normalize the skip
+    // flag: it is only meaningful for https — forced false otherwise.
+    const scheme = isVNC
+      ? null
+      : (body.scheme ?? (targetPort === 443 ? 'https' : 'http'));
+    const skipTlsVerify =
+      !isVNC && scheme === 'https' ? (body.skipTlsVerify ?? false) : false;
+
     // Source IP check
     if (!(await isSourceIpAllowed(sourceIp, device.orgId))) {
       return c.json({ error: 'Source IP not permitted' }, 403);
@@ -358,6 +368,8 @@ tunnelRoutes.post(
         status: 'pending',
         targetHost,
         targetPort,
+        scheme,
+        skipTlsVerify,
         sourceIp: sourceIp,
       })
       .returning();
@@ -388,7 +400,7 @@ tunnelRoutes.post(
       session!.id,
       auth.user.id,
       device.orgId,
-      { deviceId: device.id, type: body.type, targetHost, targetPort },
+      { deviceId: device.id, type: body.type, targetHost, targetPort, scheme, skipTlsVerify },
       sourceIp,
     );
 
