@@ -22,6 +22,8 @@ Breeze supports three categories of integrations, each served by a dedicated set
 | **Communication** | Slack, Microsoft Teams, Discord | Alert notifications, status updates, and on-call messaging |
 | **PSA / Ticketing** | Jira, ServiceNow, ConnectWise, Autotask, Freshservice, Zendesk | Ticket creation, bi-directional sync, and workflow automation |
 | **Monitoring** | External monitoring endpoints | Forward device telemetry and health data to third-party observability platforms |
+| **Accounting** | QuickBooks Online | Connect your accounting platform (see [Accounting](#accounting-integrations)) |
+| **Distributors** | Pax8, TD SYNNEX | Sync licenses and pull live distributor pricing into your [Product Catalog](/features/product-catalog/) |
 
 <Aside>
   Communication and monitoring integrations are configured through the `/integrations` routes. PSA connections use the dedicated `/psa` routes, which provide full CRUD, credential encryption, ticket mapping, and sync management.
@@ -284,6 +286,43 @@ PSA credentials follow a strict security model:
 | **Response redaction** | List and detail endpoints never return raw credentials. The `hasCredentials` boolean indicates whether credentials are stored |
 | **Rotation** | Update credentials via `PATCH /psa/connections/:id` with a new `credentials` object. The old encrypted value is replaced atomically |
 | **Deletion** | Deleting a connection removes the encrypted credentials and all associated ticket mappings from the database |
+
+---
+
+## Accounting Integrations
+
+Connect Breeze to your accounting platform from the **Accounting** tab on the Integrations page. Accounting integrations are a partner-level feature -- they're set up once for your practice, not per customer.
+
+### QuickBooks Online
+
+QuickBooks Online connects through Intuit's standard OAuth consent flow:
+
+<Steps>
+
+1. Open **Integrations → Accounting** and click **Connect to QuickBooks**.
+2. You're taken to Intuit's consent screen to authorize Breeze; approving it returns you to Breeze with the connection established.
+3. The tab then shows the connection status, the connected environment, and a **Disconnect** option. You can also choose whether issued invoices push to QuickBooks automatically or manually.
+
+</Steps>
+
+<Aside type="note">
+  This release establishes the QuickBooks **connection** (authorize, view status, disconnect). Syncing invoices, customers, and payments builds on this foundation in later releases.
+</Aside>
+
+<Aside type="caution">
+  QuickBooks requires Intuit OAuth credentials configured on the server (`QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT`). Until those are set, the connect option reports that QuickBooks isn't configured on this instance. See the [environment reference](/deploy/environment/). On Breeze-hosted accounts this is already configured.
+</Aside>
+
+---
+
+## Distributor Integrations
+
+Distributor integrations live on the **Distributors** tab of the Integrations page and let you bring vendor licenses and pricing into Breeze. They're partner-scoped.
+
+- **Pax8** syncs your clients and their subscription/license quantities, which you can map to organizations and link to recurring contract lines.
+- **TD SYNNEX** provides live product price and availability you can import straight into your catalog.
+
+The end-to-end workflow for importing distributor products into your catalog -- including TD SYNNEX EC Express live pricing -- is documented under [Product Catalog → Importing from distributor catalogs](/features/product-catalog/#importing-from-distributor-catalogs).
 
 ---
 

@@ -57,7 +57,7 @@ The practical effect: a laptop that is shut down overnight but otherwise crash-f
 
 | Factor | Weight | Description |
 |--------|--------|-------------|
-| Uptime | 30% (servers/infrastructure) / 0% (workstations) | Based on the uptime percentage since the device was enrolled, up to a 90-day window. Score 100 at 100% uptime, linearly down to 0 at 90% or below. Not counted for laptops and desktop workstations (see [Device-type-aware weighting](#device-type-aware-weighting)) |
+| Uptime | 30% (servers/infrastructure) / 0% (workstations) | Based on the device's **observed availability** over the measurement window (how much of the time it was actually up and reporting in) since enrollment, up to a 90-day window -- not just the length of the current boot session, so a single recent reboot doesn't distort the figure. Score 100 at 100% availability, linearly down to 0 at 90% or below. Not counted for laptops and desktop workstations (see [Device-type-aware weighting](#device-type-aware-weighting)) |
 | Crashes | 25% | Penalizes crash events. Recent crashes (7-day) are weighted more heavily than 30-day crashes |
 | Hangs | 15% | Penalizes application hangs, with extra penalty for unresolved hangs |
 | Service Failures | 15% | Penalizes service failures, with partial credit for auto-recovered services |

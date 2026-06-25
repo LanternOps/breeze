@@ -73,12 +73,34 @@ Items you no longer sell can be **archived** rather than deleted, so historical 
   An item that is still attached to an active contract or a deployed deployment can't be removed outright -- Breeze returns a clear conflict message instead of an error. Archive it to retire it while preserving history.
 </Aside>
 
+## Importing from distributor catalogs
+
+Rather than typing in hardware by hand, you can pull products straight from a connected distributor into your catalog. Connect the distributor first on the **Integrations → Distributors** tab (see [Distributor Integrations](/features/integrations/#distributor-integrations)).
+
+### TD SYNNEX EC Express (live pricing)
+
+TD SYNNEX **EC Express** looks up real-time price and availability by SKU so the numbers you quote reflect current distributor pricing.
+
+<Steps>
+
+1. On the TD SYNNEX pricing settings panel, enter your EC Express credentials (customer number, email, password, and region) and save. These are entered in Breeze and stored encrypted -- they are not server environment variables.
+2. Use **Test connection** to confirm your credentials work.
+3. Look up a product by its TD SYNNEX SKU or manufacturer part number. Results show your cost, MSRP, total availability, and a per-warehouse breakdown.
+4. Enter your **sell price** for a result and **import to catalog**. The item is added as a one-time hardware item with its cost basis and source details retained.
+
+</Steps>
+
+<Aside type="note">
+  EC Express is the live price-and-availability connector for TD SYNNEX. It complements the earlier Digital Bridge catalog import and is the recommended way to bring TD SYNNEX products into Breeze.
+</Aside>
+
 ## Permissions
 
 Catalog access is governed by role permissions: viewing requires catalog read access, creating and editing items and bundles requires catalog write access, and archiving requires catalog delete access. Assign these through **Settings → Users & Roles**.
 
 ## Related
 
+- [Distributor & Accounting Integrations](/features/integrations/) -- connect Pax8, TD SYNNEX, and QuickBooks
 - [Invoices](/features/invoices/) -- build invoices from catalog items and bundles
 - [Recurring Contracts](/features/contracts/) -- bill catalog items on a schedule
 - [Online Payments](/features/online-payments/) -- let customers pay invoices by card

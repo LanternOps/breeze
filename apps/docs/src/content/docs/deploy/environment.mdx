@@ -109,6 +109,7 @@ All configuration is done through environment variables, defined in your `.env.p
 | `BINARY_VERSION_FILE` | — | | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
 | `BINARY_VERSION` | — | | Release tag for GitHub redirect mode (falls back to `BREEZE_VERSION`, then `latest`) |
 | `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | `yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=` (official releases) | Yes (prod) | Comma-separated raw base64 Ed25519 public keys that sign release manifests. Use the published default for official Breeze releases (it is a public key, safe to commit); only change it if you sign your own binaries. The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
+| `AGENT_AUTO_PROMOTE` | `true` | | Controls whether a newly registered/synced agent release immediately becomes the fleet upgrade target. `true` (default): publishing a release promotes it to the fleet at once. `false`: new binaries stay downloadable but the fleet only advances when you explicitly promote a version (platform admin + MFA) — see [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout). |
 
 See [Binary Distribution](/deploy/binaries/) for details on local vs GitHub mode and S3 offloading.
 
@@ -171,6 +172,7 @@ Both API and web Sentry integrations are off by default. Leave the DSN variables
 | `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag |
 | `SENTRY_RELEASE` | — | Sentry release tag (e.g. git SHA) |
 | `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Sentry performance trace sample rate (0.0-1.0) |
+| `SENTRY_PROFILES_SAMPLE_RATE` | — | API performance-profiling sample rate (0.0-1.0). Leave blank to disable profiling. |
 | `PUBLIC_SENTRY_DSN_WEB` | — | Web Sentry DSN. Leave blank to disable browser error tracking and on-error session replay. Inlined into the web bundle at build time. |
 | `SENTRY_AUTH_TOKEN` | — | Sentry auth token used during the web build to upload source maps. If unset, source map upload is skipped and the build still succeeds. |
 
@@ -327,3 +329,22 @@ and an **unrecognized model id is priced at conservative Opus-tier
 cheap local model, not `$0`. For accurate accounting, add the served model id to
 `MODEL_PRICING` in `aiCostTracker.ts`, or use the openai-compatible path's
 `MCP_LLM_PRICE_*` overrides.
+
+## Accounting (QuickBooks Online)
+
+| Variable | Default | Description |
+|---|---|---|
+| `QBO_CLIENT_ID` | — | Intuit OAuth client ID for the QuickBooks Online integration |
+| `QBO_CLIENT_SECRET` | — | Intuit OAuth client secret |
+| `QBO_REDIRECT_URI` | — | OAuth callback URL registered with Intuit (e.g. `https://your-domain/accounting/quickbooks/callback`) |
+| `QBO_ENVIRONMENT` | — | `sandbox` or `production` |
+
+<Aside>
+  All four are optional and validated lazily — the API boots fine without them. Until they're set, the in-app QuickBooks connect flow reports that QuickBooks isn't configured on this instance. Set all four to enable [Accounting integration](/features/integrations/#accounting-integrations).
+</Aside>
+
+## Vulnerability Management
+
+| Variable | Default | Description |
+|---|---|---|
+| `NVD_API_KEY` | — | Optional NIST NVD API key. Raises NVD request rate limits so vulnerability feed syncs run faster. Without it, syncs use the slower public rate; the feature works either way. |

@@ -95,6 +95,35 @@ curl -X POST "https://breeze.example.com/api/v1/devices/<device-id>/auto-update"
 
 The agent persists this setting across restarts. This is also the way to recover agents that were left with auto-update disabled by a manual or recovery update — see the [`set_auto_update`](/agents/commands/#set_auto_update) command.
 
+### Controlled agent fleet rollout
+
+By default (`AGENT_AUTO_PROMOTE=true`), publishing or syncing a new agent release immediately makes it the fleet's upgrade target — every auto-updating device moves to it on its next heartbeat. If you'd rather stage rollouts (canary first, then the fleet), set `AGENT_AUTO_PROMOTE=false` to decouple *registering* a release from *promoting* it.
+
+<Steps>
+
+1. **Turn on controlled rollout.** Set `AGENT_AUTO_PROMOTE=false` in `.env` and map it in the `api` service `environment:` block of your compose file, then restart the API. (Compose only passes through variables you list there.)
+
+2. **Publish or sync the release.** New binaries register as downloadable but are *not* promoted — the fleet stays on the current version. Existing devices are unaffected.
+
+3. **Canary it.** Update a few non-production devices to the new version and verify (you can target an individual device's update directly).
+
+4. **Promote to the fleet.** When you're satisfied, promote the version. This is a platform-admin action and requires MFA:
+
+   ```bash
+   curl -X POST "https://breeze.example.com/api/v1/agent-versions/promote" \
+     -H "Authorization: Bearer <platform-admin-api-key>" \
+     -H "Content-Type: application/json" \
+     -d '{"version": "0.84.0"}'
+   ```
+
+   Auto-updating devices then move to the promoted version on their next heartbeat. To promote a single component (e.g. just the `helper` or `watchdog`) while holding the rest, add `"component": "helper"` to the body.
+
+</Steps>
+
+<Aside type="tip">
+  Leave `AGENT_AUTO_PROMOTE` unset (or `true`) to keep the default behavior where a published release rolls out immediately. The promote action is audit-logged either way.
+</Aside>
+
 ## Migration Failure Recovery
 
 If the API container fails to start after an upgrade due to a migration error, follow these steps:

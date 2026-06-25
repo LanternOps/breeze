@@ -68,6 +68,7 @@ export default defineConfig({
               label: 'Security & Compliance',
               items: [
                 { slug: 'features/security' },
+                { slug: 'features/vulnerability-management' },
                 { slug: 'features/pam' },
                 { slug: 'features/cis-hardening' },
                 { slug: 'features/audit-baselines' },

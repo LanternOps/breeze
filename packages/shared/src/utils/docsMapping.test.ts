@@ -50,6 +50,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/contracts/');
     });
 
+    it('/vulnerabilities maps to vulnerability management docs', () => {
+      const result = getDocsForPath('/vulnerabilities');
+      expect(result.label).toBe('Vulnerability Management');
+      expect(result.url).toContain('/features/vulnerability-management/');
+    });
+
     it('/settings/catalog maps to product catalog docs', () => {
       const result = getDocsForPath('/settings/catalog');
       expect(result.label).toBe('Product Catalog');

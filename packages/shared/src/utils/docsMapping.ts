@@ -63,6 +63,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/contracts', docsPath: '/features/contracts/', label: 'Recurring Contracts' },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },
   { pattern: '/patches', docsPath: '/features/patch-management/', label: 'Patch Management' },
+  { pattern: '/vulnerabilities', docsPath: '/features/vulnerability-management/', label: 'Vulnerability Management' },
   { pattern: '/remote/tools', docsPath: '/features/system-tools/', label: 'System Tools' },
   { pattern: '/remote', docsPath: '/features/remote-access/', label: 'Remote Access' },
   { pattern: '/discovery', docsPath: '/features/discovery/', label: 'Network Discovery' },

@@ -32,6 +32,10 @@ The release version is determined by `BINARY_VERSION` or `BREEZE_VERSION`. If ne
 
 On startup, the API calls GitHub's Releases API to register the current version's checksums in the `agent_versions` table, so agents know when a new version is available.
 
+<Aside type="note">
+  In both modes, registering a release also promotes it to the fleet upgrade target by default. Set `AGENT_AUTO_PROMOTE=false` to register binaries without promoting them, then promote explicitly once you've verified — see [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout).
+</Aside>
+
 #### Manifest trust root
 
 In production, GitHub mode requires the `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` env var. This is the base64 SPKI of the Ed25519 public key that signs our release manifests. The API verifies every fetched manifest against this key before trusting its checksums, so a compromised GitHub release alone can't deliver tampered binaries.

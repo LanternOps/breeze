@@ -54,7 +54,7 @@ Each unique IP address found during a scan is stored as a discovered asset withi
 
 ### Network Topology
 
-Discovery automatically builds topology edges between gateway devices (routers, switches, firewalls, access points) and the endpoint hosts they connect. Topology data is stored in the `network_topology` table and returned as a graph of nodes and edges by the topology endpoint.
+Discovery builds an interactive map of how your network actually fits together -- a measured backbone of switches and routers with the hosts attached to them -- and lets you hand-map anything discovery can't see. Connections carry their provenance (how Breeze knows about them) so you can tell measured links from ones you drew yourself. See [Network Topology](#network-topology) below.
 
 ---
 
@@ -359,42 +359,39 @@ Deleting an asset also removes all associated SNMP devices (and their metrics an
 
 ## Network Topology
 
-The topology endpoint returns a graph representation of discovered assets and their connections:
+The **Topology** tab on the Discovery page renders your network as an interactive map: subnets group their hosts, and lines show how infrastructure and endpoints connect. Every connection is labeled with how Breeze learned it, so you can trust what you're looking at.
 
-```
-GET /discovery/topology?orgId=uuid
-```
+### How connections are measured
 
-**Response structure:**
+Instead of guessing relationships from IP subnets, Breeze measures the backbone from the network devices themselves during SNMP-enabled scans:
 
-```json
-{
-  "nodes": [
-    {
-      "id": "uuid",
-      "type": "router",
-      "label": "gateway.local",
-      "status": "managed",
-      "ipAddress": "192.168.1.1",
-      "macAddress": "aa:bb:cc:dd:ee:ff"
-    }
-  ],
-  "edges": [
-    {
-      "id": "uuid",
-      "sourceId": "uuid",
-      "targetId": "uuid",
-      "sourceType": "discovered_asset",
-      "targetType": "discovered_asset",
-      "connectionType": "routed",
-      "bandwidth": null,
-      "latency": 1.2
-    }
-  ]
-}
-```
+| Connection | How it's measured | Confidence |
+|---|---|---|
+| **Infrastructure links** (switch-to-switch, switch-to-router) | LLDP / CDP neighbor advertisements read from network devices. | High |
+| **Host attachment** (which switch port a host hangs off) | The switch's MAC forwarding (bridge) table. | Medium |
+| **Manual links** | Connections you draw yourself. | Asserted |
 
-Topology edges are automatically created during result processing. The system links gateway devices (routers, switches, firewalls, access points) to all endpoint hosts discovered in the same scan. Connection type is `ethernet` for switches and `routed` for all other gateway types. Existing edges are updated with a new `lastVerifiedAt` timestamp on each scan.
+Uplink ports carrying many MAC addresses are filtered out of host-attachment so a trunk port doesn't appear to host hundreds of devices.
+
+### Exploring and editing the map
+
+<Steps>
+
+1. **Explore.** Pan and zoom the map, click a node to inspect its type, status, addresses, and the provenance of its connections, and use the full-screen view for large networks.
+
+2. **Switch on Edit.** With the `topology:write` permission you get an **Edit** toggle. In edit mode, dragging a node saves its position so your layout persists across reloads.
+
+3. **Add what discovery can't see.** Drop a manual placeholder node for unmanaged gear -- a patch panel, an unmanaged switch, a wiring closet -- choosing a role (switch, router, access point, firewall, patch panel, or other).
+
+4. **Connect nodes.** Tap one node, then another, to draw a manual link between them. Manual links and nodes are never altered by future scans; remove them with the delete control when they no longer apply.
+
+5. **Tidy up.** Use auto-arrange to lay out unplaced nodes (pinned nodes stay put) and fit-to-content to reset the view.
+
+</Steps>
+
+<Aside type="note">
+  A useful topology depends on the agent being able to reach your network gear over SNMP. Configure an SNMP community (v2c) or SNMPv3 credentials on the discovery profile and enable SNMP scanning, and make sure the scanning agent shares a routable path with the switches and routers you want mapped. Manual mapping works with no prerequisites.
+</Aside>
 
 ---
 
@@ -450,6 +447,11 @@ The asset list endpoint (`GET /discovery/assets`) includes `snmpMonitoringEnable
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/discovery/topology` | Get topology graph (`?orgId=`) |
+| PATCH | `/discovery/topology/layout` | Save node positions (requires `topology:write`) |
+| POST | `/discovery/topology/manual-node` | Add a manual placeholder node (requires `topology:write`) |
+| DELETE | `/discovery/topology/manual-node/:id` | Remove a manual node (requires `topology:write`) |
+| POST | `/discovery/topology/manual-edge` | Draw a manual connection (requires `topology:write`) |
+| DELETE | `/discovery/topology/manual-edge/:id` | Remove a manual connection (requires `topology:write`) |
 
 <Aside>
   All discovery endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data.

@@ -1237,6 +1237,93 @@
         "features/contracts.mdx",
         "reference/schema.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/vulnerabilities.ts",
+      "docs": [
+        "features/vulnerability-management.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/vulnerability*.ts",
+      "docs": [
+        "features/vulnerability-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/nvdClient.ts",
+      "docs": [
+        "features/vulnerability-management.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsVulnerability.ts",
+      "docs": [
+        "features/vulnerability-management.mdx",
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/vulnerabilityManagement.ts",
+      "docs": [
+        "features/vulnerability-management.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/vulnerabilities/**",
+      "docs": [
+        "features/vulnerability-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/accounting/**",
+      "docs": [
+        "features/integrations.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/**",
+      "docs": [
+        "features/integrations.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/tdSynnexEcExpress.ts",
+      "docs": [
+        "features/product-catalog.mdx",
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/catalog/distributors.ts",
+      "docs": [
+        "features/product-catalog.mdx",
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/discovery/NetworkTopologyMap.tsx",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/reconcileTopology.ts",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/binarySync.ts",
+      "docs": [
+        "deploy/binaries.mdx",
+        "deploy/upgrades.mdx"
+      ]
     }
   ]
 }
