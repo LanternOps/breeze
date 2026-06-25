@@ -96,7 +96,10 @@ servicesRoutes.get(
     }
 
     const query = c.req.valid('query');
-    const { page, limit } = getPagination(query);
+    // The Services UI paginates client-side, so it fetches the full list in one
+    // request. Allow up to the agent's per-page maximum (500) instead of the
+    // default cap of 100 so all of a device's services are returned.
+    const { page, limit } = getPagination(query, 500);
     const search = query.search || '';
     const status = query.status || '';
 

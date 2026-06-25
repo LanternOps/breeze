@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ArrowLeft, Monitor, Loader2, AlertCircle } from 'lucide-react';
 import RemoteTerminal from './RemoteTerminal';
 import { fetchWithAuth } from '@/stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 type Device = {
   id: string;
@@ -47,7 +48,10 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
   }, [deviceId]);
 
   const handleBack = () => {
-    window.history.back();
+    // Navigate deterministically to the device's detail page rather than relying
+    // on window.history.back(), which lands on intermediate SPA history entries
+    // (or nowhere, on a direct visit) after the user has navigated around.
+    void navigateTo(`/devices/${deviceId}`);
   };
 
   const handleSessionCreated = (newSessionId: string) => {

@@ -3,6 +3,7 @@ import { ArrowLeft, Monitor, Loader2, AlertCircle } from 'lucide-react';
 import FileManager from './FileManager';
 import { getInitialFilePath, type DeviceOs } from './filePathUtils';
 import { fetchWithAuth } from '@/stores/auth';
+import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 
 type Device = {
@@ -48,7 +49,10 @@ export default function RemoteFilesPage({ deviceId }: RemoteFilesPageProps) {
   }, [deviceId]);
 
   const handleBack = () => {
-    window.history.back();
+    // Navigate deterministically to the device's detail page rather than relying
+    // on window.history.back(), which lands on intermediate SPA history entries
+    // (or nowhere, on a direct visit) after the user has navigated around.
+    void navigateTo(`/devices/${deviceId}`);
   };
 
   const handleError = (errorMessage: string) => {
