@@ -331,14 +331,16 @@ async function scanAndCreateJobs(): Promise<{
 }> {
   const now = new Date();
   let created = 0;
-  // Job ids to enqueue to Redis AFTER the system DB access-context transaction
-  // closes. Enqueuing inside it held the pooled connection idle-in-transaction
-  // across BullMQ/Redis round-trips — a contributor to the #1105 pool-poisoning
-  // pattern (txn around slow non-DB work). DB writes stay in the context; the
-  // Redis enqueue happens outside it (see the worker processor).
+  // #1105/#1896: this scan is NOT wrapped in one held system DB access context.
+  // Each DB touch below (policy/assignment/device reads, maintenance-window
+  // checks, the patch_jobs insert) opens its OWN short context via
+  // runWithSystemDbAccess, so the nested policy→assignment→device loops never pin
+  // a single pooled connection in an open transaction across the whole sweep (the
+  // ~5s held-context warnings #1896 targets). Job ids are still enqueued to Redis
+  // AFTER scanAndCreateJobs returns (see enqueueScanResults in the worker).
   const enqueueJobIds: string[] = [];
 
-  const patchPoliciesWithSchedules = await db
+  const patchPoliciesWithSchedules = await runWithSystemDbAccess(() => db
     .select({
       configPolicyId: configurationPolicies.id,
       policyName: configurationPolicies.name,
@@ -353,7 +355,7 @@ async function scanAndCreateJobs(): Promise<{
         eq(configurationPolicies.status, 'active')
       )
     )
-    .where(eq(configPolicyFeatureLinks.featureType, 'patch'));
+    .where(eq(configPolicyFeatureLinks.featureType, 'patch')));
 
   for (const row of patchPoliciesWithSchedules) {
     try {
@@ -362,8 +364,12 @@ async function scanAndCreateJobs(): Promise<{
       // policies (ORG_SCOPED_ONLY_FEATURES), so this query never returns one.
       // The guard is a defensive backstop; it never skips real work.
       if (row.policyOrgId === null) continue;
+      // Capture the non-null narrowing in a const: the property narrowing from the
+      // guard above does not survive into the deferred runWithSystemDbAccess
+      // closures below (#1896 phase-split wraps each DB touch in its own callback).
+      const policyOrgId = row.policyOrgId;
 
-      const policyLocal = await loadPolicyLocalPatchConfig(row.configPolicyId);
+      const policyLocal = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(row.configPolicyId));
       if (!policyLocal) continue;
 
       if (!policyLocal.ring.valid) {
@@ -373,25 +379,25 @@ async function scanAndCreateJobs(): Promise<{
         continue;
       }
 
-      const assignments = await db
+      const assignments = await runWithSystemDbAccess(() => db
         .select({
           level: configPolicyAssignments.level,
           targetId: configPolicyAssignments.targetId,
         })
         .from(configPolicyAssignments)
-        .where(eq(configPolicyAssignments.configPolicyId, row.configPolicyId));
+        .where(eq(configPolicyAssignments.configPolicyId, row.configPolicyId)));
 
       if (assignments.length === 0) continue;
 
       const allDeviceIds = new Set<string>();
       for (const assignment of assignments) {
-        const ids = await resolveDeviceIdsForAssignment(assignment.level, assignment.targetId, row.policyOrgId);
+        const ids = await runWithSystemDbAccess(() => resolveDeviceIdsForAssignment(assignment.level, assignment.targetId, policyOrgId));
         for (const id of ids) allDeviceIds.add(id);
       }
 
       if (allDeviceIds.size === 0) continue;
 
-      const schedulingContexts = await loadDeviceSchedulingContexts(Array.from(allDeviceIds));
+      const schedulingContexts = await runWithSystemDbAccess(() => loadDeviceSchedulingContexts(Array.from(allDeviceIds)));
       const groupedContexts = new Map<string, { orgId: string; timezone: string; deviceIds: string[] }>();
 
       for (const context of schedulingContexts) {
@@ -418,13 +424,13 @@ async function scanAndCreateJobs(): Promise<{
       }
 
       for (const group of dueGroups) {
-        if (await hasExistingOccurrenceJob(row.configPolicyId, group.orgId, group.timezone, group.occurrenceKey, now)) {
+        if (await runWithSystemDbAccess(() => hasExistingOccurrenceJob(row.configPolicyId, group.orgId, group.timezone, group.occurrenceKey, now))) {
           continue;
         }
 
         const eligibleDeviceIds: string[] = [];
         for (const deviceId of group.deviceIds) {
-          const maintenance = await checkDeviceMaintenanceWindow(deviceId);
+          const maintenance = await runWithSystemDbAccess(() => checkDeviceMaintenanceWindow(deviceId));
           if (!maintenance.active || !maintenance.suppressPatching) {
             eligibleDeviceIds.push(deviceId);
           }
@@ -434,7 +440,7 @@ async function scanAndCreateJobs(): Promise<{
           continue;
         }
 
-        const [job] = await db
+        const [job] = await runWithSystemDbAccess(() => db
           .insert(patchJobs)
           .values({
             orgId: group.orgId,
@@ -455,7 +461,7 @@ async function scanAndCreateJobs(): Promise<{
             devicesTotal: eligibleDeviceIds.length,
             devicesPending: eligibleDeviceIds.length,
           })
-          .returning();
+          .returning());
 
         if (job) {
           enqueueJobIds.push(job.id);
@@ -481,7 +487,7 @@ async function scanAndCreateJobs(): Promise<{
   // it to Sentry, not just the console (#1379 worker-observability convention).
   let staleScheduledJobs: StaleScheduledJob[] = [];
   try {
-    staleScheduledJobs = await selectStaleScheduledJobIds(now);
+    staleScheduledJobs = await runWithSystemDbAccess(() => selectStaleScheduledJobIds(now));
   } catch (err) {
     const message = '[PatchScheduler] Failed to read stale scheduled jobs for reconcile';
     console.error(`${message}:`, err instanceof Error ? err.message : err);
@@ -580,20 +586,25 @@ function createSchedulerWorker(): Worker {
   return new Worker(
     QUEUE_NAME,
     async (_job: Job) => {
-      const result = await runWithSystemDbAccess(async () => {
-        try {
-          return await scanAndCreateJobs();
-        } catch (error: unknown) {
-          if (isRelationNotFoundError(error)) {
-            if (!_configPolicyTableWarningLogged) {
-              _configPolicyTableWarningLogged = true;
-              console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
-            }
-            return { created: 0, scanned: 0, enqueueJobIds: [], staleScheduledJobs: [] };
+      // #1105/#1896: scanAndCreateJobs is NOT wrapped in a single
+      // runWithSystemDbAccess — it opens a SHORT system context per DB touch so the
+      // nested policy/assignment/device sweep never holds one pooled connection in
+      // an open transaction. enqueueScanResults still runs outside any context (the
+      // Redis round-trips happen after the DB writes have committed).
+      let result: Awaited<ReturnType<typeof scanAndCreateJobs>>;
+      try {
+        result = await scanAndCreateJobs();
+      } catch (error: unknown) {
+        if (isRelationNotFoundError(error)) {
+          if (!_configPolicyTableWarningLogged) {
+            _configPolicyTableWarningLogged = true;
+            console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
           }
+          result = { created: 0, scanned: 0, enqueueJobIds: [], staleScheduledJobs: [] };
+        } else {
           throw error;
         }
-      });
+      }
 
       const { recovered } = await enqueueScanResults(result);
 

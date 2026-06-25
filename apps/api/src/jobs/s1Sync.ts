@@ -500,6 +500,9 @@ async function syncAgentsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
 ): Promise<{ fetched: number; upserted: number; skipped: number; truncated: boolean }> {
+  // #1105/#1896: the SentinelOne fetch runs OUTSIDE any DB context. Each DB touch
+  // below opens its own short system context, so the pooled connection is never
+  // held idle-in-transaction across this (potentially slow) upstream HTTP call.
   const agentResult = await client.listAgents(integration.lastSyncAt ?? undefined);
   const fetchedAgents = agentResult.results;
 
@@ -524,23 +527,23 @@ async function syncAgentsForIntegration(
   // Skip sites with no siteName — a null siteName can never match a provisional row
   // (which is keyed as 'name:<siteName>'), so attempting reconciliation would silently
   // miss and build a 'name:<siteId>' key that matches nothing.
-  await reconcileProvisionalSiteMappings(
+  await runWithSystemDbAccess(() => reconcileProvisionalSiteMappings(
     integration.id,
     discoveredSites
       .filter((s): s is { siteId: string; siteName: string; count: number } => typeof s.siteName === 'string' && s.siteName.length > 0)
       .map((s) => ({ siteId: s.siteId, siteName: s.siteName }))
-  );
+  ));
 
   // Step 2: Upsert discovered sites (sets agents_count, last_seen_at; preserves org_id).
-  await upsertDiscoveredSites({
+  await runWithSystemDbAccess(() => upsertDiscoveredSites({
     integrationId: integration.id,
     partnerId: integration.partnerId,
     sites: discoveredSites,
-  });
+  }));
 
   // Step 3: Load the org mapping keyed by s1_site_id (only rows with mapped org_id).
-  const siteOrgIds = await mapSiteOrgIds(integration.id);
-  const candidatesByOrg = await mapDeviceCandidatesByOrg([...siteOrgIds.values()]);
+  const siteOrgIds = await runWithSystemDbAccess(() => mapSiteOrgIds(integration.id));
+  const candidatesByOrg = await runWithSystemDbAccess(() => mapDeviceCandidatesByOrg([...siteOrgIds.values()]));
 
   let upserted = 0;
   let skipped = 0;
@@ -592,7 +595,7 @@ async function syncAgentsForIntegration(
 
     if (values.length === 0) continue;
 
-    const inserted = await db
+    const inserted = await runWithSystemDbAccess(() => db
       .insert(s1Agents)
       .values(values)
       .onConflictDoUpdate({
@@ -610,7 +613,7 @@ async function syncAgentsForIntegration(
           updatedAt: sql`excluded.updated_at`
         }
       })
-      .returning({ id: s1Agents.id });
+      .returning({ id: s1Agents.id }));
 
     upserted += inserted.length;
   }
@@ -627,20 +630,22 @@ async function syncThreatsForIntegration(
   integration: IntegrationForSync,
   client: SentinelOneClient
 ): Promise<{ fetched: number; upserted: number; skipped: number; emitted: number; emitFailures: number; truncated: boolean }> {
+  // #1105/#1896: the SentinelOne fetch and the post-upsert publishEvent loop both
+  // run OUTSIDE any DB context; only the reads/upserts below open short contexts.
   const threatResult = await client.listThreats(integration.lastSyncAt ?? undefined);
   const fetchedThreats = threatResult.results;
 
   // Load agent contexts from already-synced s1_agents rows.
   // If an agent was skipped during agent sync (unmapped site), it won't appear here
   // and its threats will be skipped too — consistent with the partner-wide model.
-  const agentRows = await db
+  const agentRows = await runWithSystemDbAccess(() => db
     .select({
       s1AgentId: s1Agents.s1AgentId,
       orgId: s1Agents.orgId,
       deviceId: s1Agents.deviceId
     })
     .from(s1Agents)
-    .where(eq(s1Agents.integrationId, integration.id));
+    .where(eq(s1Agents.integrationId, integration.id)));
 
   const agentContextByAgentId = new Map<string, AgentContext>();
   for (const row of agentRows) {
@@ -718,7 +723,7 @@ async function syncThreatsForIntegration(
 
     if (values.length === 0) continue;
 
-    const inserted = await db
+    const inserted = await runWithSystemDbAccess(() => db
       .insert(s1Threats)
       .values(values)
       .onConflictDoUpdate({
@@ -740,7 +745,7 @@ async function syncThreatsForIntegration(
           updatedAt: sql`excluded.updated_at`
         }
       })
-      .returning({ id: s1Threats.id });
+      .returning({ id: s1Threats.id }));
 
     upserted += inserted.length;
   }
@@ -787,7 +792,10 @@ async function syncThreatsForIntegration(
 // back to `redactLogMessage(error.responseBody)` would otherwise pass every
 // existing helper-level test.
 export async function processSyncIntegration(data: SyncIntegrationJobData) {
-  const [integration] = await db
+  // #1105/#1896: read in a short context; the SentinelOne HTTP work inside
+  // syncAgents/syncThreats runs OUTSIDE any context (those functions phase-split
+  // internally), and the status write-backs below are their own short contexts.
+  const [integration] = await runWithSystemDbAccess(() => db
     .select({
       id: s1Integrations.id,
       partnerId: s1Integrations.partnerId,
@@ -798,7 +806,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
     })
     .from(s1Integrations)
     .where(eq(s1Integrations.id, data.integrationId))
-    .limit(1);
+    .limit(1));
 
   if (!integration || !integration.isActive) {
     console.warn(`[S1SyncJob] Integration ${data.integrationId} not found or inactive; skipping sync`);
@@ -832,7 +840,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
       : { fetched: 0, upserted: 0, emitted: 0, emitFailures: 0, truncated: false };
 
     const wasTruncated = agentResult.truncated || threatResult.truncated;
-    await db
+    await runWithSystemDbAccess(() => db
       .update(s1Integrations)
       .set({
         lastSyncAt: new Date(),
@@ -840,7 +848,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
         lastSyncError: wasTruncated ? 'Results were truncated due to pagination limits' : null,
         updatedAt: new Date()
       })
-      .where(eq(s1Integrations.id, integration.id));
+      .where(eq(s1Integrations.id, integration.id)));
 
     return {
       integrationId: integration.id,
@@ -857,14 +865,14 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
     // via truncateError — a SentinelOneHttpError's `.message` carries no body.
     logSyncFailureServerSide({ integrationId: integration.id, partnerId: integration.partnerId }, error);
     try {
-      await db
+      await runWithSystemDbAccess(() => db
         .update(s1Integrations)
         .set({
           lastSyncStatus: 'error',
           lastSyncError: truncateError(error),
           updatedAt: new Date()
         })
-        .where(eq(s1Integrations.id, integration.id));
+        .where(eq(s1Integrations.id, integration.id)));
     } catch (dbError) {
       console.error('[S1SyncJob] Failed to persist sync error status:', dbError);
       captureException(dbError);
@@ -875,7 +883,8 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
 
 async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
   const queue = getS1SyncQueue();
-  const integrations = await listActiveIntegrations();
+  // #1105/#1896: read in a short context; the Redis enqueues below run OUTSIDE it.
+  const integrations = await runWithSystemDbAccess(() => listActiveIntegrations());
 
   await Promise.all(
     integrations.map((integration) => addUniqueJob(
@@ -896,7 +905,12 @@ async function processSyncAll(syncAgents: boolean, syncThreats: boolean) {
 }
 
 export async function processPollActions() {
-  const pendingActions = await db
+  // #1105/#1896: all reads here use short contexts, and per-action the SentinelOne
+  // getActivityStatus HTTP call + publishEvent run OUTSIDE any context. Each
+  // s1_actions write inside the loop opens its own short context, so a pooled
+  // connection is never held idle-in-transaction across the upstream poll latency
+  // (previously up to 200 sequential HTTP calls ran inside ONE open transaction).
+  const pendingActions = await runWithSystemDbAccess(() => db
     .select({
       id: s1Actions.id,
       orgId: s1Actions.orgId,
@@ -912,7 +926,7 @@ export async function processPollActions() {
         isNotNull(s1Actions.providerActionId)
       )
     )
-    .limit(200);
+    .limit(200));
 
   if (pendingActions.length === 0) {
     return { polled: 0, updated: 0 };
@@ -926,13 +940,13 @@ export async function processPollActions() {
   const orgIds = Array.from(new Set(pendingActions.map((row) => row.orgId)));
 
   // Step 1: Resolve org_id → partner_id
-  const orgRows = await db
+  const orgRows = await runWithSystemDbAccess(() => db
     .select({
       id: organizations.id,
       partnerId: organizations.partnerId,
     })
     .from(organizations)
-    .where(inArray(organizations.id, orgIds));
+    .where(inArray(organizations.id, orgIds)));
 
   const partnerIdByOrg = new Map<string, string>();
   for (const row of orgRows) {
@@ -942,14 +956,14 @@ export async function processPollActions() {
   // Step 2: Fetch the active integration for each distinct partner (deduplicated)
   const distinctPartnerIds = Array.from(new Set([...partnerIdByOrg.values()]));
   const partnerIntegrations = distinctPartnerIds.length > 0
-    ? await db
+    ? await runWithSystemDbAccess(() => db
         .select({
           partnerId: s1Integrations.partnerId,
           managementUrl: s1Integrations.managementUrl,
           apiTokenEncrypted: s1Integrations.apiTokenEncrypted,
         })
         .from(s1Integrations)
-        .where(and(inArray(s1Integrations.partnerId, distinctPartnerIds), eq(s1Integrations.isActive, true)))
+        .where(and(inArray(s1Integrations.partnerId, distinctPartnerIds), eq(s1Integrations.isActive, true))))
     : [];
 
   // Step 3: Build a reusable client per partner to avoid redundant decrypt + instantiation
@@ -998,14 +1012,14 @@ export async function processPollActions() {
 
     if (client === undefined) {
       // No integration found for this org
-      await db
+      await runWithSystemDbAccess(() => db
         .update(s1Actions)
         .set({
           status: 'failed',
           error: 'Action status polling failed: no active SentinelOne integration is available for this organization',
           completedAt: new Date()
         })
-        .where(eq(s1Actions.id, action.id));
+        .where(eq(s1Actions.id, action.id)));
       recordS1ActionPollTransition('failed');
       updated += 1;
       continue;
@@ -1013,14 +1027,14 @@ export async function processPollActions() {
 
     if (!client) {
       // Client construction failed (bad token)
-      await db
+      await runWithSystemDbAccess(() => db
         .update(s1Actions)
         .set({
           status: 'failed',
           error: `Action status polling failed: ${clientError ?? 'unknown client error'}`,
           completedAt: new Date()
         })
-        .where(eq(s1Actions.id, action.id));
+        .where(eq(s1Actions.id, action.id)));
       recordS1ActionPollTransition('failed');
       updated += 1;
       continue;
@@ -1035,7 +1049,7 @@ export async function processPollActions() {
       nextPayload.lastPollAt = new Date().toISOString();
 
       try {
-        await db
+        await runWithSystemDbAccess(() => db
           .update(s1Actions)
           .set({
             status: nextStatus,
@@ -1043,7 +1057,7 @@ export async function processPollActions() {
             error: nextStatus === 'failed' ? truncateError(activity.details) : null,
             payload: nextPayload
           })
-          .where(eq(s1Actions.id, action.id));
+          .where(eq(s1Actions.id, action.id)));
       } catch (dbError) {
         console.error(`[S1SyncJob] Failed to persist poll result for action ${action.id}:`, dbError);
         captureException(dbError);
@@ -1096,7 +1110,7 @@ export async function processPollActions() {
       const failure = applyPollFailure(action.payload, error);
       const nextStatus: S1ActionStatus = failure.shouldFail ? 'failed' : 'in_progress';
 
-      await db
+      await runWithSystemDbAccess(() => db
         .update(s1Actions)
         .set({
           status: nextStatus,
@@ -1106,7 +1120,7 @@ export async function processPollActions() {
             : null,
           completedAt: failure.shouldFail ? new Date() : null
         })
-        .where(eq(s1Actions.id, action.id));
+        .where(eq(s1Actions.id, action.id)));
 
       recordS1ActionPollTransition(nextStatus);
       updated += 1;
@@ -1123,56 +1137,59 @@ function createS1SyncWorker(): Worker<S1SyncJobData> {
   return new Worker<S1SyncJobData>(
     S1_SYNC_QUEUE,
     async (job: Job<S1SyncJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const start = Date.now();
-        const syncType = job.data.type;
-        switch (job.data.type) {
-          case 'sync-integration': {
-            try {
-              const result = await processSyncIntegration(job.data);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'sync-all-agents': {
-            try {
-              const result = await processSyncAll(true, false);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'sync-all-threats': {
-            try {
-              const result = await processSyncAll(false, true);
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          case 'poll-actions': {
-            try {
-              const result = await processPollActions();
-              recordS1SyncRun(syncType, 'success', Date.now() - start);
-              return result;
-            } catch (error) {
-              recordS1SyncRun(syncType, 'failure', Date.now() - start);
-              throw error;
-            }
-          }
-          default: {
+      // #1105/#1896: the job is NOT wrapped in a single runWithSystemDbAccess.
+      // Each process function below opens its own SHORT system context around DB
+      // work and runs SentinelOne HTTP calls OUTSIDE any context, so a pooled
+      // connection is never held idle-in-transaction across the upstream latency
+      // (the conn-hold that contributed to the US pool-starvation pressure).
+      const start = Date.now();
+      const syncType = job.data.type;
+      switch (job.data.type) {
+        case 'sync-integration': {
+          try {
+            const result = await processSyncIntegration(job.data);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
             recordS1SyncRun(syncType, 'failure', Date.now() - start);
-            throw new Error(`Unknown S1 sync job type: ${(job.data as { type?: string }).type ?? 'unknown'}`);
+            throw error;
           }
         }
-      });
+        case 'sync-all-agents': {
+          try {
+            const result = await processSyncAll(true, false);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        case 'sync-all-threats': {
+          try {
+            const result = await processSyncAll(false, true);
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        case 'poll-actions': {
+          try {
+            const result = await processPollActions();
+            recordS1SyncRun(syncType, 'success', Date.now() - start);
+            return result;
+          } catch (error) {
+            recordS1SyncRun(syncType, 'failure', Date.now() - start);
+            throw error;
+          }
+        }
+        default: {
+          recordS1SyncRun(syncType, 'failure', Date.now() - start);
+          throw new Error(`Unknown S1 sync job type: ${(job.data as { type?: string }).type ?? 'unknown'}`);
+        }
+      }
     },
     {
       connection: getBullMQConnection(),
