@@ -233,18 +233,39 @@ are the user's judgment calls — see the merge/hold rules. The issue stays
 
 To work several issues at once, the in-session agent acts as orchestrator:
 
-1. Take the **explicit list** of issue numbers (or a label filter the user named).
+1. **Decide the issue numbers BEFORE dispatch — never let multiple workers
+   self-select in parallel.** Each worker's step-0 selection ranks the backlog
+   the same way and claims aren't visible at selection time, so parallel
+   self-selecting agents converge on the *same* top issue and open duplicate PRs
+   (observed: 3 agents → PRs #1917/#1918/#1919, all on #1896). Get a distinct set
+   one of two ways:
+   - The user **named explicit numbers / a label filter** → use that list.
+   - The user asked you to **"find a few" with no numbers** → *you* (the
+     orchestrator) do the selection: scan the backlog once, rank with the step-0
+     criteria, pick **N distinct** eligible candidates, run the step-1 guard on
+     each, and **claim each up front** (`gh issue edit <N> --add-assignee @me`)
+     so the set is reserved. Only then dispatch.
+
    Any orchestrator-level eligibility pre-check has the same blind spot as the
    worker's: `gh pr list --state open` won't reveal an already-merged fix, so
    don't pre-declare an issue "eligible" on that basis — the worker's full guard
    (comments + `--state all` + `origin/main`) is the real gate.
 2. **REQUIRED SUB-SKILL:** `superpowers:dispatching-parallel-agents` — spawn one
-   `issue-fixer` agent per number, each in its **own worktree** (isolation
-   prevents branch/DB collisions; see the worktree skill).
+   `issue-fixer` agent **per already-chosen number**, each in its **own worktree**
+   (isolation prevents branch/DB collisions; see the worktree skill). Every agent
+   gets a concrete number — none self-selects.
 3. Each agent runs this runbook independently and returns its PR number (or its
-   abort reason).
+   abort reason). A worker that finds its handed number already assigned to `@me`
+   (because the orchestrator pre-claimed it) treats that as eligible — that's the
+   reservation working, not a poach.
 4. Collect the results into one summary table for the user. The orchestrator
    does **not** merge or close either — same boundary applies.
 
 Do not auto-expand the list beyond what the user named. If you self-selected
 from a label, `log`/state the cap and which issues were dropped.
+
+> **Anti-pattern (do not do this):** dispatching 2+ `issue-fixer` agents that
+> each run step-0 selection, trusting a "skip already-claimed issues" instruction
+> to keep them apart. Selection precedes any visible claim, so the guard can't
+> see a sibling's pick — they collide. Distinctness is the orchestrator's job,
+> settled before dispatch.
