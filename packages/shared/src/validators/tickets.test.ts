@@ -125,6 +125,11 @@ describe('ticket validators', () => {
     it('updateTicketSchema rejects a malformed requester email', () => {
       expect(updateTicketSchema.safeParse({ submitterEmail: 'bad' }).success).toBe(false);
     });
+
+    it('updateTicketSchema rejects an empty submitterName (clear via null, not "")', () => {
+      expect(updateTicketSchema.safeParse({ submitterName: '' }).success).toBe(false);
+      expect(updateTicketSchema.safeParse({ submitterName: null }).success).toBe(true);
+    });
   });
 
   it('updateTicketSchema accepts SLA override minutes', () => {

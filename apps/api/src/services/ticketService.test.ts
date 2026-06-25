@@ -1080,6 +1080,40 @@ describe('updateTicketFields', () => {
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.updated' }));
   });
 
+  it('editing the requester to a portal user with explicit name/email overrides the backfill', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields(
+      't-1',
+      { submittedBy: 'pu-1', submitterName: 'Gail (front desk)', submitterEmail: 'frontdesk@lgpc.com' },
+      actor
+    );
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: 'pu-1',
+      submitterName: 'Gail (front desk)',
+      submitterEmail: 'frontdesk@lgpc.com'
+    });
+  });
+
+  it('records a field change AND a requester change in one update (combined feed/event)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Pat', submitterEmail: null }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, priority: 'high', submitterName: 'Walk-in' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { priority: 'high', submittedBy: null, submitterName: 'Walk-in', submitterEmail: null }, actor);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated priority, requester' }));
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      payload: { changed: ['priority', 'requester'] }
+    }));
+  });
+
   it('editing the requester to free text clears the portal link', async () => {
     dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1', submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }]);
     dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null }]);

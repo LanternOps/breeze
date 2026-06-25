@@ -36,8 +36,9 @@ export const updateTicketSchema = z.object({
   tags: z.array(z.string().max(50)).max(20).optional(),
   // Requester edit. submittedBy=null clears the portal link (free-text requester);
   // a uuid links a portal user and backfills name/email when those are omitted.
+  // submitterName mirrors create's min(1) (use null to clear, not an empty string).
   submittedBy: z.string().guid().nullable().optional(),
-  submitterName: z.string().max(255).nullable().optional(),
+  submitterName: z.string().min(1).max(255).nullable().optional(),
   submitterEmail: z.string().email().max(255).nullable().optional()
 });
 

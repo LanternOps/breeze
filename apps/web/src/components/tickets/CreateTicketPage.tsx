@@ -110,16 +110,21 @@ export default function CreateTicketPage() {
   useEffect(() => {
     setRequesterId(''); setRequesterName(''); setRequesterEmail('');
     if (!orgId) { setRequesters([]); return; }
+    // `cancelled` guards against a late response from a previous org clobbering
+    // the current list (mirrors the device effect's reset intent).
+    let cancelled = false;
     void (async () => {
-      const res = await fetchWithAuth(`/tickets/requesters?orgId=${orgId}`);
-      if (res.ok) {
-        const b = await res.json();
-        setRequesters((b.data ?? []) as RequesterOption[]);
-      } else {
+      try {
+        const res = await fetchWithAuth(`/tickets/requesters?orgId=${orgId}`);
+        const b = res.ok ? await res.json() : null;
+        if (cancelled) return;
         // Requester is optional — degrade to free-text entry rather than blocking.
-        setRequesters([]);
+        setRequesters((b?.data ?? []) as RequesterOption[]);
+      } catch {
+        if (!cancelled) setRequesters([]);
       }
     })();
+    return () => { cancelled = true; };
   }, [orgId]);
 
   const submit = useCallback(async (e: React.FormEvent) => {
