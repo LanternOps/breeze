@@ -54,7 +54,13 @@ export default function DeviceComplianceTab({ deviceId, timezone }: DeviceCompli
     setError(undefined);
     try {
       const response = await fetchWithAuth(`/policies/compliance/device/${deviceId}`);
-      if (!response.ok) throw new Error('Failed to load compliance status');
+      if (!response.ok) {
+        // Surface the server's specific reason (e.g. "Access to this device
+        // denied") instead of a generic message — a 403 is not retryable and
+        // should read differently from a transient 5xx.
+        const body = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? `Failed to load compliance status (${response.status})`);
+      }
       const json = await response.json();
       setRows(Array.isArray(json?.data) ? json.data : []);
     } catch (err) {

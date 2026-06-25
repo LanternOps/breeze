@@ -27,6 +27,25 @@ const DEVICE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 // Tests mutate this before issuing a request.
 let currentPermissions: { allowedSiteIds: string[] | null } | undefined;
 
+// Auth context applied by the (mocked) authMiddleware. Tests mutate this to
+// exercise organization / partner / system scopes. Mirrors the real shape the
+// middleware sets (auth.ts), incl. the `canAccessOrg` predicate.
+type TestAuth = {
+  scope: 'organization' | 'partner' | 'system';
+  orgId: string | null;
+  partnerId: string | null;
+  accessibleOrgIds: string[] | null;
+  canAccessOrg: (orgId: string) => boolean;
+};
+const orgScopeAuth = (): TestAuth => ({
+  scope: 'organization',
+  orgId: ORG_ID,
+  partnerId: null,
+  accessibleOrgIds: [ORG_ID],
+  canAccessOrg: (orgId: string) => orgId === ORG_ID,
+});
+let currentAuth: TestAuth = orgScopeAuth();
+
 vi.mock('../db', () => ({
   db: { select: vi.fn() },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -73,14 +92,7 @@ vi.mock('./policyManagement/helpers', async (importOriginal) => {
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com' },
-      scope: 'organization',
-      orgId: ORG_ID,
-      partnerId: null,
-      accessibleOrgIds: [ORG_ID],
-      canAccessOrg: (orgId: string) => orgId === ORG_ID,
-    });
+    c.set('auth', { user: { id: 'user-123', email: 'test@example.com' }, ...currentAuth });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -113,6 +125,7 @@ describe('GET /policies/compliance/device/:deviceId (#1876)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     currentPermissions = undefined;
+    currentAuth = orgScopeAuth();
     app = new Hono();
     app.route('/policies', policyRoutes);
   });
@@ -165,5 +178,62 @@ describe('GET /policies/compliance/device/:deviceId (#1876)', () => {
     mockDeviceLookup({ orgId: ORG_ID, siteId: SITE_ID });
     const res = await app.request(`/policies/compliance/device/${DEVICE_ID}`);
     expect(res.status).toBe(200);
+  });
+
+  it('returns 403 when the device has a null org (orphaned device)', async () => {
+    // Defends the orphaned-device guard: a device with no owning org must never
+    // be readable, and `[device.orgId]` must never be passed to the helper as null.
+    mockDeviceLookup({ orgId: null, siteId: SITE_ID });
+    const res = await app.request(`/policies/compliance/device/${DEVICE_ID}`);
+    expect(res.status).toBe(403);
+    expect(vi.mocked(getConfigPolicyComplianceForDevice)).not.toHaveBeenCalled();
+  });
+
+  // --- Partner scope: this route is the sole tenant guard, so cross-tenant
+  // denial and the in-reach success path are both pinned. ---
+  it('returns 403 for a partner-scope caller when the device org is out of reach', async () => {
+    currentAuth = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: '99999999-9999-4999-8999-999999999999',
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (orgId: string) => orgId === ORG_ID,
+    };
+    mockDeviceLookup({ orgId: FOREIGN_ORG_ID, siteId: SITE_ID });
+    const res = await app.request(`/policies/compliance/device/${DEVICE_ID}`);
+    expect(res.status).toBe(403);
+    expect(vi.mocked(getConfigPolicyComplianceForDevice)).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 for a partner-scope caller when the device org is in reach', async () => {
+    currentAuth = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: '99999999-9999-4999-8999-999999999999',
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (orgId: string) => orgId === ORG_ID,
+    };
+    currentPermissions = { allowedSiteIds: null };
+    mockDeviceLookup({ orgId: ORG_ID, siteId: SITE_ID });
+    const res = await app.request(`/policies/compliance/device/${DEVICE_ID}`);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getConfigPolicyComplianceForDevice)).toHaveBeenCalledWith(DEVICE_ID, [ORG_ID]);
+  });
+
+  it('returns 200 for a system-scope caller across any org (no site restriction)', async () => {
+    // System callers reach every org (ensureOrgAccess returns true) and have no
+    // site restriction, so the site gate must not block them.
+    currentAuth = {
+      scope: 'system',
+      orgId: null,
+      partnerId: null,
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
+    };
+    currentPermissions = undefined; // system callers carry no allowedSiteIds
+    mockDeviceLookup({ orgId: FOREIGN_ORG_ID, siteId: SITE_ID });
+    const res = await app.request(`/policies/compliance/device/${DEVICE_ID}`);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getConfigPolicyComplianceForDevice)).toHaveBeenCalledWith(DEVICE_ID, [FOREIGN_ORG_ID]);
   });
 });

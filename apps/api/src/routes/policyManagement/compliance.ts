@@ -539,8 +539,9 @@ complianceRoutes.get(
       [device.orgId]
     );
 
-    // Serialize the rule-info map (keyed by feature-link id) so the web client
-    // can render rule names alongside each compliance row.
+    // Serialize the rule-info map (keyed by feature-link id) alongside the rows.
+    // Mirrors the `/:id/compliance` shape so clients can resolve rule names from
+    // a compliance row's `configPolicyId` (a feature-link id) when needed.
     const serializedRuleInfo: Record<string, unknown[]> = {};
     for (const [featureLinkId, infos] of ruleInfoMap.entries()) {
       serializedRuleInfo[featureLinkId] = infos;

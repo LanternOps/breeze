@@ -78,13 +78,33 @@ describe('DeviceComplianceTab', () => {
     expect(await screen.findByTestId('device-compliance-empty')).toBeInTheDocument();
   });
 
-  it('renders an error state when the request fails', async () => {
-    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 403));
+  it('surfaces the server-provided error message on a non-ok response', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ error: 'Access to this device denied' }, false, 403)
+    );
 
     render(<DeviceComplianceTab deviceId="dev-1" />);
 
     await waitFor(() => {
       expect(screen.getByTestId('device-compliance-error')).toBeInTheDocument();
     });
+    // The specific server reason is shown, not a generic fallback.
+    expect(screen.getByText('Access to this device denied')).toBeInTheDocument();
+  });
+
+  it('falls back to a status-coded message when the error body is unparseable', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'ERROR',
+      json: vi.fn().mockRejectedValue(new Error('bad json')),
+    } as unknown as Response);
+
+    render(<DeviceComplianceTab deviceId="dev-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('device-compliance-error')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Failed to load compliance status (500)')).toBeInTheDocument();
   });
 });
