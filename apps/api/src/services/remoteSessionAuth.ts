@@ -2,9 +2,10 @@ import { createHash, randomBytes } from 'crypto';
 import { getRedis } from './redis';
 import { VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS } from './jwt';
 
-type SessionType = 'terminal' | 'desktop' | 'tunnel';
+type SessionType = 'terminal' | 'desktop' | 'tunnel' | 'tunnel-http';
 
 const WS_TICKET_TTL_MS = 60 * 1000; // 60 seconds
+export const HTTP_TICKET_TTL_MS = 5 * 60 * 1000; // 5 minutes (interactive proxy page load window)
 const DESKTOP_CONNECT_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const VNC_CONNECT_CODE_TTL_MS = 60 * 1000; // 60 seconds
 // Viewer-token advertised expiry derives from the real signed TTL
@@ -179,21 +180,24 @@ export async function createWsTicket(input: {
   ip?: string;
   /** User-Agent of the issuer; stored as sha256(ua)[:16]. */
   userAgent?: string;
+  /** Override TTL in milliseconds. Defaults to WS_TICKET_TTL_MS (60s). Use HTTP_TICKET_TTL_MS for tunnel-http tickets. */
+  ttlMs?: number;
 }): Promise<{ ticket: string; expiresInSeconds: number }> {
   purgeExpiredRecords(wsTickets);
   const ticket = generateSecret(32);
+  const effectiveTtlMs = input.ttlMs ?? WS_TICKET_TTL_MS;
   const record: WsTicketRecord = {
     sessionId: input.sessionId,
     sessionType: input.sessionType,
     userId: input.userId,
-    expiresAt: Date.now() + WS_TICKET_TTL_MS,
+    expiresAt: Date.now() + effectiveTtlMs,
     // Only persist caller binding when the issuer provided it. Callsites
     // that pre-date Task 16 keep working but lose the IP/UA binding.
     ...(input.ip ? { ip: input.ip } : {}),
     ...(input.userAgent ? { uaHash: hashUa(input.userAgent) } : {}),
   };
 
-  const ttlSeconds = Math.floor(WS_TICKET_TTL_MS / 1000);
+  const ttlSeconds = Math.floor(effectiveTtlMs / 1000);
   if (shouldUseRedis()) {
     const redis = getRedis();
     if (!redis) {

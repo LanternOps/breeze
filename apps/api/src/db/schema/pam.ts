@@ -193,6 +193,12 @@ export type NewPamRule = typeof pamRules.$inferInsert;
  * and no PAM rule. The historical behavior is `require_approval` (the request
  * waits for a human); an org can opt into `auto_deny` (block-by-default).
  *
+ * `uacInterceptionEnabled` is the org-level fallback for whether the agent
+ * captures UAC events at all, consulted only when no 'pam' config-policy
+ * feature link resolves for the device. NULL means "no opinion" → the global
+ * opt-in default (off). It is set to true by the 2026-07-01 grandfathering
+ * migration for orgs that had deliberately configured PAM before the switch.
+ *
  * Tenancy: Shape 1 (direct org_id) — RLS policies in the migration use
  * breeze_has_org_access(org_id), mirroring pam_rules. One row per org
  * (unique org_id); absence of a row means the `require_approval` default.
@@ -207,6 +213,7 @@ export const pamOrgConfig = pgTable(
     defaultUnmatchedVerdict: pamUnmatchedVerdictEnum('default_unmatched_verdict')
       .notNull()
       .default('require_approval'),
+    uacInterceptionEnabled: boolean('uac_interception_enabled'),
     updatedByUserId: uuid('updated_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),

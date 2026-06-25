@@ -41,9 +41,22 @@ describe('PamTab', () => {
     removeMock.mockClear();
   });
 
-  it('renders the UAC interception toggle, defaulted ON', () => {
+  it('renders the UAC interception toggle, defaulted OFF (opt-in)', () => {
     render(<PamTab {...baseProps} />);
     expect(screen.getByText('Capture Windows UAC elevation prompts')).toBeTruthy();
+  });
+
+  it('saves uacInterceptionEnabled=false by default (opt-in) without toggling', async () => {
+    render(<PamTab {...baseProps} />);
+
+    const saveButton = screen
+      .getAllByRole('button')
+      .find((b) => /save/i.test(b.textContent ?? '')) as HTMLButtonElement;
+    fireEvent.click(saveButton);
+
+    expect(saveMock).toHaveBeenCalled();
+    const settings = inlineSettingsFromCall(saveMock.mock.calls[0]);
+    expect(settings).toEqual({ uacInterceptionEnabled: false });
   });
 
   it('links rule management out to the /pam console', () => {
@@ -52,7 +65,7 @@ describe('PamTab', () => {
     expect(link.getAttribute('href')).toBe('/pam');
   });
 
-  it('saves uacInterceptionEnabled=false after toggling off', async () => {
+  it('saves uacInterceptionEnabled=true after toggling on', async () => {
     render(<PamTab {...baseProps} />);
 
     const toggleButton = screen.getByTestId('pam-tab-capture-toggle') as HTMLButtonElement;
@@ -66,6 +79,6 @@ describe('PamTab', () => {
 
     expect(saveMock).toHaveBeenCalled();
     const settings = inlineSettingsFromCall(saveMock.mock.calls[0]);
-    expect(settings).toEqual({ uacInterceptionEnabled: false });
+    expect(settings).toEqual({ uacInterceptionEnabled: true });
   });
 });

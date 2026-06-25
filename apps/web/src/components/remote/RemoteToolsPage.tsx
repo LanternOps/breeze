@@ -13,6 +13,7 @@ import {
   ShieldOff
 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { navigateTo } from '@/lib/navigation';
 
 // Import actual components
 import ProcessManager, { type Process, type ProcessStatus } from './ProcessManager';
@@ -428,10 +429,12 @@ export default function RemoteToolsPage({
       onClose();
       return;
     }
-    if (typeof window !== 'undefined') {
-      window.history.back();
-    }
-  }, [onClose]);
+    // Navigate deterministically back to the device's detail page (the only
+    // entry point to this page). Using window.history.back() was unreliable:
+    // after the user clicked around, intermediate SPA history entries meant
+    // "back" landed inside Remote Tools instead of leaving it.
+    void navigateTo(`/devices/${deviceId}`);
+  }, [onClose, deviceId]);
 
   useEffect(() => {
     setResolvedDeviceOs(normalizeDeviceOs(deviceOs));
@@ -516,7 +519,10 @@ export default function RemoteToolsPage({
   const fetchServices = useCallback(async () => {
     setServiceLoading(true);
     try {
-      const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services`);
+      // Fetch with a high limit; ServicesManager paginates/filters client-side.
+      // 500 is the agent's max accepted page size (same as the Processes tab) and
+      // covers realistic Windows service counts (the agent caps the list at 512).
+      const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services?limit=500`);
       if (!res.ok) throw new Error('Failed to fetch services');
       const json = await res.json();
       const data: ApiService[] = Array.isArray(json.data) ? json.data : [];

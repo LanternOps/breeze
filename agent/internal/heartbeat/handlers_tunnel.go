@@ -20,6 +20,7 @@ func init() {
 	handlerRegistry[tools.CmdTunnelOpen] = handleTunnelOpen
 	handlerRegistry[tools.CmdTunnelData] = handleTunnelData
 	handlerRegistry[tools.CmdTunnelClose] = handleTunnelClose
+	handlerRegistry[tools.CmdHttpRequest] = handleHttpRequest
 }
 
 func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {

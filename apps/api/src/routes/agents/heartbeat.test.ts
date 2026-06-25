@@ -1021,7 +1021,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(body.uacInterceptionEnabled).toBe(false);
   });
 
-  it('fails open to uacInterceptionEnabled=true when the pam resolver throws', async () => {
+  it('fails closed to uacInterceptionEnabled=false when the pam resolver throws (opt-in)', async () => {
     const { buildPamConfigUpdate } = await import('./helpers');
     vi.mocked(buildPamConfigUpdate).mockRejectedValueOnce(new Error('boom'));
 
@@ -1033,7 +1033,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body.uacInterceptionEnabled).toBe(true);
+    expect(body.uacInterceptionEnabled).toBe(false);
   });
 });
 

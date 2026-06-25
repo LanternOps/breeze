@@ -10,12 +10,16 @@ export interface PamSettings {
 }
 
 /**
- * Default ON: UAC capture has always been unconditional on Windows agents.
- * A device with no 'pam' feature link anywhere in its hierarchy must keep
- * capturing, so upgrades are behavior-preserving. Admins opt OUT via policy.
+ * Default OFF (opt-in). UAC capture interrupts end users with an elevation-
+ * approval dialog, so a device with no 'pam' feature link anywhere in its
+ * hierarchy must NOT capture. Admins opt IN via a config policy.
+ *
+ * Orgs that had deliberately configured PAM before the opt-in switch are
+ * grandfathered back to ON via pam_org_config.uac_interception_enabled — see
+ * resolveDevicePamSettings and migration 2026-07-01-pam-uac-opt-in-grandfathering.
  */
 export const PAM_DEFAULTS: PamSettings = {
-  uacInterceptionEnabled: true,
+  uacInterceptionEnabled: false,
 };
 
 export function parsePamSettings(inlineSettings: unknown): PamSettings {

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
@@ -71,7 +71,7 @@ describe('AssetDetailModal — link to managed device', () => {
         screen.getByText('Asset linked to WS-FRONTDESK. It is now marked approved.')
       ).toBeInTheDocument();
     });
-    expect(onLinked).toHaveBeenCalledWith('asset-1');
+    expect(onLinked).toHaveBeenCalledWith('asset-1', 'dev-1');
     expect(fetchMock).toHaveBeenCalledWith(
       '/discovery/assets/asset-1/link',
       expect.objectContaining({ method: 'POST' })
@@ -118,6 +118,61 @@ describe('AssetDetailModal — link to managed device', () => {
     await waitFor(() => {
       expect(screen.getByText('Select a device to link.')).toBeInTheDocument();
     });
+  });
+});
+
+describe('AssetDetailModal — proxy bridge agent (decoupled from link)', () => {
+  const proxyAsset: AssetDetail = {
+    ...asset,
+    id: 'asset-1',
+    ip: '10.1.2.209',
+    linkedDeviceId: null,
+    // proxyEnabled drives the enabled branch directly.
+    ...( { proxyEnabled: true } as Record<string, unknown> ),
+  };
+
+  it('lists only ONLINE devices in the bridge picker and connects through the chosen one', async () => {
+    const mixed = [
+      { id: 'dev-online', name: 'FC-ESME', online: true },
+      { id: 'dev-offline', name: 'DRJJ-CHECKOUT', online: false },
+    ];
+    render(<AssetDetailModal open asset={proxyAsset} devices={mixed} onClose={() => {}} />);
+
+    // Bridge picker is present; it lists ONLY the online device (offline hidden).
+    // Scope to the bridge select — the identity Link dropdown lists all devices.
+    expect(screen.getByText('Proxy through agent')).toBeInTheDocument();
+    const bridge = screen.getByTestId('proxy-bridge-select');
+    expect(within(bridge).getByRole('option', { name: 'FC-ESME' })).toBeInTheDocument();
+    expect(within(bridge).queryByRole('option', { name: 'DRJJ-CHECKOUT' })).not.toBeInTheDocument();
+
+    // Connect uses the selected (online) bridge device, NOT the (null) linked device.
+    fetchMock.mockResolvedValueOnce(makeResponse({ id: 'tunnel-xyz' }));
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    fireEvent.click(screen.getByRole('button', { name: /Connect/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tunnels',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"deviceId":"dev-online"'),
+        }),
+      );
+    });
+    openSpy.mockRestore();
+  });
+
+  it('shows a no-online-agent message when no device can bridge', () => {
+    const offlineOnly = [{ id: 'dev-offline', name: 'DRJJ-CHECKOUT', online: false }];
+    render(<AssetDetailModal open asset={proxyAsset} devices={offlineOnly} onClose={() => {}} />);
+
+    expect(screen.getByText(/No online agent available to proxy to this device/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Connect/i })).not.toBeInTheDocument();
+  });
+
+  it('clarifies that linking is identity-only and does not control proxy', () => {
+    render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
+    expect(screen.getByText(/control proxy access/i)).toBeInTheDocument();
   });
 });
 

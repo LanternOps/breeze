@@ -120,6 +120,7 @@ vi.mock('../services/remoteSessionAuth', () => ({
   createVncConnectCode: vi.fn(async () => ({ code: 'test-connect-code-32bytes', expiresInSeconds: 60 })),
   consumeVncConnectCode: vi.fn(),
   getViewerAccessTokenExpirySeconds: vi.fn(() => 900),
+  HTTP_TICKET_TTL_MS: 300_000,
 }));
 
 // --- JWT service ---
@@ -154,7 +155,7 @@ vi.mock('../services/viewerTokenRevocation', () => ({
 
 import { db } from '../db';
 import { sendCommandToAgent } from './agentWs';
-import { createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
+import { createWsTicket, createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 import { captureException } from '../services/sentry';
 
@@ -1509,5 +1510,90 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
       result: 'success',
     }));
     expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID, type: 'vnc', via: 'downgrade_vnc' }));
+  });
+});
+
+// ─── POST /tunnels/:id/http-ticket ───────────────────────────────────────────
+
+describe('POST /tunnels/:id/http-ticket', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    rateLimiterMock.mockResolvedValue({
+      allowed: true,
+      remaining: 19,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('returns { ticket } for a session owner with a connectable tunnel', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty('ticket');
+  });
+
+  it('returns 404 when the tunnel is not found', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 403 when the caller is not the session owner', async () => {
+    const otherUserSession = { ...sessionRecord, userId: 'other-user-id' };
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([otherUserSession]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 400 when the tunnel is in a non-connectable state', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ ...sessionRecord, status: 'disconnected' }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
+  it('mints with sessionType tunnel-http and passes the 5-min TTL', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+
+    await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+
+    expect(createWsTicket).toHaveBeenCalledWith(expect.objectContaining({
+      sessionType: 'tunnel-http',
+      ttlMs: 300_000,
+    }));
+  });
+
+  it('writes a tunnel.http_ticket.mint audit row', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([]));
+    vi.mocked(db.insert).mockImplementation(insertMock as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual(expect.objectContaining({
+      action: 'tunnel.http_ticket.mint',
+      resourceType: 'tunnel_session',
+      resourceId: SESSION_ID,
+      orgId: ORG_ID,
+      actorId: USER_ID,
+      result: 'success',
+    }));
+    expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID }));
   });
 });

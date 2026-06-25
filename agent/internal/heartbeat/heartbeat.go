@@ -162,6 +162,8 @@ type Heartbeat struct {
 	lastSessionUpdate     time.Time
 	lastPostureUpdate     time.Time
 	lastReliabilityUpdate time.Time
+	lastHardwareUpdate    time.Time // stamped at startup; gate then re-runs every 24 h
+	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
 
 	// User session helper (IPC)
 	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
@@ -220,11 +222,12 @@ type Heartbeat struct {
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
 
-	// uacInterceptionDisabled is set when the server's 'pam' config policy
-	// turns UAC capture off for this device. Inverted so the zero value
-	// (enabled) matches the default-ON contract before the first heartbeat
-	// and against older servers that never send the field.
-	uacInterceptionDisabled atomic.Bool
+	// uacInterceptionEnabled is set when the server's resolved 'pam' config
+	// policy turns UAC capture ON for this device. Opt-in: the zero value
+	// (disabled) means no capture until the server explicitly enables it, so a
+	// device with no PAM policy — or one talking to a server that never sends
+	// the field — never prompts the user before the first heartbeat says so.
+	uacInterceptionEnabled atomic.Bool
 
 	// Service & process monitoring
 	monitor *monitoring.Monitor
@@ -852,8 +855,13 @@ func (h *Heartbeat) Start() {
 	// Send initial heartbeat after jitter
 	h.sendHeartbeatWithWatchdog()
 
-	// Send initial inventory in background
+	// Send initial inventory in background. Hardware and patch inventory are not
+	// part of the sendInventory fan-out (they run on a daily cadence), so kick
+	// them off here too — a freshly started/enrolled agent should report hardware
+	// and pending patches promptly rather than waiting for the first daily tick.
 	go h.sendInventory()
+	go h.sendHardwareInventory()
+	go h.sendPatchInventory()
 	go h.runProcessSampler()
 
 	// Reliability cadence persists across restarts (#1906). Seed the in-memory
@@ -875,6 +883,8 @@ func (h *Heartbeat) Start() {
 	} else {
 		h.lastReliabilityUpdate = persistedReliability
 	}
+	h.lastHardwareUpdate = startupNow
+	h.lastPatchUpdate = startupNow
 	h.mu.Unlock()
 	if postReliability {
 		go h.sendReliabilityMetrics(startupNow)
@@ -918,6 +928,20 @@ func (h *Heartbeat) Start() {
 			shouldSendReliability := reliabilityPostDue(h.lastReliabilityUpdate, now)
 			if shouldSendReliability {
 				h.lastReliabilityUpdate = now
+			}
+			// Hardware identity rarely changes; collect once per day. The initial
+			// send happens via the explicit startup dispatch (see Start), which
+			// stamps lastHardwareUpdate; this gate handles every subsequent day.
+			shouldSendHardware := dueForRun(now, h.lastHardwareUpdate, 24*time.Hour)
+			if shouldSendHardware {
+				h.lastHardwareUpdate = now
+			}
+			// Patch scan cadence is configurable (PatchScanIntervalHours, default 24 h).
+			// Initial send is the explicit startup dispatch; this gate handles the rest.
+			patchIntervalHours := clampPatchScanIntervalHours(h.config.PatchScanIntervalHours)
+			shouldSendPatch := dueForRun(now, h.lastPatchUpdate, time.Duration(patchIntervalHours)*time.Hour)
+			if shouldSendPatch {
+				h.lastPatchUpdate = now
 			}
 			h.mu.Unlock()
 
@@ -983,6 +1007,12 @@ func (h *Heartbeat) Start() {
 				// `now` was captured under the lock above; the persisted gate is
 				// advanced to it only on a confirmed send (#1906).
 				go h.sendReliabilityMetrics(now)
+			}
+			if shouldSendHardware {
+				go h.sendHardwareInventory()
+			}
+			if shouldSendPatch {
+				go h.sendPatchInventory()
 			}
 		case <-h.stopChan:
 			return
@@ -1082,21 +1112,23 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 	}
 }
 
-// sendInventory collects and sends hardware, software, disk, network, connections, and patch inventory.
-// All goroutines are tracked via inventoryWg for graceful shutdown.
+// sendInventory collects and sends the 15-minute inventory set: software, disk,
+// network, configuration changes, connections, policy registry/config state, and
+// Apple warranty info. All goroutines are tracked via inventoryWg for graceful shutdown.
+//
+// Note: hardware inventory, patch inventory, security status, and session inventory
+// are intentionally absent here — each runs on its own independent cadence:
+//   - hardware / patch:   daily (or configured), dispatched from the tick gate
+//   - security / sessions: every 5 minutes, dispatched from their own tick gates
 func (h *Heartbeat) sendInventory() {
 	fns := []func(){
-		h.sendHardwareInventory,
 		h.sendSoftwareInventory,
 		h.sendDiskInventory,
 		h.sendNetworkInventory,
 		h.sendConfigurationChanges,
-		h.sendSessionInventory,
 		h.sendConnectionsInventory,
-		h.sendPatchInventory,
 		h.sendPolicyRegistryState,
 		h.sendPolicyConfigState,
-		h.sendSecurityStatus,
 		h.sendAppleWarrantyInfo,
 	}
 	for _, fn := range fns {
@@ -1170,6 +1202,26 @@ func clampProcessSampleInterval(secs int) int {
 		return 3600
 	}
 	return secs
+}
+
+// clampPatchScanIntervalHours bounds the configured patch scan interval to
+// [1, 168] hours (1 hour to 7 days). Pure (no side effects) so it can be
+// unit-tested independently. A value ≤0 (unset/zero) returns the default.
+func clampPatchScanIntervalHours(hours int) int {
+	if hours <= 0 {
+		return config.DefaultPatchScanIntervalHours
+	}
+	if hours > 168 {
+		return 168
+	}
+	return hours
+}
+
+// dueForRun reports whether a periodic task is due — true once at least interval
+// has elapsed since its last run. A zero-value last (never run) is always due.
+// Pure, so the cadence math can be unit-tested independently of the tick loop.
+func dueForRun(now, last time.Time, interval time.Duration) bool {
+	return now.Sub(last) > interval
 }
 
 // runProcessSampler periodically captures a top-N process snapshot and POSTs it,
@@ -2672,23 +2724,24 @@ func (h *Heartbeat) handleHelperEnabled(enabled bool) {
 }
 
 // IsUACInterceptionEnabled reports whether etwlua should post UAC elevation
-// events. Default true; only an explicit uacInterceptionEnabled=false from
-// the server's resolved 'pam' config policy disables it.
+// events. Default false (opt-in); only an explicit uacInterceptionEnabled=true
+// from the server's resolved 'pam' config policy enables it.
 func (h *Heartbeat) IsUACInterceptionEnabled() bool {
-	return !h.uacInterceptionDisabled.Load()
+	return h.uacInterceptionEnabled.Load()
 }
 
 // handleUACInterception updates the UAC interception flag from the heartbeat
-// response and logs state transitions. nil (field absent — older server)
-// means enabled.
+// response and logs state transitions. nil (field absent — older server) means
+// disabled: capture is opt-in and stays off until the server sends an explicit
+// true.
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
-	disabled := enabled != nil && !*enabled
-	prev := h.uacInterceptionDisabled.Swap(disabled)
-	if prev != disabled {
-		if disabled {
-			log.Info("UAC interception disabled by configuration policy")
-		} else {
+	on := enabled != nil && *enabled
+	prev := h.uacInterceptionEnabled.Swap(on)
+	if prev != on {
+		if on {
 			log.Info("UAC interception enabled by configuration policy")
+		} else {
+			log.Info("UAC interception disabled by configuration policy")
 		}
 	}
 }
@@ -3271,6 +3324,10 @@ func (h *Heartbeat) executePatchInstallCommand(payload map[string]any, rollback 
 			case <-time.After(60 * time.Second):
 				log.Info("post-install patch rescan triggered", "successCount", successCount)
 				h.sendPatchInventory()
+				// Reset the daily gate so the scheduler doesn't re-scan immediately.
+				h.mu.Lock()
+				h.lastPatchUpdate = time.Now()
+				h.mu.Unlock()
 			case <-h.stopChan:
 				log.Info("post-install patch rescan cancelled — agent shutting down")
 			}

@@ -31,68 +31,6 @@ func wmicGet(args []string, property string) string {
 	return ""
 }
 
-func powershellWmiPropertyValues(className, property string) []string {
-	script := fmt.Sprintf(`
-$ErrorActionPreference = 'Stop'
-$items = $null
-if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
-  try {
-    $items = Get-CimInstance -ClassName '%s' -ErrorAction Stop
-  } catch {
-    $items = $null
-  }
-}
-if ($null -eq $items -and (Get-Command Get-WmiObject -ErrorAction SilentlyContinue)) {
-  $items = Get-WmiObject -Class '%s' -ErrorAction Stop
-}
-$values = $items |
-  Where-Object { $_.%s } |
-  Select-Object -ExpandProperty '%s'
-foreach ($entry in $values) {
-  if ($null -ne $entry) {
-    [Console]::WriteLine(([string]$entry).Trim())
-  }
-}
-`, className, className, property, property)
-
-	out, err := runCollectorOutput(wmicTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(script))
-	if err != nil {
-		slog.Debug("powershell WMI query failed", "class", className, "property", property, "error", err.Error())
-		return nil
-	}
-
-	seen := make(map[string]struct{})
-	values := make([]string, 0)
-	for _, line := range strings.Split(string(out), "\n") {
-		value := strings.TrimSpace(line)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		values = append(values, value)
-	}
-	return values
-}
-
-func powershellWmiFirstProperty(className, property string) string {
-	values := powershellWmiPropertyValues(className, property)
-	if len(values) == 0 {
-		return ""
-	}
-	return truncateCollectorString(values[0])
-}
-
-func powershellWmiJoinedProperties(className, property string) string {
-	values := powershellWmiPropertyValues(className, property)
-	if len(values) == 0 {
-		return ""
-	}
-	return truncateCollectorString(strings.Join(values, "; "))
-}
-
 // enrichOSInfo refines the OS version/build on Windows using the authoritative
 // registry source (HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion):
 //
@@ -136,16 +74,83 @@ func enrichOSInfo(info *SystemInfo) {
 	}
 }
 
+// collectPlatformHardware queries Win32_BIOS, Win32_BaseBoard,
+// Win32_ComputerSystem, and Win32_VideoController in a single PowerShell
+// invocation (one process spawn instead of ~9) and populates hw with the
+// results. Graceful degradation: a failed or unparseable response leaves the
+// affected fields empty.
 func collectPlatformHardware(hw *HardwareInfo) {
-	hw.SerialNumber = firstCleanHardwareIdentityValue(
-		powershellWmiFirstProperty("Win32_BIOS", "SerialNumber"),
-		powershellWmiFirstProperty("Win32_BaseBoard", "SerialNumber"),
-	)
-	hw.Manufacturer = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_ComputerSystem", "Manufacturer"))
-	hw.Model = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_ComputerSystem", "Model"))
-	hw.MotherboardManufacturer = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_BaseBoard", "Manufacturer"))
-	hw.MotherboardProduct = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_BaseBoard", "Product"))
-	hw.MotherboardVersion = cleanHardwareIdentityValue(powershellWmiFirstProperty("Win32_BaseBoard", "Version"))
-	hw.BIOSVersion = powershellWmiFirstProperty("Win32_BIOS", "SMBIOSBIOSVersion")
-	hw.GPUModel = powershellWmiJoinedProperties("Win32_VideoController", "Name")
+	// One batched PowerShell invocation fetches all WMI properties at once,
+	// cutting ~9 cold-start process spawns per collection cycle down to one.
+	// Each WMI class tries Get-CimInstance first (preferred, modern) and falls
+	// back to Get-WmiObject for older hosts where CIM is unavailable.
+	script := `
+$ErrorActionPreference = 'SilentlyContinue'
+function Get-WmiSafe($ClassName) {
+  $r = $null
+  if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+    try { $r = Get-CimInstance -ClassName $ClassName -ErrorAction Stop } catch {}
+  }
+  if ($null -eq $r -and (Get-Command Get-WmiObject -ErrorAction SilentlyContinue)) {
+    try { $r = Get-WmiObject -Class $ClassName -ErrorAction Stop } catch {}
+  }
+  $r
+}
+$bios  = @(Get-WmiSafe 'Win32_BIOS')          | Select-Object -First 1
+$board = @(Get-WmiSafe 'Win32_BaseBoard')      | Select-Object -First 1
+$sys   = @(Get-WmiSafe 'Win32_ComputerSystem') | Select-Object -First 1
+$gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
+  Where-Object { $_ -and $_.Name } |
+  Select-Object -ExpandProperty Name |
+  ForEach-Object { ([string]$_).Trim() } |
+  Where-Object { $_ -ne '' } |
+  Select-Object -Unique)
+[PSCustomObject]@{
+  BiosSerial        = if ($bios)  { ([string]$bios.SerialNumber).Trim() }      else { '' }
+  BiosVersion       = if ($bios)  { ([string]$bios.SMBIOSBIOSVersion).Trim() } else { '' }
+  BoardSerial       = if ($board) { ([string]$board.SerialNumber).Trim() }     else { '' }
+  BoardManufacturer = if ($board) { ([string]$board.Manufacturer).Trim() }     else { '' }
+  BoardProduct      = if ($board) { ([string]$board.Product).Trim() }          else { '' }
+  BoardVersion      = if ($board) { ([string]$board.Version).Trim() }          else { '' }
+  SysManufacturer   = if ($sys)   { ([string]$sys.Manufacturer).Trim() }       else { '' }
+  SysModel          = if ($sys)   { ([string]$sys.Model).Trim() }              else { '' }
+  GPUNames          = $gpus
+} | ConvertTo-Json -Compress
+`
+
+	out, err := runCollectorOutput(wmicTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(script))
+	if err != nil {
+		// Whole-scan failure (powershell blocked by WDAC/AppLocker, WMI repository
+		// corruption, timeout, …) leaves every WMI-derived field empty this cycle,
+		// so log at Warn — Debug is suppressed at the default "info" level.
+		slog.Warn("hardware WMI batch query failed; WMI-derived hardware fields empty this cycle", "error", err.Error())
+		return
+	}
+
+	parsed, err := parseHardwareJSON(out)
+	if err != nil {
+		slog.Warn("hardware WMI batch query JSON parse failed; WMI-derived hardware fields empty this cycle", "error", err.Error(), "bytes", len(out))
+		return
+	}
+
+	hw.SerialNumber = firstCleanHardwareIdentityValue(parsed.BiosSerial, parsed.BoardSerial)
+	hw.Manufacturer = cleanHardwareIdentityValue(parsed.SysManufacturer)
+	hw.Model = cleanHardwareIdentityValue(parsed.SysModel)
+	hw.MotherboardManufacturer = cleanHardwareIdentityValue(parsed.BoardManufacturer)
+	hw.MotherboardProduct = cleanHardwareIdentityValue(parsed.BoardProduct)
+	hw.MotherboardVersion = cleanHardwareIdentityValue(parsed.BoardVersion)
+	hw.BIOSVersion = truncateCollectorString(strings.TrimSpace(parsed.BiosVersion))
+
+	// Join GPU names in the same shape as before: unique, non-empty, "; "-joined.
+	// De-duplication is handled in PowerShell (Select-Object -Unique, which is
+	// case-insensitive); here we just trim stray whitespace and drop empties.
+	gpuParts := make([]string, 0, len(parsed.GPUNames))
+	for _, name := range parsed.GPUNames {
+		if name = strings.TrimSpace(name); name != "" {
+			gpuParts = append(gpuParts, name)
+		}
+	}
+	if len(gpuParts) > 0 {
+		hw.GPUModel = truncateCollectorString(strings.Join(gpuParts, "; "))
+	}
 }
