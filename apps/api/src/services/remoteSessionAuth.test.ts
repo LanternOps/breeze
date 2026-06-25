@@ -259,3 +259,48 @@ describe('WS ticket caller binding (IP + UA)', () => {
     expect(consumed.ok === false && consumed.reason).toBe('not_found');
   });
 });
+
+describe('tunnel-http ticket TTL', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    process.env.NODE_ENV = 'test';
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('tunnel-http tickets remain valid at 61s while tunnel tickets are expired', async () => {
+    const { createWsTicket, consumeWsTicket } = await import('./remoteSessionAuth');
+
+    const tunnelIssued = await createWsTicket({
+      sessionId: 's-tunnel',
+      sessionType: 'tunnel',
+      userId: 'u1',
+      ip: '1.2.3.4',
+      userAgent: 'ua',
+    });
+    const httpIssued = await createWsTicket({
+      sessionId: 's-http',
+      sessionType: 'tunnel-http',
+      userId: 'u1',
+      ip: '1.2.3.4',
+      userAgent: 'ua',
+      ttlMs: 5 * 60 * 1000, // 5 minutes
+    });
+
+    // Advance time past the 60s tunnel TTL but well within the 5-min http TTL.
+    vi.advanceTimersByTime(61_000);
+
+    const tunnelResult = await consumeWsTicket(tunnelIssued.ticket, { ip: '1.2.3.4', userAgent: 'ua' });
+    expect(tunnelResult.ok).toBe(false);
+    expect(tunnelResult.ok === false && tunnelResult.reason).toBe('expired');
+
+    const httpResult = await consumeWsTicket(httpIssued.ticket, { ip: '1.2.3.4', userAgent: 'ua' });
+    expect(httpResult.ok).toBe(true);
+    if (httpResult.ok) {
+      expect(httpResult.sessionType).toBe('tunnel-http');
+    }
+  });
+});
