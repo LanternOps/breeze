@@ -1,3 +1,4 @@
+import type { Context } from 'hono';
 import archiver from 'archiver';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -384,4 +385,22 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
     });
     return false;
   }
+}
+
+/**
+ * Serves the static, CI-signed MSI with the bootstrap token embedded in the
+ * download filename — the Windows analogue of the macOS renamed-app zip. The
+ * MSI bytes are never modified, so the Authenticode signature stays intact and
+ * every customer shares one file hash (SmartScreen reputation accrues).
+ */
+export function serveWindowsBootstrapMsi(
+  c: Context,
+  args: { msi: Buffer; token: string; apiHost: string },
+): Response {
+  const filename = `Breeze Agent [${args.token}@${args.apiHost}].msi`;
+  c.header('Content-Type', 'application/octet-stream');
+  c.header('Content-Disposition', `attachment; filename="${filename}"`);
+  c.header('Content-Length', String(args.msi.length));
+  c.header('Cache-Control', 'no-store');
+  return c.body(args.msi as unknown as ArrayBuffer);
 }

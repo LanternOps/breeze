@@ -29,6 +29,7 @@ import {
   fetchRegularMsi,
   assertMacosInstallerPkgsReachable,
   fetchMacosInstallerAppZip,
+  serveWindowsBootstrapMsi,
 } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
 import {
@@ -1078,27 +1079,57 @@ enrollmentKeyRoutes.get(
       // Falls through to legacy path below.
     }
 
-    // Determine signing availability and fetch the binary BEFORE creating
-    // child key. When the remote signing service is configured for Windows,
-    // it builds and signs the MSI from scratch using its own cached
-    // templates — the API doesn't need to fetch anything.
-    const signingService = MsiSigningService.fromEnv();
-    let binaryBuffer: Buffer | null = null;
-    try {
-      if (platform === "windows" && !signingService) {
-        binaryBuffer = await fetchRegularMsi();
+    // ----------------------------------------------------------------
+    // Windows — static signed MSI + bootstrap token in the filename.
+    // No per-customer signing, no child key here; the bootstrap endpoint
+    // mints the child key lazily on consume (mirrors the macOS path above).
+    // ----------------------------------------------------------------
+    if (platform === "windows") {
+      let issued;
+      try {
+        issued = await issueBootstrapTokenForKey({
+          parentEnrollmentKeyId: parentKey.id,
+          createdByUserId: auth.user.id,
+          maxUsage: childMaxUsage,
+          installerPlatform: "windows",
+        });
+      } catch (err) {
+        if (err instanceof BootstrapTokenIssuanceError) {
+          if (err.code === "parent_not_found")
+            return c.json({ error: err.message }, 404);
+          return c.json({ error: err.message }, 410);
+        }
+        throw err;
       }
-      // macOS no longer fetches a binary here — the bundled install.sh downloads
-      // the architecture-matched pkg at install time.
-    } catch (err) {
-      console.error(`[installer] Failed to fetch ${platform} binary:`, err);
-      return c.json(
-        {
-          error: `${platform === "windows" ? "MSI" : "macOS PKG"} not available`,
+
+      let msi: Buffer;
+      try {
+        msi = await fetchRegularMsi();
+      } catch (err) {
+        console.error("[installer] failed to fetch signed MSI:", err);
+        return c.json({ error: "MSI not available" }, 503);
+      }
+
+      const apiHost = new URL(serverUrl).host;
+
+      writeEnrollmentKeyAudit(c, auth, {
+        orgId: parentKey.orgId,
+        action: "enrollment_key.installer_download",
+        keyId: parentKey.id,
+        keyName: parentKey.name,
+        details: {
+          platform,
+          mode: "bootstrap-msi",
+          tokenId: issued.id,
+          count: childMaxUsage,
         },
-        503,
-      );
+      });
+
+      return serveWindowsBootstrapMsi(c, { msi, token: issued.token, apiHost });
     }
+
+    // Determine signing availability — macOS only reaches here.
+    const signingService = MsiSigningService.fromEnv();
 
     // Signing-spend cap — enforce BEFORE child key creation or any signing
     // operation so an authenticated user cannot drive unbounded (costly,
@@ -1183,62 +1214,9 @@ enrollmentKeyRoutes.get(
       return c.json({ error: "Failed to generate installer key" }, 500);
     }
 
-    // Build the installer — wrap in try/catch to clean up orphaned child key on failure
+    // Build the macOS installer — wrap in try/catch to clean up orphaned child key on failure.
+    // Windows early-returns above; this block is macOS-only.
     try {
-      if (platform === "windows") {
-        let resultBuffer: Buffer;
-        let contentType: string;
-        let filename: string;
-
-        if (signingService) {
-          // Signing configured: ask the remote service to build and sign
-          // an MSI from its cached template for this version.
-          resultBuffer = await signingService.buildAndSignMsi({
-            version: signingServiceVersion(),
-            properties: {
-              SERVER_URL: serverUrl,
-              ENROLLMENT_KEY: rawChildKey,
-              ...(globalSecret ? { ENROLLMENT_SECRET: globalSecret } : {}),
-            },
-          });
-          contentType = "application/octet-stream";
-          filename = "breeze-agent.msi";
-        } else {
-          // No signing: zip bundle with unmodified signed MSI + enrollment.json + install.bat
-          resultBuffer = await buildWindowsInstallerZip(
-            ensureBuffer(binaryBuffer, "installer/windows zip"),
-            {
-              serverUrl,
-              enrollmentKey: rawChildKey,
-              enrollmentSecret: globalSecret,
-              siteId: parentKey.siteId,
-            },
-          );
-          contentType = "application/zip";
-          filename = "breeze-agent-windows.zip";
-        }
-
-        writeEnrollmentKeyAudit(c, auth, {
-          orgId: parentKey.orgId,
-          action: "enrollment_key.installer_download",
-          keyId: parentKey.id,
-          keyName: parentKey.name,
-          details: {
-            platform,
-            childKeyId: childKey.id,
-            shortCode,
-            count: childMaxUsage,
-            signed: !!signingService,
-          },
-        });
-
-        c.header("Content-Type", contentType);
-        c.header("Content-Disposition", `attachment; filename="${filename}"`);
-        c.header("Content-Length", String(resultBuffer.length));
-        c.header("Cache-Control", "no-store");
-        return c.body(resultBuffer as unknown as ArrayBuffer);
-      }
-
       // macOS — install.sh downloads the architecture-matched pkg at install
       // time, so no binary is bundled here (one zip serves Intel + Apple Silicon).
       const zipBuffer = await buildMacosInstallerZip({

@@ -70,6 +70,15 @@ vi.mock('../services/installerBuilder', () => ({
   assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   // Plan C — returns null so macOS tests fall through to the legacy pkg path.
   fetchMacosInstallerAppZip: vi.fn(async () => null),
+  // Windows bootstrap path — serves static MSI with token in the filename.
+  serveWindowsBootstrapMsi: vi.fn((c: any, args: { msi: Buffer; token: string; apiHost: string }) => {
+    const filename = `Breeze Agent [${args.token}@${args.apiHost}].msi`;
+    c.header('Content-Type', 'application/octet-stream');
+    c.header('Content-Disposition', `attachment; filename="${filename}"`);
+    c.header('Content-Length', String(args.msi.length));
+    c.header('Cache-Control', 'no-store');
+    return c.body(args.msi);
+  }),
 }));
 
 // Plan C imports — mocked so Vitest can resolve them even though neither is
@@ -106,6 +115,7 @@ import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { MsiSigningService } from '../services/msiSigning';
 import { rateLimiter } from '../services/rate-limit';
+import { issueBootstrapTokenForKey } from '../services/installerBootstrapTokenIssuance';
 
 const ORG_ID = 'org-111';
 const KEY_ID = '11111111-1111-1111-1111-111111111111';
@@ -171,6 +181,13 @@ describe('enrollment key routes — installer download', () => {
     // that set mockReturnValue for fromEnv would otherwise leak into
     // subsequent tests. Explicitly reset fromEnv to "signing disabled".
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
+    // Default: Windows bootstrap token issuance succeeds.
+    vi.mocked(issueBootstrapTokenForKey).mockResolvedValue({
+      id: 'tok-1',
+      token: 'ABCDE12345',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      parentKeyName: 'Test Key',
+    } as any);
     process.env.PUBLIC_API_URL = 'https://breeze.example.com';
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -271,11 +288,10 @@ describe('enrollment key routes — installer download', () => {
       expect(body.error).toMatch(/server url/i);
     });
 
-    it('returns zip bundle for windows when signing not configured', async () => {
+    it('windows download serves a static MSI named with the bootstrap token', async () => {
+      // issueBootstrapTokenForKey default mock returns { token: 'ABCDE12345', ... }
+      // PUBLIC_API_URL = 'https://breeze.example.com' → apiHost = 'breeze.example.com'
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
-      ]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
         method: 'GET',
@@ -283,148 +299,86 @@ describe('enrollment key routes — installer download', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(res.headers.get('Content-Type')).toBe('application/zip');
-      expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-windows.zip');
+      expect(res.headers.get('content-type')).toBe('application/octet-stream');
+      expect(res.headers.get('content-disposition')).toBe(
+        'attachment; filename="Breeze Agent [ABCDE12345@breeze.example.com].msi"',
+      );
+      // The static signed MSI bytes are served as-is.
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.length).toBeGreaterThan(0);
     });
 
-    it('returns signed MSI for windows when signing configured', async () => {
-      process.env.BINARY_VERSION = '0.62.24';
-      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
-      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
-        buildAndSignMsi,
-        probe: vi.fn(async () => {}),
-      } as any);
-
+    it('windows bootstrap download does not create a child enrollment key', async () => {
+      // Windows early-returns after issueBootstrapTokenForKey — no db.insert for a child key.
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
-      ]);
 
-      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(200);
-      expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
-      expect(res.headers.get('Content-Disposition')).toContain('breeze-agent.msi');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
 
-      // When signing is configured, the route must NOT fetch any local
-      // binary — the signing service owns template fetching.
+    it('windows bootstrap download uses issueBootstrapTokenForKey with windows platform', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(issueBootstrapTokenForKey).toHaveBeenCalledWith(
+        expect.objectContaining({ installerPlatform: 'windows' }),
+      );
+    });
+
+    it('windows bootstrap returns 503 when MSI fetch fails', async () => {
       const { fetchRegularMsi } = await import('../services/installerBuilder');
-      expect(fetchRegularMsi).not.toHaveBeenCalled();
-
-      delete process.env.BINARY_VERSION;
-    });
-
-    it('passes v-prefixed version and 64-hex key to buildAndSignMsi', async () => {
-      process.env.BINARY_VERSION = '0.62.24';
-      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
-      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
-        buildAndSignMsi,
-        probe: vi.fn(async () => {}),
-      } as any);
+      vi.mocked(fetchRegularMsi).mockRejectedValueOnce(new Error('GitHub 404'));
 
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
-      ]);
-
-      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      expect(buildAndSignMsi).toHaveBeenCalledTimes(1);
-      const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
-        version: string;
-        properties: { SERVER_URL: string; ENROLLMENT_KEY: string; ENROLLMENT_SECRET?: string };
-      }])[0];
-      // Signing service uses GitHub release tags (v-prefixed) as cache keys
-      expect(req.version).toBe('v0.62.24');
-      expect(req.properties.SERVER_URL).toBe('https://breeze.example.com');
-      expect(req.properties.ENROLLMENT_KEY).toMatch(/^[a-f0-9]{64}$/);
-
-      delete process.env.BINARY_VERSION;
-    });
-
-    it('omits ENROLLMENT_SECRET when AGENT_ENROLLMENT_SECRET is unset', async () => {
-      delete process.env.AGENT_ENROLLMENT_SECRET;
-      process.env.BINARY_VERSION = '0.62.24';
-      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
-      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
-        buildAndSignMsi,
-        probe: vi.fn(async () => {}),
-      } as any);
-
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
-      ]);
-
-      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
-        properties: Record<string, unknown>;
-      }])[0];
-      expect(req.properties).not.toHaveProperty('ENROLLMENT_SECRET');
-
-      delete process.env.BINARY_VERSION;
-    });
-
-    it('passes ENROLLMENT_SECRET when AGENT_ENROLLMENT_SECRET is set', async () => {
-      process.env.AGENT_ENROLLMENT_SECRET = 'deployment-wide-secret';
-      process.env.BINARY_VERSION = '0.62.24';
-      const buildAndSignMsi = vi.fn(async () => Buffer.from('signed-msi-content'));
-      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
-        buildAndSignMsi,
-        probe: vi.fn(async () => {}),
-      } as any);
-
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
-      ]);
-
-      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer token' },
-      });
-
-      const req = (buildAndSignMsi.mock.calls[0] as unknown as [{
-        properties: { ENROLLMENT_SECRET?: string };
-      }])[0];
-      expect(req.properties.ENROLLMENT_SECRET).toBe('deployment-wide-secret');
-
-      delete process.env.AGENT_ENROLLMENT_SECRET;
-      delete process.env.BINARY_VERSION;
-    });
-
-    it('returns 500 with error detail when signing configured but fails', async () => {
-      vi.mocked(MsiSigningService.fromEnv).mockReturnValue({
-        buildAndSignMsi: vi.fn(async () => { throw new Error('signing service returned 401: CF Access denied'); }),
-        probe: vi.fn(async () => {}),
-      } as any);
-
-      mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
-      ]);
-      mockDeleteWhere(); // for orphan cleanup
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(503);
       const body = await res.json();
-      expect(body.error).toBe('Failed to build installer');
-      // Route is MFA-gated — admin debugging a misconfig sees the cause.
-      expect(body.detail).toContain('CF Access denied');
+      expect(body.error).toMatch(/MSI not available/i);
+    });
+
+    it('windows bootstrap returns 404 when issueBootstrapTokenForKey reports parent_not_found', async () => {
+      const { BootstrapTokenIssuanceError } = await import('../services/installerBootstrapTokenIssuance');
+      vi.mocked(issueBootstrapTokenForKey).mockRejectedValueOnce(
+        new BootstrapTokenIssuanceError('parent_not_found', 'Key not found'),
+      );
+
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('windows bootstrap returns 410 when issueBootstrapTokenForKey reports key_expired', async () => {
+      const { BootstrapTokenIssuanceError } = await import('../services/installerBootstrapTokenIssuance');
+      vi.mocked(issueBootstrapTokenForKey).mockRejectedValueOnce(
+        new BootstrapTokenIssuanceError('key_expired', 'Key expired'),
+      );
+
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(410);
     });
 
     it('returns zip for macos platform', async () => {
@@ -443,14 +397,14 @@ describe('enrollment key routes — installer download', () => {
       expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
     });
 
-    it('creates child key with maxUsage=1 by default', async () => {
+    it('creates child key with maxUsage=1 by default (macos)', async () => {
       const parentKey = makeEnrollmentKey();
       mockSelectFromWhereLimit([parentKey]);
       mockInsertValuesReturning([
         makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
       ]);
 
-      await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+      await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
       });
@@ -468,12 +422,8 @@ describe('enrollment key routes — installer download', () => {
       );
     });
 
-    it('creates child key with count query param', async () => {
-      const parentKey = makeEnrollmentKey();
-      mockSelectFromWhereLimit([parentKey]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer x5)', maxUsage: 5 }),
-      ]);
+    it('windows bootstrap passes maxUsage to issueBootstrapTokenForKey (count query param)', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=5`, {
         method: 'GET',
@@ -481,18 +431,14 @@ describe('enrollment key routes — installer download', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(db.insert).toHaveBeenCalledTimes(1);
-      const insertMock = vi.mocked(db.insert).mock.results[0]!.value;
-      const valuesFn = insertMock.values;
-      expect(valuesFn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          maxUsage: 5,
-          name: 'Test Key (installer x5)',
-        })
+      expect(issueBootstrapTokenForKey).toHaveBeenCalledWith(
+        expect.objectContaining({ maxUsage: 5 }),
       );
+      // Windows bootstrap does NOT create a child key (no db.insert)
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
-    it('child key honors the ttlMinutes query param (per-link picker)', async () => {
+    it('child key honors the ttlMinutes query param (per-link picker) (macos)', async () => {
       const parentKey = makeEnrollmentKey(); // parent: 1h remaining
       mockSelectFromWhereLimit([parentKey]);
       mockInsertValuesReturning([
@@ -502,7 +448,7 @@ describe('enrollment key routes — installer download', () => {
       const ttlMinutes = 43200; // 30 days
       const before = Date.now();
       const res = await app.request(
-        `/enrollment-keys/${KEY_ID}/installer/windows?ttlMinutes=${ttlMinutes}`,
+        `/enrollment-keys/${KEY_ID}/installer/macos?ttlMinutes=${ttlMinutes}`,
         { method: 'GET', headers: { Authorization: 'Bearer token' } },
       );
       const after = Date.now();
@@ -576,11 +522,8 @@ describe('enrollment key routes — installer download', () => {
       expect(res.status).toBe(400);
     });
 
-    it('emits audit log with count for installer download', async () => {
+    it('emits audit log with count for windows bootstrap installer download', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
-      mockInsertValuesReturning([
-        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer x3)', maxUsage: 3 }),
-      ]);
 
       await app.request(`/enrollment-keys/${KEY_ID}/installer/windows?count=3`, {
         method: 'GET',
@@ -590,7 +533,7 @@ describe('enrollment key routes — installer download', () => {
       expect(createAuditLogAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'enrollment_key.installer_download',
-          details: expect.objectContaining({ count: 3 }),
+          details: expect.objectContaining({ count: 3, mode: 'bootstrap-msi' }),
         })
       );
     });
@@ -607,14 +550,17 @@ describe('enrollment key routes — installer download', () => {
         vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date() });
       });
 
-      it('allows signing when both per-user and per-key caps are under limit', async () => {
+      // Signing-spend cap applies to the macOS legacy path (child key creation).
+      // Windows early-returns before the cap — it does not go through signing.
+
+      it('allows macOS installer when both per-user and per-key caps are under limit', async () => {
         // Default mock: rateLimiter always returns allowed=true
         mockSelectFromWhereLimit([makeEnrollmentKey()]);
         mockInsertValuesReturning([
           makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
         ]);
 
-        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
           method: 'GET',
           headers: { Authorization: 'Bearer token' },
         });
@@ -624,7 +570,7 @@ describe('enrollment key routes — installer download', () => {
         expect(db.insert).toHaveBeenCalledTimes(1);
       });
 
-      it('returns 429 and does NOT create child key when per-user cap is exceeded', async () => {
+      it('returns 429 and does NOT create child key when per-user cap is exceeded (macos)', async () => {
         // First rateLimiter call (per-user) returns denied; second should never be reached
         vi.mocked(rateLimiter)
           .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 3600_000) })
@@ -633,7 +579,7 @@ describe('enrollment key routes — installer download', () => {
         mockSelectFromWhereLimit([makeEnrollmentKey()]);
         // No insert mock needed — child key must NOT be created
 
-        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
           method: 'GET',
           headers: { Authorization: 'Bearer token' },
         });
@@ -646,7 +592,7 @@ describe('enrollment key routes — installer download', () => {
         expect(db.insert).not.toHaveBeenCalled();
       });
 
-      it('returns 429 and does NOT create child key when per-parent-key cap is exceeded', async () => {
+      it('returns 429 and does NOT create child key when per-parent-key cap is exceeded (macos)', async () => {
         // First rateLimiter call (per-user) passes; second (per-key) is denied
         vi.mocked(rateLimiter)
           .mockResolvedValueOnce({ allowed: true, remaining: 5, resetAt: new Date() })
@@ -655,7 +601,7 @@ describe('enrollment key routes — installer download', () => {
         mockSelectFromWhereLimit([makeEnrollmentKey()]);
         // No insert mock needed — child key must NOT be created
 
-        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
           method: 'GET',
           headers: { Authorization: 'Bearer token' },
         });
@@ -668,13 +614,13 @@ describe('enrollment key routes — installer download', () => {
         expect(db.insert).not.toHaveBeenCalled();
       });
 
-      it('returns 503 and does NOT create child key when Redis is unavailable', async () => {
+      it('returns 503 and does NOT create child key when Redis is unavailable (macos)', async () => {
         const { getRedis } = await import('../services');
         vi.mocked(getRedis).mockReturnValueOnce(null as any);
 
         mockSelectFromWhereLimit([makeEnrollmentKey()]);
 
-        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
           method: 'GET',
           headers: { Authorization: 'Bearer token' },
         });
@@ -682,6 +628,19 @@ describe('enrollment key routes — installer download', () => {
         expect(res.status).toBe(503);
         // No child enrollment key created
         expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('windows download bypasses signing-spend cap entirely', async () => {
+        // Windows early-returns before the rate limiter — rateLimiter should not be called.
+        mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+        const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(200);
+        expect(rateLimiter).not.toHaveBeenCalled();
       });
     });
   });
