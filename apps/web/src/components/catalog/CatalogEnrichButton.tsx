@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
+import { loginPathWithNext } from '../../lib/authScope';
 import { enrichCatalogItemRequest, type CatalogItemType, type EnrichResult } from '../../lib/api/catalog';
+
+const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 interface CatalogEnrichButtonProps {
   /** Bias the AI toward this item type (passed as `hint`). */
@@ -27,11 +31,13 @@ export default function CatalogEnrichButton({ hint, disabled, idSuffix, onApply 
         request: () => enrichCatalogItemRequest(q, hint),
         errorFallback: "Couldn't auto-fill — enter details manually.",
         parseSuccess: (data) => (data as { data: EnrichResult }).data,
+        onUnauthorized: UNAUTHORIZED,
       });
       onApply(result);
       setGuidance(result.priceGuidance);
     } catch (err) {
-      // runAction already toasted any ActionError; only cover the non-ActionError case.
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      // runAction already toasted any non-401 ActionError; only cover the non-ActionError case.
       if (!(err instanceof ActionError)) {
         showToast({ message: "Couldn't auto-fill — enter details manually.", type: 'error' });
       }
