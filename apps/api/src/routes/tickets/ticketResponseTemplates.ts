@@ -11,8 +11,11 @@ import { writeRouteAudit } from '../../services/auditEvents';
 
 export const ticketResponseTemplateRoutes = new Hono();
 
-ticketResponseTemplateRoutes.use('*', authMiddleware);
-
+// This router is mounted at '/' (its routes carry absolute paths), so a
+// router-level `.use('*', authMiddleware)` would attach auth to EVERY sibling
+// api route — including public ones like /agents/download (the #1383 footgun
+// documented in externalServices.ts / invoices/settings.ts). authMiddleware
+// must lead each route's own middleware chain instead.
 const requireTicketRead = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action);
 // Reuse the tickets-write permission (same admin surface that manages ticket config).
 const requireTicketWrite = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
@@ -30,7 +33,7 @@ const createSchema = z.object({
 const updateSchema = createSchema.partial();
 const idParam = z.object({ id: z.string().guid() });
 
-ticketResponseTemplateRoutes.get('/ticket-response-templates', scopes, requireTicketRead, async (c) => {
+ticketResponseTemplateRoutes.get('/ticket-response-templates', authMiddleware, scopes, requireTicketRead, async (c) => {
   const auth = c.get('auth') as AuthContext;
   const partnerId = auth.partnerId;
   if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
@@ -48,6 +51,7 @@ ticketResponseTemplateRoutes.get('/ticket-response-templates', scopes, requireTi
 
 ticketResponseTemplateRoutes.post(
   '/ticket-response-templates',
+  authMiddleware,
   scopes,
   requireTicketWrite,
   requireMfa(),
@@ -80,6 +84,7 @@ ticketResponseTemplateRoutes.post(
 
 ticketResponseTemplateRoutes.patch(
   '/ticket-response-templates/:id',
+  authMiddleware,
   scopes,
   requireTicketWrite,
   requireMfa(),
@@ -115,6 +120,7 @@ ticketResponseTemplateRoutes.patch(
 
 ticketResponseTemplateRoutes.delete(
   '/ticket-response-templates/:id',
+  authMiddleware,
   scopes,
   requireTicketWrite,
   requireMfa(),
