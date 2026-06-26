@@ -94,22 +94,58 @@ const detailPayload = {
   },
 };
 
+// Route mock responses by URL + method so a test's assertions never depend on
+// the exact COUNT or ORDER of fetch calls. The page fires the detail load from a
+// useEffect (on user-select) while the feedback save fires from a click — their
+// invocation order races under CI load, so the old positional
+// `mockResolvedValueOnce` chains could feed the save POST a queued *load* payload
+// (a success Response) when the test expected the save to fail. That was the
+// intermittent "Test Web → UserRiskPage" red. Endpoint routing is order-
+// independent. `scores`/`detail` accept a small queue for the retry tests
+// (fail-then-ok); anything past the queue falls back to the default OK payload.
+function routeFetch(cfg: {
+  flags?: boolean;
+  scores?: Array<'ok' | 'fail' | 'empty'>;
+  detail?: Array<'ok' | 'fail'>;
+  save?: 'ok' | 'fail';
+} = {}) {
+  const flags = cfg.flags ?? true;
+  const scoresQ = [...(cfg.scores ?? [])];
+  const detailQ = [...(cfg.detail ?? [])];
+  const nextOr = (q: string[], dflt: string) => (q.length ? (q.shift() as string) : dflt);
+  fetchWithAuthMock.mockImplementation((url: string, init?: { method?: string }) => {
+    const method = init?.method ?? 'GET';
+    if (url.includes('/config/ml-feature-flags')) return Promise.resolve(response(flagsPayload(flags)));
+    if (url.includes('/feedback') && method === 'POST') {
+      const okSave = cfg.save !== 'fail';
+      return Promise.resolve(response(okSave ? { success: true } : { error: 'boom' }, okSave));
+    }
+    if (url.includes('/user-risk/scores')) {
+      const s = nextOr(scoresQ, 'ok');
+      if (s === 'fail') return Promise.resolve(response({ error: 'down' }, false, 500));
+      if (s === 'empty') return Promise.resolve(response({ data: [] }));
+      return Promise.resolve(response(scorePayload));
+    }
+    if (url.includes('/user-risk/evaluation')) return Promise.resolve(response(evaluationPayload));
+    if (/\/user-risk\/users\/[^/?]+\?orgId=/.test(url)) {
+      const d = nextOr(detailQ, 'ok');
+      if (d === 'fail') return Promise.resolve(response({ error: 'detail down' }, false, 500));
+      return Promise.resolve(response(detailPayload));
+    }
+    return Promise.resolve(response({ error: 'unrouted' }, false, 404));
+  });
+}
+
 describe('UserRiskPage', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
     showToast.mockReset();
-    // useMlFeatureFlags only fetches /config/ml-feature-flags when an org is
-    // active; seed one so the flag request is the first call, matching the
-    // ordered mockResolvedValueOnce chains below.
+    // useMlFeatureFlags only fetches /config/ml-feature-flags when an org is active.
     useOrgStore.setState({ currentOrgId: 'org-1' });
   });
 
   it('renders scores, evaluation metrics, and selected user evidence', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(response(flagsPayload(true)))
-      .mockResolvedValueOnce(response(scorePayload))
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(detailPayload));
+    routeFetch();
 
     render(<UserRiskPage />);
 
@@ -123,15 +159,7 @@ describe('UserRiskPage', () => {
   });
 
   it('posts false-positive feedback through runAction', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(response(flagsPayload(true)))
-      .mockResolvedValueOnce(response(scorePayload))
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(detailPayload))
-      .mockResolvedValueOnce(response({ success: true }))
-      .mockResolvedValueOnce(response(scorePayload))
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(detailPayload));
+    routeFetch({ save: 'ok' });
 
     render(<UserRiskPage />);
 
@@ -158,15 +186,7 @@ describe('UserRiskPage', () => {
   });
 
   it('posts true-positive feedback through runAction and refetches scores', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(response(flagsPayload(true)))
-      .mockResolvedValueOnce(response(scorePayload))
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(detailPayload))
-      .mockResolvedValueOnce(response({ success: true })) // feedback POST
-      .mockResolvedValueOnce(response(scorePayload)) // refetch scores
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(detailPayload));
+    routeFetch({ save: 'ok' });
 
     render(<UserRiskPage />);
 
@@ -196,12 +216,8 @@ describe('UserRiskPage', () => {
   });
 
   it('toasts an error when saving a label fails (non-2xx)', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(response(flagsPayload(true)))
-      .mockResolvedValueOnce(response(scorePayload))
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(detailPayload))
-      .mockResolvedValueOnce(response({ error: 'boom' }, false, 500));
+    // The save POST returns 500 regardless of how the load/detail calls interleave.
+    routeFetch({ save: 'fail' });
 
     render(<UserRiskPage />);
 
@@ -214,12 +230,7 @@ describe('UserRiskPage', () => {
   });
 
   it('shows a detail-panel error inline without blanking the page, and retries just the detail load', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(response(flagsPayload(true)))
-      .mockResolvedValueOnce(response(scorePayload))
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response({ error: 'detail down' }, false, 500)) // detail load fails
-      .mockResolvedValueOnce(response(detailPayload)); // detail retry succeeds
+    routeFetch({ detail: ['fail'] }); // first detail load fails, retry succeeds
 
     render(<UserRiskPage />);
 
@@ -241,13 +252,7 @@ describe('UserRiskPage', () => {
   });
 
   it('renders the page-level error with Retry when the scores list fails to load', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(response(flagsPayload(true)))
-      .mockResolvedValueOnce(response({ error: 'down' }, false, 500)) // scores fail
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(scorePayload)) // retry scores
-      .mockResolvedValueOnce(response(evaluationPayload))
-      .mockResolvedValueOnce(response(detailPayload));
+    routeFetch({ scores: ['fail'] }); // first scores load fails, retry succeeds
 
     render(<UserRiskPage />);
 
@@ -260,10 +265,7 @@ describe('UserRiskPage', () => {
   });
 
   it('renders the empty list state when no users are above threshold', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(response(flagsPayload(true)))
-      .mockResolvedValueOnce(response({ data: [] }))
-      .mockResolvedValueOnce(response(evaluationPayload));
+    routeFetch({ scores: ['empty'] });
 
     render(<UserRiskPage />);
 
@@ -272,7 +274,7 @@ describe('UserRiskPage', () => {
   });
 
   it('shows disabled state and does not fetch stale scores when user-risk v0 is disabled', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(response(flagsPayload(false)));
+    routeFetch({ flags: false });
 
     render(<UserRiskPage />);
 
