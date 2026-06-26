@@ -4,6 +4,8 @@ import { Loader2, RefreshCw, Search } from 'lucide-react';
 import { navigateTo } from '@/lib/navigation';
 import { cn, friendlyFetchError } from '../../lib/utils';
 import { fetchHuntressIncidents, type HuntressIncident } from '../../lib/edr';
+import { promoteToIncident, huntressIncidentToIncident } from '../../lib/incidents';
+import { handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '../../lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField } from '../shared/ResponsiveTable';
 
@@ -39,6 +41,7 @@ export default function HuntressIncidentList() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [promotingId, setPromotingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,6 +72,18 @@ export default function HuntressIncidentList() {
     if (incident.deviceId) navigateTo(`/devices/${incident.deviceId}`);
   };
 
+  const promote = async (incident: HuntressIncident) => {
+    setPromotingId(incident.id);
+    try {
+      const { id } = await promoteToIncident(huntressIncidentToIncident(incident));
+      navigateTo(`/incidents/${id}`);
+    } catch (err) {
+      handleActionError(err, 'Failed to create incident');
+    } finally {
+      setPromotingId(null);
+    }
+  };
+
   const renderSeverityBadge = (incident: HuntressIncident) => (
     <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', badgeClass(incident.severity, severityBadge))}>
       {incident.severity ?? 'unknown'}
@@ -82,6 +97,22 @@ export default function HuntressIncidentList() {
   );
 
   const deviceLabel = (incident: HuntressIncident) => incident.deviceHostname ?? incident.deviceId ?? '-';
+
+  const renderActions = (incident: HuntressIncident) => (
+    <button
+      type="button"
+      data-testid={`huntress-promote-${incident.id}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        void promote(incident);
+      }}
+      disabled={promotingId === incident.id}
+      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
+    >
+      {promotingId === incident.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+      Promote to Incident
+    </button>
+  );
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="huntress-list">
@@ -162,12 +193,13 @@ export default function HuntressIncidentList() {
                 <th className="px-4 py-3">Severity</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Reported</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
                     <span className="inline-flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading Huntress incidents...
@@ -176,7 +208,7 @@ export default function HuntressIncidentList() {
                 </tr>
               ) : incidents.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
                     No Huntress incidents found.
                   </td>
                 </tr>
@@ -194,6 +226,9 @@ export default function HuntressIncidentList() {
                     <td className="px-4 py-3">{renderSeverityBadge(incident)}</td>
                     <td className="px-4 py-3">{renderStatusBadge(incident)}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{formatReported(incident.reportedAt)}</td>
+                    <td className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
+                      {renderActions(incident)}
+                    </td>
                   </tr>
                 ))
               )}
@@ -229,6 +264,9 @@ export default function HuntressIncidentList() {
                   <CardField label="Status">{renderStatusBadge(incident)}</CardField>
                   <CardField label="Reported">
                     <span className="text-xs text-muted-foreground">{formatReported(incident.reportedAt)}</span>
+                  </CardField>
+                  <CardField label="Actions">
+                    <div onClick={(event) => event.stopPropagation()}>{renderActions(incident)}</div>
                   </CardField>
                 </div>
               </DataCard>

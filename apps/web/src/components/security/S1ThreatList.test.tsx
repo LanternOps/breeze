@@ -156,7 +156,44 @@ describe('S1ThreatList', () => {
     expect(navigateTo).not.toHaveBeenCalled();
   });
 
-  it('renders no action buttons for non-active threats', async () => {
+  it('promotes a threat to an incident and navigates', async () => {
+    let body: unknown;
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/s1/threats')) {
+        return Promise.resolve(ok({
+          data: [
+            {
+              id: 't1',
+              orgId: 'org-7',
+              deviceId: 'dev-9',
+              threatName: 'X',
+              severity: 'high',
+              status: 'active',
+              detectedAt: '2026-06-20T00:00:00Z',
+            },
+          ],
+          pagination: { total: 1, limit: 100, offset: 0 },
+        }));
+      }
+      if (url === '/incidents') {
+        body = JSON.parse(String(init?.body));
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({ id: 'inc-2' }) } as Response);
+      }
+      return Promise.resolve(ok({ data: [] }));
+    });
+
+    render(<S1ThreatList />);
+
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    fireEvent.click(await desktop.findByTestId('s1-promote-t1'));
+
+    await waitFor(() => expect((body as any).orgId).toBe('org-7'));
+    expect((body as any).classification).toBe('sentinelone-threat');
+    expect(navigateTo).toHaveBeenCalledWith('/incidents/inc-2');
+    expect(navigateTo).not.toHaveBeenCalledWith('/devices/dev-9');
+  });
+
+  it('renders no remediation buttons for non-active threats', async () => {
     routeFetch([
       {
         id: 't9',
@@ -176,6 +213,7 @@ describe('S1ThreatList', () => {
     expect(desktop.queryByTestId('s1-threat-kill-t9')).toBeNull();
     expect(desktop.queryByTestId('s1-threat-quarantine-t9')).toBeNull();
     expect(desktop.queryByTestId('s1-threat-rollback-t9')).toBeNull();
+    expect(desktop.getByTestId('s1-promote-t9')).toBeInTheDocument();
   });
 
   it('shows empty and error states', async () => {

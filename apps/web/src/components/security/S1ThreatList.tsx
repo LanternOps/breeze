@@ -5,6 +5,7 @@ import { navigateTo } from '@/lib/navigation';
 import { cn, friendlyFetchError } from '../../lib/utils';
 import { handleActionError } from '../../lib/runAction';
 import { fetchS1Threats, runS1ThreatAction, type S1Threat, type S1ThreatActionType } from '../../lib/edr';
+import { promoteToIncident, s1ThreatToIncident } from '../../lib/incidents';
 import { formatDateTime } from '../../lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField } from '../shared/ResponsiveTable';
 
@@ -57,6 +58,7 @@ export default function S1ThreatList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [actingId, setActingId] = useState<string | null>(null);
+  const [promotingId, setPromotingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -101,6 +103,18 @@ export default function S1ThreatList() {
     if (threat.deviceId) navigateTo(`/devices/${threat.deviceId}`);
   };
 
+  const promote = async (threat: S1Threat) => {
+    setPromotingId(threat.id);
+    try {
+      const { id } = await promoteToIncident(s1ThreatToIncident(threat));
+      navigateTo(`/incidents/${id}`);
+    } catch (err) {
+      handleActionError(err, 'Failed to create incident');
+    } finally {
+      setPromotingId(null);
+    }
+  };
+
   const renderSeverityBadge = (threat: S1Threat) => (
     <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold', badgeClass(threat.severity, severityBadge))}>
       {threat.severity ?? 'unknown'}
@@ -114,10 +128,9 @@ export default function S1ThreatList() {
   );
 
   const renderActions = (threat: S1Threat) => {
-    if (threat.status !== 'active') return <span className="text-xs text-muted-foreground">-</span>;
     return (
       <div className="flex flex-wrap items-center gap-2">
-        {(['kill', 'quarantine', 'rollback'] as const).map((action) => (
+        {threat.status === 'active' && (['kill', 'quarantine', 'rollback'] as const).map((action) => (
           <button
             key={action}
             type="button"
@@ -133,6 +146,19 @@ export default function S1ThreatList() {
             {action}
           </button>
         ))}
+        <button
+          type="button"
+          data-testid={`s1-promote-${threat.id}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            void promote(threat);
+          }}
+          disabled={promotingId === threat.id}
+          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
+        >
+          {promotingId === threat.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Promote to Incident
+        </button>
       </div>
     );
   };

@@ -6,6 +6,7 @@ const navigateTo = vi.fn();
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import HuntressIncidentList from './HuntressIncidentList';
 
@@ -15,6 +16,7 @@ function ok(body: unknown) {
 
 type IncidentFixture = {
   id: string;
+  orgId?: string;
   deviceId?: string | null;
   deviceHostname?: string | null;
   title: string;
@@ -87,5 +89,46 @@ describe('HuntressIncidentList', () => {
       expect(params.get('status')).toBe('open');
       expect(params.get('orgId')).toBeNull();
     });
+  });
+
+  it('promotes an incident to an incident record and navigates', async () => {
+    let body: unknown;
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/huntress/incidents')) {
+        return Promise.resolve(ok({
+          data: [
+            {
+              id: 'i1',
+              orgId: 'org-3',
+              deviceId: 'dev-3',
+              deviceHostname: 'SRV-2',
+              title: 'Persistence',
+              severity: 'critical',
+              status: 'open',
+              category: 'malware',
+              reportedAt: '2026-06-21T00:00:00Z',
+            },
+          ],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        }));
+      }
+      if (url === '/incidents') {
+        body = JSON.parse(String(init?.body));
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({ id: 'inc-3' }) } as Response);
+      }
+      return Promise.resolve(ok({ data: [] }));
+    });
+
+    render(<HuntressIncidentList />);
+
+    const desktop = within(await screen.findByTestId('responsive-table-desktop'));
+    fireEvent.click(await desktop.findByTestId('huntress-promote-i1'));
+
+    await waitFor(() => expect((body as any).orgId).toBe('org-3'));
+    expect((body as any).classification).toBe('huntress-incident');
+    expect(navigateTo).toHaveBeenCalledWith('/incidents/inc-3');
+    expect(navigateTo).not.toHaveBeenCalledWith('/devices/dev-3');
   });
 });
