@@ -11,6 +11,7 @@ import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
 } from '../../services/configurationPolicy';
+import { getPolicyBaselineDefaults } from '../../services/policyBaselineDefaults';
 import { diffSchema, deviceIdParamSchema } from './schemas';
 
 export const resolutionRoutes = new Hono();
@@ -36,6 +37,14 @@ async function canAccessDeviceSite(c: Context, deviceId: string): Promise<{ ok: 
   return { ok: true };
 }
 
+// GET /baseline — static "Breeze Defaults" registry (read-only, no tenant data)
+resolutionRoutes.get(
+  '/baseline',
+  requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyRead,
+  (c) => c.json({ features: getPolicyBaselineDefaults() })
+);
+
 // GET /effective/:deviceId — resolve effective configuration
 resolutionRoutes.get(
   '/effective/:deviceId',
@@ -54,7 +63,7 @@ resolutionRoutes.get(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const result = await resolveEffectiveConfig(deviceId, auth);
+    const result = await resolveEffectiveConfig(deviceId, auth, { includeBaseline: true });
     if (!result) return c.json({ error: 'Device not found or access denied' }, 404);
 
     return c.json(result);
