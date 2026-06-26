@@ -6,8 +6,10 @@ import {
   fetchS1Threats,
   fetchHuntressIncidents,
   isolateDevice,
+  runS1ThreatAction,
   type S1Threat,
   type HuntressIncident,
+  type S1ThreatActionType,
 } from '../../lib/edr';
 import { ActionError } from '../../lib/runAction';
 
@@ -37,6 +39,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   const [error, setError] = useState<string>();
   const [confirmIsolate, setConfirmIsolate] = useState(false);
   const [isolating, setIsolating] = useState(false);
+  const [actingId, setActingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,6 +69,18 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
       // non-401 ActionError already toasted by runAction
     } finally {
       setIsolating(false);
+    }
+  };
+
+  const doThreatAction = async (threatId: string, action: S1ThreatActionType) => {
+    setActingId(threatId);
+    try {
+      await runS1ThreatAction(orgId, threatId, action);
+      await load();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -111,6 +126,22 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
                   </div>
                   {t.filePath && <p className="mt-1 text-xs text-muted-foreground" title={t.filePath}>{t.filePath}</p>}
                   <p className="mt-1 text-xs text-muted-foreground">Detected: {fmt(t.detectedAt, timezone)}</p>
+                  {t.status === 'active' && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      {(['kill', 'quarantine', 'rollback'] as const).map((action) => (
+                        <button
+                          key={action}
+                          type="button"
+                          data-testid={`edr-threat-${action}-${t.id}`}
+                          onClick={() => doThreatAction(t.id, action)}
+                          disabled={actingId === t.id}
+                          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium capitalize hover:bg-muted disabled:opacity-60"
+                        >
+                          {actingId === t.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{action}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

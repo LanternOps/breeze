@@ -59,3 +59,18 @@ describe('DeviceEdrPanel isolate', () => {
     await waitFor(() => expect(isolateBody).toEqual({ orgId: 'org-1', deviceIds: ['dev-1'], isolate: true }));
   });
 });
+
+describe('DeviceEdrPanel threat actions', () => {
+  it('POSTs /s1/threat-action with the threat row id', async () => {
+    let body: unknown;
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [{ id: 't1', threatName: 'Emotet', severity: 'high', status: 'active', detectedAt: '2026-06-20T00:00:00Z' }], pagination: { total: 1, limit: 50, offset: 0 } }));
+      if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
+      if (url === '/s1/threat-action') { body = JSON.parse(String(init?.body)); return Promise.resolve(ok({ data: {} })); }
+      return Promise.resolve(ok({ data: [] }));
+    });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    fireEvent.click(await screen.findByTestId('edr-threat-quarantine-t1'));
+    await waitFor(() => expect(body).toEqual({ orgId: 'org-1', action: 'quarantine', threatIds: ['t1'] }));
+  });
+});
