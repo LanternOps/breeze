@@ -5,9 +5,10 @@ import BillablesExportCard from './BillablesExportCard';
 import TicketStatusesTab from './TicketStatusesTab';
 import TicketPrioritiesTab from './TicketPrioritiesTab';
 import InboundEmailCard from './InboundEmailCard';
+import CannedResponsesCard from './CannedResponsesCard';
 import { getJwtClaims } from '../../lib/authScope';
 
-const VALID_TABS = ['statuses', 'priorities', 'categories', 'export', 'inbound'] as const;
+const VALID_TABS = ['statuses', 'priorities', 'categories', 'export', 'inbound', 'canned'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
 // Inbound email settings + queue are a partner-scoped surface (the queue routes
@@ -60,8 +61,17 @@ export default function TicketingSettingsTabs({ syncHash = true }: { syncHash?: 
   // Sidebar gates other partner-only settings surfaces). Decoded client-side as
   // a UX hint only — the server re-checks every request.
   const canManageInbound = useMemo(() => getJwtClaims().scope === 'partner', []);
+  // Canned responses (like inbound) are a partner-scoped surface — the CRUD routes
+  // require partner scope server-side — so they share the same client gate.
   const TABS = useMemo(
-    () => (canManageInbound ? [...BASE_TABS, { id: 'inbound' as Tab, label: 'Inbound Email' }] : BASE_TABS),
+    () =>
+      canManageInbound
+        ? [
+            ...BASE_TABS,
+            { id: 'inbound' as Tab, label: 'Inbound Email' },
+            { id: 'canned' as Tab, label: 'Canned responses' }
+          ]
+        : BASE_TABS,
     [canManageInbound]
   );
 
@@ -120,6 +130,12 @@ export default function TicketingSettingsTabs({ syncHash = true }: { syncHash?: 
       {activeTab === 'inbound' && canManageInbound && (
         <div data-testid="ticketing-tab-panel-inbound">
           <InboundEmailCard />
+        </div>
+      )}
+
+      {activeTab === 'canned' && canManageInbound && (
+        <div data-testid="ticketing-tab-panel-canned">
+          <CannedResponsesCard />
         </div>
       )}
     </div>
