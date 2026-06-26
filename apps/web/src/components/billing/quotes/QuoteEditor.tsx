@@ -15,6 +15,7 @@ import {
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
+import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
 import DistributorLookup from './DistributorLookup';
 import {
   type QuoteDetail as QuoteDetailData,
@@ -721,6 +722,14 @@ function BlockCard({
                 )
               ) : (
                 <div className="space-y-2">
+                  <CatalogEnrichButton
+                    idSuffix={`quote-${block.id}`}
+                    onApply={(result) => {
+                      const d = result.draft;
+                      setDesc(d.description ? `${d.name} — ${d.description}` : d.name);
+                      setTaxable(d.taxable);
+                    }}
+                  />
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_70px_90px_110px]">
                     <input
                       type="text" placeholder="Description" value={desc}

@@ -15,7 +15,9 @@ import {
   computeMargin, formatMargin, marginTone,
   CATALOG_TYPE_LABELS, CATALOG_TYPE_ORDER,
   type CatalogItem, type CatalogItemType, type CatalogItemDetail, type OrgPriceOverride,
+  type EnrichResult, type EnrichmentProvenance,
 } from '../../lib/api/catalog';
+import CatalogEnrichButton from '../catalog/CatalogEnrichButton';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -85,6 +87,9 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   // Once a *new* item is created we hold its id, so a retry after a partial
   // failure (item saved, components failed) PATCHes instead of creating a dupe.
   const [committedId, setCommittedId] = useState<string | null>(null);
+  // AI-enrichment provenance, stashed when the user auto-fills a NEW item and
+  // persisted under attributes.enrichment on create. Null for plain/edited items.
+  const [enrichment, setEnrichment] = useState<EnrichmentProvenance | null>(null);
   const effectiveId = editId ?? committedId;
 
   const panelRef = useRef<HTMLDivElement>(null);
@@ -272,6 +277,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       unitPrice: priceNum,
       costBasis: costBasis.trim() ? Number(costBasis) : null,
       isBundle,
+      // Persist AI provenance on create only (enrichment is null on edit).
+      ...(enrichment ? { attributes: { enrichment } } : {}),
     };
 
     setSaving(true);
@@ -307,7 +314,16 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     } finally {
       setSaving(false);
     }
-  }, [saving, name, priceValid, isBundle, components, itemType, sku, priceNum, costBasis, effectiveId, editId, onSaved, onClose]);
+  }, [saving, name, priceValid, isBundle, components, itemType, sku, priceNum, costBasis, enrichment, effectiveId, editId, onSaved, onClose]);
+
+  // Auto-fill a NEW item from the web: fill the fields this form actually edits
+  // (name + type) and stash provenance. Price is never auto-set — the button shows
+  // a guidance hint and the user enters the real price.
+  const applyEnrichment = useCallback((result: EnrichResult) => {
+    setName(result.draft.name);
+    setItemType(result.draft.itemType);
+    setEnrichment(result.provenance);
+  }, []);
 
   if (!open || typeof document === 'undefined') return null;
 
@@ -351,6 +367,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
         {/* Body (scrolls) */}
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+          {/* AI auto-fill — new items only */}
+          {!editId && canWrite && (
+            <div className="rounded-md border border-dashed p-3" data-testid="catalog-form-enrich">
+              <p className="mb-2 text-xs font-medium text-muted-foreground">Auto-fill a new item from the web</p>
+              <CatalogEnrichButton idSuffix="drawer" hint={itemType} onApply={applyEnrichment} />
+            </div>
+          )}
           {/* Type — segmented */}
           <div>
             <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Type</span>
