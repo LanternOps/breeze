@@ -88,6 +88,20 @@ describe('resolveEdrInstaller — Huntress (db)', () => {
     });
     expect(result).toEqual({ error: 'Huntress integration is disconnected' });
   });
+
+  it('fails clean when the deploy account key has not been configured', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    await seedHuntress({ acctKey: null, orgKey: 'ok', orgId: org.id, partnerId: partner.id, isActive: true });
+
+    const result = await resolveEdrInstaller({
+      provider: 'huntress',
+      orgId: org.id,
+      downloadUrlTemplate: URL_TPL,
+      silentInstallArgsTemplate: ARGS_TPL,
+    });
+    expect(result).toEqual({ error: 'Huntress account key not configured — add it in the Huntress integration settings' });
+  });
 });
 
 const S1_ARGS_TPL = 'SITE_TOKEN={s1_site_token} /q /NORESTART';
@@ -157,5 +171,36 @@ describe('resolveEdrInstaller — SentinelOne (db)', () => {
       silentInstallArgsTemplate: S1_ARGS_TPL,
     });
     expect(result).toEqual({ error: 'Organization not mapped to SentinelOne' });
+  });
+
+  it('fails clean when the stored site token cannot be decrypted (corrupt/garbage)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    // Insert a registration_token that was NOT produced by encryptSecret, so
+    // decryptForColumn throws — the resolver must convert that to a clean error.
+    await withSystemDbAccessContext(async () => {
+      const [integration] = await db.insert(s1Integrations).values({
+        partnerId: partner.id,
+        name: 'Test S1',
+        apiTokenEncrypted: encryptSecret('dummy-token', { aad: 's1_integrations.api_token_encrypted' })!,
+        managementUrl: 'https://example.sentinelone.net',
+        isActive: true,
+      }).returning({ id: s1Integrations.id });
+      await db.insert(s1OrgMappings).values({
+        integrationId: integration!.id,
+        partnerId: partner.id,
+        s1SiteId: `site-corrupt-${Date.now()}`,
+        orgId: org.id,
+        registrationToken: 'enc:v3:not-a-real-ciphertext',
+      });
+    });
+
+    const result = await resolveEdrInstaller({
+      provider: 'sentinelone',
+      orgId: org.id,
+      downloadUrlTemplate: null,
+      silentInstallArgsTemplate: S1_ARGS_TPL,
+    });
+    expect(result).toEqual({ error: 'SentinelOne site token could not be decrypted — reconnect the integration' });
   });
 });
