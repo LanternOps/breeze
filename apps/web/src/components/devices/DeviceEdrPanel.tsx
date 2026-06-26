@@ -109,7 +109,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
+        <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" data-testid="edr-error">{error}</div>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">

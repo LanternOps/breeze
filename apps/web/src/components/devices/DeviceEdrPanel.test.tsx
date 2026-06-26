@@ -74,3 +74,23 @@ describe('DeviceEdrPanel threat actions', () => {
     await waitFor(() => expect(body).toEqual({ orgId: 'org-1', action: 'quarantine', threatIds: ['t1'] }));
   });
 });
+
+describe('DeviceEdrPanel error + status gating', () => {
+  it('shows the error banner when a read fails', async () => {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url.startsWith('/s1/threats')) return Promise.resolve({ ok: false, status: 500, statusText: 'Server Error', json: async () => ({}) } as Response);
+      if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
+      return Promise.resolve(ok({ data: [] }));
+    });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('edr-error')).toBeInTheDocument();
+  });
+
+  it('renders no action buttons for non-active threats', async () => {
+    routeFetch({ s1: [{ id: 't9', threatName: 'Quarantined item', severity: 'low', status: 'quarantined', detectedAt: '2026-06-20T00:00:00Z' }], huntress: [] });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await screen.findByText('Quarantined item');
+    expect(screen.queryByTestId('edr-threat-kill-t9')).toBeNull();
+    expect(screen.queryByTestId('edr-threat-quarantine-t9')).toBeNull();
+  });
+});
