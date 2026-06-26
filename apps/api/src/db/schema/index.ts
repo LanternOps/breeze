@@ -82,6 +82,7 @@ export * from './manifestSigningKeys';
 export * from './refreshTokenFamilies';
 export * from './tickets';
 export * from './ticketConfig';
+export * from './ticketResponseTemplates';
 export * from './catalog';
 export * from './timeTracking';
 export * from './invoices';
