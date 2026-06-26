@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import NetworkChangesPanel from './NetworkChangesPanel';
@@ -256,6 +256,54 @@ describe('NetworkChangesPanel empty state', () => {
     expect(desktop().getByText('No change events match the selected filters.')).toBeInTheDocument();
     expect(desktop().queryByTestId('changes-no-profiles-hint')).not.toBeInTheDocument();
     expect(desktop().queryByTestId('changes-alerting-hint')).not.toBeInTheDocument();
+  });
+
+  it('does not flash the generic empty state before the profiles fetch settles', async () => {
+    // Profiles are deferred so the changes fetch resolves (empty) first — the
+    // race that previously flashed the generic message before the setup CTA.
+    let resolveProfiles!: (response: Response) => void;
+    const profilesPromise = new Promise<Response>((resolve) => {
+      resolveProfiles = resolve;
+    });
+
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.startsWith('/discovery/profiles')) {
+        return profilesPromise;
+      }
+      if (url.startsWith('/devices')) {
+        return Promise.resolve(jsonResponse({ data: [] }));
+      }
+      if (url.startsWith('/network/changes')) {
+        return Promise.resolve(jsonResponse({ data: [] }));
+      }
+      return Promise.resolve(jsonResponse({ data: [] }));
+    });
+
+    render(<NetworkChangesPanel {...baseProps} />);
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/network/changes'));
+    });
+    // Flush the changes-fetch resolution microtasks; profiles stay pending.
+    await act(async () => {});
+
+    // Changes settled empty + profiles still in flight → keep the loading row,
+    // never the generic message and never the setup CTA.
+    expect(desktop().getByText('Loading network changes...')).toBeInTheDocument();
+    expect(
+      desktop().queryByText('No change events match the selected filters.')
+    ).not.toBeInTheDocument();
+    expect(desktop().queryByTestId('changes-no-profiles-hint')).not.toBeInTheDocument();
+
+    // Profiles resolve empty → the setup CTA replaces the loading row.
+    await act(async () => {
+      resolveProfiles(jsonResponse({ data: [] }));
+    });
+
+    await waitFor(() => {
+      expect(desktop().getByTestId('changes-no-profiles-hint')).toBeInTheDocument();
+    });
+    expect(desktop().queryByText('Loading network changes...')).not.toBeInTheDocument();
   });
 
   it('shows a setup prompt when no discovery profiles exist', async () => {
