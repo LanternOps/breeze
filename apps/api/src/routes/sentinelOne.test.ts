@@ -1249,6 +1249,18 @@ describe('sentinel one routes', () => {
         } as any);
     }
 
+    it('GET /threats rejects system scope without explicit partnerId', async () => {
+      authState.scope = 'system';
+      authState.orgId = undefined;
+      authState.partnerId = undefined;
+      authState.accessibleOrgIds = [];
+      authState.canAccessOrg = () => false;
+      authState.orgCondition = () => undefined as any;
+
+      const res = await app.request('/s1/threats');
+      expect(res.status).toBe(400);
+    });
+
     it('GET /threats lists across all partner orgs for a partner-scoped caller without orgId', async () => {
       authState.scope = 'partner';
       authState.orgId = undefined;

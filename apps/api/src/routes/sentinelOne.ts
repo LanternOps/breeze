@@ -631,6 +631,7 @@ sentinelOneRoutes.get(
     }
     withOrgCondition(conditions, auth.orgCondition(s1Threats.orgId));
 
+    // System scope without an explicit partnerId is rejected by resolvePartnerId below (mirrors huntress.ts). Partner scope is fenced by orgCondition + the partner's integrationId set.
     if (!scopedOrgId) {
       const partnerResult = resolvePartnerId(auth, query.partnerId);
       if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
