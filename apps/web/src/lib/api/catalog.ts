@@ -36,6 +36,33 @@ export interface CatalogItem {
   updatedAt: string;
 }
 
+/** AI-enrichment draft returned by `POST /catalog/enrich` (descriptive fields only — never a price). */
+export interface EnrichDraft {
+  name: string;
+  description: string | null;
+  itemType: CatalogItemType;
+  unitOfMeasure: string;
+  taxable: boolean;
+  taxCategory: string | null;
+}
+
+/** Provenance recorded for an AI-enriched item; stored under `attributes.enrichment` on save. */
+export interface EnrichmentProvenance {
+  source: 'ai_enrich';
+  model: string;
+  query: string;
+  suggestion: Record<string, unknown>;
+  enrichedAt: string;
+  enrichedBy: string;
+}
+
+/** Shape of `POST /catalog/enrich` — `{ data: EnrichResult }`. */
+export interface EnrichResult {
+  draft: EnrichDraft;
+  priceGuidance: string | null;
+  provenance: EnrichmentProvenance;
+}
+
 /** A row from `catalog_bundle_components` (returned by `GET /catalog/:id`.`components`). */
 export interface BundleComponentRow {
   id: string;
@@ -115,6 +142,17 @@ export function getCatalogItem(id: string): Promise<Response> {
 
 export function createCatalogItem(body: unknown): Promise<Response> {
   return fetchWithAuth('/catalog', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
+}
+
+export function enrichCatalogItemRequest(
+  query: string,
+  hint?: CatalogItemType,
+): Promise<Response> {
+  return fetchWithAuth('/catalog/enrich', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ query, ...(hint ? { hint } : {}) }),
+  });
 }
 
 export function updateCatalogItem(id: string, body: unknown): Promise<Response> {
