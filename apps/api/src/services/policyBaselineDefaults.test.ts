@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CONFIG_FEATURE_TYPES } from './configurationPolicy';
 import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline } from './policyBaselineDefaults';
 import { PAM_DEFAULTS } from '../routes/agents/pamSettings';
+import { configFeatureTypeEnum } from '../db/schema/configurationPolicies';
 
 describe('policyBaselineDefaults', () => {
   it('has exactly one entry per ConfigFeatureType', () => {
@@ -46,5 +47,45 @@ describe('policyBaselineDefaults', () => {
 describe('pam defaults single source of truth', () => {
   it('PAM_DEFAULTS equals the canonical pam baseline', () => {
     expect(PAM_DEFAULTS).toEqual(getPamBaseline());
+  });
+});
+
+describe('getRemoteAccessBaseline IS_HOSTED clipboard branching', () => {
+  it('clipboardHostToViewer is false when IS_HOSTED=true', async () => {
+    const saved = process.env.IS_HOSTED;
+    try {
+      process.env.IS_HOSTED = 'true';
+      vi.resetModules();
+      const { getRemoteAccessBaseline: fresh } = await import('./policyBaselineDefaults');
+      const s = fresh();
+      expect(s.clipboardHostToViewer).toBe(false);
+      expect(s.clipboardViewerToHost).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = saved;
+      vi.resetModules();
+    }
+  });
+
+  it('clipboardHostToViewer is true when IS_HOSTED is unset', async () => {
+    const saved = process.env.IS_HOSTED;
+    try {
+      delete process.env.IS_HOSTED;
+      vi.resetModules();
+      const { getRemoteAccessBaseline: fresh } = await import('./policyBaselineDefaults');
+      const s = fresh();
+      expect(s.clipboardHostToViewer).toBe(true);
+      expect(s.clipboardViewerToHost).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = saved;
+      vi.resetModules();
+    }
+  });
+});
+
+describe('CONFIG_FEATURE_TYPES parity with DB enum', () => {
+  it('matches configFeatureTypeEnum.enumValues exactly', () => {
+    expect([...CONFIG_FEATURE_TYPES].sort()).toEqual([...configFeatureTypeEnum.enumValues].sort());
   });
 });

@@ -37,7 +37,13 @@ export default function BreezeDefaultsPage() {
       const res = await fetchWithAuth('/configuration-policies/baseline');
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
-      setFeatures(Array.isArray(data.features) ? data.features : []);
+      // Surface a malformed 200 (missing/non-array features) as an error rather
+      // than silently rendering an empty page — this endpoint always returns a
+      // populated array, so a non-array means schema drift or a broken response.
+      if (!Array.isArray(data.features)) {
+        throw new Error('Received an invalid response from the server.');
+      }
+      setFeatures(data.features);
     } catch (err) {
       setError(friendlyFetchError(err));
     } finally {

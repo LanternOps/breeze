@@ -5,7 +5,8 @@
  * and provides granular capability checks. Used by remote session, tunnel,
  * system tool, and WebSocket routes to block access when policy disables it.
  *
- * When no policy is assigned, all capabilities default to enabled (permissive).
+ * When no policy is assigned, all capabilities default to enabled (permissive) —
+ * except the hosted clipboard host→viewer direction; see policyBaselineDefaults.ts.
  */
 
 import { resolveEffectiveConfig } from './configurationPolicy';
@@ -48,9 +49,9 @@ export interface PolicyCheckResult {
 
 export type RemoteCapability = 'webrtcDesktop' | 'vncRelay' | 'remoteTools' | 'proxy';
 
-// Applied defaults for an unassigned device live in the canonical baseline
-// module (single source of truth, #1725). isHosted-dependent clipboard default
-// is encoded there.
+// Applied defaults for an unassigned device — including the isHosted-dependent
+// clipboard direction (Finding #7) — live in policyBaselineDefaults.ts
+// (single source of truth, #1725).
 const DEFAULTS: RemoteAccessSettings = getRemoteAccessBaseline();
 
 const CAPABILITY_LABELS: Record<RemoteCapability, string> = {

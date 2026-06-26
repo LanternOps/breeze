@@ -66,4 +66,16 @@ describe('DeviceEffectiveConfigTab baseline labeling', () => {
     );
     expect(screen.queryByText(/2 assigned/i)).not.toBeInTheDocument();
   });
+
+  it('omits the synthetic default node from the inheritance-chain table (no dead link)', async () => {
+    const { container } = render(<DeviceEffectiveConfigTab deviceId="dev-2" />);
+    // The real org policy links into the chain table...
+    await waitFor(() =>
+      expect(container.querySelector('a[href="/configuration-policies/pol-org"]')).toBeTruthy(),
+    );
+    // ...but the synthetic baseline node must NOT render a (broken) policy link.
+    expect(
+      container.querySelector('a[href="/configuration-policies/breeze-defaults"]'),
+    ).toBeNull();
+  });
 });

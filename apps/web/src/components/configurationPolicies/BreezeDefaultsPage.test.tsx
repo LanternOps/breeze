@@ -35,4 +35,12 @@ describe('BreezeDefaultsPage', () => {
     expect(links.length).toBeGreaterThanOrEqual(2);
     expect(links[0]).toHaveAttribute('href', expect.stringContaining('/configuration-policies/new'));
   });
+
+  it('summarizes inlineSettings into human-readable lines', async () => {
+    render(<BreezeDefaultsPage />);
+    // The remote_access card's boolean settings render via summarize() as
+    // "<key>: on" — exercises the boolean→on/off + key-humanization branch.
+    await waitFor(() => expect(screen.getByText('Remote Access')).toBeInTheDocument());
+    expect(screen.getByText('webrtc desktop: on')).toBeInTheDocument();
+  });
 });

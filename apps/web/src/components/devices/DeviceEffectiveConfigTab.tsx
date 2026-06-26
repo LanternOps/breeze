@@ -206,9 +206,13 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
   }
 
   const { features, inheritanceChain } = data;
+  // The synthetic "Breeze Defaults" layer (level 'default') is excluded from the
+  // assigned-policy count AND the inheritance-chain table below — it is not a real
+  // assigned policy, has no policy page to link to, and lists feature types this
+  // tab does not render. Baseline coverage is surfaced per-card ("Not enforced —
+  // Breeze Defaults") and on the dedicated /configuration-policies/defaults page.
   const assignedChain = inheritanceChain.filter((e) => e.level !== 'default');
   const configuredTypes = ALL_FEATURE_TYPES.filter((ft) => features[ft]);
-  const unconfiguredTypes = ALL_FEATURE_TYPES.filter((ft) => !features[ft]);
 
   return (
     <div className="space-y-6">
@@ -240,9 +244,13 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
           const settings = summarizeSettings(
             feature.inlineSettings as Record<string, unknown> | null
           );
-          // A feature resolving from the virtual baseline (sourceLevel 'default')
-          // is not enforced for any of the types this tab tracks — say so
-          // explicitly so a baseline card never reads as actively "configured".
+          // Safe ONLY while ALL_FEATURE_TYPES excludes remote_access/pam (the two
+          // applied baselines). For every type this tab tracks, a baseline source
+          // ('default') means "not enforced", so we label it as such instead of
+          // letting it read as actively "configured". If remote_access/pam are
+          // ever added to this tab, gate this on the feature being non-applied
+          // rather than on sourceLevel alone, or an applied default (e.g. Remote
+          // Desktop ON) would be mislabeled "Not enforced".
           const isBaseline = feature.sourceLevel === 'default';
 
           return (
@@ -291,31 +299,11 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
             </div>
           );
         })}
-
-        {/* Unconfigured feature placeholders */}
-        {unconfiguredTypes.map((ft) => {
-          const meta = FEATURE_META[ft];
-          return (
-            <div
-              key={ft}
-              className="rounded-lg border border-dashed bg-card/50 p-5 shadow-sm opacity-60"
-            >
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                  {meta.icon}
-                </div>
-                <div>
-                  <h4 className="font-semibold text-muted-foreground">{meta.label}</h4>
-                  <p className="mt-0.5 text-xs text-muted-foreground">No policy assigned</p>
-                </div>
-              </div>
-            </div>
-          );
-        })}
       </div>
 
-      {/* Inheritance chain */}
-      {inheritanceChain.length > 0 && (
+      {/* Inheritance chain — real assigned policies only (the synthetic
+          "Breeze Defaults" node is excluded; see assignedChain above). */}
+      {assignedChain.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-sm">
           <h4 className="font-semibold mb-3">Inheritance Chain</h4>
           <p className="text-xs text-muted-foreground mb-4">
@@ -333,7 +321,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {inheritanceChain.map((entry) => (
+                {assignedChain.map((entry) => (
                   <tr key={`${entry.policyId}-${entry.level}-${entry.targetId}`} className="text-sm">
                     <td className="px-4 py-3 text-muted-foreground">{entry.priority}</td>
                     <td className="px-4 py-3">

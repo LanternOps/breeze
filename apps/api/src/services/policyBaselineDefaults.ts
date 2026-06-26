@@ -24,8 +24,13 @@ export interface BaselineEntry {
 }
 
 // Hosted multi-tenant SaaS defaults the silent-exfil direction (remote host
-// clipboard → operator viewer) OFF. Self-hosted preserves the historical
-// bidirectional default. Mirrors the rationale in remoteAccessPolicy.ts.
+// clipboard → operator viewer) OFF, so an MSP operator can't passively harvest
+// whatever a customer copies during a session. Operator→host paste stays on for
+// usability. Self-hosted (single-tenant, IS_HOSTED!='true') preserves the
+// historical bidirectional default so an upgrade doesn't silently change
+// behavior for an admin running their own instance. There's no dedicated
+// clipboard-direction UI yet (one is being added separately), but both
+// defaults are overridable via an explicit `remote_access` policy. Finding #7.
 const isHosted = process.env.IS_HOSTED === 'true';
 
 export function getRemoteAccessBaseline(): RemoteAccessSettings {

@@ -84,6 +84,8 @@ const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   partner: 1,
 };
 
+const BREEZE_DEFAULTS_SENTINEL = 'breeze-defaults';
+
 interface ResolvedFeature {
   featureType: ConfigFeatureType;
   featurePolicyId: string | null;
@@ -1352,6 +1354,10 @@ async function resolveEffectiveConfigWithExecutor(
     featureTypes: Array.from(entry.featureTypes),
   }));
 
+  // Synthesizes the virtual bottom-of-hierarchy "Breeze Defaults" layer for every
+  // feature type with no real winner. The BREEZE_DEFAULTS_SENTINEL ids, priority 0,
+  // and sourceLevel:'default' are sentinels the UI keys off to exclude this node from
+  // assigned-policy counts. Opt-in so existing callers are unaffected.
   if (opts?.includeBaseline) {
     const synthesized: ConfigFeatureType[] = [];
     for (const entry of getPolicyBaselineDefaults()) {
@@ -1361,8 +1367,8 @@ async function resolveEffectiveConfigWithExecutor(
         featurePolicyId: null,
         inlineSettings: entry.inlineSettings,
         sourceLevel: 'default',
-        sourceTargetId: 'breeze-defaults',
-        sourcePolicyId: 'breeze-defaults',
+        sourceTargetId: BREEZE_DEFAULTS_SENTINEL,
+        sourcePolicyId: BREEZE_DEFAULTS_SENTINEL,
         sourcePolicyName: 'Breeze Defaults',
         sourcePriority: 0,
       };
@@ -1371,8 +1377,8 @@ async function resolveEffectiveConfigWithExecutor(
     if (synthesized.length > 0) {
       inheritanceChain.push({
         level: 'default',
-        targetId: 'breeze-defaults',
-        policyId: 'breeze-defaults',
+        targetId: BREEZE_DEFAULTS_SENTINEL,
+        policyId: BREEZE_DEFAULTS_SENTINEL,
         policyName: 'Breeze Defaults',
         priority: 0,
         featureTypes: synthesized,
