@@ -65,7 +65,10 @@ export async function promoteToIncident(input: CreateIncidentInput): Promise<{ i
         body: JSON.stringify(input),
       }),
     errorFallback: 'Failed to create incident',
-    successMessage: 'Incident created',
+    // No successMessage: the caller navigates to /incidents/{id} on success,
+    // and that view transition unmounts the ToastContainer before a toast
+    // would render (it would be silently dropped). The navigation is the
+    // confirmation.
     parseSuccess: (data) => data as { id: string },
   });
 }

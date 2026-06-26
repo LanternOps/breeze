@@ -172,6 +172,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
                       disabled={promotingId === t.id}
                       className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
                     >
+                      {promotingId === t.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                       Promote to Incident
                     </button>
                   </div>
@@ -209,6 +210,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
                       disabled={promotingId === i.id}
                       className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
                     >
+                      {promotingId === i.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                       Promote to Incident
                     </button>
                   </div>
