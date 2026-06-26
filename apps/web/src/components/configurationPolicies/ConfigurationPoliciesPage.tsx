@@ -118,13 +118,22 @@ export default function ConfigurationPoliciesPage() {
             Bundle feature settings into reusable policies and assign them across your hierarchy.
           </p>
         </div>
-        <a
-          href="/configuration-policies/new"
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          <Plus className="h-4 w-4" />
-          New Policy
-        </a>
+        <div className="flex items-center gap-2">
+          <a
+            href="/configuration-policies/defaults"
+            className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
+          >
+            <Layers className="h-4 w-4" />
+            Breeze Defaults
+          </a>
+          <a
+            href="/configuration-policies/new"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" />
+            New Policy
+          </a>
+        </div>
       </div>
 
       {error && (
