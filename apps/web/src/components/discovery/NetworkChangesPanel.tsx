@@ -90,6 +90,7 @@ export default function NetworkChangesPanel({
 }: NetworkChangesPanelProps) {
   const [changes, setChanges] = useState<NetworkChangeEvent[]>([]);
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [filters, setFilters] = useState<FilterState>(() => createDefaultFilters(currentSiteId));
   const [loading, setLoading] = useState(true);
@@ -107,6 +108,7 @@ export default function NetworkChangesPanel({
   }, [currentSiteId]);
 
   const fetchProfiles = useCallback(async () => {
+    setProfilesLoaded(false);
     const params = new URLSearchParams();
     if (currentOrgId) params.set('orgId', currentOrgId);
     const query = params.toString();
@@ -146,6 +148,7 @@ export default function NetworkChangesPanel({
       .filter((row: ProfileOption | null): row is ProfileOption => row !== null);
 
     setProfiles(mapped);
+    setProfilesLoaded(true);
   }, [currentOrgId]);
 
   const fetchDevices = useCallback(async () => {
@@ -468,8 +471,12 @@ export default function NetworkChangesPanel({
     </div>
   );
 
+  const genericEmptyState = (
+    <span className="text-sm text-muted-foreground">No change events match the selected filters.</span>
+  );
+
   const renderEmptyState = () =>
-    profiles.length === 0 ? (
+    !profilesLoaded ? genericEmptyState : profiles.length === 0 ? (
       <div className="mx-auto max-w-xl space-y-3 text-sm text-muted-foreground" data-testid="changes-no-profiles-hint">
         <div className="space-y-1">
           <p className="font-medium text-foreground">Set up a network discovery profile to start tracking changes.</p>
@@ -500,9 +507,7 @@ export default function NetworkChangesPanel({
           settings (Profiles tab) to start tracking network changes.
         </p>
       </div>
-    ) : (
-      <span className="text-sm text-muted-foreground">No change events match the selected filters.</span>
-    );
+    ) : genericEmptyState;
 
   return (
     <div className="space-y-6">

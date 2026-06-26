@@ -22,6 +22,14 @@ function jsonResponse(body: unknown): Response {
   } as unknown as Response;
 }
 
+function errorResponse(body: unknown, status = 500): Response {
+  return {
+    ok: false,
+    status,
+    json: async () => body
+  } as unknown as Response;
+}
+
 type AlertSettingsSeed = {
   enabled?: boolean;
   alertOnNew?: boolean;
@@ -39,9 +47,12 @@ type ProfileSeed = {
 // A profile that actually records changes: master switch on + a recording toggle.
 const RECORDING: AlertSettingsSeed = { enabled: true, alertOnNew: true };
 
-function mockEndpoints(options: { profiles: ProfileSeed[]; changes?: unknown[] }) {
+function mockEndpoints(options: { profiles?: ProfileSeed[]; changes?: unknown[]; profilesError?: boolean }) {
   fetchWithAuthMock.mockImplementation((url: string) => {
     if (url.startsWith('/discovery/profiles')) {
+      if (options.profilesError) {
+        return Promise.resolve(errorResponse({ error: 'Profile metadata unavailable' }));
+      }
       return Promise.resolve(jsonResponse({ data: options.profiles }));
     }
     if (url.startsWith('/devices')) {
@@ -232,6 +243,19 @@ describe('NetworkChangesPanel empty state', () => {
     await waitFor(() => {
       expect(desktop().getByTestId('changes-alerting-hint')).toBeInTheDocument();
     });
+  });
+
+  it('does not show the setup prompt when profile metadata fails to load', async () => {
+    mockEndpoints({ profilesError: true, changes: [] });
+
+    render(<NetworkChangesPanel {...baseProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Profile metadata unavailable')).toBeInTheDocument();
+    });
+    expect(desktop().getByText('No change events match the selected filters.')).toBeInTheDocument();
+    expect(desktop().queryByTestId('changes-no-profiles-hint')).not.toBeInTheDocument();
+    expect(desktop().queryByTestId('changes-alerting-hint')).not.toBeInTheDocument();
   });
 
   it('shows a setup prompt when no discovery profiles exist', async () => {
