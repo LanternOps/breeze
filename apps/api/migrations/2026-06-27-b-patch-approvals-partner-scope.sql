@@ -30,6 +30,11 @@ END $$;
 -- Keep one deterministic winner per (partner_id, patch_id, COALESCE(ring_id,NIL)):
 -- status precedence approved>deferred>rejected>pending, then latest updated_at,
 -- then latest id. Delete the losers and report the count (forensic trail).
+-- No org_id guard needed (unlike step 2): this block reads only
+-- partner_id/patch_id/ring_id/status/updated_at/id, never org_id, so it runs
+-- safely even after org_id has been dropped. On a re-apply of the partner
+-- end-state it's a harmless no-op — the unique index already prevents
+-- duplicate (partner, patch, ring) approvals, so there are no losers to delete.
 DO $$
 DECLARE n bigint;
 BEGIN

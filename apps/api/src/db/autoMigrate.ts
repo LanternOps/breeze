@@ -60,8 +60,8 @@ export const CHECKSUM_RECONCILIATIONS: Record<
   },
   '2026-06-27-b-patch-approvals-partner-scope.sql': {
     from: 'e7047df7bf793525af48e8bd0f6ce9eadee38b8fdb10227bf7b387595fb44384',
-    to: '857bb9005dbdbda33f55295db45a685d7003442414386d94d9cb32e7ceb9f1a0',
-    reason: '#1936: guard patch_approvals org_id backfill for already partner-scoped reruns',
+    to: '83cf9d01bf2030bb1cf063c4624c3847d9eac71ce90ae4d511228a98d14eaca6',
+    reason: '#1936: guard patch_approvals org_id backfill for already partner-scoped reruns; note why step-3 dedup needs no org_id guard',
   },
 };
 
