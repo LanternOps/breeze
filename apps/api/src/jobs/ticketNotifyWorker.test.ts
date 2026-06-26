@@ -37,7 +37,8 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../db/schema', () => ({
   tickets: { id: 'id' },
-  partners: { id: 'id', slug: 'slug', settings: 'settings' },
+  partners: { id: 'id', slug: 'slug', name: 'name', settings: 'settings' },
+  organizations: { id: 'id', name: 'name' },
   userNotifications: {},
   users: { id: 'id' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
@@ -219,10 +220,11 @@ describe('handleTicketEvent', () => {
   });
 
   it('sends a threaded, Auto-Submitted autoresponse on ticket.autoresponse', async () => {
-    // Two selects in order: the ticket row (getTicket), then the partner (slug + settings) row.
+    // Three selects in order: the ticket row, the partner (slug + settings) row, then the org row.
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
-      .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme MSP', settings: {} }])
+      .mockResolvedValueOnce([{ name: 'Jane Co' }]);
 
     await handleTicketEvent({
       type: 'ticket.autoresponse',
@@ -243,7 +245,8 @@ describe('handleTicketEvent', () => {
   it('autoresponse honors the partner self-hosted inbound override as Reply-To', async () => {
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])
-      .mockResolvedValueOnce([{ slug: 'acme', settings: { ticketing: { inbound: { address: 'support@helpdesk.theirmsp.com' } } } }]);
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme MSP', settings: { ticketing: { inbound: { address: 'support@helpdesk.theirmsp.com' } } } }])
+      .mockResolvedValueOnce([{ name: 'Jane Co' }]);
 
     await handleTicketEvent({
       type: 'ticket.autoresponse',
