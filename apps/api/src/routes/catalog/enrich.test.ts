@@ -19,17 +19,6 @@ vi.mock('../../middleware/auth', () => ({
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: { CATALOG_WRITE: { resource: 'catalog', action: 'write' } },
 }));
-vi.mock('@hono/zod-validator', () => ({
-  zValidator: (target: string, schema: { safeParse: (value: unknown) => { success: boolean; data?: unknown; error?: unknown } }) => {
-    return async (c: any, next: () => Promise<void>) => {
-      const value = target === 'json' ? await c.req.json() : {};
-      const parsed = schema.safeParse(value);
-      if (!parsed.success) return c.json({ error: parsed.error }, 400);
-      c.req.valid = () => parsed.data;
-      await next();
-    };
-  },
-}));
 vi.mock('./catalog', () => ({
   catalogActorFrom: () => ({ userId: 'u1', orgId: 'o1' }),
 }));
