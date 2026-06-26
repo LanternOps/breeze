@@ -176,9 +176,14 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
       </div>
 
       {confirmIsolate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edr-isolate-dialog-title"
+        >
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h4 className="text-base font-semibold">Isolate this device?</h4>
+            <h4 id="edr-isolate-dialog-title" className="text-base font-semibold">Isolate this device?</h4>
             <p className="mt-2 text-sm text-muted-foreground">
               SentinelOne will cut the device off the network until you remove isolation. Active sessions will drop.
             </p>

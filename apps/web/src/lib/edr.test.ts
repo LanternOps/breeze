@@ -29,5 +29,8 @@ describe('fetchHuntressIncidents', () => {
     const rows = await fetchHuntressIncidents('org-1', 'dev-1');
     expect(rows).toEqual([{ id: 'i1' }]);
     expect(fetchWithAuth.mock.calls[0][0]).toContain('/huntress/incidents');
+    const url = fetchWithAuth.mock.calls[0][0] as string;
+    expect(url).toContain('orgId=org-1');
+    expect(url).toContain('deviceId=dev-1');
   });
 });
