@@ -250,6 +250,18 @@ describe('getTicketConfig inbound block', () => {
     expect(cfg.inbound.defaultTriageOrgId).toBeNull();
     expect(cfg.inbound.addressOverride).toBeNull();
   });
+  it('surfaces auto-reply subject/body from partner settings, defaulting to null', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { autoresponseSubject: 'Hi {{ticket_number}}', autoresponseBody: 'Body' } } } });
+    const cfg = await getTicketConfig(PARTNER);
+    expect(cfg.inbound.autoresponseSubject).toBe('Hi {{ticket_number}}');
+    expect(cfg.inbound.autoresponseBody).toBe('Body');
+  });
+  it('defaults auto-reply subject/body to null when unset', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: {} } } });
+    const cfg = await getTicketConfig(PARTNER);
+    expect(cfg.inbound.autoresponseSubject).toBeNull();
+    expect(cfg.inbound.autoresponseBody).toBeNull();
+  });
   it('reports domainConfigured=false and empty address when TICKETS_INBOUND_DOMAIN is unset', async () => {
     configRef.current.TICKETS_INBOUND_DOMAIN = undefined;
     enqueueForInbound({ slug: 'acme', settings: {} });

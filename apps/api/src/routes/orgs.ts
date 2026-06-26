@@ -436,6 +436,12 @@ const partnerSettingsSchema = z.object({
       address: z.string().email().optional().or(z.literal('')),
       defaultTriageOrgId: z.string().guid().nullable().optional(),
       autoresponderEnabled: z.boolean().optional(),
+      // NOTE: triageUnknownSenders was already sent by InboundEmailCard but missing
+      // from this schema (closed object → stripped). Add it here while we're in the
+      // object so it actually persists, alongside the new auto-reply fields.
+      triageUnknownSenders: z.boolean().optional(),
+      autoresponseSubject: z.string().max(200).nullable().optional(),
+      autoresponseBody: z.string().max(5000).nullable().optional(),
     }).optional(),
   }).optional(),
 });

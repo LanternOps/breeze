@@ -364,7 +364,11 @@ export async function getTicketConfig(partnerId: string) {
   const slug = partner?.slug ?? '';
   const settings = (partner?.settings as Record<string, unknown> | null) ?? {};
   const inboundCfg = (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
-    { enabled?: boolean; address?: string; defaultTriageOrgId?: string | null; autoresponderEnabled?: boolean; triageUnknownSenders?: boolean } | undefined) ?? {};
+    {
+      enabled?: boolean; address?: string; defaultTriageOrgId?: string | null;
+      autoresponderEnabled?: boolean; triageUnknownSenders?: boolean;
+      autoresponseSubject?: string | null; autoresponseBody?: string | null;
+    } | undefined) ?? {};
   const domain = getConfig().TICKETS_INBOUND_DOMAIN ?? '';
   const domainConfigured = domain.length > 0;
   const derived = domainConfigured && slug ? `${slug}@${domain}` : '';
@@ -377,6 +381,8 @@ export async function getTicketConfig(partnerId: string) {
     defaultTriageOrgId: inboundCfg.defaultTriageOrgId ?? null,
     autoresponderEnabled: inboundCfg.autoresponderEnabled ?? true,
     triageUnknownSenders: inboundCfg.triageUnknownSenders ?? false,
+    autoresponseSubject: inboundCfg.autoresponseSubject ?? null,
+    autoresponseBody: inboundCfg.autoresponseBody ?? null,
     slug,
     domainConfigured,
   };
