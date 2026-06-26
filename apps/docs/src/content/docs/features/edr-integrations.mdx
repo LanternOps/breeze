@@ -5,6 +5,10 @@ description: Connect Huntress and SentinelOne to correlate endpoint detection da
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
+<Aside type="caution">
+  The EDR UI — the `/security/edr` fleet page, the Security-tab EDR panel on device pages, and the Security dashboard summary cards — is hidden by default. It is surfaced only when the web image is built with the environment variable `PUBLIC_ENABLE_EDR_INTEGRATIONS=true`. This is a **build-time web flag**: the value is baked into the web bundle at image-build time and cannot be toggled at runtime via `.env`. The API sync jobs and all EDR endpoints operate regardless of this flag.
+</Aside>
+
 Breeze integrates with leading Endpoint Detection and Response (EDR) platforms to give you a unified view of endpoint security across your managed fleet. Instead of switching between your RMM and EDR consoles, you can view threat data, agent coverage, and incident details directly in Breeze.
 
 Currently supported EDR vendors:
@@ -328,6 +332,14 @@ Threats can be filtered by multiple criteria:
 | `end` | ISO datetime | Threats detected on or before this time |
 | `limit` | Number | Results per page (1-500, default 100) |
 | `offset` | Number | Pagination offset |
+
+---
+
+## Promote to Incident
+
+From the `/security/edr` fleet page or from a device's **Security** tab, you can escalate a Huntress incident or a SentinelOne threat directly into a tracked Breeze incident. Click **Promote to incident** on the item, confirm the pre-filled title and severity (mapped from the EDR severity level), and Breeze creates the incident and navigates you to it. The promotion records the source (Huntress or SentinelOne), the original title, any affected device, and the detection time as the incident's detected-at timestamp.
+
+Promotion uses the standard `POST /incidents` endpoint and follows normal incident-creation permissions.
 
 ---
 

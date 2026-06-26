@@ -72,6 +72,24 @@ Each reply and internal note you wrote has **Edit** and **Delete** controls in i
 
 You can edit or delete your **own** comments; technicians with ticket management permission can edit or delete anyone's. System entries — status changes, assignments, and time logs — can't be edited or deleted, and comments that came in from the customer portal aren't editable from the workbench. Editing or deleting a reply does **not** re-notify the customer.
 
+## Canned Responses
+
+Partners can maintain a shared library of named reply templates that technicians insert directly into the ticket composer, removing repetitive typing for common answers, procedures, and closing messages.
+
+### Managing templates
+
+Templates are managed under **Settings → Ticketing**. Each template has a **name**, a **body** (plain text, up to 5,000 characters), and an optional **category** for grouping (for example, "Billing", "Onboarding", "Closures"). Within a category, templates are sorted by the order you set. Creating, editing, and deleting templates requires **partner scope plus MFA confirmation**.
+
+Templates are partner-wide and shared across all your customer organizations and technicians.
+
+### Inserting a canned response
+
+While composing a reply or internal note, open the canned-response picker from the composer toolbar. Select a template to insert its body at the cursor position — the text is inserted, not sent. You can edit the inserted text before sending as normal.
+
+<Aside>
+  Inserting a canned response **never auto-sends** the message. The template text lands at the cursor so you can review and customize it before hitting send.
+</Aside>
+
 ## Keyboard Shortcuts
 
 The queue is built to be worked without a mouse:
@@ -122,6 +140,8 @@ Each partner gets an **inbound address** -- the email address customers send to.
 ### Autoresponder
 
 An optional **autoresponder** sends customers a one-time acknowledgement when their email is received, so they know the ticket was created. It's rate-limited to avoid mail loops and is toggled per partner on the Inbound email card.
+
+Partners can customize the acknowledgement email's **subject** and **body** (plain text). The body supports three merge variables: `{{ticket_number}}`, `{{subject}}`, and `{{portal_url}}`. Leaving either field blank keeps the existing default wording unchanged. Configure both fields under **Settings → Ticketing → Inbound email**.
 
 ### Review queue
 

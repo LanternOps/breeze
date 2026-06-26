@@ -40,6 +40,14 @@ Each item represents one thing you sell. Items can be billed **one-time** (a pie
 
 The list view shows each item's **margin** at a glance, with a negative margin called out in a warning color so under-priced items are easy to spot. You can search by name or SKU, filter by type, and sort by name, price, or margin.
 
+### AI Auto-fill
+
+When creating or editing a catalog item, type a product name or SKU into the **Auto-fill from web** field and click **Auto-fill**. Breeze AI drafts the item's name, description, type, unit of measure, and taxability. A market-estimate price **range** is shown as guidance only -- you always enter your own sell price before saving.
+
+<Aside type="note">
+  AI auto-fill requires catalog write access. No MFA step is needed.
+</Aside>
+
 ## Per-Customer Pricing
 
 You can override an item's price for a specific customer without changing the base price everyone else gets. The override applies automatically wherever that item is added to an invoice or contract for that organization.
@@ -93,6 +101,12 @@ TD SYNNEX **EC Express** looks up real-time price and availability by SKU so the
 <Aside type="note">
   EC Express is the live price-and-availability connector for TD SYNNEX. It complements the earlier Digital Bridge catalog import and is the recommended way to bring TD SYNNEX products into Breeze.
 </Aside>
+
+### Searching distributor products from a quote
+
+While editing a quote, the line-item picker includes a **Search distributor** tab (visible only when TD SYNNEX EC Express credentials are configured). Enter a TD SYNNEX SKU or manufacturer part number, see live cost, MSRP, and availability, enter your sell price, and click **Import & add**. The product is imported to your catalog and added to the quote as a line item in one step.
+
+This is distinct from the catalog-level import workflow documented above. The catalog workflow builds your standing price list; the quote-level search lets you pull a product directly into an open quote without navigating away from the quote editor.
 
 ## Permissions
 

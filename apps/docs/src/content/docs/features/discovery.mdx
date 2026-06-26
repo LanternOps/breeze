@@ -317,7 +317,7 @@ Each asset in the response includes monitoring status flags:
 
 ### Linking an Asset to a Device
 
-Manually link a discovered asset to an enrolled device. This sets the asset status to `managed`:
+Manually link a discovered asset to an enrolled device. This sets the asset status to `managed` and is used for **identity and asset tracking only** — it records which enrolled Breeze device corresponds to this discovered asset. Linking alone does not open remote access; see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui) below for proxy access.
 
 ```bash
 POST /discovery/assets/:id/link
@@ -331,6 +331,24 @@ Content-Type: application/json
 <Aside>
   Auto-linking happens automatically during scan result processing. The worker matches assets to enrolled devices by MAC address or IP address within the same organization. Manual linking is only needed when auto-linking does not find a match.
 </Aside>
+
+### Connecting to a discovered device's web UI
+
+The asset modal includes a **Proxy Access** section that lets you open a LAN device's built-in web interface (router admin page, NAS panel, printer UI, switch management port, etc.) directly inside Breeze — no VPN required.
+
+<Steps>
+
+1. Open the asset modal by clicking any discovered asset in the list.
+
+2. Go to the **Proxy Access** section.
+
+3. Choose a **bridge agent** from the dropdown. Only online agents are shown; the dropdown defaults to the linked enrolled device if it is currently online.
+
+4. Click **Connect**. The device's web UI loads in an iframe inside Breeze, with an **Open in new tab** option for a full-window view.
+
+</Steps>
+
+Traffic is tunneled over the bridge agent's existing WebSocket connection to Breeze — no additional firewall rules or port forwarding required. See [Network Proxy](/features/remote-access/#network-proxy) in the Remote Access docs for allowlist configuration and the full security model.
 
 ### Ignoring an Asset
 

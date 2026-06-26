@@ -78,6 +78,18 @@ If an issued invoice needs to be cancelled, **void** it with a reason. You can o
 
 Every issued invoice can be downloaded as a clean, single-page **PDF** to send or archive. The detail view also offers an accounting-oriented breakdown of subtotal, tax, total, payments, and balance.
 
+## Bulk Actions
+
+Select invoices using the checkboxes in the invoice list to reveal a bulk action bar.
+
+| Action | Permission required | Notes |
+|--------|---------------------|-------|
+| **Issue** | Invoice send | Issues all selected draft invoices |
+| **Void** | Invoice send | Prompts for a void reason; applies to all selected issued invoices |
+| **Delete drafts** | Invoice write | Deletes all selected draft invoices |
+
+Actions run per-item in isolation, so partial success is possible -- the bar reports what succeeded and what failed.
+
 ## Permissions
 
 Invoice access is governed by role permissions: viewing requires invoice read access, creating and editing drafts requires invoice write access, and issuing, sending, voiding, and recording payments require invoice send access. Assign these through **Settings → Users & Roles**.

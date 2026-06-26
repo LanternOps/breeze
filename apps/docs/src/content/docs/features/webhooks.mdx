@@ -53,7 +53,7 @@ Webhooks let you push real-time event notifications from Breeze to any external 
 </Steps>
 
 <Aside>
-  The `secret` field is required when creating a webhook and is encrypted at rest using AES-256-GCM. It is never returned in API responses -- only the `hasSecret` boolean indicates whether a secret is configured.
+  Both the `secret` and the `url` are encrypted at rest using AES-256-GCM. The `secret` is never returned in API responses — only the `hasSecret` boolean indicates whether one is configured. The `url` is returned by GET responses, but any credentials embedded in it (HTTP basic-auth userinfo and signed query tokens) are stripped before the value is sent to the client.
 </Aside>
 
 ### Organization Scoping
@@ -529,7 +529,7 @@ All webhook routes require authentication via the `authMiddleware` and are scope
 | `id` | UUID | Primary key |
 | `org_id` | UUID | Organization this webhook belongs to |
 | `name` | varchar(255) | Display name |
-| `url` | text | Destination URL (must be HTTPS) |
+| `url` | text | Destination URL (must be HTTPS); encrypted at rest using AES. GET responses strip any credentials embedded in the URL (HTTP basic-auth userinfo and signed query tokens) before returning it. |
 | `secret` | text | Encrypted HMAC signing secret (AES-256-GCM) |
 | `events` | text[] | Array of subscribed event type strings |
 | `headers` | JSONB | Custom headers sent with each delivery |

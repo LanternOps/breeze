@@ -75,6 +75,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/peripherals', docsPath: '/features/peripheral-control/', label: 'Peripheral Control' },
   { pattern: '/security/antivirus', docsPath: '/deploy/antivirus-exceptions/', label: 'Antivirus Exceptions' },
   { pattern: '/security/user-risk', docsPath: '/features/user-risk/', label: 'User Risk' },
+  { pattern: '/security/edr', docsPath: '/features/edr-integrations/', label: 'EDR Operations' },
   { pattern: '/security', docsPath: '/features/security/', label: 'Security' },
   { pattern: '/pam', docsPath: '/features/pam/', label: 'Privileged Access' },
   { pattern: '/sensitive-data', docsPath: '/features/sensitive-data/', label: 'Sensitive Data' },

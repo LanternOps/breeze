@@ -319,10 +319,25 @@ QuickBooks Online connects through Intuit's standard OAuth consent flow:
 
 Distributor integrations live on the **Distributors** tab of the Integrations page and let you bring vendor licenses and pricing into Breeze. They're partner-scoped.
 
-- **Pax8** syncs your clients and their subscription/license quantities, which you can map to organizations and link to recurring contract lines.
-- **TD SYNNEX** provides live product price and availability you can import straight into your catalog.
+### Pax8
 
-The end-to-end workflow for importing distributor products into your catalog -- including TD SYNNEX EC Express live pricing -- is documented under [Product Catalog → Importing from distributor catalogs](/features/product-catalog/#importing-from-distributor-catalogs).
+Pax8 syncs your clients and their subscription/license quantities, which you can map to organizations and link to recurring contract lines. After connecting your Pax8 account and mapping companies to Breeze organizations, open the **Subscriptions** tab to manage how each subscription connects to a contract line.
+
+Each subscription row offers these actions:
+
+| Action | Description | Requires MFA |
+|--------|-------------|:------------:|
+| **Link** | Connect the subscription to an existing contract line, or create a new manual line on the spot | Yes |
+| **Change** | Re-point the subscription to a different contract line | Yes |
+| **Pause** | Stop automatic quantity sync while keeping the link intact | No |
+| **Resume** | Re-enable automatic quantity sync | No |
+| **Unlink** | Remove the connection between the subscription and the contract line | Yes |
+
+When **Keep quantity in sync** is enabled on a link, Pax8 subscription quantities are pushed to the linked contract line on each Pax8 sync. Pausing stops future syncs but leaves the last-synced quantity in place so billing is not affected unexpectedly.
+
+### TD SYNNEX
+
+TD SYNNEX provides live product price and availability you can import straight into your catalog. The end-to-end workflow -- including EC Express live pricing -- is documented under [Product Catalog → Importing from distributor catalogs](/features/product-catalog/#importing-from-distributor-catalogs).
 
 ---
 

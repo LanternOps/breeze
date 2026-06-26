@@ -50,6 +50,10 @@ Each enrollment key can generate pre-configured Windows MSI and macOS PKG instal
 
 When MSI signing is configured on the server, Windows installer downloads are automatically code-signed before delivery — Windows SmartScreen and antivirus tools will recognize them as trusted. See [Code Signing](/deploy/code-signing/) for setup details.
 
+<Aside type="note">
+  **Windows MSI filename token.** The Windows MSI embeds the enrollment token directly in its filename as a `[TOKEN@HOST]` block — for example `breeze-agent [ABCD1234XY@breeze.example.com].msi`. You can rename the file freely **as long as the `[TOKEN@HOST]` block is preserved**. A browser-added dedup suffix like `(1)` is harmless. If the block is removed entirely (e.g. the file is fully renamed without it), the installer falls back to requiring the enrollment key and server URL entered manually during setup.
+</Aside>
+
 ### Downloading from the Dashboard
 
 From the enrollment key list or detail view, click **Download Installer** and choose the platform (Windows or macOS). The installer is generated on the fly and downloaded to your browser.
