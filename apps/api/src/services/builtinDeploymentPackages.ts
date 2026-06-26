@@ -87,7 +87,7 @@ export async function ensureBuiltinPackage(params: {
           websiteUrl: def.websiteUrl ?? null,
           isManaged: true,
         }).returning({ id: softwareCatalog.id });
-        catalogId = row.id;
+        catalogId = row!.id;
       }
 
       // Templated version only when the binary URL is derivable (Huntress).

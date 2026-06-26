@@ -13,7 +13,7 @@ import {
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
-import { decryptForColumn } from '../services/secretCrypto';
+import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { S1_THREAT_ACTIONS, SentinelOneClient, SentinelOneHttpError, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
 import { redactLogMessage } from '../services/logRedaction';
@@ -331,7 +331,7 @@ export async function mapSiteOrgIds(integrationId: string): Promise<Map<string, 
 export async function upsertDiscoveredSites(params: {
   integrationId: string;
   partnerId: string;
-  sites: Array<{ siteId: string; siteName: string | null; count: number }>;
+  sites: Array<{ siteId: string; siteName: string | null; count: number; registrationToken: string | null }>;
 }): Promise<void> {
   if (params.sites.length === 0) return;
 
@@ -342,6 +342,9 @@ export async function upsertDiscoveredSites(params: {
     s1SiteId: site.siteId,
     s1SiteName: site.siteName ?? null,
     agentsCount: site.count,
+    registrationToken: site.registrationToken
+      ? encryptSecret(site.registrationToken, { aad: 's1_org_mappings.registration_token' })
+      : null,
     lastSeenAt: now,
     updatedAt: now,
   }));
@@ -354,6 +357,7 @@ export async function upsertDiscoveredSites(params: {
       set: {
         s1SiteName: sql`excluded.s1_site_name`,
         agentsCount: sql`excluded.agents_count`,
+        registrationToken: sql`COALESCE(excluded.registration_token, s1_org_mappings.registration_token)`,
         lastSeenAt: sql`excluded.last_seen_at`,
         updatedAt: sql`excluded.updated_at`,
         // partnerId is updated in case the composite FK partner changes (rare)
@@ -505,6 +509,8 @@ async function syncAgentsForIntegration(
   const agentResult = await dbModule.runOutsideDbContext(() =>
     client.listAgents(integration.lastSyncAt ?? undefined)
   );
+  const siteTokens = await dbModule.runOutsideDbContext(() => client.listSites());
+  const tokenBySite = new Map(siteTokens.map((s) => [s.siteId, s.registrationToken]));
   const fetchedAgents = agentResult.results;
 
   // Phase 2 — all reconcile/mapping/upsert DB work runs in ONE short context.
@@ -524,6 +530,7 @@ async function syncAgentsForIntegration(
     siteId,
     siteName: info.siteName,
     count: info.count,
+    registrationToken: tokenBySite.get(siteId) ?? null,
   }));
 
   // Step 1: Reconcile provisional mappings BEFORE upsert so carried org_id survives.
@@ -533,7 +540,7 @@ async function syncAgentsForIntegration(
   await reconcileProvisionalSiteMappings(
     integration.id,
     discoveredSites
-      .filter((s): s is { siteId: string; siteName: string; count: number } => typeof s.siteName === 'string' && s.siteName.length > 0)
+      .filter((s): s is { siteId: string; siteName: string; count: number; registrationToken: string | null } => typeof s.siteName === 'string' && s.siteName.length > 0)
       .map((s) => ({ siteId: s.siteId, siteName: s.siteName }))
   );
 

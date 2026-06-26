@@ -57,6 +57,7 @@ vi.mock('../services/sentinelOne/client', async (importOriginal) => {
   class MockSentinelOneClient {
     listAgents = listAgentsMock;
     listThreats = vi.fn().mockResolvedValue({ results: [], truncated: false });
+    listSites = vi.fn().mockResolvedValue([]);
     getActivityStatus = vi.fn();
   }
   return {

@@ -86,6 +86,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../services/secretCrypto', () => ({
   decryptForColumn: () => 'decrypted-token',
+  encryptSecret: (value: string) => `enc:${value}`,
 }));
 
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn() }));
@@ -101,6 +102,7 @@ vi.mock('../services/sentinelOne/metrics', () => ({
 
 const listAgentsMock = vi.fn();
 const listThreatsMock = vi.fn().mockResolvedValue({ results: [], truncated: false });
+const listSitesMock = vi.fn().mockResolvedValue([]);
 const getActivityStatusMock = vi.fn();
 
 vi.mock('../services/sentinelOne/client', async (importOriginal) => {
@@ -108,6 +110,7 @@ vi.mock('../services/sentinelOne/client', async (importOriginal) => {
   class MockSentinelOneClient {
     listAgents = listAgentsMock;
     listThreats = listThreatsMock;
+    listSites = listSitesMock;
     getActivityStatus = getActivityStatusMock;
   }
   return { ...actual, SentinelOneClient: MockSentinelOneClient };
@@ -160,8 +163,8 @@ describe('upsertDiscoveredSites', () => {
       integrationId: 'int-1',
       partnerId: 'partner-1',
       sites: [
-        { siteId: 'site-123', siteName: 'Acme', count: 3 },
-        { siteId: 'site-456', siteName: 'Beta Corp', count: 7 },
+        { siteId: 'site-123', siteName: 'Acme', count: 3, registrationToken: null },
+        { siteId: 'site-456', siteName: 'Beta Corp', count: 7, registrationToken: null },
       ],
     });
 
@@ -176,6 +179,24 @@ describe('upsertDiscoveredSites', () => {
     expect(site123!.partnerId).toBe('partner-1');
     expect(site456).toBeDefined();
     expect(site456!.agentsCount).toBe(7);
+  });
+
+  it('encrypts the site registration token before storing it', async () => {
+    await upsertDiscoveredSites({
+      integrationId: 'int-1',
+      partnerId: 'partner-1',
+      sites: [
+        { siteId: 'site-123', siteName: 'Acme', count: 1, registrationToken: 'eyJ-raw-token' },
+        { siteId: 'site-456', siteName: 'Beta', count: 1, registrationToken: null },
+      ],
+    });
+
+    const withToken = insertedValues.find((v) => v.s1SiteId === 'site-123');
+    const withoutToken = insertedValues.find((v) => v.s1SiteId === 'site-456');
+    // Stored as the encrypted form (mock prefixes 'enc:'), not the raw value.
+    expect(withToken!.registrationToken).toBe('enc:eyJ-raw-token');
+    // Null token stays null (no spurious encryption).
+    expect(withoutToken!.registrationToken).toBeNull();
   });
 
   it('is a no-op when there are no sites', async () => {
