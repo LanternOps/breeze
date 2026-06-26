@@ -81,6 +81,26 @@ describe('CannedResponsesCard', () => {
     expect(body.body).toBe('Thanks {{requester_name}}');
   });
 
+  it('edits a template via PATCH with the changed fields', async () => {
+    routeFetch([{ id: 't-1', name: 'Greeting', body: 'Hi', category: 'General', sortOrder: 0, isActive: true }]);
+    render(<CannedResponsesCard />);
+    await screen.findByTestId('canned-response-row-t-1');
+    fireEvent.click(screen.getByTestId('canned-response-edit-t-1'));
+    // form is pre-populated from the row
+    expect((screen.getByTestId('canned-response-name') as HTMLInputElement).value).toBe('Greeting');
+    fireEvent.change(screen.getByTestId('canned-response-name'), { target: { value: 'Greeting v2' } });
+    fireEvent.click(screen.getByTestId('canned-response-save'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/ticket-response-templates/t-1', expect.objectContaining({ method: 'PATCH' })),
+    );
+    const body = JSON.parse(
+      (fetchWithAuth.mock.calls.find(
+        (c) => String(c[0]) === '/ticket-response-templates/t-1' && (c[1] as { method?: string })?.method === 'PATCH',
+      )![1] as { body: string }).body,
+    );
+    expect(body.name).toBe('Greeting v2');
+  });
+
   it('deletes a template via DELETE', async () => {
     routeFetch([{ id: 't-1', name: 'Greeting', body: 'Hi', category: null, sortOrder: 0, isActive: true }]);
     render(<CannedResponsesCard />);

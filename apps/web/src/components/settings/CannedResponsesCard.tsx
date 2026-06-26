@@ -52,7 +52,7 @@ export default function CannedResponsesCard() {
         body: form.body,
         category: form.category.trim() ? form.category.trim() : null,
       };
-      if (form.id) {
+      if (form.id !== null) {
         await updateCannedResponse(form.id, payload);
       } else {
         await createCannedResponse(payload);
