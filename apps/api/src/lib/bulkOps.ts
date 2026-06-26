@@ -1,3 +1,5 @@
+import { withDbAccessContext, runOutsideDbContext, type DbAccessContext } from '../db';
+
 export interface BulkResult {
   total: number;
   succeeded: number;
@@ -42,4 +44,35 @@ export async function runBulk(
     }
   }
   return result;
+}
+
+/**
+ * Like {@link runBulk}, but runs EACH item in its own short RLS transaction
+ * instead of the caller's ambient request transaction.
+ *
+ * Why this matters (do not collapse back into a plain `runBulk` on the
+ * request transaction):
+ *  - **Correct partial-success counts.** On the shared request transaction a
+ *    Postgres-level error (FK/trigger) aborts the whole transaction, so every
+ *    "succeeded" item silently rolls back at commit while still being counted.
+ *    Per-item transactions make each success durable independent of siblings.
+ *  - **Connection-pool safety (#1105).** The bulk loop can do slow per-item
+ *    work (a quote/invoice email send, a sub-transaction in issue/void). On
+ *    one held request transaction that pins a single pooled connection
+ *    idle-in-transaction for the whole batch; per-item transactions release
+ *    the connection between items.
+ *
+ * `runOutsideDbContext` exits the ambient request context so each
+ * `withDbAccessContext(ctx, …)` opens a fresh transaction; `ctx` re-establishes
+ * the caller's exact RLS scope (build it with `dbAccessContextFromAuth`) so
+ * tenant isolation is identical to the request path.
+ */
+export async function runBulkIsolated(
+  ctx: DbAccessContext,
+  ids: string[],
+  perItem: (id: string) => Promise<unknown>
+): Promise<BulkResult> {
+  return runOutsideDbContext(() =>
+    runBulk(ids, (id) => withDbAccessContext(ctx, () => perItem(id)))
+  );
 }

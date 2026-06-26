@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -285,6 +285,49 @@ function computeAccessiblePartnerIds(
   return [];
 }
 
+/**
+ * Build the RLS `DbAccessContext` for a request from its already-resolved
+ * scope/org/partner facts. This is the SINGLE source of truth for the
+ * mapping — both `authMiddleware` (the request-wide context) and any code
+ * that needs to re-establish the same context in a fresh transaction (e.g.
+ * the billing bulk handlers, which run each item in its own short
+ * transaction via `runOutsideDbContext` + `withDbAccessContext`) must build
+ * the context through here so the two can never drift. `accessiblePartnerIds`
+ * is derived purely from scope+partnerId, matching the request path exactly.
+ */
+export function buildDbAccessContext(args: {
+  scope: DbAccessScope;
+  orgId: string | null;
+  accessibleOrgIds: string[] | null;
+  partnerId: string | null;
+  userId: string | null;
+}): DbAccessContext {
+  return {
+    scope: args.scope,
+    orgId: args.orgId,
+    accessibleOrgIds: args.accessibleOrgIds,
+    accessiblePartnerIds: computeAccessiblePartnerIds(args.scope, args.partnerId),
+    userId: args.userId,
+    currentPartnerId: args.partnerId ?? null,
+  };
+}
+
+/**
+ * Re-derive the request's RLS `DbAccessContext` from its `AuthContext`. Use
+ * to re-establish the caller's exact tenant scope inside a fresh transaction
+ * (outside the ambient request transaction) — every field comes from `auth`,
+ * so the re-entered context is identical to the one `authMiddleware` opened.
+ */
+export function dbAccessContextFromAuth(auth: AuthContext): DbAccessContext {
+  return buildDbAccessContext({
+    scope: auth.scope,
+    orgId: auth.orgId,
+    accessibleOrgIds: auth.accessibleOrgIds,
+    partnerId: auth.partnerId,
+    userId: auth.user.id,
+  });
+}
+
 export async function authMiddleware(c: Context, next: Next): Promise<void | Response> {
   // Avoid double-verification when authMiddleware is applied both globally and per-route.
   const existing = c.get('auth') as AuthContext | undefined;
@@ -400,11 +443,6 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     payload.orgId,
     user.id
   );
-  const accessiblePartnerIds = computeAccessiblePartnerIds(
-    payload.scope,
-    payload.partnerId
-  );
-
   // Create helper functions
   const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
     if (accessibleOrgIds === null) {
@@ -474,19 +512,19 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) {
       return runGuardedHandler();
     }
+    // Built via buildDbAccessContext (the single source of truth) so the
+    // request context can never drift from the one bulk handlers re-enter
+    // per item. `currentPartnerId` (own-partner read visibility) and
+    // `accessiblePartnerIds` (partner-axis access grant) are both derived
+    // there from scope+partnerId.
     return withDbAccessContext(
-      {
+      buildDbAccessContext({
         scope: payload.scope,
         orgId: payload.orgId,
         accessibleOrgIds,
-        accessiblePartnerIds,
-        userId: user.id,
-        // Own partner — enables read-only visibility of the partner's
-        // partner-wide catalog rows for org-scope (and partner-scope) users.
-        // NOT an access grant; partner-axis write access stays governed by
-        // accessiblePartnerIds.
-        currentPartnerId: payload.partnerId ?? null
-      },
+        partnerId: payload.partnerId,
+        userId: user.id
+      }),
       runGuardedHandler
     );
   };

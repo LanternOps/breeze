@@ -11,6 +11,13 @@ vi.mock('../../middleware/auth', () => ({
   },
   requireScope: () => async (c: any, next: any) => gate.permGate(c, next),
   requirePermission: () => async (c: any, next: any) => gate.permGate(c, next),
+  dbAccessContextFromAuth: () => ({ scope: 'partner', orgId: null, accessibleOrgIds: null }),
+}));
+// runBulkIsolated wraps each item in withDbAccessContext + runOutsideDbContext;
+// stub both as passthroughs so the loop logic runs without a real DB connection.
+vi.mock('../../db', () => ({
+  withDbAccessContext: (_ctx: any, fn: any) => fn(),
+  runOutsideDbContext: (fn: any) => fn(),
 }));
 
 import { invoiceRoutes } from './index';

@@ -24,6 +24,9 @@ vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+  // runBulkIsolated wraps each item in withDbAccessContext (passthrough here so
+  // the loop runs without a real DB connection).
+  withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
 }));
 vi.mock('../../services/contractTypes', () => ({
   ContractServiceError: class ContractServiceError extends Error {
@@ -39,6 +42,7 @@ vi.mock('../../middleware/auth', () => ({
   },
   requireScope: () => async (c: any, next: any) => gate.permGate(c, next),
   requirePermission: () => async (c: any, next: any) => gate.permGate(c, next),
+  dbAccessContextFromAuth: () => ({ scope: 'partner', orgId: null, accessibleOrgIds: null }),
 }));
 
 import { contractRoutes } from './index';
