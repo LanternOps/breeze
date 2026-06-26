@@ -6,6 +6,7 @@ import { uploadBinary, isS3Configured } from '../services/s3Storage';
 import { captureException } from '../services/sentry';
 import { parseStreamingMultipart } from '../services/streamingUpload';
 import { createHash } from 'node:crypto';
+import { authMiddleware } from '../middleware/auth';
 
 vi.mock('../services', () => ({}));
 
@@ -127,6 +128,57 @@ describe('software routes', () => {
       const body = await res.json();
       expect(body).toHaveProperty('data');
       expect(body).toHaveProperty('pagination');
+    });
+
+    it('lists catalog items across accessible orgs in partner All-Orgs scope', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-a', 'org-b']
+        });
+        return next();
+      });
+
+      const res = await app.request('/software/catalog', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toHaveProperty('data');
+      expect(body).toHaveProperty('pagination');
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns an empty page without querying when partner All-Orgs has no accessible orgs', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-123',
+          accessibleOrgIds: []
+        });
+        return next();
+      });
+
+      const res = await app.request('/software/catalog', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [],
+        pagination: { page: 1, limit: 50, total: 0 }
+      });
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

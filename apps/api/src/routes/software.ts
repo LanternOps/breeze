@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, like, or, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, like, or, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   softwareCatalog,
@@ -41,12 +41,14 @@ type ResolveScopedOrgIdResult =
   | { orgId: string }
   | { error: string; status: 400 | 403 };
 
+type AuthScopeContext = {
+  scope: 'system' | 'partner' | 'organization';
+  orgId?: string | null;
+  accessibleOrgIds?: string[] | null;
+};
+
 function resolveScopedOrgId(
-  auth: {
-    scope: 'system' | 'partner' | 'organization';
-    orgId?: string | null;
-    accessibleOrgIds?: string[] | null;
-  },
+  auth: AuthScopeContext,
   requestedOrgId?: string,
 ): ResolveScopedOrgIdResult {
   if (requestedOrgId) {
@@ -69,6 +71,35 @@ function resolveScopedOrgId(
     if (single) return { orgId: single };
   }
   return { error: 'orgId is required for this scope', status: 400 };
+}
+
+type ResolveCatalogListScopeResult =
+  | { orgCondition?: SQL }
+  | { empty: true }
+  | { error: string; status: 400 | 403 };
+
+function resolveCatalogListScope(
+  auth: AuthScopeContext,
+  requestedOrgId?: string,
+): ResolveCatalogListScopeResult {
+  const scopedOrg = resolveScopedOrgId(auth, requestedOrgId);
+  if ('orgId' in scopedOrg) {
+    return { orgCondition: eq(softwareCatalog.orgId, scopedOrg.orgId) };
+  }
+
+  if (requestedOrgId || scopedOrg.status !== 400) return scopedOrg;
+
+  if (auth.scope === 'partner') {
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (accessibleOrgIds.length === 0) return { empty: true };
+    return { orgCondition: inArray(softwareCatalog.orgId, accessibleOrgIds) };
+  }
+
+  if (auth.scope === 'system') {
+    return {};
+  }
+
+  return scopedOrg;
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -375,15 +406,19 @@ softwareRoutes.get(
   zValidator('query', listCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
+    const scopeResult = resolveCatalogListScope(auth, c.req.query('orgId'));
+    if ('error' in scopeResult) return c.json({ error: scopeResult.error }, scopeResult.status);
 
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
     const searchTerm = query.search ?? query.q;
 
-    const conditions = [eq(softwareCatalog.orgId, orgId)];
+    if ('empty' in scopeResult) {
+      return c.json({ data: [], pagination: { page, limit, total: 0 } });
+    }
+
+    const conditions: SQL[] = [];
+    if (scopeResult.orgCondition) conditions.push(scopeResult.orgCondition);
     if (searchTerm) {
       const term = `%${searchTerm}%`;
       conditions.push(
@@ -397,15 +432,16 @@ softwareRoutes.get(
     if (query.category) {
       conditions.push(eq(softwareCatalog.category, query.category));
     }
+    const whereClause = conditions.length > 0 ? and(...conditions)! : sql`true`;
 
     const [items, countResult] = await Promise.all([
       db.select().from(softwareCatalog)
-        .where(and(...conditions))
+        .where(whereClause)
         .orderBy(softwareCatalog.name)
         .limit(limit)
         .offset(offset),
       db.select({ count: sql<number>`count(*)` }).from(softwareCatalog)
-        .where(and(...conditions))
+        .where(whereClause)
     ]);
 
     return c.json({
