@@ -474,3 +474,23 @@ export async function linkPax8SubscriptionToContractLine(input: {
   if (!link) throw new Error('Failed to link Pax8 subscription to contract line');
   return link;
 }
+
+/**
+ * Remove a Pax8 subscription ↔ contract-line link. Idempotent — deleting an
+ * already-absent link returns { unlinked: false }. Intentionally does NOT reset
+ * the contract line's manual_quantity: unlinking stops future quantity sync but
+ * leaves the last-synced quantity in place so the bill doesn't change underfoot.
+ */
+export async function unlinkPax8Subscription(input: {
+  integrationId: string;
+  subscriptionSnapshotId: string;
+}): Promise<{ unlinked: boolean }> {
+  const deleted = await db
+    .delete(pax8ContractLineLinks)
+    .where(and(
+      eq(pax8ContractLineLinks.integrationId, input.integrationId),
+      eq(pax8ContractLineLinks.subscriptionSnapshotId, input.subscriptionSnapshotId),
+    ))
+    .returning({ id: pax8ContractLineLinks.id });
+  return { unlinked: deleted.length > 0 };
+}

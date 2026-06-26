@@ -5,6 +5,7 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -63,7 +64,7 @@ vi.mock('./secretCrypto', () => ({
 }));
 
 import { db } from '../db';
-import { applyEnabledPax8ContractLineLinks, linkPax8SubscriptionToContractLine, mapPax8Company } from './pax8SyncService';
+import { applyEnabledPax8ContractLineLinks, linkPax8SubscriptionToContractLine, mapPax8Company, unlinkPax8Subscription } from './pax8SyncService';
 
 function selectRowsOnce(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -88,6 +89,13 @@ function updateNoReturnOnce() {
   const set = vi.fn(() => ({ where }));
   vi.mocked(db.update).mockReturnValueOnce({ set } as any);
   return { set, where };
+}
+
+function deleteReturningOnce(rows: unknown[]) {
+  const returning = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ returning }));
+  vi.mocked(db.delete).mockReturnValueOnce({ where } as any);
+  return { where, returning };
 }
 
 describe('pax8SyncService', () => {
@@ -160,6 +168,30 @@ describe('pax8SyncService', () => {
     expect(onConflictDoUpdate).toHaveBeenCalledWith(expect.objectContaining({
       set: expect.objectContaining({ orgId: expect.any(Object) }),
     }));
+  });
+
+  describe('unlinkPax8Subscription', () => {
+    it('deletes the link row and reports unlinked when a row matched', async () => {
+      deleteReturningOnce([{ id: 'link-1' }]);
+
+      const result = await unlinkPax8Subscription({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+      });
+
+      expect(result).toEqual({ unlinked: true });
+    });
+
+    it('reports unlinked:false when no row matched (idempotent)', async () => {
+      deleteReturningOnce([]);
+
+      const result = await unlinkPax8Subscription({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+      });
+
+      expect(result).toEqual({ unlinked: false });
+    });
   });
 
   it('applies quantities only for valid manual same-org links', async () => {
