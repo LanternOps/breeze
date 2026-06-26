@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { TicketTemplateVars } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { listCannedResponses, type CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -185,16 +186,24 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
 
   // Load the partner's canned responses once; failure just leaves the picker hidden.
   useEffect(() => {
-    listCannedResponses().then(setCannedTemplates).catch(() => setCannedTemplates([]));
+    listCannedResponses()
+      .then(setCannedTemplates)
+      .catch((e) => {
+        // Best-effort: hide the picker on failure, but leave a breadcrumb so a
+        // real load error (403 regression, malformed payload, 500) is
+        // distinguishable from "this partner has no templates".
+        console.debug('[TicketWorkbench] canned responses unavailable; hiding picker', e);
+        setCannedTemplates([]);
+      });
   }, []);
 
   // Merge-variable values resolved from the current ticket + signed-in agent,
   // applied when a canned response is inserted into the composer. `partner_name`
   // isn't on the ticket payload, so it's left blank client-side (the server fills
   // it for auto-replies); the picker renders unknown/blank vars as empty.
-  const templateVars = useMemo<Record<string, string>>(() => {
+  const templateVars = useMemo<TicketTemplateVars>(() => {
     if (!ticket) return {};
-    const vars: Record<string, string> = {
+    const vars: TicketTemplateVars = {
       ticket_number: ticket.internalNumber ?? '',
       ticket_subject: ticket.subject ?? '',
       requester_name: ticket.submitterName ?? '',

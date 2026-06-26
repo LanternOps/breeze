@@ -1,5 +1,5 @@
 import { escapeHtml } from '../emailLayout';
-import { renderTemplate } from '@breeze/shared';
+import { renderTemplate, type TicketTemplateVars } from '@breeze/shared';
 
 /** Acknowledgement email for an email-created ticket (spec §5). When a partner
  *  has customized the template, render it; otherwise emit the original hardcoded
@@ -10,7 +10,7 @@ export function buildAutoresponseEmail(args: {
   internalNumber: string | null;
   subject: string;
   custom?: { subject: string | null; body: string | null };
-  vars?: Record<string, string>;
+  vars?: TicketTemplateVars;
 }): { subject: string; html: string } {
   const label = args.internalNumber ?? 'your request';
   const tokenPrefix = args.internalNumber ? `[${args.internalNumber}] ` : '';
@@ -26,8 +26,8 @@ export function buildAutoresponseEmail(args: {
 
   let html: string;
   if (customBody) {
-    const escapedVars = Object.fromEntries(
-      Object.entries(vars).map(([k, v]) => [k, escapeHtml(v)]),
+    const escapedVars: TicketTemplateVars = Object.fromEntries(
+      Object.entries(vars).map(([k, v]) => [k, escapeHtml(v ?? '')]),
     );
     const rendered = renderTemplate(escapeHtml(customBody), escapedVars).replace(/\r?\n/g, '<br>');
     html = `<p>${rendered}</p>`;

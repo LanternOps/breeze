@@ -1,3 +1,21 @@
+/** The canonical set of merge-variable keys. Every `vars` bag that feeds
+ *  renderTemplate (worker, composer, settings preview) is typed against this, so
+ *  a renamed or mistyped key fails to compile rather than silently rendering ''. */
+export type TicketTemplateVariableKey =
+  | 'ticket_number'
+  | 'ticket_subject'
+  | 'requester_name'
+  | 'requester_email'
+  | 'org_name'
+  | 'partner_name'
+  | 'agent_name'
+  | 'current_status'
+  | 'current_priority';
+
+/** Values supplied at render time. Partial — callers fill the subset available
+ *  in their context; unknown/absent keys render to '' (defense in depth). */
+export type TicketTemplateVars = Partial<Record<TicketTemplateVariableKey, string>>;
+
 /**
  * Shared {{variable}} substitution for ticket templates (auto-reply emails and
  * canned responses). Pure and context-agnostic: callers escape values for their
@@ -5,11 +23,13 @@
  * Unknown tokens render to '' so a raw {{foo}} never reaches a customer.
  * Substitution is single-pass — values are NOT re-scanned for tokens.
  */
-export function renderTemplate(template: string, vars: Record<string, string>): string {
+export function renderTemplate(template: string, vars: TicketTemplateVars): string {
+  // The regex matches any [a-z0-9_]+, not just registry keys, so read through a
+  // loose view; unknown keys (and absent ones) coerce to '' — the ?? also
+  // satisfies noUncheckedIndexedAccess (index access is string | undefined).
+  const loose = vars as Record<string, string | undefined>;
   return template.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/g, (_match, key: string) => {
-    // Read the own-property value (prototype-safe), coercing a missing key to ''.
-    // The ?? also satisfies noUncheckedIndexedAccess (index access is string | undefined).
-    const value = Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : undefined;
+    const value = Object.prototype.hasOwnProperty.call(loose, key) ? loose[key] : undefined;
     return value ?? '';
   });
 }
@@ -17,7 +37,7 @@ export function renderTemplate(template: string, vars: Record<string, string>): 
 export type TicketTemplateContext = 'autoreply' | 'canned';
 
 export interface TicketTemplateVariable {
-  key: string;
+  key: TicketTemplateVariableKey;
   label: string;
   contexts: TicketTemplateContext[];
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { renderTemplate, variablesForContext } from '@breeze/shared';
+import { renderTemplate, variablesForContext, type TicketTemplateVars } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -11,7 +11,7 @@ import { CustomerDomainsCard } from './CustomerDomainsCard';
 // Sample values so the admin can preview how merge variables resolve in the
 // acknowledgement email without sending one. The server fills these from the
 // real ticket/org/partner at send time (see ticketNotifyWorker.collectAutoresponse).
-const AUTORESPONSE_SAMPLE: Record<string, string> = {
+const AUTORESPONSE_SAMPLE: TicketTemplateVars = {
   ticket_number: 'T-2026-0001',
   ticket_subject: 'Email not syncing',
   requester_name: 'Sample Requester',
@@ -155,8 +155,9 @@ export default function InboundEmailCard() {
     ) => {
       if (!cfg) return;
       const next = { ...cfg, ...patch };
-      // Send the COMPLETE ticketing.inbound object — PATCH /partners/me shallow-
-      // replaces the top-level `ticketing` key, so any omitted field is destroyed.
+      // Send the COMPLETE ticketing.inbound object — PATCH /partners/me deep-merges
+      // `ticketing` one level but replaces the `inbound` sub-object wholesale, so any
+      // omitted inbound field is destroyed.
       // Include `address` ONLY when there is a real self-hosted override (never the
       // derived value, which would persist a derived address as a spurious override).
       const inbound: Record<string, unknown> = {

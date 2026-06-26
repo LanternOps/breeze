@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { renderTemplate } from '@breeze/shared';
+import { renderTemplate, type TicketTemplateVars } from '@breeze/shared';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
 interface Props {
   templates: CannedResponse[];
   /** Values substituted into the template body on insert (built from the ticket). */
-  vars: Record<string, string>;
+  vars: TicketTemplateVars;
   onInsert: (text: string) => void;
   disabled?: boolean;
 }

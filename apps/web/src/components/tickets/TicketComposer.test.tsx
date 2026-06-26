@@ -61,6 +61,41 @@ describe('TicketComposer', () => {
     expect(screen.getByTestId('ticket-composer-input')).toHaveValue('Hi Pat');
   });
 
+  it('splices a canned response at the caret (not just append)', () => {
+    render(
+      <TicketComposer
+        requesterName="Pat"
+        onSend={onSend}
+        templates={[{ id: '1', name: 'Sig', body: '[sig]', category: null, sortOrder: 0, isActive: true }]}
+        templateVars={{}}
+      />,
+    );
+    const input = screen.getByTestId('ticket-composer-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Hello  world' } });
+    // Place the caret between the two spaces (index 6).
+    input.setSelectionRange(6, 6);
+    fireEvent.click(screen.getByTestId('canned-picker-button'));
+    fireEvent.click(screen.getByTestId('canned-picker-option-1'));
+    expect(input.value).toBe('Hello [sig] world');
+  });
+
+  it('replaces the current selection when inserting a canned response', () => {
+    render(
+      <TicketComposer
+        requesterName="Pat"
+        onSend={onSend}
+        templates={[{ id: '1', name: 'Sig', body: 'X', category: null, sortOrder: 0, isActive: true }]}
+        templateVars={{}}
+      />,
+    );
+    const input = screen.getByTestId('ticket-composer-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'aBBBc' } });
+    input.setSelectionRange(1, 4); // select "BBB"
+    fireEvent.click(screen.getByTestId('canned-picker-button'));
+    fireEvent.click(screen.getByTestId('canned-picker-option-1'));
+    expect(input.value).toBe('aXc');
+  });
+
   it('keeps the draft and re-enables send when onSend rejects', async () => {
     onSend.mockRejectedValueOnce(new Error('network down'));
     render(<TicketComposer requesterName="Pat" onSend={onSend} />);

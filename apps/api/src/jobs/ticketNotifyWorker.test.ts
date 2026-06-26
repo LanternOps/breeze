@@ -242,6 +242,29 @@ describe('handleTicketEvent', () => {
     expect(arg.headers!['Message-ID']).toBe('<ticket-t-1@tickets.example.com>');
   });
 
+  it('renders the partner custom auto-reply with ticket/org/partner merge variables', async () => {
+    // ticket row carries submitterName; partner has a custom subject+body template; org name resolves.
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterName: 'Jane Doe', submitterEmail: 'jane@x.com', emailThreadKey: null }])
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme MSP', settings: { ticketing: { inbound: {
+        autoresponseSubject: 'Re: {{ticket_subject}} [{{ticket_number}}]',
+        autoresponseBody: 'Hi {{requester_name}} at {{org_name}} — {{partner_name}} got it ({{requester_email}}).',
+      } } } }])
+      .mockResolvedValueOnce([{ name: 'Jane Co' }]);
+
+    await handleTicketEvent({
+      type: 'ticket.autoresponse',
+      ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null,
+      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
+    } as never);
+
+    const arg = sendEmailMock.mock.calls[0]![0] as { subject: string; html: string };
+    expect(arg.subject).toBe('Re: printer down [T-2026-0001]');
+    // Every variable resolves from its real source: submitterName, org row, partner.name, payload.to.
+    expect(arg.html).toContain('Hi Jane Doe at Jane Co — Acme MSP got it (jane@x.com).');
+  });
+
   it('autoresponse honors the partner self-hosted inbound override as Reply-To', async () => {
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }])

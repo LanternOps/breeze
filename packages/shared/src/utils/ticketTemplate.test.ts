@@ -15,27 +15,28 @@ describe('renderTemplate', () => {
   });
 
   it('tolerates inner whitespace and repeats a token', () => {
-    expect(renderTemplate('{{ a }} {{a}}', { a: 'x' })).toBe('x x');
+    expect(renderTemplate('{{ org_name }} {{org_name}}', { org_name: 'x' })).toBe('x x');
   });
 
   it('handles adjacent tokens', () => {
-    expect(renderTemplate('{{a}}{{b}}', { a: '1', b: '2' })).toBe('12');
+    expect(renderTemplate('{{ticket_number}}{{ticket_subject}}', { ticket_number: '1', ticket_subject: '2' })).toBe('12');
   });
 
   it('leaves an unclosed brace untouched', () => {
-    expect(renderTemplate('a {{ b', { b: 'x' })).toBe('a {{ b');
+    expect(renderTemplate('a {{ org_name', { org_name: 'x' })).toBe('a {{ org_name');
   });
 
   it('passes through a template with no tokens', () => {
-    expect(renderTemplate('plain text', { a: 'x' })).toBe('plain text');
+    expect(renderTemplate('plain text', { org_name: 'x' })).toBe('plain text');
   });
 
   it('returns empty for an empty template', () => {
-    expect(renderTemplate('', { a: 'x' })).toBe('');
+    expect(renderTemplate('', { org_name: 'x' })).toBe('');
   });
 
   it('does not recursively expand substituted values', () => {
-    expect(renderTemplate('{{a}}', { a: '{{b}}', b: 'NO' })).toBe('{{b}}');
+    // ticket_number's value contains a token; it must NOT be re-scanned/expanded.
+    expect(renderTemplate('{{ticket_number}}', { ticket_number: '{{requester_name}}', requester_name: 'NO' })).toBe('{{requester_name}}');
   });
 });
 

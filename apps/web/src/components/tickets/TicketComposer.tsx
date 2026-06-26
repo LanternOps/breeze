@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import type { TicketTemplateVars } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import CannedResponsePicker from './CannedResponsePicker';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
@@ -11,7 +12,7 @@ interface Props {
   /** Partner canned responses (empty/omitted hides the picker). */
   templates?: CannedResponse[];
   /** Merge-variable values resolved from the current ticket, applied on insert. */
-  templateVars?: Record<string, string>;
+  templateVars?: TicketTemplateVars;
 }
 
 export default function TicketComposer({ requesterName, onSend, disabled, templates, templateVars }: Props) {

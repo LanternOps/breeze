@@ -33,6 +33,7 @@ import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
 import { buildAutoresponseEmail } from '../services/inboundEmail/autoresponseTemplate';
+import type { TicketTemplateVars } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -189,8 +190,10 @@ async function collectRequesterEmail(
 /**
  * One-time autoresponse acknowledgement (spec §5). The autoresponder gate
  * (inboundEmail/autoresponder.ts) already applied loop-prevention + the per-sender
- * cap before emitting; here we just compose + send. The body is the hardcoded v1
- * template (PR4 swaps it). Loop hygiene: stamp Auto-Submitted: auto-replied and set
+ * cap before emitting; here we just compose + send. The body is the partner's
+ * customized auto-reply template when set (settings.ticketing.inbound.autoresponse
+ * {Subject,Body}, rendered with the ticket's merge variables), otherwise the default
+ * acknowledgement — see buildAutoresponseEmail. Loop hygiene: stamp Auto-Submitted: auto-replied and set
  * the ticket thread anchor as Message-ID so the requester's reply threads. Reply-To
  * is the partner inbound address (self-hosted override honored).
  */
@@ -230,7 +233,7 @@ async function collectAutoresponse(
     orgName = orgRows[0]?.name ?? '';
   }
 
-  const vars: Record<string, string> = {
+  const vars: TicketTemplateVars = {
     ticket_number: ticket.internalNumber ?? '',
     ticket_subject: ticket.subject ?? event.payload.subject,
     requester_name: ticket.submitterName ?? '',
