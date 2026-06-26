@@ -37,7 +37,12 @@ export const createCatalogItemSchema = z.object({
   taxable: z.boolean().default(true),
   taxCategory: z.string().max(100).nullable().optional(),
   isBundle: z.boolean().default(false),
-  attributes: z.record(z.string(), z.unknown()).default({})
+  // Bound serialized size so a large enrichment.suggestion (or any blob) can't
+  // bloat the row. AI provenance is stored as attributes.enrichment (see
+  // CatalogItemEditorDrawer); this caps the whole attributes map.
+  attributes: z.record(z.string(), z.unknown())
+    .refine((v) => JSON.stringify(v).length <= 60_000, { message: 'attributes payload is too large' })
+    .default({})
 });
 export type CreateCatalogItemInput = z.infer<typeof createCatalogItemSchema>;
 
@@ -90,3 +95,40 @@ export const listCatalogQuerySchema = z.object({
   cursor: z.string().guid().optional()
 });
 export type ListCatalogQuery = z.infer<typeof listCatalogQuerySchema>;
+
+export const enrichRequestSchema = z.object({
+  query: z.string().min(1).max(200),
+  hint: catalogItemTypeSchema.optional(),
+});
+export type EnrichRequest = z.infer<typeof enrichRequestSchema>;
+
+export const enrichDraftSchema = z.object({
+  name: z.string().min(1).max(255),
+  description: z.string().max(10_000).nullable(),
+  itemType: catalogItemTypeSchema,
+  unitOfMeasure: z.string().max(50),
+  taxable: z.boolean(),
+  taxCategory: z.string().max(100).nullable(),
+});
+export type EnrichDraft = z.infer<typeof enrichDraftSchema>;
+
+export const enrichmentProvenanceSchema = z.object({
+  source: z.literal('ai_enrich'),
+  model: z.string().max(100),
+  query: z.string().max(200),
+  // Bounded passthrough of exactly what the AI returned (the "suggestion").
+  suggestion: z.record(z.string(), z.unknown()).refine(
+    (v) => JSON.stringify(v).length <= 20_000,
+    { message: 'enrichment suggestion is too large' }
+  ),
+  enrichedAt: z.string().max(40),
+  enrichedBy: z.string().max(100),
+});
+export type EnrichmentProvenance = z.infer<typeof enrichmentProvenanceSchema>;
+
+export const enrichResponseSchema = z.object({
+  draft: enrichDraftSchema,
+  priceGuidance: z.string().max(120).nullable(),
+  provenance: enrichmentProvenanceSchema,
+});
+export type EnrichResponse = z.infer<typeof enrichResponseSchema>;

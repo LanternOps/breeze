@@ -4,7 +4,11 @@ import {
   updateCatalogItemSchema,
   orgPriceOverrideSchema,
   setBundleComponentsSchema,
-  listCatalogQuerySchema
+  listCatalogQuerySchema,
+  enrichRequestSchema,
+  enrichDraftSchema,
+  enrichResponseSchema,
+  enrichmentProvenanceSchema
 } from './catalog';
 
 describe('createCatalogItemSchema', () => {
@@ -147,5 +151,62 @@ describe('listCatalogQuerySchema boolean params', () => {
     const r = listCatalogQuerySchema.parse({});
     expect(r.isActive).toBeUndefined();
     expect(r.isBundle).toBeUndefined();
+  });
+});
+
+describe('enrich validators', () => {
+  it('accepts a valid enrich request with optional hint', () => {
+    expect(enrichRequestSchema.parse({ query: 'APC Back-UPS 600VA' })).toEqual({
+      query: 'APC Back-UPS 600VA',
+    });
+    expect(enrichRequestSchema.parse({ query: 'x', hint: 'hardware' }).hint).toBe('hardware');
+  });
+
+  it('rejects an empty or oversized query', () => {
+    expect(enrichRequestSchema.safeParse({ query: '' }).success).toBe(false);
+    expect(enrichRequestSchema.safeParse({ query: 'a'.repeat(201) }).success).toBe(false);
+  });
+
+  it('validates a draft and a full response', () => {
+    const draft = {
+      name: 'APC Back-UPS 600VA',
+      description: 'Battery backup',
+      itemType: 'hardware' as const,
+      unitOfMeasure: 'each',
+      taxable: true,
+      taxCategory: null,
+    };
+    expect(enrichDraftSchema.parse(draft)).toEqual(draft);
+    const resp = {
+      draft,
+      priceGuidance: 'typically $80–120',
+      provenance: {
+        source: 'ai_enrich' as const,
+        model: 'claude-sonnet-4-6',
+        query: 'APC Back-UPS 600VA',
+        suggestion: { priceLow: 80, priceHigh: 120 },
+        enrichedAt: '2026-06-25T00:00:00.000Z',
+        enrichedBy: '00000000-0000-0000-0000-000000000001',
+      },
+    };
+    expect(enrichResponseSchema.parse(resp)).toBeTruthy();
+    expect(enrichmentProvenanceSchema.parse(resp.provenance).source).toBe('ai_enrich');
+  });
+
+  it('rejects create attributes larger than 60k chars', () => {
+    const big = { blob: 'x'.repeat(60_001) };
+    const res = createCatalogItemSchema.safeParse({
+      itemType: 'service', name: 'svc', unitPrice: 10, attributes: big,
+    });
+    expect(res.success).toBe(false);
+  });
+
+  it('rejects an enrichment suggestion larger than 20k chars', () => {
+    const res = enrichmentProvenanceSchema.safeParse({
+      source: 'ai_enrich', model: 'm', query: 'q',
+      suggestion: { blob: 'x'.repeat(20_001) },
+      enrichedAt: '2026-06-26T00:00:00.000Z', enrichedBy: 'u1',
+    });
+    expect(res.success).toBe(false);
   });
 });
