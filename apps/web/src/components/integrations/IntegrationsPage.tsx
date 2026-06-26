@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   Activity,
   Boxes,
+  CreditCard,
   DollarSign,
   MessageSquare,
   Plug,
@@ -21,9 +22,10 @@ import Pax8Integration from './Pax8Integration';
 import TdSynnexCatalogPanel from '../settings/TdSynnexCatalogPanel';
 import TdSynnexEcExpressPanel from '../settings/TdSynnexEcExpressPanel';
 import QuickbooksIntegration from './QuickbooksIntegration';
+import StripePaymentsIntegration from './StripePaymentsIntegration';
 import { getJwtClaims } from '../../lib/authScope';
 
-type TabId = 'webhooks' | 'notifications' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors' | 'accounting';
+type TabId = 'webhooks' | 'notifications' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors' | 'accounting' | 'payments';
 type SecuritySubTab = 'sentinelone' | 'huntress';
 type IdentitySubTab = 'google' | 'm365';
 type DistributorSubTab = 'pax8' | 'tdsynnex' | 'tdsynnex-ec';
@@ -37,6 +39,7 @@ const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'identity', label: 'Identity', icon: Users },
   { id: 'distributors', label: 'Distributors', icon: Boxes },
   { id: 'accounting', label: 'Accounting', icon: DollarSign },
+  { id: 'payments', label: 'Payments', icon: CreditCard },
 ];
 
 const securitySubTabs: { id: SecuritySubTab; label: string }[] = [
@@ -227,6 +230,15 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
         </p>
       )}
       {activeTab === 'accounting' && !isOrgScoped && <QuickbooksIntegration />}
+      {activeTab === 'payments' && isOrgScoped && (
+        <p
+          className="py-12 text-center text-sm text-muted-foreground"
+          data-testid="payments-org-scope"
+        >
+          Payment integrations are available to partner accounts only.
+        </p>
+      )}
+      {activeTab === 'payments' && !isOrgScoped && <StripePaymentsIntegration />}
     </div>
   );
 }

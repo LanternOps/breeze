@@ -3,7 +3,6 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { pctFromFraction } from './invoiceTypes';
-import StripeConnectCard from './StripeConnectCard';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -286,8 +285,6 @@ export default function PartnerBillingSettings() {
           />
         </div>
       </section>
-
-      <StripeConnectCard />
 
       <div className="flex justify-end">
         <button

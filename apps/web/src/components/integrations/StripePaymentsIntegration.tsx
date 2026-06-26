@@ -20,7 +20,7 @@ function maskAccountId(id: string): string {
   return `acct_••••${id.slice(-4)}`;
 }
 
-export default function StripeConnectCard() {
+export default function StripePaymentsIntegration() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
