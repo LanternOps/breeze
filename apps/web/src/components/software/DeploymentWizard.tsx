@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle, ChevronRight, Loader2, Search, Server, CalendarClock, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import ProgressBar from '../shared/ProgressBar';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
@@ -395,21 +397,35 @@ export default function DeploymentWizard() {
               scheduledAt: scheduleType === 'scheduled' ? new Date(scheduledAt).toISOString() : undefined,
             };
 
-      const response = await fetchWithAuth('/software/deployments', {
-        method: 'POST',
-        body: JSON.stringify(payload),
+      const result = await runAction<{ id?: string; status?: string; message?: string }>({
+        request: () => fetchWithAuth('/software/deployments', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        }),
+        errorFallback: 'Deployment failed',
+        parseSuccess: (data) => {
+          const d = (data as { data?: unknown })?.data ?? data;
+          return (d ?? {}) as { id?: string; status?: string; message?: string };
+        },
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? 'Deployment failed');
+      // Built-in EDR deploys return HTTP 200 with status 'failed' when the target
+      // org is unmapped or the integration is disconnected — surface that.
+      if (result?.status === 'failed') {
+        const msg = result.message ?? 'Deployment failed';
+        setError(msg);
+        showToast({ message: msg, type: 'error' });
+        return;
       }
 
-      const result = await response.json();
-      setDeploymentId(result.data?.id ?? result.id ?? 'deployment-created');
+      setDeploymentId(result?.id ?? 'deployment-created');
       setDeploymentComplete(true);
+      showToast({ message: 'Deployment started', type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Deployment failed');
+      if (err instanceof ActionError && err.status === 401) return;
+      const msg = err instanceof Error ? err.message : 'Deployment failed';
+      setError(msg);
+      if (!(err instanceof ActionError)) showToast({ message: msg, type: 'error' });
     } finally {
       setDeploying(false);
     }

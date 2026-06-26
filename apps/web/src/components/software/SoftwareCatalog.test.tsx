@@ -128,4 +128,46 @@ describe('SoftwareCatalog built-in packages', () => {
     expect(await screen.findByText(/managed by the Huntress integration/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
   });
+
+  it('disables Deploy with an upload hint for a SentinelOne package that has no version', async () => {
+    const s1NoVersion = {
+      id: 'builtin-s1',
+      name: 'SentinelOne Agent',
+      vendor: 'SentinelOne',
+      category: 'security',
+      description: 'EDR agent.',
+      createdAt: '2026-06-26T00:00:00Z',
+      integrationProvider: 'sentinelone',
+      partnerId: 'partner-1',
+      versionCount: 0
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [s1NoVersion] }));
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('SentinelOne Agent')).toBeInTheDocument());
+
+    expect(screen.getByText(/Upload installer to enable deploy/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Deploy$/ })).toBeDisabled();
+  });
+
+  it('enables Deploy for a SentinelOne package once a version is uploaded', async () => {
+    const s1WithVersion = {
+      id: 'builtin-s1b',
+      name: 'SentinelOne Agent',
+      vendor: 'SentinelOne',
+      category: 'security',
+      description: 'EDR agent.',
+      createdAt: '2026-06-26T00:00:00Z',
+      integrationProvider: 'sentinelone',
+      partnerId: 'partner-1',
+      versionCount: 1
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [s1WithVersion] }));
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('SentinelOne Agent')).toBeInTheDocument());
+
+    expect(screen.queryByText(/Upload installer to enable deploy/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Deploy$/ })).not.toBeDisabled();
+  });
 });

@@ -452,6 +452,7 @@ softwareRoutes.get(
         websiteUrl: softwareCatalog.websiteUrl,
         isManaged: softwareCatalog.isManaged,
         createdAt: softwareCatalog.createdAt,
+        versionCount: sql<number>`(SELECT count(*) FROM software_versions WHERE software_versions.catalog_id = ${softwareCatalog.id})`,
       }).from(softwareCatalog)
         .where(whereClause)
         .orderBy(softwareCatalog.name)

@@ -24,6 +24,8 @@ type SoftwareItem = {
   /** Set for built-in integration packages (e.g. Huntress, SentinelOne). */
   integrationProvider?: string;
   partnerId?: string;
+  /** Number of uploaded versions; built-in S1 needs >=1 before it can deploy. */
+  versionCount?: number;
 };
 
 /** Human label for a built-in package's integration provider, or null if not built-in. */
@@ -32,6 +34,13 @@ const providerLabel = (provider?: string): string | null => {
   if (provider === 'sentinelone') return 'SentinelOne';
   return null;
 };
+
+/**
+ * A built-in package whose installer binary must be uploaded before it can deploy
+ * (SentinelOne ships no derivable download URL — the partner uploads the MSI once).
+ */
+const needsInstallerUpload = (item: SoftwareItem): boolean =>
+  item.integrationProvider === 'sentinelone' && (item.versionCount ?? 0) === 0;
 
 const categoryStyles: Record<string, string> = {
   browser: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
@@ -83,6 +92,7 @@ export default function SoftwareCatalog() {
           createdAt: String(item.createdAt ?? ''),
           integrationProvider: item.integrationProvider ? String(item.integrationProvider) : undefined,
           partnerId: item.partnerId ? String(item.partnerId) : undefined,
+          versionCount: item.versionCount != null ? Number(item.versionCount) : undefined,
         })));
       }
     } catch (err) {
@@ -299,15 +309,27 @@ export default function SoftwareCatalog() {
                 <p className="mt-3 text-xs text-muted-foreground line-clamp-2">{item.description}</p>
               )}
 
-              <div className="mt-4 flex items-center justify-end">
+              <div className="mt-4 flex items-center justify-between gap-2">
+                {needsInstallerUpload(item) ? (
+                  <p className="text-xs text-muted-foreground">Upload installer to enable deploy</p>
+                ) : (
+                  <span />
+                )}
                 <button
                   type="button"
-                  title={item.integrationProvider ? 'Deploys to mapped organizations only' : undefined}
+                  disabled={needsInstallerUpload(item)}
+                  title={
+                    needsInstallerUpload(item)
+                      ? 'Upload the SentinelOne installer (Versions tab) to enable deploy'
+                      : item.integrationProvider
+                        ? 'Deploys to mapped organizations only'
+                        : undefined
+                  }
                   onClick={event => {
                     event.stopPropagation();
                     setShowDeployWizard(true);
                   }}
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                  className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Deploy
                 </button>
