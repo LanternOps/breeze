@@ -67,7 +67,12 @@ export const pamInlineSettingsSchema = z
 // Types
 // ============================================
 
-type ConfigFeatureType = 'patch' | 'alert_rule' | 'backup' | 'security' | 'monitoring' | 'maintenance' | 'compliance' | 'automation' | 'event_log' | 'software_policy' | 'sensitive_data' | 'peripheral_control' | 'warranty' | 'helper' | 'remote_access' | 'pam' | 'onedrive_helper';
+export const CONFIG_FEATURE_TYPES = [
+  'patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance',
+  'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data',
+  'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
+] as const;
+export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
