@@ -14,6 +14,13 @@ DECLARE
   deleted_rings bigint;
 BEGIN
   DROP TABLE IF EXISTS pg_temp.patch_policy_default_ring_dedup_map;
+  -- Loser-ring selection. The (lower(name)='default' AND ring_order=0 AND
+  -- deferral_days=0) heuristic below is INTENTIONALLY IDENTICAL to the predicate
+  -- of the partial unique index created at the end of this migration, so the
+  -- cleanup and the index stay self-consistent: every row this dedup collapses is
+  -- exactly a row the index would otherwise reject. Edge case (accepted): a
+  -- partner's coincidentally-named custom "Default" order-0 / 0-day ring matches
+  -- the same predicate and would be merged into the winner.
   CREATE TEMP TABLE patch_policy_default_ring_dedup_map ON COMMIT DROP AS
   WITH ranked AS (
     SELECT
@@ -96,6 +103,10 @@ BEGIN
    WHERE pcs.ring_id = m.loser_id;
   GET DIAGNOSTICS updated_snapshots = ROW_COUNT;
 
+  -- No dedup needed here, unlike patch_approvals above. This repoint only
+  -- rewrites feature_policy_id (loser -> winner); it never touches the
+  -- (config_policy_id, feature_type) pair that uniqueness on this table is keyed
+  -- on, so it cannot create a new uniqueness collision on config_policy_feature_links.
   UPDATE config_policy_feature_links fl
      SET feature_policy_id = m.winner_id
     FROM patch_policy_default_ring_dedup_map m
@@ -107,6 +118,9 @@ BEGIN
    WHERE id IN (SELECT loser_id FROM patch_policy_default_ring_dedup_map);
   GET DIAGNOSTICS deleted_rings = ROW_COUNT;
 
+  -- Deliberately always-report (no `IF n>0` guard): emitting every count, even
+  -- zeros, preserves a complete forensic trail of this data cleanup in the
+  -- Postgres logs (per CLAUDE.md migration guidance).
   RAISE WARNING 'default update ring dedup: approvals deleted %, approval ring refs updated %, approval policy refs updated %, job ring refs updated %, job policy refs updated %, snapshot refs updated %, feature links updated %, duplicate rings removed %',
     deleted_approvals,
     updated_approvals_ring,
