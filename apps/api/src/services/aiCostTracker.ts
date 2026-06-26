@@ -243,9 +243,17 @@ export async function checkAiRateLimit(
 
 /**
  * Record token usage for a message and update aggregates.
+ *
+ * `sessionId` is `null` for sessionless flows (e.g. the one-shot catalog AI
+ * enrichment, which has no `ai_sessions` row). In that case the per-session
+ * totals update is skipped, but the org-budget aggregates (`ai_cost_usage`)
+ * are still written so per-org budget enforcement still sees the spend. Passing
+ * a non-UUID label as the session id used to throw `invalid input syntax for
+ * type uuid` and abort before the aggregate write, silently bypassing budgets
+ * (issue #1949).
  */
 export async function recordUsage(
-  sessionId: string,
+  sessionId: string | null,
   orgId: string,
   model: string,
   inputTokens: number,
@@ -260,21 +268,23 @@ export async function recordUsage(
   // Run queries individually instead of in a transaction to avoid
   // SAVEPOINT errors with the postgres.js driver (postgres@3.4.8).
   // These are additive counters so partial failure is acceptable.
-  try {
-    await db
-      .update(aiSessions)
-      .set({
-        totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
-        totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
-        totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
-        turnCount: sql`${aiSessions.turnCount} + 1`,
-        lastActivityAt: new Date(),
-        updatedAt: new Date()
-      })
-      .where(eq(aiSessions.id, sessionId));
-  } catch (err) {
-    console.error(`[AI] Failed to update session totals for session=${sessionId}, cost=${costCents}:`, err);
-    throw err;
+  if (sessionId !== null) {
+    try {
+      await db
+        .update(aiSessions)
+        .set({
+          totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
+          totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
+          totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
+          turnCount: sql`${aiSessions.turnCount} + 1`,
+          lastActivityAt: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(aiSessions.id, sessionId));
+    } catch (err) {
+      console.error(`[AI] Failed to update session totals for session=${sessionId}, cost=${costCents}:`, err);
+      throw err;
+    }
   }
 
   // Update daily/monthly aggregates
@@ -565,7 +575,7 @@ export async function getRemainingBudgetUsd(orgId: string): Promise<number | nul
  * Logs warnings for sessions consuming too much budget.
  */
 async function checkCostAnomalies(
-  sessionId: string,
+  sessionId: string | null,
   orgId: string,
   costCents: number,
   dailyKey: string
@@ -578,12 +588,16 @@ async function checkCostAnomalies(
 
   if (!budget || !budget.dailyBudgetCents) return;
 
-  // Check if single session exceeds 10% of daily budget
-  const [session] = await db
-    .select({ totalCostCents: aiSessions.totalCostCents })
-    .from(aiSessions)
-    .where(eq(aiSessions.id, sessionId))
-    .limit(1);
+  // Check if single session exceeds 10% of daily budget. Sessionless flows
+  // (sessionId === null, e.g. catalog enrichment) have no per-session row, so
+  // skip straight to the org-level daily check.
+  const [session] = sessionId === null
+    ? [undefined]
+    : await db
+        .select({ totalCostCents: aiSessions.totalCostCents })
+        .from(aiSessions)
+        .where(eq(aiSessions.id, sessionId))
+        .limit(1);
 
   if (session && session.totalCostCents > budget.dailyBudgetCents * 0.1) {
     console.warn(

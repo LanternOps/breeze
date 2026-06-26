@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { calculateCostCents, recordUsageFromSdkResult } from './aiCostTracker';
+import { calculateCostCents, recordUsage, recordUsageFromSdkResult } from './aiCostTracker';
 import { db } from '../db';
 
 // ============================================
@@ -70,7 +70,10 @@ const mockDb = db as unknown as {
  * `sessionModel` is returned by the session-model lookup `db.select(...).limit(1)`.
  */
 function setupDbMocks(sessionModel: string | null) {
-  const capture: { sessionSet?: Record<string, unknown> } = {};
+  const capture: {
+    sessionSet?: Record<string, unknown>;
+    aggregateValues: Array<Record<string, unknown>>;
+  } = { aggregateValues: [] };
 
   mockDb.update.mockReturnValue({
     set: vi.fn((values: Record<string, unknown>) => {
@@ -80,9 +83,10 @@ function setupDbMocks(sessionModel: string | null) {
   });
 
   mockDb.insert.mockReturnValue({
-    values: vi.fn(() => ({
-      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-    })),
+    values: vi.fn((values: Record<string, unknown>) => {
+      capture.aggregateValues.push(values);
+      return { onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) };
+    }),
   });
 
   // db.select(...) is used both for the session-model lookup and for the
@@ -294,5 +298,52 @@ describe('recordUsageFromSdkResult', () => {
     });
 
     expect(mockDb.update).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// recordUsage — sessionless org-budget path (issue #1949)
+// ============================================
+
+describe('recordUsage', () => {
+  it('records the session row when a real sessionId is given', async () => {
+    const captured = setupDbMocks(null);
+
+    // sonnet-4-6 1M/1M → 1800 cents on the session row.
+    await recordUsage('sess-1', 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, true);
+
+    expect(mockDb.update).toHaveBeenCalledTimes(1);
+    expect(recordedCostCents(captured.sessionSet)).toBe(1800);
+  });
+
+  it('skips the ai_sessions update but still writes org aggregates when sessionId is null', async () => {
+    // The catalog AI enrichment flow has no ai_sessions row. Passing null must
+    // NOT touch ai_sessions (the old non-UUID label threw and bypassed budgets,
+    // issue #1949) yet must still record the org-budget aggregates.
+    const captured = setupDbMocks(null);
+
+    await recordUsage(null, 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, true);
+
+    // No session update at all.
+    expect(mockDb.update).not.toHaveBeenCalled();
+
+    // Both daily and monthly aggregate inserts still happen, carrying the spend.
+    expect(captured.aggregateValues.length).toBe(2);
+    const periods = captured.aggregateValues.map((v) => v.period).sort();
+    expect(periods).toEqual(['daily', 'monthly']);
+    for (const agg of captured.aggregateValues) {
+      expect(agg.orgId).toBe('org-1');
+      expect(agg.totalCostCents).toBe(1800); // 1M/1M sonnet-4-6
+      expect(agg.inputTokens).toBe(1_000_000);
+      expect(agg.outputTokens).toBe(1_000_000);
+      expect(agg.toolExecutionCount).toBe(1); // isToolExecution=true
+    }
+  });
+
+  it('does not throw on the sessionless path (budget enforcement always sees the spend)', async () => {
+    setupDbMocks(null);
+    await expect(
+      recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, true),
+    ).resolves.toBeUndefined();
   });
 });

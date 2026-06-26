@@ -1,6 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { randomUUID } from 'node:crypto';
 import { resolveDefaultModel } from './aiAgent';
 import { checkBudget, checkAiRateLimit, recordUsage } from './aiCostTracker';
 import { captureException } from './sentry';
@@ -122,7 +121,11 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
     }
 
     if (actor.orgId) {
-      recordUsage('catalog-enrich-' + randomUUID(), actor.orgId, model, totalIn, totalOut, true)
+      // Sessionless flow: there is no ai_sessions row for catalog enrichment, so
+      // pass null and let recordUsage write only the org-budget aggregates. The
+      // previous 'catalog-enrich-<uuid>' label was not a valid uuid and threw
+      // before any spend was recorded, bypassing budget enforcement (issue #1949).
+      recordUsage(null, actor.orgId, model, totalIn, totalOut, true)
         .catch((err) => {
           console.error('[catalog-enrich] recordUsage failed:', err);
           captureException(err instanceof Error ? err : new Error(String(err)));
