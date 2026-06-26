@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CONFIG_FEATURE_TYPES } from './configurationPolicy';
 import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline } from './policyBaselineDefaults';
+import { PAM_DEFAULTS } from '../routes/agents/pamSettings';
 
 describe('policyBaselineDefaults', () => {
   it('has exactly one entry per ConfigFeatureType', () => {
@@ -39,5 +40,11 @@ describe('policyBaselineDefaults', () => {
 
   it('getPamBaseline returns UAC off', () => {
     expect(getPamBaseline()).toEqual({ uacInterceptionEnabled: false });
+  });
+});
+
+describe('pam defaults single source of truth', () => {
+  it('PAM_DEFAULTS equals the canonical pam baseline', () => {
+    expect(PAM_DEFAULTS).toEqual(getPamBaseline());
   });
 });

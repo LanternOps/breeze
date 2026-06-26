@@ -1,3 +1,5 @@
+import { getPamBaseline } from '../../services/policyBaselineDefaults';
+
 /**
  * PAM config-policy feature ('pam') — inline settings shape.
  *
@@ -18,9 +20,7 @@ export interface PamSettings {
  * grandfathered back to ON via pam_org_config.uac_interception_enabled — see
  * resolveDevicePamSettings and migration 2026-07-01-pam-uac-opt-in-grandfathering.
  */
-export const PAM_DEFAULTS: PamSettings = {
-  uacInterceptionEnabled: false,
-};
+export const PAM_DEFAULTS: PamSettings = getPamBaseline();
 
 export function parsePamSettings(inlineSettings: unknown): PamSettings {
   if (!inlineSettings || typeof inlineSettings !== 'object') return PAM_DEFAULTS;
