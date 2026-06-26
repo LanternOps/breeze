@@ -19,8 +19,9 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 export async function listCannedResponses(): Promise<CannedResponse[]> {
   const res = await fetchWithAuth('/ticket-response-templates');
   if (!res.ok) throw new Error('Failed to load canned responses');
-  const body = (await res.json()) as { data: CannedResponse[] };
-  return body.data;
+  const body = (await res.json()) as { data?: CannedResponse[] };
+  return body.data ?? []; // tolerate a malformed payload — never hand back undefined
+
 }
 
 export function createCannedResponse(input: {
