@@ -35,6 +35,7 @@ import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@b
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
+import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 
 // ============================================
 // Inline settings schemas
@@ -87,7 +88,7 @@ interface ResolvedFeature {
   featureType: ConfigFeatureType;
   featurePolicyId: string | null;
   inlineSettings: unknown;
-  sourceLevel: ConfigAssignmentLevel;
+  sourceLevel: ConfigAssignmentLevel | 'default';
   sourceTargetId: string;
   sourcePolicyId: string;
   sourcePolicyName: string;
@@ -100,7 +101,7 @@ export interface EffectiveConfiguration {
   deviceId: string;
   features: Record<string, ResolvedFeature>;
   inheritanceChain: Array<{
-    level: ConfigAssignmentLevel;
+    level: ConfigAssignmentLevel | 'default';
     targetId: string;
     policyId: string;
     policyName: string;
@@ -1197,7 +1198,8 @@ export async function listAssignmentsForTarget(level: ConfigAssignmentLevel, tar
 async function resolveEffectiveConfigWithExecutor(
   executor: DbExecutor,
   deviceId: string,
-  auth: AuthContext
+  auth: AuthContext,
+  opts?: { includeBaseline?: boolean }
 ): Promise<EffectiveConfiguration | null> {
   // 1. Load device
   const deviceConditions: SQL[] = [eq(devices.id, deviceId)];
@@ -1345,16 +1347,48 @@ async function resolveEffectiveConfigWithExecutor(
     }
   }
 
-  const inheritanceChain = Array.from(chainMap.values()).map((entry) => ({
+  const inheritanceChain: EffectiveConfiguration['inheritanceChain'] = Array.from(chainMap.values()).map((entry) => ({
     ...entry,
     featureTypes: Array.from(entry.featureTypes),
   }));
 
+  if (opts?.includeBaseline) {
+    const synthesized: ConfigFeatureType[] = [];
+    for (const entry of getPolicyBaselineDefaults()) {
+      if (features[entry.featureType]) continue;
+      features[entry.featureType] = {
+        featureType: entry.featureType,
+        featurePolicyId: null,
+        inlineSettings: entry.inlineSettings,
+        sourceLevel: 'default',
+        sourceTargetId: 'breeze-defaults',
+        sourcePolicyId: 'breeze-defaults',
+        sourcePolicyName: 'Breeze Defaults',
+        sourcePriority: 0,
+      };
+      synthesized.push(entry.featureType);
+    }
+    if (synthesized.length > 0) {
+      inheritanceChain.push({
+        level: 'default',
+        targetId: 'breeze-defaults',
+        policyId: 'breeze-defaults',
+        policyName: 'Breeze Defaults',
+        priority: 0,
+        featureTypes: synthesized,
+      });
+    }
+  }
+
   return { deviceId, features, inheritanceChain };
 }
 
-export async function resolveEffectiveConfig(deviceId: string, auth: AuthContext): Promise<EffectiveConfiguration | null> {
-  return resolveEffectiveConfigWithExecutor(db, deviceId, auth);
+export async function resolveEffectiveConfig(
+  deviceId: string,
+  auth: AuthContext,
+  opts?: { includeBaseline?: boolean }
+): Promise<EffectiveConfiguration | null> {
+  return resolveEffectiveConfigWithExecutor(db, deviceId, auth, opts);
 }
 
 // ============================================
