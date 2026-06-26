@@ -192,23 +192,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // applied when a canned response is inserted into the composer. `partner_name`
   // isn't on the ticket payload, so it's left blank client-side (the server fills
   // it for auto-replies); the picker renders unknown/blank vars as empty.
-  const templateVars = useMemo<Record<string, string>>(
-    () =>
-      ticket
-        ? {
-            ticket_number: ticket.internalNumber ?? '',
-            ticket_subject: ticket.subject ?? '',
-            requester_name: ticket.submitterName ?? '',
-            requester_email: ticket.submitterEmail ?? '',
-            org_name: ticket.orgName ?? '',
-            partner_name: '',
-            agent_name: agentName,
-            current_status: String(ticket.status ?? ''),
-            current_priority: String(ticket.priority ?? ''),
-          }
-        : {},
-    [ticket, agentName],
-  );
+  const templateVars = useMemo<Record<string, string>>(() => {
+    if (!ticket) return {};
+    const vars: Record<string, string> = {
+      ticket_number: ticket.internalNumber ?? '',
+      ticket_subject: ticket.subject ?? '',
+      requester_name: ticket.submitterName ?? '',
+      requester_email: ticket.submitterEmail ?? '',
+      org_name: ticket.orgName ?? '',
+      partner_name: '',
+      agent_name: agentName,
+      current_status: String(ticket.status ?? ''),
+      current_priority: String(ticket.priority ?? ''),
+    };
+    return vars;
+  }, [ticket, agentName]);
 
   useEffect(() => {
     if (!ticket) {
