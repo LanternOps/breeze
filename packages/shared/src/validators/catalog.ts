@@ -22,6 +22,23 @@ const markupPercent = z.number().min(0).max(9999.99).multipleOf(0.01);
 // than overflowing at insert (DB-layer 500).
 const bundleQuantity = z.number().positive().max(9_999_999_999.99).multipleOf(0.01);
 
+// AI enrichment provenance stored on a catalog item as `attributes.enrichment`.
+// Defined here (above createCatalogItemSchema) so the create boundary can
+// validate the known sub-key's shape; also reused on the enrich response path.
+export const enrichmentProvenanceSchema = z.object({
+  source: z.literal('ai_enrich'),
+  model: z.string().max(100),
+  query: z.string().max(200),
+  // Bounded passthrough of exactly what the AI returned (the "suggestion").
+  suggestion: z.record(z.string(), z.unknown()).refine(
+    (v) => JSON.stringify(v).length <= 20_000,
+    { message: 'enrichment suggestion is too large' }
+  ),
+  enrichedAt: z.string().max(40),
+  enrichedBy: z.string().max(100),
+});
+export type EnrichmentProvenance = z.infer<typeof enrichmentProvenanceSchema>;
+
 export const createCatalogItemSchema = z.object({
   itemType: catalogItemTypeSchema,
   name: z.string().min(1).max(255),
@@ -37,10 +54,15 @@ export const createCatalogItemSchema = z.object({
   taxable: z.boolean().default(true),
   taxCategory: z.string().max(100).nullable().optional(),
   isBundle: z.boolean().default(false),
-  // Bound serialized size so a large enrichment.suggestion (or any blob) can't
-  // bloat the row. AI provenance is stored as attributes.enrichment (see
-  // CatalogItemEditorDrawer); this caps the whole attributes map.
-  attributes: z.record(z.string(), z.unknown())
+  // AI provenance is stored as attributes.enrichment (see CatalogItemEditorDrawer).
+  // Validate that known sub-key's shape at the write boundary so a malformed
+  // provenance object can't be persisted, while still allowing forward-compatible
+  // extra keys via .catchall(). The serialized-size refine bounds the whole map
+  // (the enrichmentProvenanceSchema's own 20k suggestion cap also applies here).
+  attributes: z.object({
+    enrichment: enrichmentProvenanceSchema.optional(),
+  })
+    .catchall(z.unknown())
     .refine((v) => JSON.stringify(v).length <= 60_000, { message: 'attributes payload is too large' })
     .default({})
 });
@@ -112,19 +134,8 @@ export const enrichDraftSchema = z.object({
 });
 export type EnrichDraft = z.infer<typeof enrichDraftSchema>;
 
-export const enrichmentProvenanceSchema = z.object({
-  source: z.literal('ai_enrich'),
-  model: z.string().max(100),
-  query: z.string().max(200),
-  // Bounded passthrough of exactly what the AI returned (the "suggestion").
-  suggestion: z.record(z.string(), z.unknown()).refine(
-    (v) => JSON.stringify(v).length <= 20_000,
-    { message: 'enrichment suggestion is too large' }
-  ),
-  enrichedAt: z.string().max(40),
-  enrichedBy: z.string().max(100),
-});
-export type EnrichmentProvenance = z.infer<typeof enrichmentProvenanceSchema>;
+// enrichmentProvenanceSchema / EnrichmentProvenance are defined above
+// createCatalogItemSchema so the create boundary can reference them.
 
 export const enrichResponseSchema = z.object({
   draft: enrichDraftSchema,

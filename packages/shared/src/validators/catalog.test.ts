@@ -210,3 +210,87 @@ describe('enrich validators', () => {
     expect(res.success).toBe(false);
   });
 });
+
+describe('createCatalogItemSchema attributes.enrichment shape', () => {
+  const validProvenance = {
+    source: 'ai_enrich' as const,
+    model: 'claude-sonnet-4-6',
+    query: 'APC Back-UPS 600VA',
+    suggestion: { priceLow: 80, priceHigh: 120 },
+    enrichedAt: '2026-06-25T00:00:00.000Z',
+    enrichedBy: '00000000-0000-0000-0000-000000000001',
+  };
+
+  it('accepts a well-formed attributes.enrichment provenance object', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'hardware', name: 'APC Back-UPS', unitPrice: 99,
+      attributes: { enrichment: validProvenance },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.attributes.enrichment?.source).toBe('ai_enrich');
+    }
+  });
+
+  it('rejects a malformed attributes.enrichment (missing source)', () => {
+    const { source: _omit, ...noSource } = validProvenance;
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'hardware', name: 'X', unitPrice: 1,
+      attributes: { enrichment: noSource },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects a malformed attributes.enrichment (wrong source literal)', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'hardware', name: 'X', unitPrice: 1,
+      attributes: { enrichment: { ...validProvenance, source: 'manual' } },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects a malformed attributes.enrichment (wrong field type)', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'hardware', name: 'X', unitPrice: 1,
+      attributes: { enrichment: { ...validProvenance, model: 123 } },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('enforces the 20k suggestion cap at the create boundary', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'hardware', name: 'X', unitPrice: 1,
+      attributes: {
+        enrichment: { ...validProvenance, suggestion: { blob: 'x'.repeat(20_001) } },
+      },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('allows forward-compatible extra attribute keys via catchall', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'hardware', name: 'X', unitPrice: 1,
+      attributes: { enrichment: validProvenance, futureKey: { nested: true }, tag: 'abc' },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect((r.data.attributes as Record<string, unknown>).futureKey).toEqual({ nested: true });
+      expect((r.data.attributes as Record<string, unknown>).tag).toBe('abc');
+    }
+  });
+
+  it('accepts attributes without an enrichment key (enrichment is optional)', () => {
+    const r = createCatalogItemSchema.safeParse({
+      itemType: 'service', name: 'Onsite hour', unitPrice: 150,
+      attributes: { customField: 'value' },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('defaults attributes to an empty object when omitted', () => {
+    const r = createCatalogItemSchema.parse({
+      itemType: 'service', name: 'Onsite hour', unitPrice: 150,
+    });
+    expect(r.attributes).toEqual({});
+  });
+});
