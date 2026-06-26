@@ -54,6 +54,8 @@ describe('DeviceEffectiveConfigTab baseline labeling', () => {
     await waitFor(() => expect(screen.getAllByText('Org Patch Policy').length).toBeGreaterThan(0));
     // ...and the baseline fall-through feature shows "Breeze Defaults" as its source.
     expect(screen.getAllByText(/Breeze Defaults/).length).toBeGreaterThan(0);
+    // ...and is explicitly marked "Not enforced" so it never reads as configured.
+    expect(screen.getByText('Not enforced')).toBeInTheDocument();
   });
 
   it('excludes the synthetic default node from the assigned-policy count', async () => {

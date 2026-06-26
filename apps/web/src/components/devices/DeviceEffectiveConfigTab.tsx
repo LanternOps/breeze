@@ -240,6 +240,10 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
           const settings = summarizeSettings(
             feature.inlineSettings as Record<string, unknown> | null
           );
+          // A feature resolving from the virtual baseline (sourceLevel 'default')
+          // is not enforced for any of the types this tab tracks — say so
+          // explicitly so a baseline card never reads as actively "configured".
+          const isBaseline = feature.sourceLevel === 'default';
 
           return (
             <div key={ft} className="rounded-lg border bg-card p-5 shadow-sm">
@@ -248,7 +252,14 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
                   {meta.icon}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h4 className="font-semibold">{meta.label}</h4>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-semibold">{meta.label}</h4>
+                    {isBaseline && (
+                      <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                        Not enforced
+                      </span>
+                    )}
+                  </div>
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     From: <span className="font-medium text-foreground">{feature.sourcePolicyName}</span>
                     {' '}
