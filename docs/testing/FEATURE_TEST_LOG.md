@@ -2984,3 +2984,394 @@ Scope: re-verify 6/19 fix-PRs that resolved the prior sweep's own findings (Tier
 
 ### Issue filed
 - **#1712** [UI] Quote detail "Customer" shows raw org UUID prefix instead of organization name — root cause `QuoteDetail.tsx:99` (`quote.billToName ?? quote.orgId.slice(0,8)`). Cosmetic carryover from prior sweeps; QuoteDetail-only (InvoiceDetail unaffected).
+
+## UI QA Sweep — 2026-06-25 (since v0.82.1 → main)
+
+Test list: `docs/testing/UI_TEST_LIST_since_v0.82.1.md` (51 click-paths across the
+0.83.x line + 8 unreleased-on-main P0 commits). Stack: code-mounted dev override,
+http://localhost, login admin@breeze.local. Run mode: background agent owns browser.
+
+### Environment / setup
+- ✅ Switched override symlink ghcr → dev; `up --build` rebuilt breeze-api:dev / breeze-web:dev; health 200, web 200, API login 200.
+- ❌ BUG (build-blocker, **local-DB drift, likely not prod-impacting**): API crashed on boot during auto-migrate of `2026-06-27-a-update-rings-partner-scope.sql` — `column p.org_id does not exist` in the step-2 backfill (`UPDATE patch_policies p SET partner_id=o.partner_id ... WHERE p.org_id=o.id`). The shared dev `breeze` DB already had patch_policies/patch_approvals in the partner-scope end-state (org_id dropped) but the migration was **unrecorded** in breeze_migrations — classic symptom of the migration file having been **renamed before merge** (CLAUDE.md warns: breeze_migrations keys on filename, so a rename re-applies on already-migrated DBs). Resolved locally by marking `2026-06-27-a`/`-b` as applied (sha256 of file content) so the other 12 pending migrations (config-policy/pam/topology/vuln-perm) ran fresh and cleanly.
+- ⚠️ ROBUSTNESS / improvement opportunity: `2026-06-27-a-update-rings-partner-scope.sql` (and `-b-patch-approvals-partner-scope.sql`) are **not re-runnable** — step 2 references `org_id` that step 5 drops, violating CLAUDE.md's "re-applying must be a no-op." Single-application is safe (txn-wrapped), so this only bites on the forbidden-rename path. Cheap hardening: guard the backfill with `IF EXISTS (SELECT FROM information_schema.columns WHERE table_name='patch_policies' AND column_name='org_id')`. Same pattern in the `-b` sibling. (#1764)
+
+---
+
+### Baseline (login + sidebar render) — PASS
+- ✅ Login via admin@breeze.local works (credentials pre-filled, redirects to Dashboard).
+- ✅ Dashboard renders: Fleet Status 0/4 online (4 seeded devices SEED-CRIT-NODE/SEED-NORMAL-NODE/SEED-WARM-NODE/WIN-DHQNR1F8LO2), Recent Activity feed, Breeze AI panel, alerts list.
+- ⚠️ Pre-login console shows ~14x 401 on /api/v1/* (devices/alerts/audit-logs/auth/refresh) — expected pre-auth race; clears after login. Note once, not chased.
+- Sidebar groups present: AI & FLEET, MONITORING, SECURITY, OPERATIONS, plus Integrations/Backup/Reports/admin Settings. All 50 nav destinations enumerated.
+
+### [1 / #1926] Billing bulk actions + draft delete — PASS
+- ✅ Quotes list: select-all → bulk bar "3 selected" with Send / Delete drafts / Clear (testids quotes-bulk-bar etc.).
+- ✅ Delete drafts → confirm modal "Delete 3 selected quote(s)? Only DRAFT quotes will be deleted..." → confirm → honest toast "0 deleted, 3 skipped" (none were drafts), list intact. Correct partial-action feedback.
+- ✅ Created a fresh Draft quote (New quote → pick org → Create draft → detail). Detail tab has Download PDF / Send proposal / Delete draft.
+- ✅ Delete draft → confirm modal "This permanently deletes the draft quote..." → confirm → toast "Draft deleted", redirected to list, row removed.
+- ✅ Invoices list: select-all → bulk bar with Issue / Void / Delete + Clear. Multi-select parity confirmed.
+
+### [13 / #1743] Quote detail Customer label — PASS
+- ✅ Quote Detail tab shows Customer = "Default Organization" (resolved org name, not a UUID). Note: this is the QuoteDetail page previously flagged in #1712 — now resolving names correctly.
+
+### [10 / #1862] Quote presentation refresh + typed-name e-signature — PARTIAL
+- ✅ Admin Preview tab renders styled proposal ("This is what your customer sees"): PROPOSAL header, partner branding, pricing table with ONE-TIME vs MONTHLY recurrence, Subtotal $600, "Due on acceptance $500", "Monthly recurring" — presentation refresh intact.
+- ✅ Detail tab: full breakdown TOTALS (One-time $500 / Monthly $100/mo / Annual $0), DUE ON ACCEPTANCE $500, First-period total $600, explanatory copy, FROM Default Partner, TERMS & CONDITIONS. Styling clean.
+- ⏳ Typed-name e-signature accept lives in the separate **portal** app (`apps/portal/.../quote/[token].astro`, POST /quotes-public/:token/accept). Token is a signed JWT minted on "Send proposal" (not DB-stored). Tested via send→portal flow below.
+
+### [14 / #1763] Quote PDF preview (blob CSP) — PASS
+- ✅ Preview tab renders inline (HTML proposal, not iframe). "Download PDF" (GET /api/v1/quotes/:id/pdf) → 200, file Q-2026-0003.pdf downloaded. No CSP / frame-src errors in console (0 errors after action). No blob frame block.
+
+### [12 / #1765] Contracts auto-renew + renewal notices — PASS
+- ✅ New contract form has "Auto-renew at end of term" toggle, gated with hint "(set an end date first)" — disabled-state copy is clear.
+- ✅ Setting an end date enables the toggle; enabling it reveals "Renewal term (months)" + "Advance notice (days)" fields (contract-renewal-term / contract-renewal-notice-days).
+- ✅ Save validation: leaving renewal term blank → toast "Enter a renewal term (months) before saving." (good inline guard).
+- ✅ Filled term=12, notice=30 → toast "Contract created", navigated to detail; on reload the auto-renew config persisted (shows Auto-renew + term + notice). 
+- ✅ Added a flat-fee line ($250) → row appears; "Save changes" → toast "Contract saved".
+
+### [2 / #1924] Pax8 → contract-line picker — BLOCKED (needs live Pax8 connection)
+- The picker (LinkSubscriptionPicker) is rendered from Integrations → Distributors → Pax8 on a *synced subscription* row, NOT from contract detail. Source: apps/web/src/components/integrations/Pax8Integration.tsx:679.
+- ✅ Pax8 panel renders honest "Not connected" state + clean OAuth credential form (Display name / Client ID / Client secret / Webhook secret / Connect Pax8), with "Saving requires MFA verification" copy. No crash.
+- BLOCKED: link/change/pause/unlink to a contract line requires a connected Pax8 with synced subscriptions (no fixture). The contract created above (QA Sweep Contract, with a line) would be the link target once a subscription exists.
+
+### [16 / #1848] TD SYNNEX EC Express connector — PARTIAL (UI verified, lookup BLOCKED)
+- ✅ Integrations → Distributors → "TD SYNNEX Pricing" sub-tab renders panel: "Not configured" + form (Customer No / Region / Email / Password / Enabled) + Save settings / Test connection / Look up.
+- ✅ Correct gating: "Test connection" and "Look up" buttons are disabled while not configured (no silent dead clicks); lookup query field is enabled.
+- BLOCKED: actual price/availability lookup by SKU needs real EC Express credentials (no fixture).
+
+### [15 / #1849] QuickBooks Online connect flow — PASS
+- ✅ Integrations → Accounting → QuickBooks Online: honest "Not connected" state + clear copy ("Breeze stays your system of record") + "Connect to QuickBooks".
+- ✅ Clicking Connect → honest toast "QuickBooks OAuth is not configured on this instance", stays on page, no crash. Correct fail-soft for an unconfigured instance.
+
+### [3 / #1922] TD SYNNEX inline lookup in quote editor — DEFERRED/BLOCKED (needs EC Express creds)
+- The inline distributor lookup requires EC Express configured (same dependency as item 16). UI presence in the quote pricing block noted; actual SKU lookup BLOCKED without creds.
+
+### [17 / #1861 BE-16] Vuln list & detection — PASS (empty-state)
+- ✅ /vulnerabilities renders: title + subtitle "CVEs detected across your fleet, prioritized by risk (CVSS, with KEV/EPSS modifiers)", Severity filter (All/Critical/High/Medium/Low), clean honest empty state "No open vulnerabilities detected across your fleet." No crash, no console errors.
+- ⚠️ Risk scores / sort can't be seen — no vuln data (seeded devices are offline, no scan results). Filter UI present.
+
+### [18 / BE-16] Vuln remediation workflow — BLOCKED
+- BLOCKED: no detected vulnerabilities to open (offline fixture devices, no scan data). Remediation/risk-accept actions not reachable.
+
+### [19 / BE-16] Vuln RBAC gating — BLOCKED
+- BLOCKED: single seeded admin user; no non-privileged role session available to verify gating vs blank 403.
+
+### [7 / #1907 #1921] Reliability — capped counts, age-aware windows, offender drill-down — PASS
+- ✅ Device reliability card (WIN-DHQNR1F8LO2): Score 72, Trend "Improving", age-aware label "since enroll · 6d uptime" (young device — windows labeled by enroll age, not faked to 30d).
+- ✅ Factor breakdown with weights: Hardware errors 15% (Health 0/100, count 22), Service failures 15% (Health 10/100, count 6), Uptime 30% (Health 100/100, 100.0%). Counts look capped/sane (no runaway inflation).
+- ✅ Offender drill-down toggle ("Hide offending services & components"): TOP SERVICES (Service Control Manager Jun 20 6×) + TOP HARDWARE COMPONENTS (Server 12×, DNS-Client 2×, etc.) with "Distinct events from the since enroll (6d)." Clean.
+
+### [31 / #1755 #1804 #1810] Device Reliability column + card — PASS
+- ✅ Reliability is an opt-in column in the Devices Columns picker; enabling adds RELIABILITY col showing scores + trend arrows (100→, 100→, 100→, 72↑). Capped at 100.
+- ✅ Card has "Ask AI about reliability" CTA + "Mark outcome" menu.
+- ✅ Mark outcome menu: "WAS THIS ACCURATE?" → Device failed / Device replaced / False alarm + copy "These train the reliability model — they don't change the device." Clicking "False alarm" → toast "False alarm label saved". Full feedback loop works.
+
+### [30 / #1744] Activity pane last-N feed — PASS
+- ✅ Device Overview "Activity" pane shows a last-N feed (Command queued — reboot / Patch installation queued) with actor (Breeze Admin) + relative time, plus a "View all activity →" link. Renders index-backed recent events.
+
+### [50 / #1803] Warranty refresh feedback + auto-update card — PARTIAL
+- ✅ Warranty card renders on Overview: "Warranty Unknown" + manufacturer "MICROSOFTCORPORATION".
+- ⚠️ No warranty Refresh button / affordance and no "auto-update" card found on the Overview of this OFFLINE device. Likely online-gated; could not exercise refresh feedback. Needs an online device to confirm.
+
+### [5 / #1911] Remote Tools — all services + Close/Back — BLOCKED (offline)
+- ✅ Honest gating: "Remote Tools" tab button is disabled with tooltip "Device is offline" (no dead click).
+- BLOCKED: services list / Close / Back require a live online agent (all 4 fixture devices are Down).
+
+### [29 / #1745] Process drilldown empty states + drillable charts — PARTIAL/PASS
+- ✅ Performance tab renders Performance Graphs (CPU/RAM/Disk, 24h/7d/30d window toggles, % axes) + Metric Anomalies cards (Spike/Memory growth/Disk growth) with Observed vs Baseline + Confidence% and Dismiss/Resolve/Promote actions. Seeded anomaly data present.
+- Device-detail tab bar: Overview / Performance / Alerts / Anomalies / Tickets / Event Log / Monitoring / Compliance / More + Software/Patches/Security/Remote Tools.
+- ⚠️ Did not exercise live chart drill-to-process (offline device, limited live process data); empty-state distinctness not fully confirmed.
+
+### [8 / #1897] Patch ring selection no longer collapses list to 50 — PARTIAL (fixture too small)
+- ✅ Patches → selecting "Default (Order 0, +0d)" ring keeps "All Devices (4)" with all 4 rows — list does not collapse on ring change.
+- ⚠️ The >50-row pagination cap regression cannot be reproduced with only 4 seeded devices. Mechanism looks correct; no regression observed.
+- ⚠️ UI/UX papercut: TWO update rings both display as "Default (Order 0, +0d)" in the ring selector dropdown — ambiguous, can't tell them apart (one is "edited by QA sweep" 4 devices, other "all patches require manual approval" 0 devices). Selector should disambiguate by description or id.
+
+### [33 / #1764] Partner-scoped update rings & approvals — PARTIAL
+- ✅ Update Rings tab lists 2 rings; "New Ring" opens "Create update ring" modal: Name / Rollout order / Description / Install enforcement (Deadline days, Reboot grace hours) / Approval policy (Add override) / auto-approve section. Clear copy.
+- ✅ Ring creation is scope-aware (page-scope-indicator + org-scope Current/All-orgs toggle) — partner-scoped ring = create while in All-orgs/partner scope.
+- ⚠️ Single-org fixture: cannot fully verify partner-scope vs org-scope distinction or cross-org approval flow.
+
+### [4 / #1913] Network Proxy + discovery asset-modal rework — PARTIAL/BLOCKED
+- HTTP reverse proxy UI is a per-tunnel page (`/remote/proxy/[tunnelId]`, ProxyTunnelPage.tsx) launched from Remote Access against a device → BLOCKED (all devices offline; can't start a proxy tunnel).
+- Discovery asset modal (AssetDetailModal) → BLOCKED: "No assets discovered yet" (no scan data; agents offline). Cannot render the reworked asset modal/fields.
+
+### [20 / #1728 #1842] Network topology redesign — PARTIAL (empty-state)
+- ✅ Discovery → Topology renders Cytoscape container (canvas present) with Expand / Edit map controls and a clean empty state: "No assets discovered yet — Run a network discovery scan to populate the topology map."
+- BLOCKED: backbone/host-attachment/manual node mapping needs discovered assets (none in fixture).
+
+### [21 / #1801] Empty Network Changes tab explains Alerting prereq — PARTIAL (works by design; fixture has 0 profiles)
+- The alerting-prereq hint (`changes-alerting-hint`) IS implemented + wired: NetworkChangesPanel.tsx:261 shows it when in-scope profiles exist but none record changes (verified via component + its test).
+- In this fixture there are ZERO discovery profiles, so line 246 `if (profiles.length === 0) return null` short-circuits and the generic "No change events match the selected filters." message shows instead.
+- ⚠️ UI/UX opportunity: with zero profiles, "No change events match the selected filters" is misleading (no filters are excluding anything). A distinct "create a discovery profile with alerting to detect changes" empty state would be clearer for the truly-unconfigured case.
+
+### [22 / #1799] SNMP data in asset detail modal — BLOCKED
+- BLOCKED: no discovered assets to open (empty Discovery). Modal/SNMP fields not reachable.
+
+### [24 / #1742] Discovered-asset "Link to Device" clarity — BLOCKED
+- BLOCKED: no discovered assets. (Assets tab shows Approve/Dismiss bulk controls + "No assets discovered yet.")
+
+### [9 / #1914] PAM UAC interception opt-in default — PARTIAL (single-org fixture)
+- ✅ PAM Overview "Getting started" copy: "UAC prompt capture is on by default. Scope it per device with a Configuration Policy → Privileged Access feature link." Default Org is an existing/grandfathered org (capture ON), consistent with #1914 (opt-in default applies to NEW orgs, active orgs grandfathered).
+- ⚠️ Cannot verify the new-org opt-in default vs grandfathering with only one pre-existing org (no second/new org in fixture). The per-device toggle lives in Config Policy → Privileged Access feature.
+
+### [35 / #1771] Signer-group (trusted-publisher) catalog — PASS
+- ✅ PAM → Signer Groups: clear empty state + helper copy ("reuse a trusted-publisher list across multiple rules").
+- ✅ "Add signer group" modal: Name / Description / Signers (one Authenticode subject CN per row, "Add signer") / Create group. Created "QA Trusted Publishers" (signer: Microsoft Corporation) → modal closed, group appears in list (state-change confirmation).
+- ⚠️ Minor: no success toast on create — confirmation is the list update only (acceptable per list-handler pattern, but a toast would be clearer).
+
+### [36 / #1761] PAM rule matching cluster — PASS
+- ✅ Rules tab: priority-order explainer + "Default verdict" (Require approval / Auto-deny) for unmatched elevations (pam-default-unmatched-verdict).
+- ✅ "Add rule" editor has full matching cluster, each criterion with its own "Negate (does not match)" toggle: Signer, Signer group, SHA-256 hash, Path glob, Parent image, Command line, User, AD group + scheduling window (start/end), approval mins, Enabled. Command-line match + negation + default-unmatched verdict all present.
+
+### [6 / #1909] Viewer interactive update prompt — BLOCKED (desktop app)
+- BLOCKED: this is the desktop Viewer (Tauri) update prompt, not the web app. Out of scope for browser QA.
+
+---
+## P1 items
+
+### [25 / #1762] Unified chip-centric filter bar + saved views — PASS
+- ✅ Quick-add chips (Online/Offline/Servers/Needs patches/Critical/Reboot needed/Not seen 7d/Low disk/Untagged) + Add filter + Views + Advanced + Columns.
+- ✅ Clicking "Offline" chip applies a filter encoded in URL hash (#filtersV2=...) — transient UI state in hash per project convention.
+- ✅ Views menu → "Save current as view…" → name "QA Offline View" → toast "Saved view \"QA Offline View\""; view appears in menu.
+- ✅ Delete view → toast "Deleted view \"QA Offline View\"". Full chip→save→delete cycle confirmed with feedback. (Existing "Online devices" view also present.)
+
+### [26 / #1886] Reboot-pending dot layout — PASS (by design + code)
+- Set pending_reboot=true on offline WIN device. Inline status dot is correctly NOT rendered (DeviceList.tsx:818 `device.pendingReboot && device.status !== 'offline'`). Comment: "On an offline device the flag is stale and unactionable, so suppress the dot rather than wrap it under the wider 'Down' pill." → the wrap regression is resolved by suppression. No layout break observed.
+
+### [27 / #1850] Pending-reboot orange dot + "Updating" label — PASS (verified by code; live orange dot needs online device)
+- ✅ Dedicated "Pending Reboot" column renders "Reboot pending" badge (bg-warning amber) for the pending device — confirms pendingReboot data + amber styling.
+- ✅ statusLabels.updating = 'Updating' (full word, NOT truncated to "Upd"); inline reboot dot is `bg-warning` (orange/amber) and only shows for non-offline devices (DeviceList.tsx).
+- ⚠️ Live inline orange dot not visually exercised — requires an ONLINE pending-reboot device (all fixture devices offline). Logic confirmed in source.
+
+### [28 / #1718] Display names in Device column — PARTIAL
+- ✅ Device column renders friendly primary name (primaryName) with hostname as secondary/title (DeviceList.tsx:657-659). Seeded devices show hostnames as their names (SEED-CRIT-NODE etc.).
+- ⚠️ Cannot distinguish a separate friendly display_name from hostname — no fixture device has a distinct display name set.
+
+### [32 / #1760] Responsive data tables (mobile) — PASS
+- ✅ At 390px width: no horizontal viewport overflow (docW === viewW === 390) on Devices and Organizations pages; no layout break.
+- ✅ Devices table uses `overflow-x-auto` container on mobile (graceful horizontal scroll, content stays within viewport).
+- ✅ Organizations (ResponsiveTable) renders card layout on mobile (no `<table>` element at 390px) and switches at desktop width — no duplicate rendering, no overflow. ResponsiveTable primitive adopted across org/users/patches/vuln/discovery lists (source-confirmed).
+
+### [34 / #1775] Linux OS patch logic — BLOCKED
+- BLOCKED: no Linux device with patch data in fixture (4 devices: 3 SEED nodes with no OS shown + 1 Windows). Cannot verify Linux-specific OS patch rendering.
+
+### [41 / #1749] Script scope changer on edit screen — PASS
+- ✅ Edit Script screen has a scope control: radios "All my organizations" (partner-wide) / "A specific organization" + scope-badge.
+- ✅ Selecting "A specific organization" reveals an Organization picker (Default Organization / Northwind IT / Acme Managed Services). Reverted without saving to preserve the partner-wide script. Save button present.
+
+### [42 / #1794] Monaco theme preserved across nav — PASS
+- ✅ Script editor Monaco background = rgb(30,30,30) (dark). Navigated to /devices and back to the script editor → Monaco background still rgb(30,30,30) (NOT white). No white-editor regression (global monaco-theme-persist.js working).
+
+### [40 / #1883] Ticket requester selectable/editable + device link — PASS
+- ✅ Ticket detail (T-2026-0002): Requester field "Breeze Admin" + Edit. Edit reveals contact select ("Unknown" / "Someone else…") + Name + Email inputs + Save/Cancel.
+- ✅ Set requester to custom "QA Requester" → field updates to "QA Requester" + activity-log entry recorded (no toast, but clear state change).
+- ✅ Device link "WIN-DHQNR1F8LO2" → clicking navigates to /devices/<id> (device detail). Device also has Unlink control.
+
+### Bonus observation — Script editor unsaved-changes guard — POSITIVE
+- ✅ The Edit Script page fires a beforeunload guard when navigating away with unsaved changes. Good safety UX (prevents accidental loss).
+
+### [43 / #1875] Config-policy monitoring + compliance in portal — PASS
+- ✅ Config policy detail has feature tabs: Overview / Patches / Alerts / Backup / Monitoring / Maintenance / Compliance / More.
+- ✅ Monitoring tab: "Service/process monitoring, event log alerts, and metric alert rules" — General (Check Interval), Service & Process Watches (Add Watch), Event Log Alerts (Add Alert), Metric & Status Alert Rules (CPU/RAM/disk thresholds, offline detection, custom conditions). "Not configured" state honest.
+- ✅ Compliance tab: "Compliance rules and enforcement" + Compliance Rule Sets (Add Compliance Rule) + empty state "No compliance rule sets configured yet."
+
+### [44 / #1860 #1859] Config-policy automations & offline rules — PASS
+- ✅ Automations feature (More → Automations): "Add Automation" + empty state "No automations configured yet."
+- ✅ Offline alert rules present: Monitoring → Metric & Status Alert Rules explicitly includes "offline detection."
+
+### [BUG / #1875 area] Nested <button> hydration error on Config Policy Monitoring tab — FAIL (console)
+- ❌ BUG: Opening Config Policy → Monitoring tab logs a React hydration error: "In HTML, <button> cannot be a descendant of <button>. This will cause a hydration error." Source: MonitoringSection — the collapsible section-header is a <button>, and the "Add Watch"/action button is nested inside it. Invalid DOM (interactive-in-interactive) + hydration mismatch + a11y issue. Visible behavior currently works, but should be fixed (wrap header in a non-button or move the action button outside).
+
+### [45 / #1754] Huntress inbound webhook URL + secret in GUI — PASS (secret); URL post-connect
+- ✅ Integrations → Security → Huntress (in All-orgs/partner scope): config form Name / Account ID / API Key (hk_...) / API Secret (hs_...) / Webhook Secret (optional, "used to verify inbound Huntress webhooks") + Generate.
+- ✅ "Generate" button produces a 64-char hex webhook secret into the field. Copy/verify path present.
+- Note: the inbound webhook URL display is a post-connection element (Huntress not connected — no real creds). Secret generation fully verified.
+
+### [46 / #1791] Partner-wide SentinelOne — PASS
+- ✅ Integrations → Security → SentinelOne: clear partner-wide model copy ("configured once at the partner level and shared across every organization. Switch your scope to All orgs to add the management URL and API token"). Honest "isn't connected yet" state; config form surfaces in All-orgs scope.
+- ✅ Same partner-level pattern confirmed for Huntress.
+
+### [23 / #1748] Network Discovery in All-Orgs mode — PASS
+- ✅ In All-orgs scope, /discovery shows a clean guard: "Select an organization to view network discovery — Network discovery is scoped to a single organization, site, and agent. Choose an organization in the scope switcher..." No crash. Exactly the intended guard.
+
+### [47 / #1852] Software inventory "All Orgs" — PASS
+- ✅ #1852 target is /software-inventory (Software Policies → Inventory tab). In All-orgs mode it loads the aggregate: "Aggregate view of software installed across all managed devices", "33 unique software" with Name/Vendor/Devices/Versions/Policy Status columns. No error.
+
+### [FINDING] Software LIBRARY (/software) catalog errors in All-Orgs mode — PARTIAL/BUG
+- ❌ BUG: /software (Software Library, distinct from the #1852-fixed /software-inventory) fails in All-orgs scope: GET /api/v1/software/catalog → 400 {"error":"orgId is required for this scope"}, surfaced as an error banner "Failed to fetch software catalog [Dismiss]".
+- ✅ Loads fine in Current (single-org) scope ("No software packages yet").
+- This is the SAME class of bug #1852 fixed for Software Inventory, not yet applied to the Software Library catalog endpoint. Unlike Discovery (clean guard), Library shows a raw error. Fix: either aggregate the catalog across accessible orgs (like #1852) or show a "select an organization" guard.
+
+### [49 / #1740] Sidebar nav scroll position preserved — PASS
+- ✅ Scrolled .sidebar-nav to scrollTop=240, clicked the "Users" nav link → after navigation the sidebar scroll position is restored to 240 (not reset to top). Works across the click-driven (MPA) navigation path.
+- Note: a direct URL navigation (browser goto) does reset to 0, which is expected (bypasses the click handler that persists scroll).
+
+### [48 / #1741] AI chat panel pinned to bottom — PASS
+- ✅ Workspace → New Conversation → submitted "List how many devices are offline..." → AI ran a "Query Devices" tool call and answered "There are 4 devices currently offline." (correct — 4 seeded offline devices). End-to-end AI + tool-calling works.
+- ✅ Latest message renders at the bottom with the composer ("Cmd+Enter to send") pinned below it; no layout break. Short reply fit the panel so scroll-pinning wasn't stress-tested, but no anti-pattern observed.
+
+### [37 / #1752] UAC elevation → mobile approval — BLOCKED
+- BLOCKED: cross-surface (live elevation request + mobile approval app). Not exercisable from web browser with offline devices.
+
+### [38 / #1694] Remote session consent & notification — BLOCKED
+- BLOCKED: starting a remote session requires an online device (all offline). Consent prompt config not reachable.
+
+### [11 / #1759] Accepted quote → auto-draft contract — BLOCKED (portal accept)
+- BLOCKED: requires completing the typed-name accept on the public portal page (apps/portal /quote/[token]); token is a signed JWT minted on Send. Portal accept flow not exercisable in this dev stack (per prior sweeps). The auto-draft-contract-on-accept path therefore can't be triggered via UI.
+
+### [51 / #1844] Forced-MFA enrollment login — BLOCKED
+- BLOCKED: requires an MFA-required fixture/user. Single seeded admin without forced MFA.
+
+### [39 / #1863 #1864] Breeze Assist tab — PASS
+- Note: the Breeze Assist tab is a Config Policy feature tab (HelperTab.tsx), reached via Config Policy detail → More → Breeze Assist (NOT a device-detail tab).
+- ✅ Honest badge: "Not configured" when deploy is off.
+- ✅ "Deploy Breeze Assist to devices" toggle present.
+- ✅ Tray Menu Options ARE shown even when deploy is off, with hint "Enable 'Deploy Breeze Assist to devices' above to apply these options" — the #1863 fix. Toggles: Open Breeze Portal / Device Info / Request Support + Custom Portal URL field. Exactly the intended behavior.
+
+---
+
+## SUMMARY — UI/UX papercuts & improvement opportunities (running list)
+1. **Duplicate "Default (Order 0, +0d)" update rings** in the Patches ring selector — two rings share the identical display label; can't disambiguate without opening each. Add description/id to the dropdown label. (Patches)
+2. **Network Changes empty state misleading when 0 profiles** — shows "No change events match the selected filters" even when no filters exclude anything (zero profiles). A distinct "create a discovery profile with alerting" empty state would be clearer. (Discovery #1801)
+3. **Software Library (/software) errors in All-Orgs mode** — "Failed to fetch software catalog" (400 orgId required) instead of a guard like Discovery's. Same class of bug #1852 fixed for Software Inventory; not yet applied to the Library catalog. (BUG-ish)
+4. **Nested <button> hydration error on Config Policy → Monitoring tab** — invalid DOM + React hydration warning + a11y issue (MonitoringSection). (BUG)
+5. **No success toast on PAM signer-group create** — confirmation is list-update only (acceptable, but a toast would match other flows). (PAM)
+6. **No success toast on ticket requester change** — field updates + activity-log entry, but no toast. (Tickets — minor)
+7. **Warranty card has no Refresh affordance / no auto-update card** on the Overview of an offline device — could not find a way to trigger warranty refresh (#1803 may be online-gated). (Devices)
+8. **Footer shows "API 0.82.0"** while testing against main (post-0.83.3) — version endpoint may be stale/behind. (Minor — worth confirming /system/version reflects deployed build.)
+9. **POSITIVE**: script editor beforeunload guard, honest "not configured"/"not connected" integration states, disabled-with-tooltip gating (Remote Tools "Device is offline", TD SYNNEX Test/Lookup), and clear partial-action feedback ("0 deleted, 3 skipped") are all good patterns.
+
+## RESULTS TABLE (this sweep)
+| # | PR | Area | Result |
+|---|---|---|---|
+| 1 | #1926 | Billing bulk actions + draft delete | PASS |
+| 2 | #1924 | Pax8 → contract-line picker | BLOCKED (no Pax8 conn) |
+| 3 | #1922 | TD SYNNEX inline lookup in quote editor | BLOCKED (no EC creds) |
+| 4 | #1913 | Network Proxy + asset-modal | BLOCKED (offline/no assets) |
+| 5 | #1911 | Remote Tools all services + Close/Back | BLOCKED (offline; gated honestly) |
+| 6 | #1909 | Viewer update prompt | BLOCKED (desktop) |
+| 7 | #1907/1921 | Reliability capped/age-aware/offenders | PASS |
+| 8 | #1897 | Patch ring no 50-collapse | PARTIAL (4-device fixture) |
+| 9 | #1914 | PAM UAC opt-in default | PARTIAL (single org) |
+| 10 | #1862 | Quote presentation + typed signature | PARTIAL (presentation PASS; accept on portal) |
+| 11 | #1759 | Accepted quote → auto-draft contract | BLOCKED (portal accept) |
+| 12 | #1765 | Contracts auto-renew + renewal notices | PASS |
+| 13 | #1743 | Quote detail Customer label | PASS |
+| 14 | #1763 | Quote PDF preview (blob CSP) | PASS |
+| 15 | #1849 | QuickBooks connect flow | PASS |
+| 16 | #1848 | TD SYNNEX EC Express connector | PARTIAL (UI PASS; lookup blocked) |
+| 17 | #1861 | Vuln list & detection | PASS (empty) |
+| 18 | BE-16 | Vuln remediation | BLOCKED (no vuln data) |
+| 19 | BE-16 | Vuln RBAC | BLOCKED (no role) |
+| 20 | #1728/1842 | Network topology | PARTIAL (empty-state PASS) |
+| 21 | #1801 | Network Changes empty-state | PARTIAL (works by design; 0 profiles) |
+| 22 | #1799 | SNMP in asset modal | BLOCKED (no assets) |
+| 23 | #1748 | Discovery All-Orgs guard | PASS |
+| 24 | #1742 | Link-to-Device clarity | BLOCKED (no assets) |
+| 25 | #1762 | Chip filter + saved views | PASS |
+| 26 | #1886 | Reboot dot layout | PASS (suppress-on-offline) |
+| 27 | #1850 | Pending-reboot orange dot + "Updating" | PASS (code+badge; live dot needs online) |
+| 28 | #1718 | Display names in Device column | PARTIAL (no distinct display name in fixture) |
+| 29 | #1745 | Process drilldown empty states | PARTIAL/PASS |
+| 30 | #1744 | Activity pane last-N | PASS |
+| 31 | #1755/1804/1810 | Reliability column + card | PASS |
+| 32 | #1760 | Responsive tables mobile | PASS |
+| 33 | #1764 | Partner-scoped rings | PARTIAL (single org) |
+| 34 | #1775 | Linux patch logic | BLOCKED (no Linux device) |
+| 35 | #1771 | Signer-group catalog | PASS |
+| 36 | #1761 | PAM rule matching cluster | PASS |
+| 37 | #1752 | UAC → mobile approval | BLOCKED |
+| 38 | #1694 | Remote session consent | BLOCKED (offline) |
+| 39 | #1863/1864 | Breeze Assist tab | PASS |
+| 40 | #1883 | Ticket requester + device link | PASS |
+| 41 | #1749 | Script scope changer | PASS |
+| 42 | #1794 | Monaco theme across nav | PASS |
+| 43 | #1875 | Config-policy monitoring + compliance | PASS (+ hydration bug) |
+| 44 | #1860/1859 | Config-policy automations + offline rules | PASS |
+| 45 | #1754 | Huntress webhook URL + secret | PASS (secret gen; URL post-connect) |
+| 46 | #1791 | Partner-wide SentinelOne | PASS |
+| 47 | #1852 | Software inventory All-Orgs | PASS (+ Library catalog all-orgs bug) |
+| 48 | #1741 | AI chat pinned to bottom | PASS |
+| 49 | #1740 | Sidebar scroll preserved | PASS |
+| 50 | #1803 | Warranty refresh + auto-update card | PARTIAL (no refresh affordance offline) |
+| 51 | #1844 | Forced-MFA enrollment | BLOCKED (no fixture) |
+
+Test artifacts left in DB: contract "QA Sweep Contract" (Default Org, $250 line, auto-renew 12mo/30d notice); PAM signer group "QA Trusted Publishers"; ticket T-2026-0002 requester changed to "QA Requester"; a workspace AI conversation. Reverted: WIN device pending_reboot, script scope. Org scope left on Current.
+
+### Triage note (main session)
+- Dropped proposed issue "footer reports API 0.82.0": confirmed `BREEZE_VERSION=0.82.0` is set in the local `.env` and passed into breeze-api; the footer correctly reflects that env var. Local-config artifact, NOT a defect.
+
+### Issues filed (2026-06-25, internal QA)
+- **#1932** [UI] Config Policy → Monitoring tab renders nested `<button>` (hydration error) — MonitoringTab.tsx (medium)
+- **#1933** [UI] Software Library catalog 400s in All-Orgs mode — software.ts `/catalog`, #1852 sibling (medium)
+- **#1934** [Patches] Duplicate identical "Default" update rings after #1764 org→partner migration (`-a` lacks the dedup `-b` has) (low/medium)
+- **#1935** [UI] Network Changes empty state misleading when no discovery profiles exist (low)
+- **#1936** [DB] #1764 partner-scope migrations not re-runnable — guard org_id backfill with IF EXISTS (low)
+
+## UI QA Sweep — 2026-06-26 (increment)
+
+Pulled main 61983fbd9 → 6c880e0ce (10 commits). Test list: `docs/testing/UI_TEST_LIST_2026-06-26_increment.md`. Stack: same code-mounted dev, http://localhost, admin@breeze.local.
+
+### Environment / setup
+- ✅ ff-merged to 6c880e0ce; ticket-response-templates migration applied; stack health/web/login 200.
+- ✅ VERIFIED #1941 (#1936 fix): API booted clean through the partner-scope a/b/c rerun path. #1941 edited the shipped `-a`/`-b` in place + added exact CHECKSUM_RECONCILIATIONS (from = the canonical original checksums, which matched what this QA recorded yesterday). Local DB had a stale `-b` (857bb90…) and `-c` (6f5a3b3…) recorded checksum from yesterday's surgical marking + intermediate runs; healed both to the on-disk hashes (already-applied schema), after which boot is clean. New `-c` dedup confirmed at data layer: Default rings 2→1 (#1939).
+
+### [A1 / #1937] Config Policy → Monitoring nested-button — PASS (CONFIRMED-FIXED)
+- ✅ Source fix confirmed: `MonitoringSection` outer expand header is now `<div role="button" tabIndex aria-expanded>` (MonitoringTab.tsx:254), inner "Add Watch" remains a real `<button>` — valid nesting.
+- ✅ Fresh page load + open Monitoring tab: `browser_console_messages level=error` = 0 errors; no `validateDOMNesting`/`<button> cannot be a descendant of <button>`/hydration error.
+- ✅ DOM probe: 42 buttons, 0 nested `<button>`-in-`<button>`.
+- ✅ Row toggle works (expand/collapse, aria-expanded flips); inner "Add Watch" adds an editor row (count badge 0→1) and inner remove button deletes it — inner actions fire independently of the row toggle (stopPropagation).
+- ⚠️ Note: with `all=true` the console buffer still contained ONE stale nested-button hydration warning from an earlier HMR/compile state; it does NOT reproduce on a clean reload. Mention only so future sweeps don't false-alarm on the accumulated buffer.
+
+### [A2 / #1938] Software Library catalog All-Orgs — PASS (CONFIRMED-FIXED)
+- ✅ Scope = All Orgs (aria-pressed=true): `GET /api/v1/software/catalog => 200 OK` (network probe req #154). No 400, no raw error banner.
+- ✅ Single-org scope: library loads cleanly too. Both modes render the empty-state ("No software packages yet. Add one to get started.") — no console errors (level=error = 0).
+- BLOCKED (fixture): catalog is empty in this DB, so cross-org *aggregation* couldn't be visually confirmed — but the 400 regression (#1933) is resolved (200 in both scopes).
+
+### [A3 / #1939] Duplicate Default rings deduped — PASS (CONFIRMED-FIXED)
+- ✅ Patches → Update Ring selector: exactly one entry "Default (Order 0, +0d)" alongside "All Rings". No duplicate identical entries.
+- ✅ Patches → Update Rings tab: header reads "1 of 1 rings"; single "Default" row (Order 0). Matches data-layer 2→1 confirmation noted in env setup.
+
+### [A4 / #1940] Network Changes empty state — PASS (CONFIRMED-FIXED)
+- ✅ Discovery → Changes with no profiles now shows actionable guidance: "Set up a network discovery profile to start tracking changes." + "Network change events are created by discovery profiles. Create a profile and enable Alerting to record new, changed, or disappeared devices." NOT the old misleading "no events match filters".
+- ✅ "Go to Profiles" CTA (data-testid changes-create-profile) navigates to /discovery#profiles.
+- ⚠️ Minor: the "0 events loaded" counter + full filter bar still render above the empty-state guidance, which slightly competes with the call-to-action. Acceptable, not blocking.
+
+### [B6 / #1946] EDR operations (SentinelOne + Huntress) Pillars 1–4a — PARTIAL
+- ✅ Pillar 2 (Fleet EDR pages) VISIBLE & working: /security/edr renders "Endpoint Detection & Response" with SentinelOne Threats + Huntress Incidents tabs (hash-routed #huntress).
+  - S1 tab: full filter bar (severity/status/date-range/search/refresh), `GET /api/v1/s1/threats?limit=100&orgId=... => 200 OK`, honest empty state "0 threats match your filters" / "No SentinelOne threats found."
+  - Huntress tab: filters (severity/status/search/refresh), `GET /api/v1/huntress/incidents?limit=100&orgId=... => 200 OK`, honest empty state "No Huntress incidents found."
+  - No console errors; integration-not-connected is handled as empty 200, NOT an error banner — correct honest gating.
+- BLOCKED Pillar 1 (Device-detail EDR panel): device Security tab shows NO EDR/SentinelOne/Huntress content. Gated behind build-time flag `PUBLIC_ENABLE_EDR_INTEGRATIONS` (default false in featureFlags.ts:18; not set in this dev stack). Sidebar "EDR" nav link also absent for the same reason. Prereq: rebuild web with `PUBLIC_ENABLE_EDR_INTEGRATIONS=true`.
+- BLOCKED Pillar 3 (security-dashboard EDR summary panel): same flag gate.
+- BLOCKED Pillar 4a (promote-to-incident from EDR events): no SentinelOne threats / Huntress incidents in fixture and no integration creds, so isolate/promote inline actions have no rows to exercise. Prereq: connected S1/Huntress integration + seeded threat/incident data.
+- ⚠️ Inconsistency: the fleet EDR page (/security/edr astro route) renders regardless of the flag (route not gated), but its sidebar entry point IS flag-gated — so with the flag off the page is functional yet has no discoverable nav link (reachable only by direct URL). Either gate the route too, or surface the link.
+
+### [B7 / #1942] AI catalog auto-fill from name/SKU — PARTIAL (UI correct; enrichment failing + cost-tracking bug)
+- ✅ UI surface present: Product Catalog (/settings/catalog) → "Add item" drawer has an "Auto-fill a new item from the web" section: input "Product name or SKU" + "✨ Auto-fill from web" button (CatalogEnrichButton; also wired into QuoteEditor). Button correctly disabled until text entered.
+- ✅ Honest loading state: button → "Filling…", input disabled during the ~16s call.
+- ✅ AI call actually executes: `POST /api/v1/catalog/enrich` (Anthropic + web_search tool; ~30k input tokens, real spend per logs).
+- ✅ Honest error feedback (NOT silent): on failure a toast fires ("AI response missing required fields") via runAction; fields revert cleanly, no crash. Captured via MutationObserver.
+- ❌ BUG (reliability): enrichment FAILED twice for a mainstream product ("Microsoft 365 Business Premium") → API 502 `{"error":"AI response missing required fields","code":"AI_PARSE"}`. Root cause (api log + catalogEnrichmentService.ts:158): the model's JSON output fails `enrichDraftSchema.safeParse` (required field missing, likely `name`) after web search. Happy-path field population could NOT be demonstrated. Could be model-config specific (resolveDefaultModel) — needs investigation; if a common SKU can't enrich, the feature is effectively non-functional here.
+- ❌ BUG (cost-tracking integrity): every enrich call logs `[catalog-enrich] recordUsage failed: ... invalid input syntax for type uuid: "catalog-enrich-<uuid>"`. catalogEnrichmentService.ts:125 calls `recordUsage('catalog-enrich-' + randomUUID(), ...)` — the first arg is written to `ai_sessions.id` (a UUID column), but the `catalog-enrich-` prefix makes it a non-UUID string, so the usage UPDATE throws on EVERY call. Result: AI cost/tokens for catalog enrichment are never recorded → budget accounting/enforcement is bypassed for this endpoint. Caught+logged (doesn't fail the request) but the spend (~$0.10/call here) is lost. Fix: use a bare `randomUUID()` for the session id (the human label belongs elsewhere), or change the column/lookup.
+- Note: spend is real (~30k tokens/call) and untracked — the two bugs compound (paying for calls that both fail to parse AND fail to record).
+
+### [B8 / #1931] Tickets auto-reply + canned responses — BLOCKED (UI dead in dev stack; backend verified via API)
+- ❌ BLOCKER (dev-env, not a #1931 source defect): BOTH host pages fail to hydrate. `/settings/partner#ticketing` hangs forever on "Loading partner settings…"; `/tickets` renders the SSR shell but the React island never hydrates. Console (both): `[astro-island] Error hydrating … SyntaxError: The requested module '/@fs/app/packages/shared/src/index.ts' does not provide an export named 'renderTemplate'`.
+  - Root cause: #1931 added `export * from './ticketTemplate'` to `packages/shared/src/utils/index.ts`. The export chain on disk is correct & complete (index.ts → `export * from './utils'` → utils/index.ts → `export * from './ticketTemplate'` → `export function renderTemplate`). The long-running Vite dev server has NOT re-resolved the newly-added *transitive* `export *` across nested barrels (a known Vite limitation; HMR/file-touch does not fix it — error persisted with an unchanged `?t=` after touch). Consumers `InboundEmailCard.tsx` + `CannedResponsePicker.tsx` import `renderTemplate`/`variablesForContext` from `@breeze/shared`, so their host islands crash.
+  - This is dev-only: a production rollup build bundles the export fine. PREREQ to test the UI: restart the web dev container (or `rm -rf node_modules/.vite` then restart astro dev) so Vite rebuilds the module graph. Per instructions I did not restart docker.
+  - ⚠️ DX papercut: every dev who pulls #1931 and relies on HMR will hit a broken Tickets + Partner Settings page until they restart Vite.
+- ✅ Backend verified via API (partner-scope token): `GET /api/v1/ticket-response-templates` → 200 `{data:[]}`; `POST` a canned response with merge vars (`Hi {{requester_name}}, re ticket {{ticket_number}}…`) → 201 (id returned, body+vars persisted, partnerId scoped); `GET` reflects it; `DELETE /…/{id}` → 200 `{success:true}`. Canned-response CRUD + template-variable storage all work server-side. Test row cleaned up.
+- Not exercised (UI-only): auto-reply template editor + live preview (InboundEmailCard), template-variable rendering in the composer, applying a canned response in a ticket reply (CannedResponsePicker), and save-feedback toasts — all blocked by the hydration failure above.
+
+### Cleanup / stack note
+- `touch`ed packages/shared/src/{index.ts,utils/index.ts,utils/ticketTemplate.ts} (mtime only, no content change) attempting to nudge Vite; this restarted the API dev server (transient 502s ~30s) — recovered (/health 200, /api/v1/config 200, web 200). Did NOT fix the web Vite barrel-resolution cache.
+- Test artifact: created+deleted canned template "QA Canned Reply" (id 88f2bee5…) — net zero.
+
+### Triage outcomes (main session, 2026-06-26)
+- ✅ **All 4 fix-verifications CONFIRMED-FIXED**: #1937 (Monitoring nested-button — source now `<div role=button>`, 0 console errors), #1938 (Software Library all-orgs aggregates, no 400), #1939 (Default rings 2→1), #1940 (Network Changes empty-state CTA).
+- **B8 (#1931 tickets) — flipped BLOCKED → PASS.** The hydration breaker was a Vite stale-cache artifact (newly-added transitive `export *` from ticketTemplate not re-resolved without restart). `docker restart breeze-web` cleared it; `/tickets` now 200 with **0 console errors** and hydrates (auto-nav to T-2026-0002). Export chain verified correct in source (`utils/index.ts` → `export * from './ticketTemplate'`; root `index.ts` → `export * from './utils'`). NOT a code bug → not filed. DX note only: after pulling #1931, dev stacks relying on HMR must restart Vite.
+- **Filed #1949** [Billing/AI] catalog enrich never records usage — `'catalog-enrich-'+uuid` written to `ai_sessions.id` (uuid col) → insert fails → budget bypass. `catalogEnrichmentService.ts:125`. CONFIRMED (ai_sessions.id data_type=uuid). medium.
+- **Filed #1950** [AI] catalog auto-fill 502/AI_PARSE for common products (M365 Business Premium ×2). Local `ANTHROPIC_API_KEY` IS set, so not a missing-key artifact; `enrichDraftSchema.safeParse` rejects model output. `catalogEnrichmentService.ts:158`. medium.
+- Stack left healthy on 6c880e0ce (api/web/caddy/pg/redis all up; health/web/login 200).
