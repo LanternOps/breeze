@@ -10,11 +10,12 @@ import {
   ShieldOff
 } from 'lucide-react';
 
-import { ENABLE_ENDPOINT_AV_FEATURES } from '../../lib/featureFlags';
+import { ENABLE_EDR_INTEGRATIONS, ENABLE_ENDPOINT_AV_FEATURES } from '../../lib/featureFlags';
 import { friendlyFetchError } from '../../lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import DeviceSecurityStatus from '../security/DeviceSecurityStatus';
+import DeviceEdrPanel from './DeviceEdrPanel';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
 type ThreatStatus = 'active' | 'quarantined' | 'removed';
@@ -40,6 +41,7 @@ type ScanRecord = {
 
 type DeviceSecurityTabProps = {
   deviceId: string;
+  orgId: string;
   timezone?: string;
 };
 
@@ -76,7 +78,7 @@ function compactPath(value: string): string {
   return `...${value.slice(-45)}`;
 }
 
-export default function DeviceSecurityTab({ deviceId, timezone }: DeviceSecurityTabProps) {
+export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceSecurityTabProps) {
   const [threats, setThreats] = useState<ThreatRecord[]>([]);
   const [scans, setScans] = useState<ScanRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -174,6 +176,7 @@ export default function DeviceSecurityTab({ deviceId, timezone }: DeviceSecurity
     return (
       <div className="space-y-6">
         <DeviceSecurityStatus deviceId={deviceId} showAvActions={false} />
+        {ENABLE_EDR_INTEGRATIONS && <DeviceEdrPanel deviceId={deviceId} orgId={orgId} timezone={timezone} />}
       </div>
     );
   }
@@ -181,6 +184,7 @@ export default function DeviceSecurityTab({ deviceId, timezone }: DeviceSecurity
   return (
     <div className="space-y-6">
       <DeviceSecurityStatus deviceId={deviceId} showAvActions />
+      {ENABLE_EDR_INTEGRATIONS && <DeviceEdrPanel deviceId={deviceId} orgId={orgId} timezone={timezone} />}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">

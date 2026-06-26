@@ -608,10 +608,13 @@ sentinelOneRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgResult = resolveOrgId(auth, query.orgId);
-    if ('error' in orgResult) {
+    const requestedOrg = query.orgId;
+    const wantsOrgScope = requestedOrg || auth.scope === 'organization';
+    const orgResult = wantsOrgScope ? resolveOrgId(auth, requestedOrg) : null;
+    if (orgResult && 'error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
     }
+    const scopedOrgId = orgResult && 'orgId' in orgResult ? orgResult.orgId : null;
 
     const start = query.start ? new Date(query.start) : null;
     const end = query.end ? new Date(query.end) : null;
@@ -622,15 +625,33 @@ sentinelOneRoutes.get(
       return c.json({ error: 'start must be before or equal to end' }, 400);
     }
 
-    const conditions: SQL[] = [eq(s1Threats.orgId, orgResult.orgId)];
+    const conditions: SQL[] = [];
+    if (scopedOrgId) {
+      conditions.push(eq(s1Threats.orgId, scopedOrgId));
+    }
     withOrgCondition(conditions, auth.orgCondition(s1Threats.orgId));
+
+    // System scope without an explicit partnerId is rejected by resolvePartnerId below (mirrors huntress.ts). Partner scope is fenced by orgCondition + the partner's integrationId set.
+    if (!scopedOrgId) {
+      const partnerResult = resolvePartnerId(auth, query.partnerId);
+      if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+      const integrations = await db
+        .select({ id: s1Integrations.id })
+        .from(s1Integrations)
+        .where(and(eq(s1Integrations.partnerId, partnerResult.partnerId), eq(s1Integrations.isActive, true)));
+      const integrationIds = integrations.map((i) => i.id);
+      if (integrationIds.length === 0) {
+        return c.json({ data: [], pagination: { total: 0, limit: query.limit ?? 100, offset: query.offset ?? 0 } });
+      }
+      conditions.push(inArray(s1Threats.integrationId, integrationIds));
+    }
 
     // Site-scope: site is an app-layer authz axis (RLS does not defend it).
     // When the caller is site-restricted, deny an explicit out-of-scope
     // deviceId and narrow the broad list to the caller's accessible devices.
     const perms = c.get('permissions') as UserPermissions | undefined;
-    if (perms?.allowedSiteIds) {
-      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgResult.orgId, perms);
+    if (perms?.allowedSiteIds && scopedOrgId) {
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(scopedOrgId, perms);
       if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
         return c.json({ error: 'Device not found or access denied' }, 403);
       }

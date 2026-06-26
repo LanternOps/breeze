@@ -77,6 +77,11 @@ const TARGET_GLOBS = [
   'src/components/devices/DeviceVulnerabilitiesTab.tsx',
   'src/lib/api/vulnerabilities.ts',
   'src/components/settings/TdSynnexEcExpressPanel.tsx',
+  'src/lib/edr.ts',
+  'src/lib/incidents.ts',
+  'src/components/devices/DeviceEdrPanel.tsx',
+  'src/components/security/S1ThreatList.tsx',
+  'src/components/security/HuntressIncidentList.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -268,7 +273,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(49);
+    expect(absoluteFiles.length).toBe(54);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

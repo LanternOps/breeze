@@ -15,6 +15,11 @@ export const ENABLE_ENDPOINT_AV_FEATURES = parseBoolean(
   false
 );
 
+export const ENABLE_EDR_INTEGRATIONS = parseBoolean(
+  import.meta.env.PUBLIC_ENABLE_EDR_INTEGRATIONS,
+  false
+);
+
 // Unified Devices list network arm (#1322): surface network-discovered assets
 // alongside agent endpoints in the Devices view. Off by default until the
 // remaining rough edges (unified sort/pagination, per-asset detail pages,

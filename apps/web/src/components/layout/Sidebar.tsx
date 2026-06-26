@@ -59,6 +59,7 @@ import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
 import BrandHeader from './BrandHeader';
+import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 
 interface SidebarProps {
   currentPath?: string;
@@ -211,6 +212,9 @@ export const navSections: NavSection[] = [
     // A billing-only role has no devices:read grant, so the whole section hides.
     items: [
       { name: 'Security', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      ...(ENABLE_EDR_INTEGRATIONS
+        ? [{ name: 'EDR', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
+        : []),
       { name: 'DNS Security', href: '/dns-security', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'PAM', href: '/pam', icon: KeyRound, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'User Risk', href: '/security/user-risk', icon: UserCheck, requiredPermission: { resource: 'devices', action: 'read' } },

@@ -1,11 +1,18 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceSecurityTab from './DeviceSecurityTab';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../lib/featureFlags', () => ({
-  ENABLE_ENDPOINT_AV_FEATURES: true
+let edrFlagOn = true;
+vi.mock('../../lib/featureFlags', async (orig) => ({
+  ...(await orig<typeof import('../../lib/featureFlags')>()),
+  ENABLE_ENDPOINT_AV_FEATURES: true,
+  get ENABLE_EDR_INTEGRATIONS() { return edrFlagOn; },
+}));
+
+vi.mock('./DeviceEdrPanel', () => ({
+  default: ({ orgId }: { orgId: string }) => <div data-testid="edr-panel-stub">{orgId}</div>
 }));
 
 vi.mock('../../stores/auth', () => ({
@@ -23,8 +30,13 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
   }) as unknown as Response;
 
 const deviceId = '11111111-1111-1111-1111-111111111111';
+const orgId = '22222222-2222-2222-2222-222222222222';
 
 describe('DeviceSecurityTab', () => {
+  afterEach(() => {
+    edrFlagOn = true;
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -95,7 +107,7 @@ describe('DeviceSecurityTab', () => {
   });
 
   it('renders device security status, recent threats, and recent scans', async () => {
-    render(<DeviceSecurityTab deviceId={deviceId} />);
+    render(<DeviceSecurityTab deviceId={deviceId} orgId={orgId} />);
 
     await screen.findByText(/FIN-WS-014/i);
     await screen.findByText('Trojan:Win32/Emotet');
@@ -106,8 +118,20 @@ describe('DeviceSecurityTab', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/security/scans/${deviceId}?limit=10`);
   });
 
+  it('renders the EDR panel with the device orgId when the flag is on', async () => {
+    render(<DeviceSecurityTab deviceId="dev-1" orgId="org-9" />);
+
+    expect(await screen.findByTestId('edr-panel-stub')).toHaveTextContent('org-9');
+  });
+
+  it('does NOT render the EDR panel when ENABLE_EDR_INTEGRATIONS is off', async () => {
+    edrFlagOn = false;
+    render(<DeviceSecurityTab deviceId="dev-1" orgId="org-9" />);
+    await waitFor(() => expect(screen.queryByTestId('edr-panel-stub')).toBeNull());
+  });
+
   it('runs a full scan from the device security operations panel', async () => {
-    render(<DeviceSecurityTab deviceId={deviceId} />);
+    render(<DeviceSecurityTab deviceId={deviceId} orgId={orgId} />);
 
     await screen.findByText(/FIN-WS-014/i);
 
@@ -122,7 +146,7 @@ describe('DeviceSecurityTab', () => {
   });
 
   it('quarantines an active threat from the threat card', async () => {
-    render(<DeviceSecurityTab deviceId={deviceId} />);
+    render(<DeviceSecurityTab deviceId={deviceId} orgId={orgId} />);
 
     await screen.findByText('Trojan:Win32/Emotet');
 
