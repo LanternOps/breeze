@@ -52,13 +52,16 @@ function resolveScopedOrgId(
   requestedOrgId?: string,
 ): ResolveScopedOrgIdResult {
   if (requestedOrgId) {
-    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
+    if (auth.scope === 'system') {
+      return { orgId: requestedOrgId };
+    }
     if (auth.scope === 'organization') {
-      if (auth.orgId && requestedOrgId !== auth.orgId) {
+      if (!auth.orgId || requestedOrgId !== auth.orgId) {
         return { error: 'Access to this organization denied', status: 403 };
       }
       return { orgId: requestedOrgId };
     }
+    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
     if (!accessibleOrgIds.includes(requestedOrgId)) {
       return { error: 'Access to this organization denied', status: 403 };
     }

@@ -155,6 +155,79 @@ describe('software routes', () => {
       expect(db.select).toHaveBeenCalledTimes(2);
     });
 
+    it('denies explicit orgId outside partner accessible orgs', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['11111111-1111-4111-8111-111111111111']
+        });
+        return next();
+      });
+
+      const res = await app.request('/software/catalog?orgId=22222222-2222-4222-8222-222222222222', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Access to this organization denied' });
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('allows system scope to list a requested orgId', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'system',
+          orgId: null,
+          partnerId: null,
+          accessibleOrgIds: null
+        });
+        return next();
+      });
+
+      const res = await app.request('/software/catalog?orgId=22222222-2222-4222-8222-222222222222', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toHaveProperty('data');
+      expect(body).toHaveProperty('pagination');
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it('allows system scope to list the all-org catalog without orgId', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'system',
+          orgId: null,
+          partnerId: null,
+          accessibleOrgIds: null
+        });
+        return next();
+      });
+
+      const res = await app.request('/software/catalog', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toHaveProperty('data');
+      expect(body).toHaveProperty('pagination');
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
     it('returns an empty page without querying when partner All-Orgs has no accessible orgs', async () => {
       vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('auth', {
