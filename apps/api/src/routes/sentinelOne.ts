@@ -10,6 +10,7 @@ import {
   scheduleS1Sync
 } from '../jobs/s1Sync';
 import { writeRouteAudit } from '../services/auditEvents';
+import { ensureBuiltinPackage } from '../services/builtinDeploymentPackages';
 import { encryptSecret } from '../services/secretCrypto';
 import { captureException } from '../services/sentry';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -419,6 +420,16 @@ sentinelOneRoutes.post(
 
     if (!integration) {
       return c.json({ error: 'Failed to save SentinelOne integration' }, 500);
+    }
+
+    // Provision (or reveal) the built-in SentinelOne deployment package for this
+    // partner. The catalog row is created now; it has no deployable version until
+    // the partner uploads the S1 MSI.
+    try {
+      await ensureBuiltinPackage({ provider: 'sentinelone', partnerId: integration.partnerId });
+    } catch (error) {
+      console.error('[s1-route] failed to provision built-in deployment package:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
     }
 
     let syncJobId: string | null = null;
