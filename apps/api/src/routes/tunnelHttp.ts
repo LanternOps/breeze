@@ -347,9 +347,16 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       // Surface via the session row so ProxyTunnelPage's existing poll renders
       // the "recreate with self-signed allowed" banner. A cert failure on load
       // is terminal for the session — the cert won't become trusted on retry.
-      await db.update(tunnelSessions)
-        .set({ status: 'failed', errorMessage: 'tls_cert_untrusted', endedAt: new Date() })
-        .where(eq(tunnelSessions.id, tunnelId));
+      //
+      // Must run under system DB context: this route mounts before auth
+      // middleware so there is no request-scoped RLS context. Without system
+      // context this becomes a silent 0-row write once tunnel_sessions gains
+      // RLS, causing the recreate banner to never appear (#1916 follow-up).
+      await withSystemDbAccessContext(async () => {
+        await db.update(tunnelSessions)
+          .set({ status: 'failed', errorMessage: 'tls_cert_untrusted', endedAt: new Date() })
+          .where(eq(tunnelSessions.id, tunnelId));
+      });
       return c.text('Untrusted upstream certificate', 502);
     }
     return c.text('Bridge agent error', 502);

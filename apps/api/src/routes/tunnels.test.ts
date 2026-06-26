@@ -1664,6 +1664,9 @@ describe('POST /tunnels — proxy scheme/skipTlsVerify persistence', () => {
     const sessionVals = sessionInsertValues(insertMock);
     expect(sessionVals).toHaveLength(1);
     expect(sessionVals[0]).toMatchObject({ scheme: 'https', skipTlsVerify: true });
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0].details).toEqual(expect.objectContaining({ scheme: 'https', skipTlsVerify: true }));
   });
 
   it('forces skipTlsVerify false when scheme is http', async () => {
@@ -1693,5 +1696,8 @@ describe('POST /tunnels — proxy scheme/skipTlsVerify persistence', () => {
     const sessionVals = sessionInsertValues(insertMock);
     expect(sessionVals).toHaveLength(1);
     expect(sessionVals[0]).toMatchObject({ scheme: 'http', skipTlsVerify: false });
+    const audits = auditCalls(insertMock);
+    expect(audits).toHaveLength(1);
+    expect(audits[0].details).toEqual(expect.objectContaining({ scheme: 'http', skipTlsVerify: false }));
   });
 });

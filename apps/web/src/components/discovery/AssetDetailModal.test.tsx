@@ -230,14 +230,15 @@ describe('AssetDetailModal — proxy scheme + self-signed certificate (#1916)', 
   it('shows self-signed checkbox only when scheme is https', async () => {
     render(<AssetDetailModal open asset={assetWithHttpsPort} devices={onlineDevices} onClose={() => {}} />);
 
-    // Default is http (or derived from port), checkbox not visible
+    // Port 443 → default scheme is https → checkbox IS visible initially.
     const schemeSelect = screen.getByTestId('proxy-scheme-select');
 
-    // Switch to https → checkbox appears
+    // Already on https; confirm checkbox visible, then switch to https explicitly
+    // (no-op) to keep the assertion ordering consistent with the toggle test.
     fireEvent.change(schemeSelect, { target: { value: 'https' } });
     expect(screen.getByTestId('proxy-allow-self-signed')).toBeInTheDocument();
 
-    // Switch back to http → checkbox hidden
+    // Switch to http → checkbox hidden
     fireEvent.change(schemeSelect, { target: { value: 'http' } });
     expect(screen.queryByTestId('proxy-allow-self-signed')).not.toBeInTheDocument();
   });
