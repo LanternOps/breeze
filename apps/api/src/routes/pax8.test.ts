@@ -147,6 +147,7 @@ vi.mock('../services/pax8SyncService', () => ({
   createPax8ClientForIntegration: vi.fn(),
   linkPax8SubscriptionToContractLine: vi.fn(),
   mapPax8Company: vi.fn(async () => ({ pax8CompanyId: 'company-1', orgId: null, ignored: false })),
+  unlinkPax8Subscription: vi.fn(),
 }));
 
 import { db } from '../db';
@@ -367,6 +368,55 @@ describe('pax8 routes', () => {
       }),
     });
 
+    expect(res.status).toBe(404);
+  });
+
+  it('unlinks a subscription the caller can access', async () => {
+    // 1) integration lookup → belongs to caller's partner
+    mockSelectOnce([{ id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId }]);
+    // 2) snapshot lookup → org the caller can access, same integration
+    mockSelectOnce([{ orgId: ORG_A, integrationId: '44444444-4444-4444-4444-444444444444' }]);
+    const { unlinkPax8Subscription } = await import('../services/pax8SyncService');
+    (unlinkPax8Subscription as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ unlinked: true });
+
+    const res = await app.request('/pax8/subscriptions/link', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+      }),
+    });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ data: { unlinked: true } });
+  });
+
+  it('rejects unlinking a subscription in an org the caller cannot access (IDOR)', async () => {
+    authState.canAccessOrg = false;
+    mockSelectOnce([{ id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId }]);
+    mockSelectOnce([{ orgId: '55555555-5555-5555-5555-555555555555', integrationId: '44444444-4444-4444-4444-444444444444' }]);
+
+    const res = await app.request('/pax8/subscriptions/link', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 when the integration is not visible to the caller', async () => {
+    mockSelectOnce([]); // partner predicate filtered it out
+    const res = await app.request('/pax8/subscriptions/link', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+      }),
+    });
     expect(res.status).toBe(404);
   });
 

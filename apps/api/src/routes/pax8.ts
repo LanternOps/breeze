@@ -16,7 +16,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { DEFAULT_PAX8_API_BASE_URL, DEFAULT_PAX8_TOKEN_URL } from '../services/pax8Client';
-import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, mapPax8Company } from '../services/pax8SyncService';
+import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, mapPax8Company, unlinkPax8Subscription } from '../services/pax8SyncService';
 import { enqueuePax8Sync } from '../jobs/pax8SyncWorker';
 import { captureException } from '../services/sentry';
 
@@ -94,6 +94,11 @@ const linkSchema = z.object({
   subscriptionSnapshotId: z.string().guid(),
   contractLineId: z.string().guid(),
   syncEnabled: z.boolean().default(false),
+});
+
+const unlinkSchema = z.object({
+  integrationId: z.string().guid(),
+  subscriptionSnapshotId: z.string().guid(),
 });
 
 // Defense-in-depth partner scoping for the integration-id lookups in
@@ -440,4 +445,39 @@ pax8Routes.post('/subscriptions/link', partnerScopes, writePerm, requireMfa(), z
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
   }
+});
+
+pax8Routes.delete('/subscriptions/link', partnerScopes, writePerm, requireMfa(), zValidator('json', unlinkSchema), async (c) => {
+  const auth = c.get('auth');
+  const body = c.req.valid('json');
+  const [integration] = await db
+    .select({ id: pax8Integrations.id, partnerId: pax8Integrations.partnerId })
+    .from(pax8Integrations)
+    .where(and(...integrationScopeConditions(auth, body.integrationId)))
+    .limit(1);
+  if (!integration) return c.json({ error: 'Pax8 integration not found' }, 404);
+
+  // Authorize on the subscription snapshot's org (unlink keys on the
+  // subscription, and the link row may already be gone, so there is no contract
+  // line to gate on). Also confirm the snapshot belongs to this integration.
+  const [snapshot] = await db
+    .select({ orgId: pax8SubscriptionSnapshots.orgId, integrationId: pax8SubscriptionSnapshots.integrationId })
+    .from(pax8SubscriptionSnapshots)
+    .where(eq(pax8SubscriptionSnapshots.id, body.subscriptionSnapshotId))
+    .limit(1);
+  if (!snapshot || snapshot.integrationId !== integration.id) return c.json({ error: 'Pax8 subscription not found' }, 404);
+  if (snapshot.orgId && !auth.canAccessOrg(snapshot.orgId)) return c.json({ error: 'Access to subscription denied' }, 403);
+
+  const result = await unlinkPax8Subscription({
+    integrationId: integration.id,
+    subscriptionSnapshotId: body.subscriptionSnapshotId,
+  });
+  writeRouteAudit(c, {
+    orgId: snapshot.orgId ?? undefined,
+    action: 'pax8.subscription.unlink_contract_line',
+    resourceType: 'pax8_subscription_snapshot',
+    resourceId: body.subscriptionSnapshotId,
+    details: { integrationId: integration.id },
+  });
+  return c.json({ data: result });
 });
