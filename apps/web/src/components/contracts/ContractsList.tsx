@@ -132,6 +132,12 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     return () => window.removeEventListener('hashchange', onHash);
   }, [lockedOrgId]);
 
+  // Clear bulk selection whenever the server-side filters change so stale
+  // invisible rows are never acted on. No client-side search in this component.
+  useEffect(() => {
+    bulk.clear();
+  }, [filters.orgId, filters.status, bulk.clear]);
+
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
       const next = { ...prev, ...patch };
