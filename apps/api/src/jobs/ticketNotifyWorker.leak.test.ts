@@ -74,7 +74,8 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../db/schema', () => ({
   tickets: { __t: 'tickets', id: 'id' },
-  partners: { __t: 'partners', id: 'id', slug: 'slug', settings: 'settings' },
+  partners: { __t: 'partners', id: 'id', slug: 'slug', name: 'name', settings: 'settings' },
+  organizations: { __t: 'organizations', id: 'id', name: 'name' },
   userNotifications: { __t: 'user_notifications' },
   users: { __t: 'users', id: 'id' },
   // Present so a regression that DOES query it would be caught by the table assertion.

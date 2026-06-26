@@ -6,9 +6,12 @@
  * Substitution is single-pass — values are NOT re-scanned for tokens.
  */
 export function renderTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/g, (_match, key: string) =>
-    Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : '',
-  );
+  return template.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/g, (_match, key: string) => {
+    // Read the own-property value (prototype-safe), coercing a missing key to ''.
+    // The ?? also satisfies noUncheckedIndexedAccess (index access is string | undefined).
+    const value = Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : undefined;
+    return value ?? '';
+  });
 }
 
 export type TicketTemplateContext = 'autoreply' | 'canned';
