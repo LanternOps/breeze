@@ -10,7 +10,7 @@ const { permissionGate, mfaGate, permsState, authState } = vi.hoisted(() => ({
     orgId: '11111111-1111-4111-8111-111111111111' as string | undefined,
     partnerId: 'a0000000-0000-4000-8000-000000000001' as string | undefined,
     accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'] as string[],
-    canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
+    canAccessOrg: ((orgId: string) => orgId === '11111111-1111-4111-8111-111111111111') as (orgId: string) => boolean,
     orgCondition: () => undefined as any,
   }
 }));
@@ -162,7 +162,9 @@ import { encryptSecret } from '../services/secretCrypto';
 const PARTNER_ID = 'a0000000-0000-4000-8000-000000000001';
 const OTHER_PARTNER_ID = 'a0000000-0000-4000-8000-000000000002';
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
+const ORG_ID_B = '22222222-2222-4222-8222-222222222222';
 const INTEGRATION_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const INTEGRATION_ID_B = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const S1_SITE_ID = 's1-site-abc123';
 
 describe('sentinel one routes', () => {
@@ -1212,6 +1214,63 @@ describe('sentinel one routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ───────────────────── GET /threats — partner scope ─────────────────────
+  describe('GET /threats — partner scope', () => {
+    function mockActiveIntegrations(rows: Array<{ id: string }>) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows)
+        })
+      } as any);
+    }
+
+    function mockThreatsQueries(rows: any[], count: number) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue(rows)
+                  })
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count }])
+          })
+        } as any);
+    }
+
+    it('GET /threats lists across all partner orgs for a partner-scoped caller without orgId', async () => {
+      authState.scope = 'partner';
+      authState.orgId = undefined;
+      authState.partnerId = PARTNER_ID;
+      authState.accessibleOrgIds = [ORG_ID, ORG_ID_B];
+      authState.canAccessOrg = (orgId: string) => [ORG_ID, ORG_ID_B].includes(orgId);
+      authState.orgCondition = () => undefined as any;
+
+      mockActiveIntegrations([{ id: INTEGRATION_ID }, { id: INTEGRATION_ID_B }]);
+      mockThreatsQueries(
+        [
+          { id: 'threat-a', orgId: ORG_ID, integrationId: INTEGRATION_ID },
+          { id: 'threat-b', orgId: ORG_ID_B, integrationId: INTEGRATION_ID_B }
+        ],
+        2
+      );
+
+      const res = await app.request('/s1/threats');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((t: any) => t.orgId).sort()).toEqual([ORG_ID, ORG_ID_B].sort());
+      expect(body.pagination.total).toBe(2);
     });
   });
 
