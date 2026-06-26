@@ -66,7 +66,8 @@ export const listContractsQuerySchema = z.object({
 });
 
 export const bulkContractIdsSchema = z.object({
-  ids: z.array(z.string().guid()).min(1).max(200),
+  // capped at 50: each item runs sequentially in the request transaction (conn-pool safety)
+  ids: z.array(z.string().guid()).min(1).max(50),
 });
 
 export type ContractLineInput = z.infer<typeof contractLineInputSchema>;

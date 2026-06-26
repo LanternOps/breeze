@@ -109,7 +109,8 @@ export const orgBillingSettingsSchema = z.object({
 });
 
 export const bulkInvoiceIdsSchema = z.object({
-  ids: z.array(z.string().guid()).min(1).max(200),
+  // capped at 50: each item runs sequentially in the request transaction (conn-pool safety)
+  ids: z.array(z.string().guid()).min(1).max(50),
 });
 export const bulkVoidInvoicesSchema = bulkInvoiceIdsSchema.extend({
   reason: z.string().trim().min(1).max(500),

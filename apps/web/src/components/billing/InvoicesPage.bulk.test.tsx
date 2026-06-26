@@ -67,6 +67,10 @@ describe('InvoicesPage bulk actions', () => {
 
     fireEvent.click(screen.getByTestId('invoices-bulk-action-delete'));
 
+    // Confirm dialog must appear before the request is sent.
+    const confirmBtn = await screen.findByTestId('invoices-bulk-delete-confirm');
+    fireEvent.click(confirmBtn);
+
     await waitFor(() => {
       const call = fetchWithAuth.mock.calls.find((c) => String(c[0]).includes('/invoices/bulk-delete'));
       expect(call).toBeTruthy();

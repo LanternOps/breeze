@@ -61,6 +61,10 @@ describe('QuotesPage bulk delete', () => {
 
     fireEvent.click(screen.getByTestId('quotes-bulk-action-delete'));
 
+    // Confirm dialog must appear before the request is sent.
+    const confirmBtn = await screen.findByTestId('quotes-bulk-delete-confirm');
+    fireEvent.click(confirmBtn);
+
     await waitFor(() => {
       const call = fetchWithAuth.mock.calls.find((c) => String(c[0]).includes('/quotes/bulk-delete'));
       expect(call).toBeTruthy();

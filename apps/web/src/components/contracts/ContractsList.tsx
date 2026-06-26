@@ -86,6 +86,8 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : readFilters(),
   );
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const orgName = useCallback(
     (id: string) => orgs.find((o) => o.id === id)?.name ?? id.slice(0, 8),
@@ -153,6 +155,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     async (path: string, verb: string) => {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return;
+      setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number; skippedReasons?: Record<string, number> } }>({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids }) }),
@@ -169,6 +172,8 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
         void loadContracts(filters);
       } catch (err) {
         handleActionError(err, `Bulk ${verb} failed. Retry.`);
+      } finally {
+        setBulkBusy(false);
       }
     },
     [bulk, loadContracts, filters],
@@ -328,8 +333,8 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
               onClear={bulk.clear}
               testIdPrefix="contracts"
               actions={[
-                ...(can('contracts', 'manage') ? [{ key: 'cancel', label: 'Cancel', variant: 'destructive' as const, onClick: () => setCancelOpen(true) }] : []),
-                ...(can('contracts', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, onClick: () => void runBulkContracts('/contracts/bulk-delete', 'deleted') }] : []),
+                ...(can('contracts', 'manage') ? [{ key: 'cancel', label: 'Cancel', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setCancelOpen(true) }] : []),
+                ...(can('contracts', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
           </div>
@@ -344,6 +349,16 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
         message={`Cancel ${bulk.size} selected contract(s)? Active and paused contracts will be cancelled; this cannot be undone.`}
         confirmLabel="Cancel contracts"
         confirmTestId="contracts-bulk-cancel-confirm"
+      />
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => { setDeleteOpen(false); void runBulkContracts('/contracts/bulk-delete', 'deleted'); }}
+        title="Delete draft contracts"
+        message={`Delete ${bulk.size} selected contract(s)? Only DRAFT contracts will be deleted; this cannot be undone.`}
+        confirmLabel="Delete drafts"
+        confirmTestId="contracts-bulk-delete-confirm"
       />
     </div>
   );

@@ -4,6 +4,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
 import { Dialog } from '../../shared/Dialog';
+import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { listQuotes, createQuote } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { useBulkSelection } from '../bulk/useBulkSelection';
@@ -81,6 +82,9 @@ export function QuotesPage() {
   const [filters, setFilters] = useState<Filters>(() => readFilters());
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // New-quote dialog state
   const [createOpen, setCreateOpen] = useState(false);
@@ -206,6 +210,7 @@ export function QuotesPage() {
     async (path: string, verb: string) => {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return;
+      setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number; skippedReasons?: Record<string, number> } }>({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids }) }),
@@ -222,6 +227,8 @@ export function QuotesPage() {
         void loadQuotes(filters);
       } catch (err) {
         handleActionError(err, `Bulk ${verb} failed. Retry.`);
+      } finally {
+        setBulkBusy(false);
       }
     },
     [bulk, loadQuotes, filters],
@@ -411,13 +418,23 @@ export function QuotesPage() {
               onClear={bulk.clear}
               testIdPrefix="quotes"
               actions={[
-                ...(can('quotes', 'send') ? [{ key: 'send', label: 'Send', onClick: () => void runBulkQuotes('/quotes/bulk-send', 'sent') }] : []),
-                ...(can('quotes', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, onClick: () => void runBulkQuotes('/quotes/bulk-delete', 'deleted') }] : []),
+                ...(can('quotes', 'send') ? [{ key: 'send', label: 'Send', disabled: bulkBusy, onClick: () => void runBulkQuotes('/quotes/bulk-send', 'sent') }] : []),
+                ...(can('quotes', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => { setDeleteOpen(false); void runBulkQuotes('/quotes/bulk-delete', 'deleted'); }}
+        title="Delete draft quotes"
+        message={`Delete ${bulk.size} selected quote(s)? Only DRAFT quotes will be deleted; this cannot be undone.`}
+        confirmLabel="Delete drafts"
+        confirmTestId="quotes-bulk-delete-confirm"
+      />
 
       {/* New-quote dialog */}
       <Dialog

@@ -4,6 +4,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { Dialog } from '../shared/Dialog';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useBulkSelection } from './bulk/useBulkSelection';
 import { BulkActionBar } from './bulk/BulkActionBar';
@@ -85,6 +86,9 @@ export function InvoicesPage() {
   const [filters, setFilters] = useState<Filters>(() => readFilters());
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Bulk void dialog state
   const [voidOpen, setVoidOpen] = useState(false);
@@ -221,6 +225,7 @@ export function InvoicesPage() {
     async (path: string, verb: string, extraBody?: Record<string, unknown>): Promise<boolean> => {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return false;
+      setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number } }>({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify({ ids, ...extraBody }) }),
@@ -239,6 +244,8 @@ export function InvoicesPage() {
       } catch (err) {
         handleActionError(err, `Bulk ${verb} failed. Retry.`);
         return false;
+      } finally {
+        setBulkBusy(false);
       }
     },
     [bulk, loadInvoices, filters],
@@ -524,9 +531,9 @@ export function InvoicesPage() {
               onClear={bulk.clear}
               testIdPrefix="invoices"
               actions={[
-                ...(can('invoices', 'send') ? [{ key: 'issue', label: 'Issue', onClick: () => void runBulkInvoices('/invoices/bulk-issue', 'issued') }] : []),
-                ...(can('invoices', 'send') ? [{ key: 'void', label: 'Void', variant: 'destructive' as const, onClick: () => { setVoidReason(''); setVoidOpen(true); } }] : []),
-                ...(can('invoices', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, onClick: () => void runBulkInvoices('/invoices/bulk-delete', 'deleted') }] : []),
+                ...(can('invoices', 'send') ? [{ key: 'issue', label: 'Issue', disabled: bulkBusy, onClick: () => void runBulkInvoices('/invoices/bulk-issue', 'issued') }] : []),
+                ...(can('invoices', 'send') ? [{ key: 'void', label: 'Void', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => { setVoidReason(''); setVoidOpen(true); } }] : []),
+                ...(can('invoices', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
           </div>
@@ -572,6 +579,16 @@ export function InvoicesPage() {
           </div>
         </div>
       </Dialog>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => { setDeleteOpen(false); void runBulkInvoices('/invoices/bulk-delete', 'deleted'); }}
+        title="Delete draft invoices"
+        message={`Delete ${bulk.size} selected invoice(s)? Only DRAFT invoices will be deleted; this cannot be undone.`}
+        confirmLabel="Delete drafts"
+        confirmTestId="invoices-bulk-delete-confirm"
+      />
 
       {/* New-invoice dialog (assemble | blank) */}
       <Dialog

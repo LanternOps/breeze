@@ -102,6 +102,10 @@ describe('ContractsList bulk actions', () => {
 
     fireEvent.click(screen.getByTestId('contracts-bulk-action-delete'));
 
+    // Confirm dialog must appear before the request is sent.
+    const confirmBtn = await screen.findByTestId('contracts-bulk-delete-confirm');
+    fireEvent.click(confirmBtn);
+
     await waitFor(() => {
       const call = fetchWithAuth.mock.calls.find((c) => String(c[0]).includes('/contracts/bulk-delete'));
       expect(call).toBeTruthy();
