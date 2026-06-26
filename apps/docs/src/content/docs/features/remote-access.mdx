@@ -200,7 +200,23 @@ Network Proxy lets you access TCP services on an agent's local network without a
 
 **Starting a proxy session:**
 
-- Open the **Discovered Assets** tab on a device and click **Enable Proxy Access** next to the target service, or create a tunnel manually by specifying the destination host and port.
+<Steps>
+
+1. Open **Network Discovery** and click on a discovered asset to open the asset modal.
+
+2. Go to the **Proxy Access** section of the asset modal.
+
+3. Pick a **bridge agent** from the dropdown. The dropdown lists only online agents; it defaults to the device that was linked to the asset, if that device is currently online.
+
+4. Click **Connect**. The LAN device's web UI (router admin page, NAS management panel, printer interface, etc.) loads in an iframe inside Breeze.
+
+5. Use the **Open in new tab** button to detach the UI into its own browser tab if you prefer a full-window view.
+
+</Steps>
+
+<Aside type="note">
+  If the target device uses a self-signed certificate, the first request will fail with an untrusted-certificate error and the session will surface a **Reconnect (allow self-signed)** option. Re-opening the proxy with that option skips TLS verification for that session only — it does not change any persistent trust settings (PR #1916).
+</Aside>
 
 **Security model:**
 

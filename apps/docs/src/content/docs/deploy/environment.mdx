@@ -214,6 +214,12 @@ Two rate-limit tiers protect the API. The generic per-user limit covers logged-i
 | `ENABLE_API_DOCS_UI` | `false` | Enable interactive Swagger UI (requires `ENABLE_API_DOCS=true`) |
 | `USE_AGENT_SDK` | — | Use Claude Agent SDK for AI chat |
 | `PORTAL_STATE_BACKEND` | `memory` | Portal state backend: `memory` or `redis` (auto `redis` in production) |
+| `PUBLIC_ENABLE_EDR_INTEGRATIONS` | `false` | Surface the EDR UI: the `/security/edr` fleet page, the device Security-tab EDR panel, and the Security dashboard summary cards. Set `true` at web image build time to enable. |
+| `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` | `false` | Surface network-discovered assets alongside agent endpoints in the Devices list view. Set `true` at web image build time to enable. |
+
+<Aside>
+  Variables prefixed with `PUBLIC_` are **web build-time flags** — they are baked into the web bundle when the image is built and cannot be changed at runtime by editing `.env`. To toggle them, set the value in your build environment and rebuild the web image.
+</Aside>
 
 ## MCP Server
 

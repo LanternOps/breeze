@@ -114,6 +114,20 @@ For onboarding Macs the same way you'd install any other native macOS app, Breez
 
 The GUI installer uses bootstrap tokens generated server-side from an enrollment key, so the same usage-limit and site-pinning guarantees as MSI/PKG installers apply.
 
+### Windows MSI Zero-Config Enrollment
+
+Windows MSI installers downloaded from the dashboard or via a public link also auto-enroll with zero configuration. The enrollment token is embedded directly in the downloaded filename as a `[TOKEN@HOST]` block — for example:
+
+```
+breeze-agent [ABCD1234XY@breeze.example.com].msi
+```
+
+The installer parses this block at runtime using a regex search anywhere in the filename, so a browser-added dedup suffix such as `(1)` — producing `breeze-agent [ABCD1234XY@breeze.example.com] (1).msi` — does not break enrollment. Just run the file as downloaded.
+
+<Aside type="note">
+  If you rename the MSI before deploying it, preserve the `[TOKEN@HOST]` block exactly as downloaded. Removing the block causes the installer to fall back to requiring the enrollment key and server URL entered manually during setup.
+</Aside>
+
 ---
 
 ## Pre-Provisioning Devices

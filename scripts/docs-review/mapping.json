@@ -1324,6 +1324,93 @@
         "deploy/binaries.mdx",
         "deploy/upgrades.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/catalogEnrichmentService.ts",
+      "docs": [
+        "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/pax8.ts",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/pax8SyncService.ts",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/policyManagement/compliance.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/quotes/**",
+      "docs": [
+        "features/contracts.mdx",
+        "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/agentapp/installer_filename.go",
+      "docs": [
+        "agents/enrollment-keys.mdx",
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/installerBootstrapTokenIssuance.ts",
+      "docs": [
+        "agents/enrollment-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/installer.ts",
+      "docs": [
+        "agents/enrollment-keys.mdx",
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tunnelHttp.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/heartbeat/handlers_httpproxy.go",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/ticketResponseTemplates.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/inboundEmail/autoresponseTemplate.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/utils/ticketTemplate.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/lib/featureFlags.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
     }
   ]
 }

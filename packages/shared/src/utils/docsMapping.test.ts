@@ -27,6 +27,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/user-risk/');
     });
 
+    it('/security/edr maps to EDR docs (not generic security)', () => {
+      const result = getDocsForPath('/security/edr');
+      expect(result.label).toBe('EDR Operations');
+      expect(result.url).toContain('/features/edr-integrations/');
+    });
+
     it('/scripts maps to scripts docs', () => {
       const result = getDocsForPath('/scripts');
       expect(result.label).toBe('Scripts');

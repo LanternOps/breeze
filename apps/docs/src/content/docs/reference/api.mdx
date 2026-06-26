@@ -462,6 +462,15 @@ Platform-admin scope. Backs the third-party application patching catalog and AI 
 | `GET` | `/remote/transfers/:id/download` | Download file |
 | `GET` | `/remote/transfers/:id/progress` | Transfer progress |
 
+### Network Proxy
+
+Reach a discovered LAN device's web UI through a bridge agent. The proxy page first mints a one-time ticket, then all browser traffic flows through the reverse-proxy route (authenticated by a signed, path-scoped cookie — no bearer token on the proxied requests).
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/tunnels/:id/http-ticket` | Mint a one-time HTTP-proxy ticket (5-min TTL) for a tunnel session |
+| `ALL` | `/tunnel-http/:tunnelId/*` | Authenticated HTTP reverse proxy to the target device's web UI |
+
 ## System Tools
 
 Device-scoped management commands exposed as REST endpoints.
@@ -521,6 +530,7 @@ Device-scoped management commands exposed as REST endpoints.
 | `GET` | `/policies` | List policies |
 | `GET` | `/policies/compliance/stats` | Compliance statistics |
 | `GET` | `/policies/compliance/summary` | Compliance summary |
+| `GET` | `/policies/compliance/device/:deviceId` | Per-device compliance across every assigned policy |
 | `GET` | `/policies/:id` | Get policy |
 | `POST` | `/policies` | Create policy |
 | `PUT` | `/policies/:id` | Replace policy |
@@ -662,6 +672,42 @@ Device-scoped management commands exposed as REST endpoints.
 | `PATCH` | `/filters/:id` | Update filter |
 | `DELETE` | `/filters/:id` | Delete filter |
 | `POST` | `/filters/:id/preview` | Preview saved filter |
+
+## Catalog & Billing
+
+Selected catalog and billing operations. Resource CRUD follows the standard REST pattern under `/catalog`, `/invoices`, `/quotes`, and `/contracts`; the endpoints below are the bulk and assist operations most useful to integrators.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/catalog/enrich` | AI-draft a catalog item's fields from a product name or SKU (returns a draft to review; writes nothing) |
+| `POST` | `/invoices/bulk-issue` | Issue multiple draft invoices |
+| `POST` | `/invoices/bulk-void` | Void multiple invoices (with a shared reason) |
+| `POST` | `/invoices/bulk-delete` | Delete multiple draft invoices |
+| `POST` | `/quotes/bulk-send` | Send multiple draft quotes |
+| `POST` | `/quotes/bulk-delete` | Delete multiple draft quotes |
+| `POST` | `/contracts/bulk-cancel` | Cancel multiple contracts |
+| `POST` | `/contracts/bulk-delete` | Delete multiple draft contracts |
+
+Bulk endpoints accept a list of IDs and return per-item results, so partial success is possible.
+
+### Distributor Integrations
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/pax8/subscriptions` | List Pax8 subscriptions |
+| `POST` | `/pax8/subscriptions/link` | Link (or re-point) a Pax8 subscription to a contract line — requires MFA |
+| `DELETE` | `/pax8/subscriptions/link` | Unlink a Pax8 subscription from its contract line (idempotent) — requires MFA |
+
+## Ticketing
+
+Canned reply templates are partner-scoped. Management operations require `partner` scope and MFA.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/ticket-response-templates` | List canned response templates |
+| `POST` | `/ticket-response-templates` | Create a canned response template |
+| `PATCH` | `/ticket-response-templates/:id` | Update a canned response template |
+| `DELETE` | `/ticket-response-templates/:id` | Delete a canned response template |
 
 ## PSA Integrations
 

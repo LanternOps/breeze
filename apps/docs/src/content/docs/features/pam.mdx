@@ -182,7 +182,7 @@ Whether a device captures UAC prompts at all is controlled through a **Configura
 </Steps>
 
 <Aside>
-  UAC interception is **ON by default at every level**. Existing deployments keep capturing prompts with no action needed; you opt a scope *out* by assigning a policy that turns the toggle off. When capture is disabled, the agent stops surfacing new UAC elevation requests for those devices.
+  As of v0.84.0, UAC interception defaults to **OFF (opt-in)** for new organizations — a scope must have a policy with **Capture Windows UAC elevation prompts** toggled on before any prompts are captured. Organizations that already had PAM configured before v0.84.0 are **grandfathered** and remain ON with no action needed. When capture is disabled, the agent stops surfacing new UAC elevation requests for those devices.
 </Aside>
 
 <Aside type="note">

@@ -173,6 +173,16 @@ Configure security policy settings for **Security**; check intervals and targets
   A device-level assignment always takes precedence over all group, site, organization, and partner assignments — regardless of priority number. A **Partner-Wide (All Orgs)** assignment is the broadest scope and is overridden by any more-specific assignment.
 </Aside>
 
+## Per-device compliance status
+
+Each device's detail page surfaces how that device measures against every compliance rule from its assigned policies — separate from the Effective Configuration view. Open any device page and select the **Compliance** tab to see a row for every assigned policy's compliance rules, including the rule name, current status (compliant, non-compliant, pending, or error), the last evaluation time, and any remediation attempts. This makes it easy to audit a single machine's standing without leaving the device page.
+
+The underlying endpoint is:
+
+```
+GET /policies/compliance/device/:deviceId
+```
+
 ## Viewing effective configuration
 
 To see the merged settings a specific device will receive:
