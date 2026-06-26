@@ -7,7 +7,11 @@ import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi'
 import type { TicketDetail } from './ticketConfig';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  // Selector hook stub — the composer reads the signed-in agent's name for the
+  // {{agent_name}} canned-response variable.
+  useAuthStore: (selector: (s: { user: { name: string } | null }) => unknown) =>
+    selector({ user: { name: 'Test Agent' } })
 }));
 
 // Stub only fetchTicketConfig; the real display/grouping helpers run unchanged.

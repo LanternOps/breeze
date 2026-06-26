@@ -42,6 +42,25 @@ describe('TicketComposer', () => {
     expect(onSend).toHaveBeenCalledWith('hi', true);
   });
 
+  it('hides the canned-response picker when there are no templates', () => {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} />);
+    expect(screen.queryByTestId('canned-picker-button')).toBeNull();
+  });
+
+  it('inserts a canned response (with variables substituted) into the draft', () => {
+    render(
+      <TicketComposer
+        requesterName="Pat"
+        onSend={onSend}
+        templates={[{ id: '1', name: 'Greeting', body: 'Hi {{requester_name}}', category: null, sortOrder: 0, isActive: true }]}
+        templateVars={{ requester_name: 'Pat' }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('canned-picker-button'));
+    fireEvent.click(screen.getByTestId('canned-picker-option-1'));
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('Hi Pat');
+  });
+
   it('keeps the draft and re-enables send when onSend rejects', async () => {
     onSend.mockRejectedValueOnce(new Error('network down'));
     render(<TicketComposer requesterName="Pat" onSend={onSend} />);

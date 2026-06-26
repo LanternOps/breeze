@@ -1,18 +1,46 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
+import CannedResponsePicker from './CannedResponsePicker';
+import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
 interface Props {
   requesterName: string | null;
   /** Must surface its own failures (runAction). Rejection here only preserves the draft. */
   onSend: (content: string, isPublic: boolean) => Promise<void>;
   disabled?: boolean;
+  /** Partner canned responses (empty/omitted hides the picker). */
+  templates?: CannedResponse[];
+  /** Merge-variable values resolved from the current ticket, applied on insert. */
+  templateVars?: Record<string, string>;
 }
 
-export default function TicketComposer({ requesterName, onSend, disabled }: Props) {
+export default function TicketComposer({ requesterName, onSend, disabled, templates, templateVars }: Props) {
   const [mode, setMode] = useState<'reply' | 'internal'>('reply'); // public reply default (UI brief)
   const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isPublic = mode === 'reply';
+
+  // Splice canned text in at the caret (append when there's no selection) so an
+  // agent can stack snippets and keep editing. Never sends.
+  const insertText = useCallback(
+    (text: string) => {
+      const el = textareaRef.current;
+      if (!el) {
+        setContent((c) => c + text);
+        return;
+      }
+      const start = el.selectionStart ?? content.length;
+      const end = el.selectionEnd ?? content.length;
+      setContent(content.slice(0, start) + text + content.slice(end));
+      requestAnimationFrame(() => {
+        el.focus();
+        const pos = start + text.length;
+        el.setSelectionRange(pos, pos);
+      });
+    },
+    [content],
+  );
 
   const send = useCallback(async () => {
     if (!content.trim() || sending) return;
@@ -59,9 +87,18 @@ export default function TicketComposer({ requesterName, onSend, disabled }: Prop
             Internal: not visible to requester
           </span>
         )}
+        <div className="ml-auto">
+          <CannedResponsePicker
+            templates={templates ?? []}
+            vars={templateVars ?? {}}
+            onInsert={insertText}
+            disabled={disabled || sending}
+          />
+        </div>
       </div>
       <div className="p-3">
         <textarea
+          ref={textareaRef}
           value={content}
           onChange={(e) => setContent(e.target.value)}
           onKeyDown={(e) => {
