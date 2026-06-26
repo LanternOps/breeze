@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { renderTemplate, variablesForContext } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -7,6 +8,18 @@ import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { CustomerDomainsCard } from './CustomerDomainsCard';
 
+// Sample values so the admin can preview how merge variables resolve in the
+// acknowledgement email without sending one. The server fills these from the
+// real ticket/org/partner at send time (see ticketNotifyWorker.collectAutoresponse).
+const AUTORESPONSE_SAMPLE: Record<string, string> = {
+  ticket_number: 'T-2026-0001',
+  ticket_subject: 'Email not syncing',
+  requester_name: 'Sample Requester',
+  requester_email: 'user@example.com',
+  org_name: 'Acme Corp',
+  partner_name: 'Your Company',
+};
+
 interface InboundConfig {
   enabled: boolean;
   address: string;
@@ -14,6 +27,8 @@ interface InboundConfig {
   defaultTriageOrgId: string | null;
   autoresponderEnabled: boolean;
   triageUnknownSenders: boolean;
+  autoresponseSubject: string | null;
+  autoresponseBody: string | null;
   slug: string;
   domainConfigured: boolean;
 }
@@ -64,6 +79,10 @@ export default function InboundEmailCard() {
   const [saving, setSaving] = useState(false);
   const [convertOpenId, setConvertOpenId] = useState<string | null>(null);
   const [convertOrgId, setConvertOrgId] = useState('');
+  // Draft state for the auto-reply editor — kept separate from `cfg` so typing
+  // doesn't auto-save; persisted explicitly via the Save button.
+  const [autoSubject, setAutoSubject] = useState('');
+  const [autoBody, setAutoBody] = useState('');
 
   const loadConfig = useCallback(async () => {
     const res = await fetchWithAuth('/ticket-config');
@@ -73,6 +92,8 @@ export default function InboundEmailCard() {
     }
     const body = (await res.json()) as { data: { inbound: InboundConfig } };
     setCfg(body.data.inbound);
+    setAutoSubject(body.data.inbound.autoresponseSubject ?? '');
+    setAutoBody(body.data.inbound.autoresponseBody ?? '');
   }, []);
 
   const loadQueue = useCallback(async (p: number) => {
@@ -121,7 +142,15 @@ export default function InboundEmailCard() {
   const saveConfig = useCallback(
     async (
       patch: Partial<
-        Pick<InboundConfig, 'enabled' | 'defaultTriageOrgId' | 'autoresponderEnabled' | 'triageUnknownSenders'>
+        Pick<
+          InboundConfig,
+          | 'enabled'
+          | 'defaultTriageOrgId'
+          | 'autoresponderEnabled'
+          | 'triageUnknownSenders'
+          | 'autoresponseSubject'
+          | 'autoresponseBody'
+        >
       >,
     ) => {
       if (!cfg) return;
@@ -135,6 +164,8 @@ export default function InboundEmailCard() {
         defaultTriageOrgId: next.defaultTriageOrgId,
         autoresponderEnabled: next.autoresponderEnabled,
         triageUnknownSenders: next.triageUnknownSenders,
+        autoresponseSubject: next.autoresponseSubject,
+        autoresponseBody: next.autoresponseBody,
       };
       if (next.addressOverride) inbound.address = next.addressOverride;
       setSaving(true);
@@ -333,6 +364,94 @@ export default function InboundEmailCard() {
           />
           Send an autoresponse acknowledging new email tickets
         </label>
+
+        {cfg.autoresponderEnabled && (
+          <div className="mt-4 rounded-md border bg-muted/20 p-3" data-testid="inbound-autoreply-editor">
+            <p className="mb-2 text-xs font-medium">Autoresponse message</p>
+
+            <label className="text-xs font-medium" htmlFor="inbound-autoreply-subject">
+              Subject
+            </label>
+            <input
+              id="inbound-autoreply-subject"
+              type="text"
+              value={autoSubject}
+              disabled={saving}
+              onChange={(e) => setAutoSubject(e.target.value)}
+              placeholder="We received your request: {{ticket_subject}}"
+              className="mt-0.5 mb-2 block w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+              data-testid="inbound-autoreply-subject"
+            />
+
+            <label className="text-xs font-medium" htmlFor="inbound-autoreply-body">
+              Body
+            </label>
+            <textarea
+              id="inbound-autoreply-body"
+              value={autoBody}
+              disabled={saving}
+              onChange={(e) => setAutoBody(e.target.value)}
+              rows={4}
+              placeholder="Thanks {{requester_name}} — we've opened ticket {{ticket_number}}."
+              className="mt-0.5 block w-full resize-y rounded-md border bg-background px-2.5 py-1.5 text-sm"
+              data-testid="inbound-autoreply-body"
+            />
+
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <span className="text-xs text-muted-foreground">Insert:</span>
+              {variablesForContext('autoreply').map((v) => (
+                <button
+                  key={v.key}
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setAutoBody((b) => `${b}{{${v.key}}}`)}
+                  className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+                  data-testid={`inbound-autoreply-var-${v.key}`}
+                  title={v.label}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+
+            {autoSubject.trim() || autoBody.trim() ? (
+              <div className="mt-3" data-testid="inbound-autoreply-preview">
+                <p className="text-xs font-medium text-muted-foreground">Preview</p>
+                {autoSubject.trim() && (
+                  <p className="mt-0.5 text-sm font-medium">
+                    {renderTemplate(autoSubject, AUTORESPONSE_SAMPLE)}
+                  </p>
+                )}
+                {autoBody.trim() && (
+                  <p className="mt-0.5 whitespace-pre-wrap text-sm">
+                    {renderTemplate(autoBody, AUTORESPONSE_SAMPLE)}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-muted-foreground" data-testid="inbound-autoreply-default-hint">
+                Leave blank to use the default acknowledgement.
+              </p>
+            )}
+
+            <div className="mt-3">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() =>
+                  void saveConfig({
+                    autoresponseSubject: autoSubject.trim() ? autoSubject : null,
+                    autoresponseBody: autoBody.trim() ? autoBody : null,
+                  })
+                }
+                className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                data-testid="inbound-autoreply-save"
+              >
+                Save autoresponse
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <CustomerDomainsCard />

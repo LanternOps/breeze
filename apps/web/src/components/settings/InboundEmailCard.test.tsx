@@ -27,6 +27,9 @@ interface CfgShape {
   addressOverride: string | null;
   defaultTriageOrgId: string | null;
   autoresponderEnabled: boolean;
+  triageUnknownSenders: boolean;
+  autoresponseSubject: string | null;
+  autoresponseBody: string | null;
   slug: string;
   domainConfigured: boolean;
 }
@@ -37,6 +40,9 @@ const CFG: CfgShape = {
   addressOverride: null,
   defaultTriageOrgId: null,
   autoresponderEnabled: true,
+  triageUnknownSenders: false,
+  autoresponseSubject: null,
+  autoresponseBody: null,
   slug: 'acme',
   domainConfigured: true,
 };
@@ -159,6 +165,47 @@ describe('InboundEmailCard', () => {
         expect.objectContaining({ method: 'PATCH' }),
       ),
     );
+  });
+
+  it('shows a live preview of the custom auto-reply body with sample variables', async () => {
+    routeFetch([], { ...CFG, autoresponseBody: 'Hi {{requester_name}}' });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    const preview = await screen.findByTestId('inbound-autoreply-preview');
+    expect(preview.textContent).toContain('Hi Sample Requester');
+  });
+
+  it('saves the complete inbound object including auto-reply subject + body', async () => {
+    routeFetch([]);
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    fireEvent.change(screen.getByTestId('inbound-autoreply-subject'), {
+      target: { value: 'Re: {{ticket_subject}}' },
+    });
+    fireEvent.change(screen.getByTestId('inbound-autoreply-body'), {
+      target: { value: 'Thanks {{requester_name}}' },
+    });
+    fireEvent.click(screen.getByTestId('inbound-autoreply-save'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    const body = JSON.parse(
+      (fetchWithAuth.mock.calls.find((c) => c[0] === '/orgs/partners/me')![1] as { body: string }).body,
+    );
+    const inbound = body.settings.ticketing.inbound;
+    expect(inbound.autoresponseSubject).toBe('Re: {{ticket_subject}}');
+    expect(inbound.autoresponseBody).toBe('Thanks {{requester_name}}');
+    // No sibling field destroyed by the shallow-replace of `ticketing`.
+    expect(inbound).toHaveProperty('enabled');
+    expect(inbound).toHaveProperty('autoresponderEnabled');
+    expect(inbound).toHaveProperty('triageUnknownSenders');
+  });
+
+  it('hides the auto-reply editor when the autoresponder is disabled', async () => {
+    routeFetch([], { ...CFG, autoresponderEnabled: false });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    expect(screen.queryByTestId('inbound-autoreply-body')).toBeNull();
   });
 
   it('shows the unconfigured-domain hint when domainConfigured is false', async () => {
