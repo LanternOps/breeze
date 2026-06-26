@@ -51,17 +51,24 @@ import { db, withDbAccessContext } from '../../db';
 import { auditLogs } from '../../db/schema';
 import { logSessionAudit } from '../../routes/remote/helpers';
 import { createPartner, createOrganization } from './db-utils';
-import { getTestDb } from './setup';
+import { getTestDb, getAppDb } from './setup';
 
 describe('audit_logs RLS — logSessionAudit (issue #437)', () => {
   it('reproduces the pre-fix bug: raw insert with no access context is rejected by RLS (harness smoke test)', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
 
-    // Simulate the pre-fix behavior: call the production db pool directly,
-    // without any access context. As `breeze_app` the session has scope
-    // defaulting to 'none' / accessible_org_ids='', so breeze_has_org_access
-    // returns false and the WITH CHECK clause rejects the row.
+    // Simulate the pre-fix behavior: issue a contextless write as `breeze_app`.
+    // As `breeze_app` the session has scope defaulting to 'none' /
+    // accessible_org_ids='', so breeze_has_org_access returns false and the
+    // WITH CHECK clause rejects the row.
+    //
+    // We route this through getAppDb() (a raw breeze_app client) rather than
+    // the production `db` proxy: under DB_CONTEXTLESS_WRITE_STRICT the proxy
+    // guard would throw before the statement reaches Postgres (#1379 A1 /
+    // #1828), pre-empting the DB-layer RLS rejection this control asserts.
+    // The raw client still connects as breeze_app with no GUCs, so forced RLS
+    // is genuinely enforced.
     //
     // Note: this test reproduces the bug regardless of whether the fix is
     // applied — its role is to anchor the RLS contract and prove the
@@ -69,7 +76,7 @@ describe('audit_logs RLS — logSessionAudit (issue #437)', () => {
     // below is the actual regression guard for the fix.
     let caught: unknown;
     try {
-      await db.insert(auditLogs).values({
+      await getAppDb().insert(auditLogs).values({
         orgId: org.id,
         actorType: 'user',
         actorId: '00000000-0000-0000-0000-000000000001',

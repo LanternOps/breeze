@@ -117,6 +117,54 @@ describe('contextless-write guard on proxiedDb (#1375/#1379)', () => {
       expect(classifyContextlessExecuteVerb(sql`SELECT ${'delete'} AS action`)).toBeNull();
     });
 
+    it('does not false-positive on write verbs in a string-literal array (catalog reads, #1828)', () => {
+      // The rls-coverage contract queries are pure catalog reads that contain
+      // ARRAY['SELECT','INSERT','UPDATE','DELETE']. The old greedy regex skipped
+      // past the leading CTE and matched DELETE inside that literal, throwing
+      // under DB_CONTEXTLESS_WRITE_STRICT. The verbs are quoted and not anchored
+      // to a target, so the classifier must treat the whole thing as a read.
+      expect(
+        classifyContextlessExecuteVerb(sql`
+          WITH t AS (
+            SELECT c.relname FROM pg_class c WHERE c.relname = ANY(${'x'})
+          ),
+          cov AS (
+            SELECT p.tablename FROM pg_policies p
+            CROSS JOIN UNNEST(ARRAY['SELECT','INSERT','UPDATE','DELETE']) AS cmd
+          )
+          SELECT t.relname FROM t
+        `),
+      ).toBeNull();
+    });
+
+    it('does not false-positive on a verb appearing only inside a string literal', () => {
+      expect(classifyContextlessExecuteVerb(sql`SELECT 'DELETE FROM x' AS literal`)).toBeNull();
+    });
+
+    it('classifies an aliased / ONLY update target', () => {
+      expect(classifyContextlessExecuteVerb(sql`UPDATE foo AS f SET x = ${1} WHERE f.id = ${2}`)).toBe('update');
+      expect(classifyContextlessExecuteVerb(sql`UPDATE ONLY foo SET x = ${1}`)).toBe('update');
+    });
+
+    it('does not false-positive on identifiers that merely contain update/set substrings', () => {
+      // `updated_at` is not the UPDATE verb (no word boundary); `OFFSET`
+      // contains "set" but not as a standalone token.
+      expect(
+        classifyContextlessExecuteVerb(sql`SELECT updated_at FROM foo ORDER BY id OFFSET ${10}`),
+      ).toBeNull();
+    });
+
+    it('still classifies a data-modifying CTE statement that trails a long CTE block', () => {
+      // A genuine WITH ... DELETE FROM cascade write must still be caught even
+      // when the DELETE trails a sizeable CTE prefix.
+      const longCte = 'a'.repeat(400);
+      expect(
+        classifyContextlessExecuteVerb(
+          sql`WITH t AS (SELECT 1 AS x /* ${sql.raw(longCte)} */) DELETE FROM foo WHERE id IN (SELECT x FROM t)`,
+        ),
+      ).toBe('delete');
+    });
+
     it('returns null defensively for non-sql shapes', () => {
       expect(classifyContextlessExecuteVerb(undefined)).toBeNull();
       expect(classifyContextlessExecuteVerb({})).toBeNull();

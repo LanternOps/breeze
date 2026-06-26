@@ -23,7 +23,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext, runOutsideDbContext } from '../../db';
-import { getTestDb } from './setup';
+import { getTestDb, getAppDb } from './setup';
 import { createPartner, createOrganization } from './db-utils';
 
 describe('audit_logs checksum chain', () => {
@@ -367,11 +367,17 @@ describe('audit_logs checksum chain', () => {
   });
 
   // breeze_app cannot mutate the chain at all (append-only + REVOKE).
-  // Implementation note: we run the mutation attempts OUTSIDE withSystemDbAccessContext
-  // so they hit the breeze_app pool directly (no transaction wrapper). Inside a
-  // withSystemDbAccessContext transaction, a PostgresError aborts the whole transaction
-  // and the outer begin() also rejects, making it impossible to catch just the inner
-  // error cleanly. Running outside the context keeps each rejection self-contained.
+  // Implementation note: we issue the mutation attempts through getAppDb() — a
+  // raw breeze_app client with no transaction wrapper and, crucially, no
+  // contextless-write proxy guard. Under DB_CONTEXTLESS_WRITE_STRICT the
+  // production `db` proxy would THROW on a contextless write (#1379 A1 /
+  // #1828) before the statement reached Postgres, pre-empting the DB-layer
+  // "permission denied"/"append-only" rejection this control asserts. The raw
+  // client still connects as breeze_app, so the REVOKE + append-only trigger
+  // are genuinely exercised. Hitting the pool directly (no withSystemDbAccessContext
+  // transaction) also keeps each rejection self-contained: inside a context
+  // transaction a PostgresError aborts the whole tx and the outer begin() also
+  // rejects, making it impossible to catch just the inner error cleanly.
   // The underlying PostgresError message is "permission denied for table audit_log_chain";
   // Drizzle wraps it in DrizzleQueryError (message: "Failed query: …") with the original
   // in .cause — we walk the cause chain to match "permission denied" precisely.
@@ -399,17 +405,16 @@ describe('audit_logs checksum chain', () => {
       }
     };
 
-    // runOutsideDbContext so db resolves to the bare breeze_app pool (no
-    // transaction wrapper). This keeps each rejection self-contained.
-    await runOutsideDbContext(() =>
-      expectPermissionDenied(
-        db.execute(sql`UPDATE audit_log_chain SET chain_checksum = 'forged' WHERE org_id = ${orgId}::uuid`),
-      )
+    // getAppDb() is a raw breeze_app client (no transaction wrapper, no
+    // contextless-write proxy guard), so each rejection is self-contained and
+    // the contextless write reaches Postgres to surface the real REVOKE /
+    // append-only rejection rather than the strict guard's throw.
+    const appDb = getAppDb();
+    await expectPermissionDenied(
+      appDb.execute(sql`UPDATE audit_log_chain SET chain_checksum = 'forged' WHERE org_id = ${orgId}::uuid`),
     );
-    await runOutsideDbContext(() =>
-      expectPermissionDenied(
-        db.execute(sql`DELETE FROM audit_log_chain WHERE org_id = ${orgId}::uuid`),
-      )
+    await expectPermissionDenied(
+      appDb.execute(sql`DELETE FROM audit_log_chain WHERE org_id = ${orgId}::uuid`),
     );
   });
 

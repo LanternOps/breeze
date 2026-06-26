@@ -865,6 +865,13 @@ jobs:
           APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
           MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
           NODE_ENV: test
+          # #1828 — fail the build on any contextless db write (the #1375 silent
+          # 0-row class). The opt-in gate (#1379 A1) is flipped on suite-wide now
+          # that the RLS negative-control tests route their deliberate contextless
+          # writes through a raw breeze_app client (getAppDb) instead of the
+          # guarded `db` proxy. Production code must always carry an access
+          # context, so a genuine offender here is a real bug, not test noise.
+          DB_CONTEXTLESS_WRITE_STRICT: 'true'
         run: pnpm --filter=@breeze/api test:integration
 
       # The rls-coverage contract test inspects pg_catalog to verify every
@@ -884,6 +891,10 @@ jobs:
           APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
           MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
           NODE_ENV: test
+          # #1828 — strict gate on here too. The rls-coverage forge writes all
+          # carry a context (withDbAccessContext / withSystemDbAccessContext);
+          # the catalog-inspection statements are reads, which the guard ignores.
+          DB_CONTEXTLESS_WRITE_STRICT: 'true'
         run: pnpm --filter=@breeze/api test:rls-coverage
 
       - name: Show container logs on failure

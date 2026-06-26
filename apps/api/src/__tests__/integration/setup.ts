@@ -113,6 +113,8 @@ export type TestDatabase = PostgresJsDatabase<typeof schema>;
 
 let testClient: Sql;
 let testDb: TestDatabase;
+let appClient: Sql;
+let appDb: TestDatabase;
 let testRedis: Redis;
 
 export function getTestDb(): TestDatabase {
@@ -120,6 +122,36 @@ export function getTestDb(): TestDatabase {
     throw new Error('Test database not initialized. Make sure integration test setup ran.');
   }
   return testDb;
+}
+
+/**
+ * A drizzle instance connected as the unprivileged `breeze_app` role, the
+ * SAME role the production `db` pool uses — but WITHOUT the RLS-access-context
+ * proxy guard (`apps/api/src/db/index.ts`).
+ *
+ * Use this for the handful of RLS negative-control assertions that must issue
+ * a *genuinely contextless* write to prove the DB layer itself rejects it
+ * (e.g. `new row violates row-level security policy`). The production `db`
+ * proxy now throws on a contextless write when `DB_CONTEXTLESS_WRITE_STRICT`
+ * is set (#1379 A1 / #1828) — which would pre-empt the DB-layer rejection
+ * these tests assert. Routing the deliberate contextless write through this
+ * raw client keeps the negative control meaningful under the strict gate.
+ *
+ * It connects with NO `breeze.*` GUCs set, so RLS sees the default
+ * scope='none' / accessible_org_ids='' — exactly the state a contextless
+ * production write would land in. Drizzle wraps the underlying postgres.js
+ * error in `.cause`, so callers read `err.cause.message` just as they did
+ * against the proxied `db`.
+ *
+ * Do NOT use this to bypass RLS for convenience seeding — that's what
+ * `getTestDb()` (the superuser client) is for. This is strictly for
+ * negative-control writes that must hit `breeze_app`'s forced RLS.
+ */
+export function getAppDb(): TestDatabase {
+  if (!appDb) {
+    throw new Error('App (breeze_app) test database not initialized. Make sure integration test setup ran.');
+  }
+  return appDb;
 }
 
 export function getTestRedis() {
@@ -155,6 +187,19 @@ export async function setupIntegrationTests() {
   });
 
   testDb = drizzle(testClient, { schema });
+
+  // Raw `breeze_app` client (no proxy guard) for RLS negative-control writes.
+  // Connects as the same unprivileged role as production code-under-test, so
+  // forced RLS is enforced, but bypasses the contextless-write proxy guard
+  // (#1379 A1 / #1828) so a deliberate contextless write reaches the DB layer
+  // and surfaces the real RLS rejection instead of the guard's throw.
+  appClient = postgres(DATABASE_URL_APP, {
+    max: 5,
+    idle_timeout: 20,
+    connect_timeout: 10,
+    onnotice: () => {}
+  });
+  appDb = drizzle(appClient, { schema });
 
   // Create Redis connection
   testRedis = new Redis(REDIS_URL, {
@@ -192,6 +237,9 @@ export async function setupIntegrationTests() {
 export async function teardownIntegrationTests() {
   if (testRedis) {
     await testRedis.quit();
+  }
+  if (appClient) {
+    await appClient.end();
   }
   if (testClient) {
     await testClient.end();

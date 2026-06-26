@@ -262,10 +262,28 @@ const CONTEXTLESS_WRITE_GUARD_METHODS = new Set<PropertyKey>(['insert', 'update'
 // Raw SQL writes go through `db.execute(sql`...`)`, which the builder-method set
 // above cannot see — so a contextless raw DELETE/UPDATE/INSERT would slip the
 // guard entirely (the exact style cascadeDeletePartner uses). This classifies
-// the leading verb of an execute() statement. A leading CTE (`WITH ...`) is
-// skipped so `WITH ... DELETE` still classifies as a write. SELECT and catalog
-// reads never match, so they're left alone.
-const RAW_WRITE_RE = /^\s*(?:with\b[\s\S]*)?\b(insert|update|delete)\b/i;
+// the leading verb of an execute() statement.
+//
+// A non-CTE write starts directly with the verb. A CTE-prefixed write
+// (`WITH ... DELETE FROM t`) carries the data-modifying statement after the
+// CTE block, so we also match a write verb anchored to its target keyword:
+// `INSERT INTO`, `UPDATE <ident> SET`, `DELETE FROM`. Anchoring to the target
+// is what keeps a *read* like `WITH cte AS (SELECT ...) SELECT ...` from being
+// misclassified when the query merely MENTIONS those verbs — e.g. a catalog
+// inspection containing `UNNEST(ARRAY['SELECT','INSERT','UPDATE','DELETE'])`.
+// String literals are stripped first (in classifyContextlessExecuteVerb) so a
+// quoted `'DELETE'` can never match, and the bare verbs in such a list aren't
+// followed by INTO/FROM/an UPDATE target+SET, so they don't match the anchored
+// form either. SELECT/WITH reads never match; genuine raw writes still do.
+const RAW_WRITE_LEADING_RE = /^\s*(insert|update|delete)\b/i;
+// `UPDATE <target> ... SET` allows an optional ONLY and a table alias between
+// the target and SET (`UPDATE foo AS f SET`), bounded so it can't run away into
+// an unrelated later `set`. Literals are already stripped, so a bare `update`
+// keyword here is a real statement, not a quoted word.
+const RAW_WRITE_STMT_RE = /\b(?:(insert)\s+into|(update)\s+(?:only\s+)?[a-z_"][a-z0-9_."]*\b[\s\S]{0,80}?\bset\b|(delete)\s+from)\b/i;
+// Single-quoted SQL string literals (with '' escape) — removed before
+// classification so verbs appearing inside a literal cannot trip the match.
+const SQL_STRING_LITERAL_RE = /'(?:[^']|'')*'/g;
 
 // Dedup so a hot contextless path can't flood Sentry and bury the signal.
 // Keyed by the originating stack → each distinct call site reports once.
@@ -305,7 +323,9 @@ function reportContextlessWrite(label: string): void {
 // Best-effort extraction of the leading SQL text from a drizzle `sql` object so
 // execute() can be classified read-vs-write. Defensive: any shape surprise just
 // yields '' (treated as a non-write — fail open, since this is observability,
-// not a security control).
+// not a security control). The window is generous (not just a short prefix) so
+// a data-modifying statement that trails a long CTE block — `WITH big AS (...)
+// DELETE FROM t` — is still reached by the anchored classifier below.
 function rawSqlLeadingText(arg: unknown): string {
   try {
     const chunks = (arg as { queryChunks?: unknown[] })?.queryChunks;
@@ -315,7 +335,7 @@ function rawSqlLeadingText(arg: unknown): string {
       const v = (ch as { value?: unknown })?.value;
       if (typeof v === 'string') text += v;
       else if (Array.isArray(v)) text += (v as unknown[]).join('');
-      if (text.length >= 256) break; // enough to clear a short leading CTE
+      if (text.length >= 4096) break; // enough to clear a long leading CTE
     }
     return text;
   } catch {
@@ -326,9 +346,27 @@ function rawSqlLeadingText(arg: unknown): string {
 // Returns the leading write verb ('insert'|'update'|'delete') of a raw `sql`
 // statement, or null for reads. Exported so the guard's classification can be
 // unit-tested without opening a DB connection.
+//
+// Strips single-quoted string literals first so a verb inside a literal (e.g.
+// a catalog query's `ARRAY['SELECT','INSERT','UPDATE','DELETE']`) never trips
+// the match. A statement is a write when it either *starts* with a write verb
+// (plain INSERT/UPDATE/DELETE) or contains the verb anchored to its target
+// (`INSERT INTO`, `UPDATE <ident> SET`, `DELETE FROM`) — the latter catches a
+// data-modifying CTE statement that trails a `WITH ...` prefix while ignoring
+// reads that merely mention the verbs.
 export function classifyContextlessExecuteVerb(arg: unknown): string | null {
-  const m = rawSqlLeadingText(arg).match(RAW_WRITE_RE);
-  return m && m[1] ? m[1].toLowerCase() : null;
+  const text = rawSqlLeadingText(arg).replace(SQL_STRING_LITERAL_RE, "''");
+
+  const leading = text.match(RAW_WRITE_LEADING_RE);
+  if (leading && leading[1]) return leading[1].toLowerCase();
+
+  const stmt = text.match(RAW_WRITE_STMT_RE);
+  if (stmt) {
+    const verb = stmt[1] ?? stmt[2] ?? stmt[3];
+    if (verb) return verb.toLowerCase();
+  }
+
+  return null;
 }
 
 /**
