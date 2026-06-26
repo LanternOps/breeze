@@ -10,14 +10,14 @@ export interface S1Threat {
   integrationId: string;
   deviceId: string | null;
   deviceName: string | null;
-  threatName: string;
+  threatName: string | null;
   classification: string | null;
   severity: string | null;
   status: string;
   processName: string | null;
   filePath: string | null;
   mitreTactics: unknown;
-  detectedAt: string;
+  detectedAt: string | null;
   resolvedAt: string | null;
   updatedAt: string;
   details: unknown;
@@ -30,13 +30,13 @@ export interface HuntressIncident {
   deviceId: string | null;
   deviceHostname: string | null;
   huntressIncidentId: string;
-  severity: string;
+  severity: string | null;
   category: string | null;
   title: string;
   description: string | null;
   recommendation: string | null;
   status: string;
-  reportedAt: string;
+  reportedAt: string | null;
   resolvedAt: string | null;
   details: unknown;
   createdAt: string;
@@ -48,15 +48,24 @@ export async function fetchS1Threats(orgId: string, deviceId: string): Promise<S
   const res = await fetchWithAuth(`/s1/threats?${params.toString()}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const body = await res.json();
-  return Array.isArray(body?.data) ? (body.data as S1Threat[]) : [];
+  if (!Array.isArray(body?.data)) {
+    console.warn('[edr] /s1/threats returned non-array data');
+    return [];
+  }
+  return body.data as S1Threat[];
 }
 
+// Huntress returns a flat { data, total, limit, offset } envelope, not S1's { data, pagination } shape.
 export async function fetchHuntressIncidents(orgId: string, deviceId: string): Promise<HuntressIncident[]> {
   const params = new URLSearchParams({ orgId, deviceId, limit: '50' });
   const res = await fetchWithAuth(`/huntress/incidents?${params.toString()}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const body = await res.json();
-  return Array.isArray(body?.data) ? (body.data as HuntressIncident[]) : [];
+  if (!Array.isArray(body?.data)) {
+    console.warn('[edr] /huntress/incidents returned non-array data');
+    return [];
+  }
+  return body.data as HuntressIncident[];
 }
 
 export async function isolateDevice(orgId: string, deviceId: string, isolate: boolean): Promise<void> {
