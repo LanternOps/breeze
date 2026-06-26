@@ -200,4 +200,13 @@ describe('enrich validators', () => {
     });
     expect(res.success).toBe(false);
   });
+
+  it('rejects an enrichment suggestion larger than 20k chars', () => {
+    const res = enrichmentProvenanceSchema.safeParse({
+      source: 'ai_enrich', model: 'm', query: 'q',
+      suggestion: { blob: 'x'.repeat(20_001) },
+      enrichedAt: '2026-06-26T00:00:00.000Z', enrichedBy: 'u1',
+    });
+    expect(res.success).toBe(false);
+  });
 });

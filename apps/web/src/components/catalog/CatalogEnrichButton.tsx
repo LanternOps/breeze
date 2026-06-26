@@ -13,7 +13,8 @@ interface CatalogEnrichButtonProps {
   disabled?: boolean;
   /** Disambiguates data-testids when multiple instances mount on one page. */
   idSuffix: string;
-  /** Host maps the draft into its form and stashes provenance for save. */
+  /** Called with the enrichment result. The host maps draft fields into its form;
+   *  it may stash provenance for persistence (drawer) or discard it (quote line). */
   onApply: (result: EnrichResult) => void;
 }
 
@@ -25,6 +26,7 @@ export default function CatalogEnrichButton({ hint, disabled, idSuffix, onApply 
   const run = async () => {
     const q = query.trim();
     if (!q || busy) return;
+    setGuidance(null); // clear stale guidance from a prior query before retrying
     setBusy(true);
     try {
       const result = await runAction<EnrichResult>({

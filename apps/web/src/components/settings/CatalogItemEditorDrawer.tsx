@@ -278,7 +278,9 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       unitPrice: priceNum,
       costBasis: costBasis.trim() ? Number(costBasis) : null,
       isBundle,
-      // Persist AI provenance on create only (enrichment is null on edit).
+      // Persist AI provenance only for auto-filled new items (enrichment resets
+      // to null when the drawer opens for an existing item). A bundle-retry PATCH
+      // may still carry it, which is fine — the item was just created this session.
       ...(enrichment ? { attributes: { enrichment } } : {}),
     };
 

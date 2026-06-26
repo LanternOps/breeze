@@ -38,7 +38,8 @@ export const createCatalogItemSchema = z.object({
   taxCategory: z.string().max(100).nullable().optional(),
   isBundle: z.boolean().default(false),
   // Bound serialized size so a large enrichment.suggestion (or any blob) can't
-  // bloat the row. The enrichment provenance object is stored under this key.
+  // bloat the row. AI provenance is stored as attributes.enrichment (see
+  // CatalogItemEditorDrawer); this caps the whole attributes map.
   attributes: z.record(z.string(), z.unknown())
     .refine((v) => JSON.stringify(v).length <= 60_000, { message: 'attributes payload is too large' })
     .default({})

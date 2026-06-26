@@ -65,13 +65,56 @@ describe('enrichCatalogItem', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('throws AI_PARSE on non-JSON output', async () => {
+  it('throws AI_PARSE (code + status) on non-JSON output', async () => {
     create.mockResolvedValueOnce({
       stop_reason: 'end_turn',
       content: [{ type: 'text', text: 'sorry, no idea' }],
       usage: { input_tokens: 10, output_tokens: 5 },
     });
-    await expect(enrichCatalogItem('x', undefined, actor)).rejects.toBeInstanceOf(EnrichmentError);
+    await expect(enrichCatalogItem('x', undefined, actor)).rejects.toMatchObject({
+      code: 'AI_PARSE', status: 502,
+    });
+  });
+
+  it('throws AI_TRUNCATED when the model hits max_tokens with no text', async () => {
+    create.mockResolvedValueOnce({
+      stop_reason: 'max_tokens',
+      content: [],
+      usage: { input_tokens: 10, output_tokens: 1024 },
+    });
+    await expect(enrichCatalogItem('x', undefined, actor)).rejects.toMatchObject({
+      code: 'AI_TRUNCATED', status: 502,
+    });
+  });
+
+  it('short-circuits with AI_LIMIT when the rate limit is hit (before any API call)', async () => {
+    checkAiRateLimit.mockResolvedValueOnce('Rate limit exceeded');
+    await expect(enrichCatalogItem('x', undefined, actor)).rejects.toMatchObject({
+      code: 'AI_LIMIT', status: 429,
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(checkBudget).not.toHaveBeenCalled(); // rate check runs first and short-circuits
+  });
+
+  it('falls back to the hint when the AI omits itemType', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'Widget', description: null,
+      unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
+    }));
+    const res = await enrichCatalogItem('Widget', 'hardware', actor);
+    expect(res.draft.itemType).toBe('hardware');
+  });
+
+  it('replaces an oversized AI suggestion with a truncation marker', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'Big', description: null, itemType: 'service',
+      unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
+      blob: 'x'.repeat(20_000),
+    }));
+    const res = await enrichCatalogItem('Big', undefined, actor);
+    expect(res.provenance.suggestion).toEqual({ truncated: true });
   });
 
   it('skips org-scoped guardrails and cost when orgId is null', async () => {

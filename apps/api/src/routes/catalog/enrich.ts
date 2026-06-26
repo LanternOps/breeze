@@ -13,6 +13,9 @@ const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSI
 catalogEnrichRoutes.post('/enrich', scopes, writePerm, zValidator('json', enrichRequestSchema), async (c) => {
   const { query, hint } = c.req.valid('json');
   const auth = c.get('auth') as AuthContext;
+  // org-scope tokens carry orgId; partner-scope falls back to the first accessible
+  // org as a best-effort billing target. When null (system scope), the service
+  // skips budget/rate checks and logs a warning.
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   try {
     const data = await enrichCatalogItem(query, hint, { userId: auth.user.id, orgId });
