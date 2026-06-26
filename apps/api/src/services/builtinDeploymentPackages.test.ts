@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { BUILTIN_PACKAGES, getBuiltinPackage } from './builtinDeploymentPackages';
 
+// Note: the DB-backed ensureBuiltinPackage tests live in
+// src/__tests__/integration/builtinDeploymentPackages.integration.test.ts
+// (real partner fixture, runs as breeze_app). This file stays pure-unit.
+
 describe('builtin deployment packages', () => {
   it('defines a Windows-only Huntress package with derivable URL + keys', () => {
     const pkg = getBuiltinPackage('huntress');

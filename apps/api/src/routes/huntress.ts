@@ -22,6 +22,7 @@ import {
   parseHuntressWebhookPayload,
   verifyHuntressWebhookSignature,
 } from '../services/huntressClient';
+import { ensureBuiltinPackage } from '../services/builtinDeploymentPackages';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
@@ -431,6 +432,15 @@ huntressRoutes.post(
 
     if (!integration) {
       return c.json({ error: 'Failed to persist Huntress integration' }, 500);
+    }
+
+    // Provision (or reveal) the built-in Huntress deployment package for this partner.
+    try {
+      await ensureBuiltinPackage({ provider: 'huntress', partnerId: integration.partnerId });
+    } catch (error) {
+      console.error('[huntress] failed to provision built-in deployment package:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      // Non-fatal: integration is saved; the package can be re-provisioned on next connect.
     }
 
     let syncJobId: string | null = null;
