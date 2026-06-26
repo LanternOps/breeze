@@ -84,6 +84,7 @@ async function selectSite(siteId: string) {
 describe('NetworkChangesPanel empty state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.location.hash = '';
   });
 
   it('shows the prerequisite hint when no loaded profile records changes', async () => {
@@ -233,16 +234,21 @@ describe('NetworkChangesPanel empty state', () => {
     });
   });
 
-  it('shows no hint when profiles fail to load (empty list)', async () => {
+  it('shows a setup prompt when no discovery profiles exist', async () => {
     mockEndpoints({ profiles: [], changes: [] });
 
     render(<NetworkChangesPanel {...baseProps} />);
 
     await waitFor(() => {
       expect(
-        desktop().getByText('No change events match the selected filters.')
+        desktop().getByTestId('changes-no-profiles-hint')
       ).toBeInTheDocument();
     });
+    expect(desktop().getByText('Set up a network discovery profile to start tracking changes.')).toBeInTheDocument();
+    expect(desktop().queryByText('No change events match the selected filters.')).not.toBeInTheDocument();
     expect(desktop().queryByTestId('changes-alerting-hint')).not.toBeInTheDocument();
+
+    fireEvent.click(desktop().getByTestId('changes-create-profile'));
+    expect(window.location.hash).toBe('#profiles');
   });
 });

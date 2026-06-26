@@ -469,7 +469,27 @@ export default function NetworkChangesPanel({
   );
 
   const renderEmptyState = () =>
-    alertingPrerequisite ? (
+    profiles.length === 0 ? (
+      <div className="mx-auto max-w-xl space-y-3 text-sm text-muted-foreground" data-testid="changes-no-profiles-hint">
+        <div className="space-y-1">
+          <p className="font-medium text-foreground">Set up a network discovery profile to start tracking changes.</p>
+          <p>
+            Network change events are created by discovery profiles. Create a profile and enable Alerting
+            to record new, changed, or disappeared devices.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            if (typeof window !== 'undefined') window.location.hash = 'profiles';
+          }}
+          className="inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
+          data-testid="changes-create-profile"
+        >
+          Go to Profiles
+        </button>
+      </div>
+    ) : alertingPrerequisite ? (
       <div className="mx-auto max-w-xl space-y-1 text-sm text-muted-foreground" data-testid="changes-alerting-hint">
         <p className="font-medium text-foreground">No change events recorded yet.</p>
         <p>
