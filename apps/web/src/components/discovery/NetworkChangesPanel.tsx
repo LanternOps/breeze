@@ -90,6 +90,8 @@ export default function NetworkChangesPanel({
 }: NetworkChangesPanelProps) {
   const [changes, setChanges] = useState<NetworkChangeEvent[]>([]);
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [profilesError, setProfilesError] = useState(false);
   const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [filters, setFilters] = useState<FilterState>(() => createDefaultFilters(currentSiteId));
   const [loading, setLoading] = useState(true);
@@ -107,45 +109,56 @@ export default function NetworkChangesPanel({
   }, [currentSiteId]);
 
   const fetchProfiles = useCallback(async () => {
+    setProfilesLoaded(false);
+    setProfilesError(false);
     const params = new URLSearchParams();
     if (currentOrgId) params.set('orgId', currentOrgId);
     const query = params.toString();
 
-    const response = await fetchWithAuth(`/discovery/profiles${query ? `?${query}` : ''}`);
-    if (!response.ok) {
-      throw new Error(await extractError(response, 'Failed to load profile filters'));
+    try {
+      const response = await fetchWithAuth(`/discovery/profiles${query ? `?${query}` : ''}`);
+      if (!response.ok) {
+        throw new Error(await extractError(response, 'Failed to load profile filters'));
+      }
+
+      const payload = await response.json();
+      const items = Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload)
+          ? payload
+          : [];
+
+      const mapped: ProfileOption[] = items
+        .map((row: Record<string, unknown>) => {
+          const id = typeof row.id === 'string' ? row.id : null;
+          const name = typeof row.name === 'string' ? row.name : null;
+          if (!id || !name) return null;
+          // A profile records discovery-scan change events only when the master
+          // Alerting switch is on AND at least one recording sub-toggle is set —
+          // the worker gates each insert on `enabled && alertOn{New,Changed,...}`
+          // (assetApproval.ts), so `enabled: true` with every sub-toggle off
+          // still records nothing. Mirror that here so the hint stays accurate.
+          const alert = (row.alertSettings && typeof row.alertSettings === 'object')
+            ? row.alertSettings as Record<string, unknown>
+            : null;
+          const recordsChanges = !!(alert
+            && alert.enabled === true
+            && [alert.alertOnNew, alert.alertOnChanged, alert.alertOnDisappeared]
+              .some((flag) => flag === true));
+          const siteId = typeof row.siteId === 'string' ? row.siteId : null;
+          return { id, name, siteId, recordsChanges };
+        })
+        .filter((row: ProfileOption | null): row is ProfileOption => row !== null);
+
+      setProfiles(mapped);
+      setProfilesLoaded(true);
+    } catch (profilesFetchError) {
+      // Mark the profiles fetch as settled-with-error so the empty state
+      // resolves to the generic message (not a perpetual spinner, not the
+      // setup CTA). Re-throw so the Promise.all catch still surfaces the banner.
+      setProfilesError(true);
+      throw profilesFetchError;
     }
-
-    const payload = await response.json();
-    const items = Array.isArray(payload?.data)
-      ? payload.data
-      : Array.isArray(payload)
-        ? payload
-        : [];
-
-    const mapped: ProfileOption[] = items
-      .map((row: Record<string, unknown>) => {
-        const id = typeof row.id === 'string' ? row.id : null;
-        const name = typeof row.name === 'string' ? row.name : null;
-        if (!id || !name) return null;
-        // A profile records discovery-scan change events only when the master
-        // Alerting switch is on AND at least one recording sub-toggle is set —
-        // the worker gates each insert on `enabled && alertOn{New,Changed,...}`
-        // (assetApproval.ts), so `enabled: true` with every sub-toggle off
-        // still records nothing. Mirror that here so the hint stays accurate.
-        const alert = (row.alertSettings && typeof row.alertSettings === 'object')
-          ? row.alertSettings as Record<string, unknown>
-          : null;
-        const recordsChanges = !!(alert
-          && alert.enabled === true
-          && [alert.alertOnNew, alert.alertOnChanged, alert.alertOnDisappeared]
-            .some((flag) => flag === true));
-        const siteId = typeof row.siteId === 'string' ? row.siteId : null;
-        return { id, name, siteId, recordsChanges };
-      })
-      .filter((row: ProfileOption | null): row is ProfileOption => row !== null);
-
-    setProfiles(mapped);
   }, [currentOrgId]);
 
   const fetchDevices = useCallback(async () => {
@@ -468,8 +481,45 @@ export default function NetworkChangesPanel({
     </div>
   );
 
+  const genericEmptyState = (
+    <span className="text-sm text-muted-foreground">No change events match the selected filters.</span>
+  );
+
+  // Don't render the *terminal* empty state until BOTH fetches have settled.
+  // The changes fetch (`loading`) and the profiles fetch (`profilesLoaded` /
+  // `profilesError`) run as independent effects; without this gate a genuine
+  // no-profiles org briefly flashes the generic "no events" copy before the
+  // setup CTA appears once profiles resolve. While profiles are still in
+  // flight (neither loaded nor errored) we keep showing the loading row.
+  const profilesSettled = profilesLoaded || profilesError;
+  const emptyStateResolving = changes.length === 0 && (loading || !profilesSettled);
+
+  // Reached only once profiles have settled (the gate above intercepts the
+  // still-loading case). When `profilesLoaded` is false here, it means the
+  // profiles fetch errored — fall through to the generic message rather than
+  // the setup CTA.
   const renderEmptyState = () =>
-    alertingPrerequisite ? (
+    !profilesLoaded ? genericEmptyState : profiles.length === 0 ? (
+      <div className="mx-auto max-w-xl space-y-3 text-sm text-muted-foreground" data-testid="changes-no-profiles-hint">
+        <div className="space-y-1">
+          <p className="font-medium text-foreground">Set up a network discovery profile to start tracking changes.</p>
+          <p>
+            Network change events are created by discovery profiles. Create a profile and enable Alerting
+            to record new, changed, or disappeared devices.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            if (typeof window !== 'undefined') window.location.hash = 'profiles';
+          }}
+          className="inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
+          data-testid="changes-create-profile"
+        >
+          Go to Profiles
+        </button>
+      </div>
+    ) : alertingPrerequisite ? (
       <div className="mx-auto max-w-xl space-y-1 text-sm text-muted-foreground" data-testid="changes-alerting-hint">
         <p className="font-medium text-foreground">No change events recorded yet.</p>
         <p>
@@ -480,9 +530,7 @@ export default function NetworkChangesPanel({
           settings (Profiles tab) to start tracking network changes.
         </p>
       </div>
-    ) : (
-      <span className="text-sm text-muted-foreground">No change events match the selected filters.</span>
-    );
+    ) : genericEmptyState;
 
   return (
     <div className="space-y-6">
@@ -656,7 +704,7 @@ export default function NetworkChangesPanel({
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {loading && changes.length === 0 ? (
+                {emptyStateResolving ? (
                   <tr>
                     <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
                       Loading network changes...
@@ -692,7 +740,7 @@ export default function NetworkChangesPanel({
             </table>
           }
           cards={
-            loading && changes.length === 0 ? (
+            emptyStateResolving ? (
               <DataCard>
                 <p className="py-2 text-center text-sm text-muted-foreground">Loading network changes...</p>
               </DataCard>
