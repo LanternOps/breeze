@@ -9,7 +9,10 @@
  * enforcement paths (remoteAccessPolicy.ts / pamSettings.ts) so there is exactly
  * one definition each.
  */
-import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configurationPolicy';
+// Import the feature-type list from the leaf module, NOT from configurationPolicy
+// — importing from the service would create a runtime cycle and pull the heavy
+// service into pamSettings/helpers test suites (#1725 PR review).
+import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTypes';
 import type { RemoteAccessSettings } from './remoteAccessPolicy';
 
 export interface BaselineEntry {

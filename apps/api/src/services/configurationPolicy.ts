@@ -68,12 +68,13 @@ export const pamInlineSettingsSchema = z
 // Types
 // ============================================
 
-export const CONFIG_FEATURE_TYPES = [
-  'patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance',
-  'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data',
-  'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
-] as const;
-export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
+// CONFIG_FEATURE_TYPES / ConfigFeatureType live in a leaf module to avoid a
+// configurationPolicy ⇄ policyBaselineDefaults import cycle (and to keep route/
+// helper test suites from transitively crash-loading this service). Re-exported
+// here so existing importers that read them from configurationPolicy still work.
+import { CONFIG_FEATURE_TYPES, type ConfigFeatureType } from './configFeatureTypes';
+export { CONFIG_FEATURE_TYPES };
+export type { ConfigFeatureType };
 export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
