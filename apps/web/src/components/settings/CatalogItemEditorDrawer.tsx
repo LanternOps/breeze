@@ -101,6 +101,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     if (!open) return;
     setCommittedId(null);
     setSaving(false);
+    setEnrichment(null);
     setOverrides([]);
     setNewOverrideOrgId('');
     setNewOverridePrice('');
