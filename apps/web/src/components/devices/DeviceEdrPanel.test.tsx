@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -40,5 +40,22 @@ describe('DeviceEdrPanel', () => {
     render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
     await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
     expect(screen.getByTestId('edr-huntress-empty')).toBeInTheDocument();
+  });
+});
+
+describe('DeviceEdrPanel isolate', () => {
+  it('confirms then POSTs /s1/isolate with the device id', async () => {
+    let isolateBody: unknown;
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [], pagination: { total: 0, limit: 50, offset: 0 } }));
+      if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
+      if (url === '/s1/isolate') { isolateBody = JSON.parse(String(init?.body)); return Promise.resolve(ok({ data: {} })); }
+      return Promise.resolve(ok({ data: [] }));
+    });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    fireEvent.click(await screen.findByTestId('edr-isolate-btn'));
+    // confirm modal
+    fireEvent.click(await screen.findByTestId('edr-isolate-confirm'));
+    await waitFor(() => expect(isolateBody).toEqual({ orgId: 'org-1', deviceIds: ['dev-1'], isolate: true }));
   });
 });

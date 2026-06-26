@@ -5,9 +5,11 @@ import { friendlyFetchError } from '../../lib/utils';
 import {
   fetchS1Threats,
   fetchHuntressIncidents,
+  isolateDevice,
   type S1Threat,
   type HuntressIncident,
 } from '../../lib/edr';
+import { ActionError } from '../../lib/runAction';
 
 const severityBadge: Record<string, string> = {
   low: 'bg-blue-500/20 text-blue-700 border-blue-500/30',
@@ -33,6 +35,8 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   const [incidents, setIncidents] = useState<HuntressIncident[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [confirmIsolate, setConfirmIsolate] = useState(false);
+  const [isolating, setIsolating] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,6 +55,20 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
     }
   }, [orgId, deviceId]);
 
+  const doIsolate = async () => {
+    setIsolating(true);
+    try {
+      await isolateDevice(orgId, deviceId, true);
+      setConfirmIsolate(false);
+      await load();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      // non-401 ActionError already toasted by runAction
+    } finally {
+      setIsolating(false);
+    }
+  };
+
   useEffect(() => { void load(); }, [load]);
 
   return (
@@ -58,6 +76,14 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
       <div className="mb-4 flex items-center gap-2">
         <ShieldAlert className="h-4 w-4 text-primary" />
         <h3 className="text-lg font-semibold">Endpoint Protection (EDR)</h3>
+        <button
+          type="button"
+          data-testid="edr-isolate-btn"
+          onClick={() => setConfirmIsolate(true)}
+          className="ml-auto inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+        >
+          Isolate device
+        </button>
       </div>
 
       {error && (
@@ -117,6 +143,29 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
           )}
         </div>
       </div>
+
+      {confirmIsolate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+            <h4 className="text-base font-semibold">Isolate this device?</h4>
+            <p className="mt-2 text-sm text-muted-foreground">
+              SentinelOne will cut the device off the network until you remove isolation. Active sessions will drop.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmIsolate(false)} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Cancel</button>
+              <button
+                type="button"
+                data-testid="edr-isolate-confirm"
+                onClick={doIsolate}
+                disabled={isolating}
+                className="inline-flex items-center gap-2 rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-60"
+              >
+                {isolating && <Loader2 className="h-4 w-4 animate-spin" />}Isolate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
