@@ -8,8 +8,9 @@
  * the user-supplied orgId, validate it against `accessibleOrgIds`, and forward
  * it through. Foreign orgIds must 403; missing orgId must still 400 with the
  * existing "orgId is required..." message — EXCEPT the software-inventory READ
- * endpoints, which now aggregate across all accessible orgs ("All Orgs") on a
- * missing orgId instead of 400ing (see the software-inventory describe block).
+ * endpoints AND the software catalog LIST endpoint (#1933), which aggregate
+ * across all accessible orgs ("All Orgs") on a missing orgId instead of 400ing
+ * (see the software-inventory and software-catalog describe blocks).
  *
  * #723: GET /orgs/sites must scope by the explicit `organizationId`, not the
  * ambient `orgId` the web client auto-injects (see the #723 describe block).
@@ -254,7 +255,12 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
       await expectNotOrgIdRequired400(res);
     });
 
-    it('GET /software/catalog 400s when orgId is missing', async () => {
+    it('GET /software/catalog aggregates across accessible orgs when orgId is missing (#1933)', async () => {
+      // #1933 supersedes the prior #620 "orgId is required" 400 here: the catalog
+      // LIST endpoint now aggregates across the partner's accessibleOrgIds ("All
+      // Orgs") when no orgId is supplied, instead of 400ing. (Explicit foreign
+      // orgIds still 403 — see the test below — and single-org catalog detail /
+      // write paths are unchanged.)
       const { softwareRoutes } = await import('./software');
       const app = new Hono().route('/software', softwareRoutes);
 
@@ -263,9 +269,10 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
         headers: { Authorization: 'Bearer t' },
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
       const body = await res.json();
-      expect(String(body.error)).toMatch(/orgId is required/i);
+      expect(body).toHaveProperty('data');
+      expect(body).toHaveProperty('pagination');
     });
 
     it('GET /software/catalog 403s when ?orgId= points outside accessibleOrgIds', async () => {
@@ -321,8 +328,9 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
 
     // Exception to the #620 "missing orgId => 400" rule: the software-inventory
     // READ endpoints now aggregate across all accessible orgs ("All Orgs") when
-    // no orgId is supplied, rather than 400ing. (The catalog and discovery
-    // routes below still require an explicit orgId.)
+    // no orgId is supplied, rather than 400ing. (The catalog LIST endpoint does
+    // the same as of #1933; the discovery routes below still require an explicit
+    // orgId.)
     it('GET /software-inventory aggregates across all orgs when orgId is missing', async () => {
       const { softwareInventoryRoutes } = await import('./softwareInventory');
       const app = new Hono().route('/software-inventory', softwareInventoryRoutes);
