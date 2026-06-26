@@ -64,6 +64,32 @@ describe('PartnerBillingSettings', () => {
     });
   });
 
+  it('sends autoTaxHardware in the PATCH body and toggles it via checkbox', async () => {
+    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return json({ data: {} });
+      return json({
+        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+        autoTaxHardware: true, invoiceFooter: null,
+      });
+    });
+    render(<PartnerBillingSettings />);
+    await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+
+    // Checkbox should start checked (loaded true from server)
+    const checkbox = screen.getByTestId('partner-billing-auto-tax-hardware') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    // Uncheck it and save — PATCH body must carry autoTaxHardware: false
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByTestId('partner-billing-save'));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      expect(patch).toBeTruthy();
+      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({ autoTaxHardware: false });
+    });
+  });
+
   it('uppercases billingAddressCountry and normalizes whitespace-only address fields to null on save', async () => {
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
       if (opts?.method === 'PATCH') return json({ data: {} });

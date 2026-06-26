@@ -6,6 +6,8 @@ import { isApiFailure, extractApiError } from '../../lib/apiError';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary } from './marginMath';
+import CatalogEnrichButton from '../catalog/CatalogEnrichButton';
 
 const MASKED = '********';
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -102,16 +104,26 @@ function configFromStatus(status: IntegrationStatus | null): ConfigForm {
   };
 }
 
-function productImportDefaults(product: TdSynnexProduct): ImportForm {
+function productImportDefaults(
+  product: TdSynnexProduct,
+  defaultMarkupPct: number | null,
+  autoTaxHardware: boolean,
+): ImportForm {
   const cost = product.cost ?? '';
+  const costNum = Number(cost);
+  // Apply the partner's default markup (over cost) to pre-fill the sell
+  // price when we have a numeric cost. Fall back to cost == price otherwise.
+  const hasMarkup = defaultMarkupPct != null && cost !== '' && Number.isFinite(costNum);
+  const unitPrice = hasMarkup ? String(priceFromCostMarkup(costNum, defaultMarkupPct)) : cost;
   return {
     name: product.name,
     sku: product.sku ?? product.manufacturerPartNumber ?? '',
     description: product.description ?? '',
-    unitPrice: cost,
+    unitPrice,
     costBasis: cost,
-    markupPercent: '',
-    taxable: true,
+    markupPercent: hasMarkup ? String(defaultMarkupPct) : '',
+    // Distributor imports are hardware; default taxable to the partner policy.
+    taxable: autoTaxHardware,
   };
 }
 
@@ -133,6 +145,10 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
   const [draftProduct, setDraftProduct] = useState<TdSynnexProduct | null>(null);
   const [importForm, setImportForm] = useState<ImportForm | null>(null);
   const [importing, setImporting] = useState(false);
+  // Partner-level default markup % used to pre-fill the sell price.
+  const [defaultMarkupPct, setDefaultMarkupPct] = useState<number | null>(null);
+  // Partner policy: do newly imported (hardware) items default to taxable?
+  const [autoTaxHardware, setAutoTaxHardware] = useState(true);
   const endpointReady = config.searchPath.trim().length > 0;
 
   const loadStatus = useCallback(async () => {
@@ -156,6 +172,27 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
   }, []);
 
   useEffect(() => { void loadStatus(); }, [loadStatus]);
+
+  // Load the partner default markup once so imports can pre-fill the sell price.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/orgs/partners/me');
+        if (!res.ok) return;
+        const p = (await res.json()) as { defaultMarkupPercent?: string | number | null; autoTaxHardware?: boolean };
+        if (cancelled) return;
+        if (p.defaultMarkupPercent != null) {
+          const pct = Number(p.defaultMarkupPercent);
+          if (Number.isFinite(pct)) setDefaultMarkupPct(pct);
+        }
+        if (typeof p.autoTaxHardware === 'boolean') setAutoTaxHardware(p.autoTaxHardware);
+      } catch {
+        // Non-fatal: import just falls back to cost == price.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const connectionLabel = useMemo(() => {
     if (status?.lastTestStatus === 'success') return 'Last test succeeded';
@@ -246,7 +283,7 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
 
   const openImport = (product: TdSynnexProduct) => {
     setDraftProduct(product);
-    setImportForm(productImportDefaults(product));
+    setImportForm(productImportDefaults(product, defaultMarkupPct, autoTaxHardware));
   };
 
   const importProduct = useCallback(async () => {
@@ -543,11 +580,40 @@ export default function TdSynnexCatalogPanel({ onImported }: { onImported?: () =
                 <input type="checkbox" checked={importForm.taxable} onChange={(e) => setImportForm((f) => f && ({ ...f, taxable: e.target.checked }))} data-testid="td-synnex-import-taxable" />
                 Taxable
               </label>
+              <div className="md:col-span-2" data-testid="td-synnex-import-enrich">
+                <p className="text-xs font-medium">Clean up name &amp; description with AI</p>
+                <p className="mb-2 mt-0.5 text-xs text-muted-foreground">
+                  Search the web by product name or SKU to rewrite the raw distributor text. Pricing stays untouched.
+                </p>
+                <CatalogEnrichButton
+                  hint="hardware"
+                  idSuffix="td-synnex-import"
+                  onApply={(result) => setImportForm((f) => f && ({
+                    ...f,
+                    name: result.draft.name || f.name,
+                    description: result.draft.description ?? f.description,
+                  }))}
+                />
+              </div>
               <label className="text-xs font-medium md:col-span-2">
                 Description
                 <textarea value={importForm.description} onChange={(e) => setImportForm((f) => f && ({ ...f, description: e.target.value }))} className="mt-1 min-h-20 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm" data-testid="td-synnex-import-description" />
               </label>
             </div>
+            {(() => {
+              const breakdown = computeMarginBreakdown(toMoney(importForm.costBasis), toMoney(importForm.unitPrice));
+              if (!breakdown) return null;
+              const negative = breakdown.profit < 0;
+              return (
+                <p
+                  className={`text-xs font-medium ${negative ? 'text-red-600' : 'text-muted-foreground'}`}
+                  data-testid="td-synnex-import-margin"
+                >
+                  {formatMarginSummary(breakdown, draftProduct.currency ?? 'USD')}
+                  {negative ? ' — selling below cost' : ''}
+                </p>
+              );
+            })()}
             <div className="flex gap-2">
               <button
                 type="button"

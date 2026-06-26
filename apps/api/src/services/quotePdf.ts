@@ -111,12 +111,17 @@ interface QuoteBlock {
 interface QuoteLine {
   id: string;
   blockId?: string | null;
+  catalogItemId?: string | null;
   description: string;
   quantity: string | number;
   unitPrice: string | number;
   lineTotal?: string | number | null;
   recurrence?: string | null;
 }
+
+/** Loads a catalog item's product image bytes (or null). Injected so renderQuotePdf
+ *  stays pure / DB-free; the route supplies the real readCatalogItemImage loader. */
+type LoadCatalogImage = (catalogItemId: string) => Promise<{ data: Buffer } | null>;
 
 // ---------------------------------------------------------------------------
 // Layout constants (shared between the line table + summary so columns align).
@@ -160,9 +165,33 @@ function ensureSpace(doc: PDFKit.PDFDocument, y: number, needed = 40): number {
 // Returns the y position below the table.
 // ---------------------------------------------------------------------------
 
-function renderLineTable(doc: PDFKit.PDFDocument, lines: QuoteLine[], currency: string, startY: number): number {
+async function renderLineTable(
+  doc: PDFKit.PDFDocument,
+  lines: QuoteLine[],
+  currency: string,
+  startY: number,
+  loadCatalogImage: LoadCatalogImage,
+): Promise<number> {
   const c = columnsFor(doc);
   let y = ensureSpace(doc, startY, 60);
+
+  // Pre-load product images (DB I/O) for catalog-sourced lines. A failed load
+  // degrades to "no thumbnail" — never aborts the document.
+  const THUMB = 30;
+  const imageByLine = new Map<string, Buffer>();
+  for (const l of lines) {
+    if (!l.catalogItemId) continue;
+    try {
+      const img = await loadCatalogImage(l.catalogItemId);
+      if (img?.data) imageByLine.set(l.id, img.data);
+    } catch (e) {
+      console.error('[quotePdf] loadCatalogImage failed', l.catalogItemId, e instanceof Error ? e.message : e);
+    }
+  }
+  // Reserve a thumbnail gutter only when at least one line has an image, so the
+  // description column stays aligned across rows.
+  const gutter = imageByLine.size > 0 ? THUMB + 8 : 0;
+  const descW = c.contentWidth * 0.46 - gutter;
 
   // Header row with a light fill bar.
   doc.save();
@@ -178,15 +207,19 @@ function renderLineTable(doc: PDFKit.PDFDocument, lines: QuoteLine[], currency: 
 
   const descX = c.colQtyX + c.contentWidth * 0.12;
   for (const l of lines) {
-    y = ensureSpace(doc, y, 30);
+    y = ensureSpace(doc, y, Math.max(30, gutter));
     doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
-    const descHeight = doc.heightOfString(l.description, { width: c.contentWidth * 0.46 });
+    const descHeight = doc.heightOfString(l.description, { width: descW });
     doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
-    doc.text(l.description, descX, y, { width: c.contentWidth * 0.46 });
+    const img = imageByLine.get(l.id);
+    if (img) {
+      try { doc.image(img, descX, y, { fit: [THUMB, THUMB] }); } catch { /* corrupt image: skip */ }
+    }
+    doc.text(l.description, descX + gutter, y, { width: descW });
     doc.text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
     const suffix = recurrenceSuffix(l.recurrence);
     doc.text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
-    y += Math.max(descHeight, 12) + 6;
+    y += Math.max(descHeight, img ? THUMB : 12) + 6;
   }
   return y + 6;
 }
@@ -256,6 +289,8 @@ export async function renderQuotePdf(
   lines: QuoteLine[],
   loadImage: (imageId: string) => Promise<{ data: Buffer } | null>,
   branding: QuotePdfBranding,
+  // Optional so existing callers/tests compile; the route injects the real loader.
+  loadCatalogImage: LoadCatalogImage = async () => null,
 ): Promise<Buffer> {
   const currency = quote.currencyCode ?? branding.currencyCode ?? 'USD';
   const primary = hexToColor(branding.primaryColor, '#2563eb');
@@ -372,14 +407,14 @@ export async function renderQuotePdf(
           doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
           y = doc.y + 6;
         }
-        y = renderLineTable(doc, blockLines, currency, y);
+        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage);
       }
     }
   }
 
   // ---- Trailing default table for lines with no block ----------------------
   const orphanLines = lines.filter((l) => !l.blockId);
-  if (orphanLines.length) y = renderLineTable(doc, orphanLines, currency, y);
+  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, y, loadCatalogImage);
 
   // ---- Recurring summary footer -------------------------------------------
   y = renderRecurringSummary(doc, quote, currency, primary, y);

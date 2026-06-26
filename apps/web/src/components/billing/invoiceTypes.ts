@@ -149,8 +149,9 @@ export function formatMoney(value: string | number | null | undefined, currencyC
 }
 
 /** Convert a stored tax-rate FRACTION (e.g. '0.07') to a percent string for an
- *  input ('7'), rounding to 3 decimals to match the numeric(6,3)-on-fraction
- *  scale. Avoids float noise like `String(0.07 * 100)` → '7.000000000000001'.
+ *  input ('7'), rounding the percent to 3 decimals — equivalently the numeric(8,5)
+ *  fraction scale (5 fraction decimals = 3 percent decimals, e.g. 8.875%). Avoids
+ *  float noise like `String(0.07 * 100)` → '7.000000000000001'.
  *  Returns '' for null/empty so the input shows its placeholder. */
 export function pctFromFraction(frac: string | number | null): string {
   if (frac === null || frac === '') return '';

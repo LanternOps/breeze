@@ -163,6 +163,34 @@ export function archiveCatalogItem(id: string): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}/archive`, { method: 'POST' });
 }
 
+// Product image (one per item). Multipart upload — no JSON Content-Type so the
+// browser sets the multipart boundary itself. Responds { data: { imageId, ... } }.
+export function uploadCatalogItemImage(id: string, file: File): Promise<Response> {
+  const form = new FormData();
+  form.append('file', file);
+  return fetchWithAuth(`/catalog/${id}/image`, { method: 'POST', body: form });
+}
+
+// Server-side image import from a URL. The server downloads + validates (SSRF-
+// guarded) and stores it. Responds { data: { imageId, ... } }.
+export function importCatalogItemImageFromUrl(id: string, url: string): Promise<Response> {
+  return fetchWithAuth(`/catalog/${id}/image/from-url`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ url }),
+  });
+}
+
+/** Path for the auth'd image GET. A bare <img src> would 401, so callers
+ *  fetchWithAuth this then objectURL the blob (see CatalogImagePreview). */
+export function catalogItemImagePath(id: string): string {
+  return `/catalog/${id}/image`;
+}
+
+export function deleteCatalogItemImageRequest(id: string): Promise<Response> {
+  return fetchWithAuth(`/catalog/${id}/image`, { method: 'DELETE' });
+}
+
 export function setBundleComponents(id: string, components: BundleComponentInput[]): Promise<Response> {
   return fetchWithAuth(`/catalog/${id}/components`, {
     method: 'PUT',

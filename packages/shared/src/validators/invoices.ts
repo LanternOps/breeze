@@ -83,6 +83,13 @@ export const partnerBillingSettingsSchema = z.object({
   defaultTaxRate: taxRate.nullable().optional(),
   invoiceNumberPrefix: z.string().min(1).max(12),
   invoiceTermsDays: z.number().int().min(0).max(365),
+  // Default markup over distributor cost (percent) used to pre-fill the sell price
+  // when importing catalog items. It feeds the catalog `markupPercent` field, so it
+  // shares that field's bounds (numeric(6,2), 0..9999.99). The import view shows
+  // the resulting gross margin alongside.
+  defaultMarkupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
+  // When true, hardware catalog items default to taxable when added/imported.
+  autoTaxHardware: z.boolean().optional(),
   invoiceFooter: z.string().max(5000).nullable().optional(),
   // Seller "From" contact profile (snapshotted onto each document at issue).
   billingCompanyName: z.string().max(255).nullable().optional(),

@@ -32,14 +32,18 @@ describe('computeInvoiceTotals', () => {
 
 describe('resolveEffectiveTaxRate', () => {
   it('exempt overrides everything', () => {
-    expect(resolveEffectiveTaxRate({ taxExempt: true, orgRate: '0.1', partnerRate: '0.2' })).toBe('0.000');
+    expect(resolveEffectiveTaxRate({ taxExempt: true, orgRate: '0.1', partnerRate: '0.2' })).toBe('0.00000');
   });
   it('org rate beats partner rate', () => {
-    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: '0.075', partnerRate: '0.2' })).toBe('0.075');
+    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: '0.075', partnerRate: '0.2' })).toBe('0.07500');
   });
   it('falls back to partner then zero', () => {
-    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: null, partnerRate: '0.2' })).toBe('0.200');
-    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: null, partnerRate: null })).toBe('0.000');
+    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: null, partnerRate: '0.2' })).toBe('0.20000');
+    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: null, partnerRate: null })).toBe('0.00000');
+  });
+  it('preserves sub-percent precision (8.95%, 8.875%)', () => {
+    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: '0.0895', partnerRate: null })).toBe('0.08950');
+    expect(resolveEffectiveTaxRate({ taxExempt: false, orgRate: '0.08875', partnerRate: null })).toBe('0.08875');
   });
 });
 

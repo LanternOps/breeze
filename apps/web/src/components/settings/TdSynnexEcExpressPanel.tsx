@@ -6,6 +6,7 @@ import { isApiFailure, extractApiError } from '../../lib/apiError';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary } from './marginMath';
 
 const MASKED = '********';
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -80,7 +81,12 @@ function toMoney(value: string): number | null {
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
-function sellPriceDefault(product: EcProduct): string {
+function sellPriceDefault(product: EcProduct, defaultMarkupPct: number | null): string {
+  // Prefer the partner default markup (over cost) when we have a cost;
+  // otherwise fall back to MSRP, then cost.
+  if (defaultMarkupPct != null && product.cost != null && Number.isFinite(product.cost)) {
+    return priceFromCostMarkup(product.cost, defaultMarkupPct).toFixed(2);
+  }
   const value = product.msrp ?? product.cost;
   return value === null || value === undefined ? '' : value.toFixed(2);
 }
@@ -96,6 +102,10 @@ function TdSynnexEcExpressPanel() {
   const [products, setProducts] = useState<EcProduct[]>([]);
   const [sellPrices, setSellPrices] = useState<Record<string, string>>({});
   const [importingSku, setImportingSku] = useState<string | null>(null);
+  // Partner-level default markup % used to pre-fill sell prices.
+  const [defaultMarkupPct, setDefaultMarkupPct] = useState<number | null>(null);
+  // Partner policy: do newly imported (hardware) items default to taxable?
+  const [autoTaxHardware, setAutoTaxHardware] = useState(true);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -124,6 +134,27 @@ function TdSynnexEcExpressPanel() {
   }, []);
 
   useEffect(() => { void loadStatus(); }, [loadStatus]);
+
+  // Load the partner default markup once so lookups can pre-fill the sell price.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/orgs/partners/me');
+        if (!res.ok) return;
+        const p = (await res.json()) as { defaultMarkupPercent?: string | number | null; autoTaxHardware?: boolean };
+        if (cancelled) return;
+        if (p.defaultMarkupPercent != null) {
+          const pct = Number(p.defaultMarkupPercent);
+          if (Number.isFinite(pct)) setDefaultMarkupPct(pct);
+        }
+        if (typeof p.autoTaxHardware === 'boolean') setAutoTaxHardware(p.autoTaxHardware);
+      } catch {
+        // Non-fatal: sell price just falls back to MSRP/cost.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const connectionLabel = useMemo(() => {
     if (status?.lastTestStatus === 'success') return 'Last test succeeded';
@@ -204,13 +235,13 @@ function TdSynnexEcExpressPanel() {
       }
       const results = body?.data ?? [];
       setProducts(results);
-      setSellPrices(Object.fromEntries(results.map((p) => [p.synnexSku, sellPriceDefault(p)])));
+      setSellPrices(Object.fromEntries(results.map((p) => [p.synnexSku, sellPriceDefault(p, defaultMarkupPct)])));
     } catch (err) {
       showToast({ message: err instanceof Error ? err.message : 'TD SYNNEX Pricing lookup failed.', type: 'error' });
     } finally {
       setSearching(false);
     }
-  }, [query]);
+  }, [query, defaultMarkupPct]);
 
   const importProduct = useCallback(async (product: EcProduct) => {
     const sellPrice = toMoney(sellPrices[product.synnexSku] ?? '');
@@ -233,6 +264,7 @@ function TdSynnexEcExpressPanel() {
               costBasis: product.cost !== null && Number.isFinite(product.cost)
                 ? Number(product.cost.toFixed(2))
                 : null,
+              taxable: autoTaxHardware,
             },
           }),
         }),
@@ -245,7 +277,7 @@ function TdSynnexEcExpressPanel() {
     } finally {
       setImportingSku(null);
     }
-  }, [sellPrices]);
+  }, [sellPrices, autoTaxHardware]);
 
   if (loading) {
     return <p className="text-sm text-muted-foreground" data-testid="td-synnex-ec-loading">Loading TD SYNNEX Pricing.</p>;
@@ -453,6 +485,20 @@ function TdSynnexEcExpressPanel() {
                     {importingSku === product.synnexSku ? 'Importing.' : 'Import to catalog'}
                   </button>
                 </div>
+                {(() => {
+                  const breakdown = computeMarginBreakdown(product.cost, toMoney(sellPrices[product.synnexSku] ?? ''));
+                  if (!breakdown) return null;
+                  const negative = breakdown.profit < 0;
+                  return (
+                    <p
+                      className={`text-xs font-medium ${negative ? 'text-red-600' : 'text-muted-foreground'}`}
+                      data-testid={`td-synnex-ec-margin-${product.synnexSku}`}
+                    >
+                      {formatMarginSummary(breakdown, product.currency ?? 'USD')}
+                      {negative ? ' — selling below cost' : ''}
+                    </p>
+                  );
+                })()}
               </div>
             ))}
           </div>

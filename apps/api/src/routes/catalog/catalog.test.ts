@@ -16,6 +16,15 @@ vi.mock('../../services/catalogService', () => ({
   }
 }));
 
+vi.mock('../../services/catalogImageStorage', () => ({
+  writeCatalogItemImage: vi.fn(),
+  readCatalogItemImage: vi.fn(),
+  deleteCatalogItemImage: vi.fn(),
+  fetchImageFromUrl: vi.fn(),
+  sniffImageMime: vi.fn(),
+  MAX_CATALOG_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
+}));
+
 vi.mock('../../services/tdSynnexDigitalBridge', () => ({
   getTdSynnexDigitalBridgeStatus: vi.fn(),
   saveTdSynnexDigitalBridgeConfig: vi.fn(),
@@ -67,6 +76,7 @@ vi.mock('../../middleware/auth', () => ({
 
 import { catalogRoutes } from './index';
 import * as svc from '../../services/catalogService';
+import * as imgSvc from '../../services/catalogImageStorage';
 import * as tdSvc from '../../services/tdSynnexDigitalBridge';
 import * as ecSvc from '../../services/tdSynnexEcExpress';
 
@@ -119,6 +129,108 @@ describe('catalog routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('DUPLICATE_SKU');
+  });
+});
+
+describe('catalog item image routes', () => {
+  const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  beforeEach(() => vi.clearAllMocks());
+
+  it('POST /:id/image uploads a sniffed image (ownership-checked)', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.sniffImageMime as any).mockReturnValue('image/png');
+    (imgSvc.writeCatalogItemImage as any).mockResolvedValue({ id: 'img1', byteSize: 4, sha256: 'x' });
+    const form = new FormData();
+    form.append('file', new File([new Uint8Array([1, 2, 3, 4])], 'p.png', { type: 'image/png' }));
+    const res = await app().request(`/${ID}/image`, { method: 'POST', body: form });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.imageId).toBe('img1');
+    expect(svc.getCatalogItem).toHaveBeenCalledWith(ID, expect.anything());
+    expect(imgSvc.writeCatalogItemImage).toHaveBeenCalledWith(ID, 'p1', 'image/png', expect.anything());
+  });
+
+  it('POST /:id/image rejects an unsniffable file (415)', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.sniffImageMime as any).mockReturnValue(null);
+    const form = new FormData();
+    form.append('file', new File([new Uint8Array([0, 0])], 'x.txt', { type: 'text/plain' }));
+    const res = await app().request(`/${ID}/image`, { method: 'POST', body: form });
+    expect(res.status).toBe(415);
+    expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/image 404s when the item is not the partner’s', async () => {
+    (svc.getCatalogItem as any).mockRejectedValue(new (svc as any).CatalogServiceError('not found', 404, 'NOT_FOUND'));
+    const form = new FormData();
+    form.append('file', new File([new Uint8Array([1])], 'p.png', { type: 'image/png' }));
+    const res = await app().request(`/${ID}/image`, { method: 'POST', body: form });
+    expect(res.status).toBe(404);
+    expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/image/from-url downloads and stores the image (ownership-checked)', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.fetchImageFromUrl as any).mockResolvedValue({ mime: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
+    (imgSvc.writeCatalogItemImage as any).mockResolvedValue({ id: 'img1', byteSize: 4, sha256: 'x' });
+    const res = await app().request(`/${ID}/image/from-url`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/p.png' })
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.imageId).toBe('img1');
+    expect(imgSvc.fetchImageFromUrl).toHaveBeenCalledWith('https://example.com/p.png');
+    expect(imgSvc.writeCatalogItemImage).toHaveBeenCalledWith(ID, 'p1', 'image/png', expect.anything());
+  });
+
+  it('POST /:id/image/from-url returns 400 (and does not store) when the download fails/blocked', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.fetchImageFromUrl as any).mockRejectedValue(new Error('blocked address'));
+    const res = await app().request(`/${ID}/image/from-url`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://internal.example/p.png' })
+    });
+    expect(res.status).toBe(400);
+    expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/image/from-url rejects an invalid url body (400, no download)', async () => {
+    const res = await app().request(`/${ID}/image/from-url`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'not-a-url' })
+    });
+    expect(res.status).toBe(400);
+    expect(imgSvc.fetchImageFromUrl).not.toHaveBeenCalled();
+    expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
+  });
+
+  it('GET /:id/image serves the bytes', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.readCatalogItemImage as any).mockResolvedValue({ data: Buffer.from([1, 2, 3]), mime: 'image/png', byteSize: 3 });
+    const res = await app().request(`/${ID}/image`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+  });
+
+  it('GET /:id/image 404s when there is no image', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.readCatalogItemImage as any).mockResolvedValue(null);
+    const res = await app().request(`/${ID}/image`, { method: 'GET' });
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE /:id/image removes the image', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.deleteCatalogItemImage as any).mockResolvedValue(undefined);
+    const res = await app().request(`/${ID}/image`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.ok).toBe(true);
+    expect(imgSvc.deleteCatalogItemImage).toHaveBeenCalledWith(ID);
   });
 });
 

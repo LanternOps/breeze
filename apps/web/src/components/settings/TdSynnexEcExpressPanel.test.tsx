@@ -48,10 +48,35 @@ const product = {
   raw: {},
 };
 
+// Route fetch by URL (not call order) so the panel's extra GET /orgs/partners/me
+// on mount can't shift a positional mock queue (the no-positional-mock lesson).
+let statusResponse: Response;
+let meResponse: Response;
+let lookupResponse: Response;
+let importResponse: Response;
+let testResponse: Response;
+let configResponse: Response;
+
 describe('TdSynnexEcExpressPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    fetchWithAuth.mockResolvedValue(jsonResponse(statusPayload));
+    statusResponse = jsonResponse(statusPayload);
+    meResponse = jsonResponse({ defaultMarkupPercent: null, autoTaxHardware: true });
+    lookupResponse = jsonResponse({ data: [] });
+    importResponse = jsonResponse({ data: { id: 'catalog-1' } });
+    testResponse = jsonResponse(statusPayload);
+    configResponse = jsonResponse(statusPayload);
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (typeof url === 'string') {
+        if (url.includes('/orgs/partners/me')) return Promise.resolve(meResponse);
+        if (url.includes('/td-synnex-ec/lookup')) return Promise.resolve(lookupResponse);
+        if (url.includes('/td-synnex-ec/import')) return Promise.resolve(importResponse);
+        if (url.includes('/td-synnex-ec/test')) return Promise.resolve(testResponse);
+        if (url.includes('/td-synnex-ec/config')) return Promise.resolve(configResponse);
+        if (url.includes('/td-synnex-ec/status')) return Promise.resolve(statusResponse);
+      }
+      return Promise.resolve(statusResponse);
+    });
   });
 
   it('renders config fields and the SKU lookup box after loading status', async () => {
@@ -67,10 +92,6 @@ describe('TdSynnexEcExpressPanel', () => {
   });
 
   it('saves configuration with runAction', async () => {
-    fetchWithAuth
-      .mockResolvedValueOnce(jsonResponse(statusPayload))
-      .mockResolvedValueOnce(jsonResponse(statusPayload));
-
     render(<TdSynnexEcExpressPanel />);
     await screen.findByTestId('td-synnex-ec-panel');
     fireEvent.change(screen.getByTestId('td-synnex-ec-customer-no'), { target: { value: 'CUST-2' } });
@@ -98,9 +119,7 @@ describe('TdSynnexEcExpressPanel', () => {
         lastTestError: null,
       },
     };
-    fetchWithAuth
-      .mockResolvedValueOnce(jsonResponse(statusPayload)) // initial status load
-      .mockResolvedValueOnce(jsonResponse(testResult)); // POST /test
+    testResponse = jsonResponse(testResult); // POST /test
 
     render(<TdSynnexEcExpressPanel />);
     await screen.findByTestId('td-synnex-ec-panel');
@@ -138,14 +157,13 @@ describe('TdSynnexEcExpressPanel', () => {
         lastTestError: 'TD SYNNEX authentication failed',
       },
     };
-    fetchWithAuth
-      .mockResolvedValueOnce(jsonResponse(statusPayload)) // initial status load
-      .mockResolvedValueOnce(jsonResponse({ error: 'TD SYNNEX authentication failed', code: 'EC_AUTH_FAILED' }, 422)) // POST /test fails
-      .mockResolvedValueOnce(jsonResponse(failedResult)); // loadStatus reload after the failed test
+    testResponse = jsonResponse({ error: 'TD SYNNEX authentication failed', code: 'EC_AUTH_FAILED' }, 422); // POST /test fails
 
     render(<TdSynnexEcExpressPanel />);
     await screen.findByTestId('td-synnex-ec-panel');
 
+    // After the failed test, testConnection reloads status — surface the failure state.
+    statusResponse = jsonResponse(failedResult);
     fireEvent.click(screen.getByTestId('td-synnex-ec-test'));
 
     await waitFor(() => {
@@ -164,9 +182,7 @@ describe('TdSynnexEcExpressPanel', () => {
   });
 
   it('looks up a SKU and renders pricing, availability, and warehouse stock', async () => {
-    fetchWithAuth
-      .mockResolvedValueOnce(jsonResponse(statusPayload))
-      .mockResolvedValueOnce(jsonResponse({ data: [product] }));
+    lookupResponse = jsonResponse({ data: [product] });
 
     render(<TdSynnexEcExpressPanel />);
     await screen.findByTestId('td-synnex-ec-panel');
@@ -181,11 +197,25 @@ describe('TdSynnexEcExpressPanel', () => {
     expect(within(card).getByText('CA')).toBeTruthy();
   });
 
+  it('pre-fills the sell price from the partner default markup and shows the margin calc', async () => {
+    lookupResponse = jsonResponse({ data: [product] });
+    meResponse = jsonResponse({ defaultMarkupPercent: 25, autoTaxHardware: true });
+
+    render(<TdSynnexEcExpressPanel />);
+    await screen.findByTestId('td-synnex-ec-panel');
+    fireEvent.change(screen.getByTestId('td-synnex-ec-lookup-query'), { target: { value: 'SNX-1' } });
+    fireEvent.click(screen.getByTestId('td-synnex-ec-lookup'));
+
+    const card = await screen.findByTestId('td-synnex-ec-result-SNX-1');
+    // cost 100 + 25% markup -> 125.00 (overrides the MSRP default of 150).
+    expect((within(card).getByTestId('td-synnex-ec-sell-price') as HTMLInputElement).value).toBe('125.00');
+    const margin = within(card).getByTestId('td-synnex-ec-margin-SNX-1');
+    expect(margin.textContent).toContain('Markup 25.0%');
+    expect(margin.textContent).toContain('Margin 20.0%');
+  });
+
   it('imports a result with sell price prefilled from msrp', async () => {
-    fetchWithAuth
-      .mockResolvedValueOnce(jsonResponse(statusPayload))
-      .mockResolvedValueOnce(jsonResponse({ data: [product] }))
-      .mockResolvedValueOnce(jsonResponse({ data: { id: 'catalog-1' } }));
+    lookupResponse = jsonResponse({ data: [product] });
 
     render(<TdSynnexEcExpressPanel />);
     await screen.findByTestId('td-synnex-ec-panel');

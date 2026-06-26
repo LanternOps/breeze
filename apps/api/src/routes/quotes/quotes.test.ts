@@ -8,6 +8,7 @@ vi.mock('../../services/quoteService', () => ({
   updateQuote: vi.fn(),
   deleteDraftQuote: vi.fn(),
   addBlock: vi.fn(),
+  updateBlock: vi.fn(),
   deleteBlock: vi.fn(),
   addManualLine: vi.fn(),
   addCatalogLine: vi.fn(),
@@ -166,6 +167,33 @@ describe('quote crud + lines routes', () => {
     const body = await res.json();
     expect(body.data.ok).toBe(true);
     expect(svc.deleteDraftQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('PATCH /:id/blocks/:blockId updates a heading block (200, forwards body)', async () => {
+    (svc.updateBlock as any).mockResolvedValue({ id: BLOCK_ID, blockType: 'heading', content: { text: 'New title', level: 2 } });
+    const res = await app().request(`/${QUOTE_ID}/blocks/${BLOCK_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blockType: 'heading', content: { text: 'New title', level: 2 } }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.content.text).toBe('New title');
+    expect(svc.updateBlock).toHaveBeenCalledWith(
+      QUOTE_ID, BLOCK_ID,
+      { blockType: 'heading', content: { text: 'New title', level: 2 } },
+      expect.anything(),
+    );
+  });
+
+  it('PATCH /:id/blocks/:blockId rejects an invalid content shape (400)', async () => {
+    const res = await app().request(`/${QUOTE_ID}/blocks/${BLOCK_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blockType: 'heading', content: { text: '' } }), // empty heading text
+    });
+    expect(res.status).toBe(400);
+    expect(svc.updateBlock).not.toHaveBeenCalled();
   });
 
   it('DELETE /:id/blocks/:blockId deletes a block (200, forwards ids)', async () => {

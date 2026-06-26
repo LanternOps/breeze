@@ -52,9 +52,10 @@ export function resolveEffectiveTaxRate(input: {
   orgRate: string | null;
   partnerRate: string | null;
 }): string {
-  if (input.taxExempt) return '0.000';
+  // Fraction with scale 5 (3 percent decimals) — see numeric(8,5) tax_rate columns.
+  if (input.taxExempt) return '0.00000';
   const rate = input.orgRate ?? input.partnerRate ?? '0';
-  return Number(rate).toFixed(3);
+  return Number(rate).toFixed(5);
 }
 
 export function deriveInvoiceStatus(input: {

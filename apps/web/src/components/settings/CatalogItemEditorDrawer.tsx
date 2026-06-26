@@ -9,9 +9,11 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { useOrgStore } from '@/stores/orgStore';
+import { fetchWithAuth } from '../../stores/auth';
 import {
   createCatalogItem, updateCatalogItem, getCatalogItem, setBundleComponents,
   setOrgPriceOverride, removeOrgPriceOverride,
+  uploadCatalogItemImage, importCatalogItemImageFromUrl, catalogItemImagePath, deleteCatalogItemImageRequest,
   computeMargin, formatMargin, marginTone,
   CATALOG_TYPE_LABELS, CATALOG_TYPE_ORDER,
   type CatalogItem, type CatalogItemType, type CatalogItemDetail, type OrgPriceOverride,
@@ -95,6 +97,14 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   // persisted under attributes.enrichment on create. Null for plain/edited items.
   const [enrichment, setEnrichment] = useState<EnrichmentProvenance | null>(null);
   const effectiveId = editId ?? committedId;
+
+  // Product image (one per item; manual upload, shown on quotes). Only available
+  // once the item is persisted (effectiveId). `imageVersion` bumps to refetch the
+  // preview after an upload/remove.
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageVersion, setImageVersion] = useState(0);
+  const [imageUrl, setImageUrl] = useState('');
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<Element | null>(null);
@@ -268,6 +278,65 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       setOverrideBusy(false);
     }
   }, [overrideBusy, effectiveId]);
+
+  // ---- product image (#5) --------------------------------------------------
+  const uploadImage = useCallback(async (file: File) => {
+    if (!effectiveId || imageBusy) return;
+    setImageBusy(true);
+    try {
+      await runAction({
+        request: () => uploadCatalogItemImage(effectiveId, file),
+        errorFallback: 'Could not upload the image. Retry.',
+        successMessage: 'Image uploaded',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setImageVersion((v) => v + 1);
+    } catch (err) {
+      handleActionError(err, 'Could not upload the image. Retry.');
+    } finally {
+      setImageBusy(false);
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  }, [effectiveId, imageBusy]);
+
+  const importFromUrl = useCallback(async () => {
+    if (!effectiveId || imageBusy) return;
+    const url = imageUrl.trim();
+    if (!url) { showToast({ message: 'Enter an image URL.', type: 'error' }); return; }
+    setImageBusy(true);
+    try {
+      await runAction({
+        request: () => importCatalogItemImageFromUrl(effectiveId, url),
+        errorFallback: 'Could not import the image from that URL. Retry.',
+        successMessage: 'Image imported',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setImageVersion((v) => v + 1);
+      setImageUrl('');
+    } catch (err) {
+      handleActionError(err, 'Could not import the image from that URL. Retry.');
+    } finally {
+      setImageBusy(false);
+    }
+  }, [effectiveId, imageBusy, imageUrl]);
+
+  const removeImage = useCallback(async () => {
+    if (!effectiveId || imageBusy) return;
+    setImageBusy(true);
+    try {
+      await runAction({
+        request: () => deleteCatalogItemImageRequest(effectiveId),
+        errorFallback: 'Could not remove the image. Retry.',
+        successMessage: 'Image removed',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setImageVersion((v) => v + 1);
+    } catch (err) {
+      handleActionError(err, 'Could not remove the image. Retry.');
+    } finally {
+      setImageBusy(false);
+    }
+  }, [effectiveId, imageBusy]);
 
   // ---- save ----------------------------------------------------------------
   const priceNum = Number(unitPrice);
@@ -488,6 +557,63 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
             </span>
           </div>
 
+          {/* Product image (#5) — manual upload, shown on quotes */}
+          {canWrite && (
+            <div className="space-y-2 rounded-md border p-3" data-testid="catalog-form-image">
+              <span className="text-xs font-medium text-muted-foreground">Product image</span>
+              {effectiveId ? (
+                <>
+                  <CatalogImagePreview itemId={effectiveId} version={imageVersion} />
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      disabled={imageBusy}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadImage(f); }}
+                      className="block w-full text-xs file:mr-2 file:rounded-md file:border file:bg-muted file:px-2 file:py-1 file:text-xs file:font-medium disabled:opacity-50"
+                      data-testid="catalog-form-image-input"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void removeImage()}
+                      disabled={imageBusy}
+                      className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                      data-testid="catalog-form-image-remove"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="url"
+                      value={imageUrl}
+                      onChange={(e) => setImageUrl(e.target.value)}
+                      disabled={imageBusy}
+                      placeholder="https://example.com/product.png"
+                      className={`${fieldCls} text-xs disabled:opacity-50`}
+                      data-testid="catalog-form-image-url"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void importFromUrl()}
+                      disabled={imageBusy || imageUrl.trim() === ''}
+                      className="shrink-0 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                      data-testid="catalog-form-image-url-btn"
+                    >
+                      Import from URL
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">PNG, JPEG, or WebP up to 5 MB.</p>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground" data-testid="catalog-form-image-hint">
+                  Save the item first, then add a product image.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Bundle toggle */}
           <label className="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-sm">
             <input
@@ -698,4 +824,39 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     </div>,
     document.body,
   );
+}
+
+// Product-image preview. GET /catalog/:id/image needs the Bearer auth header, so a
+// bare <img src> would 401 — fetchWithAuth → blob → object URL (mirrors
+// QuoteImagePreview). 404 means the item simply has no image yet. `version` bumps
+// to refetch after an upload/remove.
+function CatalogImagePreview({ itemId, version }: { itemId: string; version: number }) {
+  const [url, setUrl] = useState<string>();
+  const [state, setState] = useState<'loading' | 'none' | 'error' | 'ok'>('loading');
+
+  useEffect(() => {
+    let objectUrl: string | undefined;
+    let cancelled = false;
+    setState('loading');
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(catalogItemImagePath(itemId));
+        if (res.status === 404) { if (!cancelled) setState('none'); return; }
+        if (!res.ok) { if (!cancelled) setState('error'); return; }
+        const blob = await res.blob();
+        if (cancelled) return;
+        objectUrl = window.URL.createObjectURL(blob);
+        setUrl(objectUrl);
+        setState('ok');
+      } catch {
+        if (!cancelled) setState('error');
+      }
+    })();
+    return () => { cancelled = true; if (objectUrl) window.URL.revokeObjectURL(objectUrl); };
+  }, [itemId, version]);
+
+  if (state === 'loading') return <div className="h-32 w-full animate-pulse rounded border bg-muted" data-testid="catalog-image-loading" />;
+  if (state === 'none') return <p className="rounded border border-dashed py-6 text-center text-xs text-muted-foreground" data-testid="catalog-image-empty">No image yet.</p>;
+  if (state === 'error' || !url) return <p className="text-xs text-muted-foreground">Image preview unavailable.</p>;
+  return <img src={url} alt="Product" className="max-h-40 rounded border" data-testid="catalog-image-preview" />;
 }

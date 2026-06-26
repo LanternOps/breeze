@@ -11,6 +11,8 @@ interface PartnerBilling {
   defaultTaxRate: string | null;
   invoiceNumberPrefix: string;
   invoiceTermsDays: number;
+  defaultMarkupPercent: string | null;
+  autoTaxHardware: boolean;
   invoiceFooter: string | null;
   billingCompanyName: string | null;
   billingPhone: string | null;
@@ -34,6 +36,10 @@ export default function PartnerBillingSettings() {
   const [taxPercent, setTaxPercent] = useState('');
   const [prefix, setPrefix] = useState('INV');
   const [termsDays, setTermsDays] = useState('30');
+  // Default markup over distributor cost used to pre-fill catalog import prices.
+  const [markupPercent, setMarkupPercent] = useState('');
+  // When true, hardware catalog items default to taxable on import.
+  const [autoTaxHardware, setAutoTaxHardware] = useState(true);
   const [footer, setFooter] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [phone, setPhone] = useState('');
@@ -58,6 +64,8 @@ export default function PartnerBillingSettings() {
       setTaxPercent(pctFromFraction(p.defaultTaxRate));
       setPrefix(p.invoiceNumberPrefix ?? 'INV');
       setTermsDays(String(p.invoiceTermsDays ?? 30));
+      setMarkupPercent(p.defaultMarkupPercent != null ? String(Number(p.defaultMarkupPercent)) : '');
+      setAutoTaxHardware(p.autoTaxHardware ?? true);
       setFooter(p.invoiceFooter ?? '');
       setCompanyName(p.billingCompanyName ?? '');
       setPhone(p.billingPhone ?? '');
@@ -84,6 +92,8 @@ export default function PartnerBillingSettings() {
     try {
       const pct = taxPercent.trim();
       const defaultTaxRate = pct === '' ? null : Number(pct) / 100;
+      const markupTrimmed = markupPercent.trim();
+      const defaultMarkupPercent = markupTrimmed === '' ? null : Number(markupTrimmed);
       await runAction({
         request: () => fetchWithAuth('/partner/billing-settings', {
           method: 'PATCH',
@@ -92,6 +102,8 @@ export default function PartnerBillingSettings() {
             defaultTaxRate,
             invoiceNumberPrefix: prefix.trim(),
             invoiceTermsDays: Number(termsDays),
+            defaultMarkupPercent,
+            autoTaxHardware,
             invoiceFooter: footer.trim() === '' ? null : footer,
             billingCompanyName: companyName.trim() === '' ? null : companyName.trim(),
             billingPhone: phone.trim() === '' ? null : phone.trim(),
@@ -115,7 +127,7 @@ export default function PartnerBillingSettings() {
     } finally {
       setSaving(false);
     }
-  }, [saving, currencyCode, taxPercent, prefix, termsDays, footer,
+  }, [saving, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, footer,
       companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading billing settings…</p>;
@@ -148,7 +160,7 @@ export default function PartnerBillingSettings() {
           <div>
             <label className="text-sm font-medium" htmlFor="pb-tax">Default tax rate (%)</label>
             <input
-              id="pb-tax" type="number" min={0} max={100} step="0.1" value={taxPercent}
+              id="pb-tax" type="number" min={0} max={100} step="0.001" value={taxPercent}
               onChange={(e) => setTaxPercent(e.target.value)} placeholder="None"
               data-testid="partner-billing-tax"
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
@@ -172,6 +184,35 @@ export default function PartnerBillingSettings() {
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             />
           </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="pb-markup">Default markup (%)</label>
+            <input
+              id="pb-markup" type="number" min={0} max={9999.99} step="0.01" value={markupPercent}
+              onChange={(e) => setMarkupPercent(e.target.value)} placeholder="None"
+              data-testid="partner-billing-markup"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Default markup over distributor cost, used to pre-fill the sell price when importing catalog
+              items. The resulting gross margin is shown as you import.
+            </p>
+          </div>
+        </div>
+        <div className="mt-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              id="pb-auto-tax-hardware"
+              type="checkbox"
+              checked={autoTaxHardware}
+              onChange={(e) => setAutoTaxHardware(e.target.checked)}
+              data-testid="partner-billing-auto-tax-hardware"
+              className="h-4 w-4 rounded border"
+            />
+            <span className="text-sm font-medium">Auto-tax hardware items</span>
+          </label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Newly imported hardware defaults to taxable.
+          </p>
         </div>
         <div className="mt-4">
           <label className="text-sm font-medium" htmlFor="pb-footer">Invoice footer</label>

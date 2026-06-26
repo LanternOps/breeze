@@ -34,7 +34,7 @@ export const partners = pgTable('partners', {
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   stripeCustomerId: text('stripe_customer_id'),
   currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
-  defaultTaxRate: numeric('default_tax_rate', { precision: 6, scale: 3 }),
+  defaultTaxRate: numeric('default_tax_rate', { precision: 8, scale: 5 }),
   invoiceNumberPrefix: varchar('invoice_number_prefix', { length: 12 }).notNull().default('INV'),
   invoiceTermsDays: integer('invoice_terms_days').notNull().default(30),
   invoiceFooter: text('invoice_footer'),
@@ -48,6 +48,15 @@ export const partners = pgTable('partners', {
   billingAddressPostalCode: varchar('billing_address_postal_code', { length: 40 }),
   billingAddressCountry: char('billing_address_country', { length: 2 }),
   billingTermsAndConditions: text('billing_terms_and_conditions'),
+  // Default markup over distributor cost (percent) used to pre-fill the listed
+  // price when importing catalog items; feeds the catalog `markupPercent` field.
+  // Percent value 0..9999.99. (The import view shows the resulting gross margin
+  // alongside.)
+  defaultMarkupPercent: numeric('default_markup_percent', { precision: 6, scale: 2 }),
+  // When true (default), hardware catalog items are pre-flagged as taxable when
+  // added or imported. Partners can opt out if their jurisdiction treats hardware
+  // as non-taxable or they prefer to set taxability item-by-item.
+  autoTaxHardware: boolean('auto_tax_hardware').notNull().default(true),
   // AI for Office is a per-partner entitlement the platform operator grants
   // (off by default). The session-minting exchange and the /client-ai/admin
   // surface gate on this; it is NOT in settings JSONB because that is
@@ -70,7 +79,7 @@ export const organizations = pgTable('organizations', {
   billingContact: jsonb('billing_contact'),
   taxId: varchar('tax_id', { length: 100 }),
   taxExempt: boolean('tax_exempt').notNull().default(false),
-  taxRate: numeric('tax_rate', { precision: 6, scale: 3 }),
+  taxRate: numeric('tax_rate', { precision: 8, scale: 5 }),
   billingAddressLine1: varchar('billing_address_line1', { length: 255 }),
   billingAddressLine2: varchar('billing_address_line2', { length: 255 }),
   billingAddressCity: varchar('billing_address_city', { length: 120 }),

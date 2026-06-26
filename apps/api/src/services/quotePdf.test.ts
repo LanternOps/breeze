@@ -40,6 +40,32 @@ describe('renderQuotePdf', () => {
     expect(buf.length).toBeGreaterThan(800);
   });
 
+  it('embeds a product thumbnail for a catalog-sourced line via loadCatalogImage', async () => {
+    const requested: string[] = [];
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-3', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },
+      [{ id: 'b2', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b2', catalogItemId: 'cat-9', description: 'Laptop', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' }],
+      async () => null,
+      {},
+      async (catalogItemId) => { requested.push(catalogItemId); return { data: ONE_BY_ONE_PNG }; },
+    );
+    expect(requested).toEqual(['cat-9']);
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('skips the thumbnail (no throw) when loadCatalogImage rejects', async () => {
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-4', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },
+      [{ id: 'b2', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b2', catalogItemId: 'cat-9', description: 'Laptop', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' }],
+      async () => null,
+      {},
+      async () => { throw new Error('image store down'); },
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
   it('renders mixed one-time + monthly + annual lines without throwing', async () => {
     const buf = await renderQuotePdf(
       {
