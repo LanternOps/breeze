@@ -4,7 +4,6 @@ import { requireScope, requirePermission, type AuthContext } from '../../middlew
 import { PERMISSIONS } from '../../services/permissions';
 import { enrichRequestSchema } from '@breeze/shared';
 import { enrichCatalogItem, EnrichmentError } from '../../services/catalogEnrichmentService';
-import { catalogActorFrom } from './catalog';
 
 export const catalogEnrichRoutes = new Hono();
 
@@ -14,10 +13,9 @@ const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSI
 catalogEnrichRoutes.post('/enrich', scopes, writePerm, zValidator('json', enrichRequestSchema), async (c) => {
   const { query, hint } = c.req.valid('json');
   const auth = c.get('auth') as AuthContext;
-  const actor = catalogActorFrom(c);
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   try {
-    const data = await enrichCatalogItem(query, hint, { userId: actor.userId, orgId });
+    const data = await enrichCatalogItem(query, hint, { userId: auth.user.id, orgId });
     return c.json({ data });
   } catch (err) {
     if (err instanceof EnrichmentError) return c.json({ error: err.message, code: err.code }, err.status);

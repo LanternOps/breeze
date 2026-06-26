@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import type { AuthContext } from '../../middleware/auth';
 
 const { enrichCatalogItem, EnrichmentError } = vi.hoisted(() => {
   const enrichCatalogItem = vi.fn();
@@ -19,15 +20,14 @@ vi.mock('../../middleware/auth', () => ({
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: { CATALOG_WRITE: { resource: 'catalog', action: 'write' } },
 }));
-vi.mock('./catalog', () => ({
-  catalogActorFrom: () => ({ userId: 'u1', orgId: 'o1' }),
-}));
 
 import { catalogEnrichRoutes } from './enrich';
 
+const fakeAuth = { user: { id: 'u1' }, orgId: 'o1', accessibleOrgIds: ['o1'] } as unknown as AuthContext;
+
 function app() {
   const a = new Hono();
-  a.use('*', async (c, next) => { c.set('auth', { user: { id: 'u1' }, orgId: 'o1', accessibleOrgIds: ['o1'] }); await next(); });
+  a.use('*', async (c, next) => { c.set('auth', fakeAuth); await next(); });
   a.route('/', catalogEnrichRoutes);
   return a;
 }

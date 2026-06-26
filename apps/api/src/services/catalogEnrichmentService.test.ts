@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { create, checkBudget, checkAiRateLimit, recordUsage } = vi.hoisted(() => ({
   create: vi.fn(),
-  checkBudget: vi.fn(async () => null),
-  checkAiRateLimit: vi.fn(async () => null),
+  checkBudget: vi.fn(async (): Promise<string | null> => null),
+  checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({

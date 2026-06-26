@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { randomUUID } from 'node:crypto';
 import { resolveDefaultModel } from './aiAgent';
 import { checkBudget, checkAiRateLimit, recordUsage } from './aiCostTracker';
@@ -10,8 +11,8 @@ import {
 
 export class EnrichmentError extends Error {
   code: string;
-  status: number;
-  constructor(message: string, code: string, status: number) {
+  status: ContentfulStatusCode;
+  constructor(message: string, code: string, status: ContentfulStatusCode) {
     super(message);
     this.name = 'EnrichmentError';
     this.code = code;
@@ -57,7 +58,7 @@ function priceGuidanceFrom(low: number | null, high: number | null, currency: st
 function lastTextBlock(content: Array<{ type: string; text?: string }>): string | null {
   for (let i = content.length - 1; i >= 0; i--) {
     const b = content[i];
-    if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) return b.text;
+    if (b && b.type === 'text' && typeof b.text === 'string' && b.text.trim()) return b.text;
   }
   return null;
 }
