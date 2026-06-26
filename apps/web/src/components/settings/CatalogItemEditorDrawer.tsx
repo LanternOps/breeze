@@ -76,6 +76,10 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const [isBundle, setIsBundle] = useState(false);
   const [components, setComponents] = useState<ComponentDraft[]>([]);
   const [componentsLoading, setComponentsLoading] = useState(false);
+  // True when the detail load (components + overrides) failed for an existing
+  // item. Empty `components` is then "we couldn't load them", NOT "this item has
+  // none" — so the bundle save path must be blocked to avoid wiping the bundle.
+  const [detailLoadFailed, setDetailLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   // Per-org price overrides (#1368). Loaded for an existing item and edited as a
   // sub-resource — each set/remove applies immediately (the item already exists),
@@ -105,6 +109,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     setOverrides([]);
     setNewOverrideOrgId('');
     setNewOverridePrice('');
+    setDetailLoadFailed(false);
     if (item) {
       setItemType(item.itemType);
       setName(item.name);
@@ -116,19 +121,33 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       // Existing items carry sub-resources (bundle components + per-org price
       // overrides) — load the detail once and hydrate both.
       setComponentsLoading(item.isBundle);
+      const failDetailLoad = () => {
+        // The detail load is load-bearing: it drives what the bundle save writes
+        // back. Surfacing the failure (and flagging it) prevents a silent "empty
+        // bundle" that a save would persist as zero components (#1944). Contrast
+        // QuoteEditor's loadEcStatus, where `if (!res.ok) return` is intentional
+        // optional context.
+        setDetailLoadFailed(true);
+        showToast({
+          message: 'Could not load this item’s components and pricing. Reopen to retry before saving.',
+          type: 'error',
+        });
+      };
       void getCatalogItem(item.id)
         .then(async (res) => {
           if (res.status === 401) return UNAUTHORIZED();
-          if (!res.ok) return;
+          if (!res.ok) return failDetailLoad();
           const body = (await res.json().catch(() => null)) as { data?: CatalogItemDetail } | null;
-          const rows = body?.data?.components ?? [];
+          if (!body?.data) return failDetailLoad();
+          const rows = body.data.components ?? [];
           setComponents(rows.map((r) => ({
             componentItemId: r.componentItemId,
             quantity: r.quantity,
             showOnInvoice: r.showOnInvoice,
           })));
-          setOverrides(body?.data?.overrides ?? []);
+          setOverrides(body.data.overrides ?? []);
         })
+        .catch(() => failDetailLoad())
         .finally(() => setComponentsLoading(false));
     } else {
       setItemType('service');
@@ -254,12 +273,24 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const priceNum = Number(unitPrice);
   const priceValid = unitPrice.trim() !== '' && Number.isFinite(priceNum);
   const marginPreview = computeMargin(unitPrice, costBasis);
-  const canSave = !saving && name.trim() !== '' && priceValid;
+  // Block saving a bundle whose components never loaded — an empty save would
+  // wipe the real components (#1944).
+  const canSave = !saving && name.trim() !== '' && priceValid && !(isBundle && detailLoadFailed);
 
   const save = useCallback(async () => {
     if (saving) return;
     if (!name.trim()) { showToast({ message: 'Enter an item name.', type: 'error' }); return; }
     if (!priceValid) { showToast({ message: 'Enter a valid unit price.', type: 'error' }); return; }
+    // If the detail load failed, our `components` state is unknown — not empty.
+    // Saving a bundle would overwrite its real components with this stale/empty
+    // set, wiping the bundle (#1944). Block until the user reopens and reloads.
+    if (isBundle && detailLoadFailed) {
+      showToast({
+        message: 'This bundle’s components could not be loaded. Reopen the item to retry before saving.',
+        type: 'error',
+      });
+      return;
+    }
 
     const comps = isBundle ? components : [];
     for (const c of comps) {
@@ -317,7 +348,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     } finally {
       setSaving(false);
     }
-  }, [saving, name, priceValid, isBundle, components, itemType, sku, priceNum, costBasis, enrichment, effectiveId, editId, onSaved, onClose]);
+  }, [saving, name, priceValid, isBundle, detailLoadFailed, components, itemType, sku, priceNum, costBasis, enrichment, effectiveId, editId, onSaved, onClose]);
 
   // Auto-fill a NEW item from the web: fill the fields this form actually edits
   // (name + type) and stash provenance. Price is never auto-set — the button shows
@@ -491,6 +522,13 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
               {componentsLoading ? (
                 <p className="py-2 text-center text-xs text-muted-foreground">Loading components.</p>
+              ) : detailLoadFailed ? (
+                <p
+                  className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-center text-xs text-destructive"
+                  data-testid="catalog-bundle-load-error"
+                >
+                  Could not load this bundle’s components. Reopen the item to retry — saving now is disabled to avoid wiping the bundle.
+                </p>
               ) : components.length === 0 ? (
                 <p className="py-2 text-center text-xs text-muted-foreground" data-testid="catalog-bundle-empty">
                   No components yet. Add the items this bundle includes.
