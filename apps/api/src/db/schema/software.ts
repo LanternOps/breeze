@@ -13,7 +13,7 @@ import {
   uniqueIndex
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 import { maintenanceWindows } from './maintenance';
@@ -21,7 +21,9 @@ import { deploymentStatusEnum } from './deployments';
 
 export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
+  integrationProvider: varchar('integration_provider', { length: 20 }),
   name: varchar('name', { length: 200 }).notNull(),
   vendor: varchar('vendor', { length: 200 }),
   description: text('description'),
@@ -32,6 +34,8 @@ export const softwareCatalog = pgTable('software_catalog', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdx: index('software_catalog_org_id_idx').on(table.orgId),
+  partnerIdx: index('software_catalog_partner_id_idx').on(table.partnerId),
+  partnerProviderIdx: index('software_catalog_partner_provider_idx').on(table.partnerId, table.integrationProvider),
   nameIdx: index('software_catalog_name_idx').on(table.name),
   vendorIdx: index('software_catalog_vendor_idx').on(table.vendor),
   categoryIdx: index('software_catalog_category_idx').on(table.category)
