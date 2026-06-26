@@ -105,6 +105,13 @@ export const DEFAULT_POLICY_CHECK_INTERVAL = 60;
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 100;
 
+// Max ids accepted by a single bulk billing action (quotes/invoices/contracts).
+// Each id runs sequentially in its own short transaction, so this bounds both
+// request latency and connection-pool pressure. Shared by the Zod request
+// schemas (server enforcement) and the web bulk runners (client-side guard +
+// friendly message) so the two can never drift.
+export const BULK_ID_LIMIT = 50;
+
 // Session timeouts
 export const ACCESS_TOKEN_EXPIRY = '15m';
 export const REFRESH_TOKEN_EXPIRY = '7d';

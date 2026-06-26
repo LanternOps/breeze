@@ -17,6 +17,7 @@ import {
   formatDate,
   formatMoney,
 } from './quoteTypes';
+import { BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
   id: string;
@@ -216,6 +217,10 @@ export function QuotesPage() {
     async (path: string, verb: string) => {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return;
+      if (ids.length > BULK_ID_LIMIT) {
+        showToast({ type: 'warning', message: `Select up to ${BULK_ID_LIMIT} at a time.` });
+        return;
+      }
       setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number; skippedReasons?: Record<string, number> } }>({

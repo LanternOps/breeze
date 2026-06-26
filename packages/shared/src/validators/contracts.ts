@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BULK_ID_LIMIT } from '../constants';
 
 const money = z.string().regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string');
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
@@ -66,8 +67,8 @@ export const listContractsQuerySchema = z.object({
 });
 
 export const bulkContractIdsSchema = z.object({
-  // capped at 50: each item runs sequentially in its own short transaction (conn-pool safety)
-  ids: z.array(z.string().guid()).min(1).max(50),
+  // capped at BULK_ID_LIMIT: each item runs sequentially in its own short transaction (conn-pool safety)
+  ids: z.array(z.string().guid()).min(1).max(BULK_ID_LIMIT),
 });
 
 export type ContractLineInput = z.infer<typeof contractLineInputSchema>;

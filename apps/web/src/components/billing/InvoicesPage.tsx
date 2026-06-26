@@ -18,7 +18,7 @@ import {
   formatDate,
   formatMoney,
 } from './invoiceTypes';
-import { INVOICE_STATUSES } from '@breeze/shared';
+import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
   id: string;
@@ -231,6 +231,10 @@ export function InvoicesPage() {
     async (path: string, verb: string, extraBody?: Record<string, unknown>): Promise<boolean> => {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return false;
+      if (ids.length > BULK_ID_LIMIT) {
+        showToast({ type: 'warning', message: `Select up to ${BULK_ID_LIMIT} at a time.` });
+        return false;
+      }
       setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number } }>({
@@ -576,7 +580,7 @@ export function InvoicesPage() {
             <button
               type="button"
               onClick={async () => { const ok = await runBulkInvoices('/invoices/bulk-void', 'voided', { reason: voidReason.trim() }); if (ok) setVoidOpen(false); }}
-              disabled={!voidReason.trim()}
+              disabled={!voidReason.trim() || bulkBusy}
               data-testid="invoices-bulk-void-submit"
               className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
             >

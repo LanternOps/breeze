@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BULK_ID_LIMIT } from '../constants';
 
 // Bounded to numeric(12,2) (max 9,999,999,999.99) so out-of-range inputs fail
 // fast with a 400 rather than overflowing at insert (DB-layer 500). Mirrors the
@@ -95,8 +96,8 @@ export const listQuotesQuerySchema = z.object({
 });
 
 export const bulkQuoteIdsSchema = z.object({
-  // capped at 50: each item runs sequentially in its own short transaction (conn-pool safety)
-  ids: z.array(z.string().guid()).min(1).max(50),
+  // capped at BULK_ID_LIMIT: each item runs sequentially in its own short transaction (conn-pool safety)
+  ids: z.array(z.string().guid()).min(1).max(BULK_ID_LIMIT),
 });
 
 export type QuoteLineInput = z.infer<typeof quoteLineInputSchema>;

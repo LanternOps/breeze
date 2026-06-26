@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { BULK_ID_LIMIT } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -161,6 +162,10 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     async (path: string, verb: string) => {
       const ids = Array.from(bulk.selectedIds);
       if (ids.length === 0) return;
+      if (ids.length > BULK_ID_LIMIT) {
+        showToast({ type: 'warning', message: `Select up to ${BULK_ID_LIMIT} at a time.` });
+        return;
+      }
       setBulkBusy(true);
       try {
         const result = await runAction<{ data: { succeeded: number; skipped: number; failed: number; skippedReasons?: Record<string, number> } }>({
