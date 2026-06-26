@@ -357,6 +357,8 @@ export async function upsertDiscoveredSites(params: {
       set: {
         s1SiteName: sql`excluded.s1_site_name`,
         agentsCount: sql`excluded.agents_count`,
+        // COALESCE so a sync that returns no token (listSites failed or omitted it)
+        // preserves the existing one — never clobber a working deploy credential with NULL.
         registrationToken: sql`COALESCE(excluded.registration_token, s1_org_mappings.registration_token)`,
         lastSeenAt: sql`excluded.last_seen_at`,
         updatedAt: sql`excluded.updated_at`,
@@ -509,8 +511,18 @@ async function syncAgentsForIntegration(
   const agentResult = await dbModule.runOutsideDbContext(() =>
     client.listAgents(integration.lastSyncAt ?? undefined)
   );
-  const siteTokens = await dbModule.runOutsideDbContext(() => client.listSites());
-  const tokenBySite = new Map(siteTokens.map((s) => [s.siteId, s.registrationToken]));
+  // Site registration tokens are an additive capability (deploy-time enrollment);
+  // a failure here (e.g. the API token lacks sites:read) must NOT abort the core
+  // agent/threat sync. Degrade to no tokens this run — the COALESCE upsert preserves
+  // any previously-synced token, and the next successful sync backfills.
+  let tokenBySite = new Map<string, string | null>();
+  try {
+    const siteTokens = await dbModule.runOutsideDbContext(() => client.listSites());
+    tokenBySite = new Map(siteTokens.map((s) => [s.siteId, s.registrationToken]));
+  } catch (error) {
+    console.error('[s1-sync] listSites failed; continuing agent sync without token refresh:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
   const fetchedAgents = agentResult.results;
 
   // Phase 2 — all reconcile/mapping/upsert DB work runs in ONE short context.

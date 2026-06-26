@@ -8,7 +8,21 @@ export interface ResolvedInstaller {
   downloadUrl: string | null;
   silentInstallArgs: string | null;
 }
+/** Failure outcome. No HTTP `status` — callers always map this to a 200 body with `status:'failed'`. */
 export type EdrResolveError = { error: string };
+
+/** Decrypt a column-bound secret, returning null on either empty input or a
+ *  decryption failure (corrupt blob, wrong key, missing AAD). decryptForColumn
+ *  THROWS on a malformed value, so we convert that into the resolver's graceful
+ *  `{ error }` contract rather than letting it become a 500. */
+function tryDecryptColumn(table: string, column: string, value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    return decryptForColumn(table, column, value);
+  } catch {
+    return null;
+  }
+}
 
 /** Pure substitution - kept separate so it is unit-testable without a DB. */
 export function substituteHuntress(
@@ -44,7 +58,7 @@ export async function resolveEdrInstaller(params: {
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
   if (params.provider === 'huntress') return resolveHuntress(params);
-  return resolveSentinelOne(params); // implemented in Task 11
+  return resolveSentinelOne(params);
 }
 
 async function resolveHuntress(params: {
@@ -52,8 +66,10 @@ async function resolveHuntress(params: {
   downloadUrlTemplate: string | null;
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
-  // System context: the integration row is partner-axis and unreadable under
-  // an org-scoped request context (partner read needs system context).
+  // System context: both huntress_org_mappings and huntress_integrations are
+  // partner-axis (Shape 3); under an org-scoped request context both reads
+  // silently return zero rows. Read under system context, keyed off the trusted
+  // authenticated orgId the caller passed.
   const ctx = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [mapping] = await db
@@ -68,8 +84,7 @@ async function resolveHuntress(params: {
 
       const [integration] = await db
         .select({
-          accountId: huntressIntegrations.accountId,
-          apiKeyEncrypted: huntressIntegrations.apiKeyEncrypted,
+          accountKeyEncrypted: huntressIntegrations.accountKeyEncrypted,
           isActive: huntressIntegrations.isActive,
         })
         .from(huntressIntegrations)
@@ -84,18 +99,27 @@ async function resolveHuntress(params: {
   if (ctx.kind === 'unmapped') return { error: 'Organization not mapped to Huntress' };
   if (ctx.kind === 'inactive') return { error: 'Huntress integration is disconnected' };
 
-  // The Huntress Account Key used in the download URL and /ACCT_KEY.
-  // VERIFICATION (spec open question 4b): confirm whether accountId is the deploy
-  // account key, or whether a dedicated decrypted field must be used here.
-  const acctKey = ctx.integration.accountId;
+  // The Huntress deployment Account Key (used in the installer URL and /ACCT_KEY) is
+  // a dedicated secret distinct from the API account_id; it is captured on the
+  // integration form and stored encrypted.
   const orgKey = ctx.mapping.orgKey;
-  if (!acctKey) return { error: 'Huntress account key not available; reconnect the integration' };
   if (!orgKey) return { error: 'Huntress org key not synced; run Sync in Integrations' };
+  if (!ctx.integration.accountKeyEncrypted) {
+    return { error: 'Huntress account key not configured — add it in the Huntress integration settings' };
+  }
+  const acctKey = tryDecryptColumn('huntress_integrations', 'account_key_encrypted', ctx.integration.accountKeyEncrypted);
+  if (!acctKey) {
+    return { error: 'Huntress account key could not be decrypted — re-enter it in the integration settings' };
+  }
 
-  return substituteHuntress(
+  const resolved = substituteHuntress(
     { downloadUrlTemplate: params.downloadUrlTemplate, silentInstallArgsTemplate: params.silentInstallArgsTemplate },
     { acctKey, orgKey },
   );
+  // A built-in Huntress package must always yield a concrete download URL — never
+  // fall through to dispatching an un-substituted template.
+  if (!resolved.downloadUrl) return { error: 'Huntress installer URL is unavailable for this package' };
+  return resolved;
 }
 
 async function resolveSentinelOne(params: {
@@ -103,6 +127,8 @@ async function resolveSentinelOne(params: {
   downloadUrlTemplate: string | null;
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
+  // System context: s1_org_mappings and s1_integrations are partner-axis (Shape 3),
+  // unreadable under an org-scoped request. Keyed off the trusted authenticated orgId.
   const ctx = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [mapping] = await db
@@ -132,8 +158,10 @@ async function resolveSentinelOne(params: {
   if (!ctx.tokenEncrypted) {
     return { error: 'SentinelOne site token not synced — run Sync in Integrations' };
   }
-  const siteToken = decryptForColumn('s1_org_mappings', 'registration_token', ctx.tokenEncrypted);
-  if (!siteToken) return { error: 'SentinelOne site token could not be decrypted' };
+  const siteToken = tryDecryptColumn('s1_org_mappings', 'registration_token', ctx.tokenEncrypted);
+  if (!siteToken) {
+    return { error: 'SentinelOne site token could not be decrypted — reconnect the integration' };
+  }
 
   return substituteS1(
     { downloadUrlTemplate: params.downloadUrlTemplate, silentInstallArgsTemplate: params.silentInstallArgsTemplate },

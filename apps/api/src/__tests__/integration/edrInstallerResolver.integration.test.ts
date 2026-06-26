@@ -19,13 +19,16 @@ import { createPartner, createOrganization } from './db-utils';
 const URL_TPL = 'https://update.huntress.io/download/{huntress_acct_key}/HuntressInstaller.exe';
 const ARGS_TPL = '/ACCT_KEY="{huntress_acct_key}" /ORG_KEY="{huntress_org_key}" /S';
 
-async function seedHuntress(opts: { acctKey: string; orgKey: string; orgId: string; partnerId: string; isActive: boolean }) {
+async function seedHuntress(opts: { acctKey: string | null; orgKey: string; orgId: string; partnerId: string; isActive: boolean }) {
   return withSystemDbAccessContext(async () => {
     const [integration] = await db.insert(huntressIntegrations).values({
       partnerId: opts.partnerId,
       name: 'Test Huntress',
       apiKeyEncrypted: encryptSecret('dummy-api-key', { aad: 'huntress_integrations.api_key_encrypted' })!,
-      accountId: opts.acctKey,
+      accountId: 'huntress-account-id-123',
+      accountKeyEncrypted: opts.acctKey
+        ? encryptSecret(opts.acctKey, { aad: 'huntress_integrations.account_key_encrypted' })!
+        : null,
       isActive: opts.isActive,
     }).returning({ id: huntressIntegrations.id });
 

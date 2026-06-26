@@ -4,7 +4,7 @@ import { softwareCatalog, softwareVersions } from '../db/schema';
 
 export type BuiltinProvider = 'huntress' | 'sentinelone';
 
-export interface BuiltinPackageDef {
+interface BuiltinPackageBase {
   provider: BuiltinProvider;
   name: string;
   vendor: string;
@@ -13,11 +13,17 @@ export interface BuiltinPackageDef {
   websiteUrl?: string;
   fileType: string;
   supportedOs: string[];
-  /** Templated download URL; undefined when the binary must be uploaded. */
-  downloadUrlTemplate?: string;
   silentInstallArgsTemplate: string;
-  requiresBinaryUpload: boolean;
 }
+
+/**
+ * Discriminated on `requiresBinaryUpload` so the two valid shapes can't drift:
+ *  - false → installer URL is derivable, `downloadUrlTemplate` is required (Huntress)
+ *  - true  → no derivable URL; the partner uploads the binary (SentinelOne)
+ */
+export type BuiltinPackageDef =
+  | (BuiltinPackageBase & { requiresBinaryUpload: false; downloadUrlTemplate: string })
+  | (BuiltinPackageBase & { requiresBinaryUpload: true; downloadUrlTemplate?: never });
 
 export const BUILTIN_PACKAGES: Record<BuiltinProvider, BuiltinPackageDef> = {
   huntress: {

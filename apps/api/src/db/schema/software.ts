@@ -21,6 +21,10 @@ import { deploymentStatusEnum } from './deployments';
 
 export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
+  // Dual-axis ownership: exactly one of org_id / partner_id is set
+  // (CHECK software_catalog_one_owner_chk). Partner-scoped rows are built-in
+  // integration packages, marked by integrationProvider ('huntress'|'sentinelone',
+  // CHECK software_catalog_integration_provider_chk).
   orgId: uuid('org_id').references(() => organizations.id),
   partnerId: uuid('partner_id').references(() => partners.id),
   integrationProvider: varchar('integration_provider', { length: 20 }),

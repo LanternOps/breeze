@@ -109,6 +109,8 @@ const upsertIntegrationSchema = z.object({
   name: z.string().min(1).max(200),
   apiKey: z.string().min(1).max(5000).optional(),
   accountId: z.string().min(1).max(120).optional(),
+  // Deployment Account Key (installer URL + /ACCT_KEY) — distinct from accountId.
+  accountKey: z.string().min(1).max(200).optional(),
   apiBaseUrl: z.string().url().max(300).optional().refine(
     (url) => {
       if (!url) return true;
@@ -308,7 +310,8 @@ huntressRoutes.get(
         createdAt: huntressIntegrations.createdAt,
         updatedAt: huntressIntegrations.updatedAt,
         hasApiKey: sql<boolean>`(${huntressIntegrations.apiKeyEncrypted} is not null and ${huntressIntegrations.apiKeyEncrypted} != '')`,
-        hasWebhookSecret: sql<boolean>`(${huntressIntegrations.webhookSecretEncrypted} is not null)`
+        hasWebhookSecret: sql<boolean>`(${huntressIntegrations.webhookSecretEncrypted} is not null)`,
+        hasAccountKey: sql<boolean>`(${huntressIntegrations.accountKeyEncrypted} is not null and ${huntressIntegrations.accountKeyEncrypted} != '')`
       })
       .from(huntressIntegrations)
       .where(and(
@@ -380,11 +383,16 @@ huntressRoutes.post(
       ? encryptSecret(body.webhookSecret)
       : (existing?.webhookSecretEncrypted ?? null);
 
+    const accountKeyEncrypted = body.accountKey
+      ? encryptSecret(body.accountKey, { aad: 'huntress_integrations.account_key_encrypted' })
+      : (existing?.accountKeyEncrypted ?? null);
+
     const payload = {
       partnerId: partnerResult.partnerId,
       name: body.name,
       apiKeyEncrypted,
       accountId: body.accountId ?? existing?.accountId ?? null,
+      accountKeyEncrypted,
       apiBaseUrl: body.apiBaseUrl ?? existing?.apiBaseUrl ?? 'https://api.huntress.io/v1',
       webhookSecretEncrypted,
       isActive: body.isActive ?? existing?.isActive ?? true,
@@ -472,6 +480,7 @@ huntressRoutes.post(
       ...integration,
       hasApiKey: true,
       hasWebhookSecret: webhookSecretEncrypted !== null,
+      hasAccountKey: accountKeyEncrypted !== null,
       syncJobId,
       ...(syncWarning ? { syncWarning } : {}),
     }, existing ? 200 : 201);

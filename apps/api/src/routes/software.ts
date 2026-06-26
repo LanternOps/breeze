@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, like, or, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, sql, desc, like, or, inArray, isNotNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   softwareCatalog,
@@ -14,7 +14,7 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
-import { resolveEdrInstaller, type EdrResolveError } from '../services/edrInstallerResolver';
+import { resolveEdrInstaller, type ResolvedInstaller } from '../services/edrInstallerResolver';
 import { uploadBinary, getPresignedUrl, isS3Configured, isS3NotFound } from '../services/s3Storage';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import {
@@ -422,7 +422,12 @@ softwareRoutes.get(
     }
 
     const conditions: SQL[] = [];
-    if (scopeResult.orgCondition) conditions.push(scopeResult.orgCondition);
+    // Include partner-scoped built-in (integration) packages alongside the caller's
+    // own org packages. RLS scopes built-ins to the caller's partner, so widening
+    // the WHERE here cannot leak another partner's rows.
+    if (scopeResult.orgCondition) {
+      conditions.push(or(scopeResult.orgCondition, isNotNull(softwareCatalog.integrationProvider))!);
+    }
     if (searchTerm) {
       const term = `%${searchTerm}%`;
       conditions.push(
@@ -1035,11 +1040,17 @@ softwareRoutes.post(
 
     const [catalogItem] = await db.select({
       id: softwareCatalog.id,
+      orgId: softwareCatalog.orgId,
       name: softwareCatalog.name,
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, versionRecord.catalogId), eq(softwareCatalog.orgId, orgId)));
-    if (!catalogItem) return c.json({ error: 'Catalog item not found or access denied' }, 404);
+      .where(eq(softwareCatalog.id, versionRecord.catalogId));
+    // RLS already restricts visibility to the caller's org rows + their partner's
+    // built-ins. Extra guard: an org-scoped (non-built-in) row must match the
+    // authenticated org; built-in packages have org_id NULL and are allowed.
+    if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
+      return c.json({ error: 'Catalog item not found or access denied' }, 404);
+    }
 
     const resolvedTargets = await resolveSoftwareTargetDeviceIds(orgId, c.get('permissions') as UserPermissions | undefined, payload);
     if (resolvedTargets.error) {
@@ -1097,52 +1108,66 @@ softwareRoutes.post(
       }
       downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
 
-      if (downloadUrl) {
-        // Get agentIds for target devices
-        const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
-          .from(devices)
-          .where(and(
-            eq(devices.orgId, orgId),
-            inArray(devices.id, targetDeviceIds),
-          ));
-
-        // Built-in EDR packages: resolve per-org keys server-side. Templates live on the
-        // version row (downloadUrl / silentInstallArgs). On any resolution failure, mark
-        // every result failed and skip dispatch — never send a broken installer.
-        let resolvedInstaller: { downloadUrl: string | null; silentInstallArgs: string | null } | null = null;
-        if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
-          const resolved = await resolveEdrInstaller({
-            provider: catalogItem.integrationProvider,
-            orgId,
-            downloadUrlTemplate: versionRecord.downloadUrl,
-            silentInstallArgsTemplate: versionRecord.silentInstallArgs,
-          });
-          if ('error' in resolved) {
-            await db.update(deploymentResults)
-              .set({ status: 'failed', errorMessage: (resolved as EdrResolveError).error, completedAt: new Date() })
-              .where(eq(deploymentResults.deploymentId, deployment!.id));
-            return c.json({ data: { id: deployment!.id, status: 'failed', message: (resolved as EdrResolveError).error } }, 200);
-          }
-          resolvedInstaller = resolved;
+      // Built-in EDR packages: resolve per-org keys server-side BEFORE the dispatch
+      // gate. On resolution failure, mark every result failed and return — never
+      // dispatch and never silently no-op.
+      let resolvedInstaller: ResolvedInstaller | null = null;
+      if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
+        const resolved = await resolveEdrInstaller({
+          provider: catalogItem.integrationProvider,
+          orgId,
+          downloadUrlTemplate: versionRecord.downloadUrl,
+          silentInstallArgsTemplate: versionRecord.silentInstallArgs,
+        });
+        if ('error' in resolved) {
+          await db.update(deploymentResults)
+            .set({ status: 'failed', errorMessage: resolved.error, completedAt: new Date() })
+            .where(eq(deploymentResults.deploymentId, deployment!.id));
+          return c.json({ data: { id: deployment!.id, status: 'failed', message: resolved.error } }, 200);
         }
+        resolvedInstaller = resolved;
+      }
 
-        for (const device of targetDevices) {
-          const command: AgentCommand = {
-            id: `sw-install-${deployment!.id}-${device.id}`,
-            type: 'software_install',
-            payload: {
-              deploymentId: deployment!.id,
-              downloadUrl: resolvedInstaller?.downloadUrl ?? downloadUrl,
-              checksum: versionRecord.checksum,
-              fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
-              fileType: versionRecord.fileType ?? 'exe',
-              silentInstallArgs: resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs,
-              softwareName: catalogItem.name,
-              version: versionRecord.version,
-            },
-          };
-          sendCommandToAgent(device.agentId, command);
-        }
+      const finalDownloadUrl = resolvedInstaller?.downloadUrl ?? downloadUrl;
+      const finalSilentInstallArgs = resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs;
+
+      if (!finalDownloadUrl) {
+        // No installer binary/URL to dispatch — fail the results instead of leaving
+        // them 'pending' forever and reporting a false success to the caller.
+        await db.update(deploymentResults)
+          .set({
+            status: 'failed',
+            errorMessage: 'No installer available for this version — upload an installer (or check storage configuration) before deploying.',
+            completedAt: new Date(),
+          })
+          .where(eq(deploymentResults.deploymentId, deployment!.id));
+        return c.json({ data: { id: deployment!.id, status: 'failed', message: 'No installer available for this version' } }, 200);
+      }
+
+      // Get agentIds for target devices
+      const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
+        .from(devices)
+        .where(and(
+          eq(devices.orgId, orgId),
+          inArray(devices.id, targetDeviceIds),
+        ));
+
+      for (const device of targetDevices) {
+        const command: AgentCommand = {
+          id: `sw-install-${deployment!.id}-${device.id}`,
+          type: 'software_install',
+          payload: {
+            deploymentId: deployment!.id,
+            downloadUrl: finalDownloadUrl,
+            checksum: versionRecord.checksum,
+            fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
+            fileType: versionRecord.fileType ?? 'exe',
+            silentInstallArgs: finalSilentInstallArgs,
+            softwareName: catalogItem.name,
+            version: versionRecord.version,
+          },
+        };
+        sendCommandToAgent(device.agentId, command);
       }
     }
 
@@ -1201,14 +1226,19 @@ softwareRoutes.post(
     const deviceIds = body.targets?.deviceIds ?? [];
     const scheduleType = body.configuration?.scheduleType ?? 'immediate';
 
-    // Look up the catalog item + version
+    // Look up the catalog item + version. RLS restricts visibility to the caller's
+    // org rows + their partner's built-ins; the org guard below rejects a (visible)
+    // org-scoped row that belongs to a different org. Built-ins have org_id NULL.
     const [catalogItem] = await db.select({
       id: softwareCatalog.id,
+      orgId: softwareCatalog.orgId,
       name: softwareCatalog.name,
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, softwareId), eq(softwareCatalog.orgId, orgId)));
-    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+      .where(eq(softwareCatalog.id, softwareId));
+    if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
+      return c.json({ error: 'Catalog item not found' }, 404);
+    }
 
     const [versionRecord] = await db.select().from(softwareVersions)
       .where(and(eq(softwareVersions.catalogId, softwareId), eq(softwareVersions.version, version)));
@@ -1278,51 +1308,62 @@ softwareRoutes.post(
         }
         downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
 
-        if (downloadUrl) {
-          const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
-            .from(devices)
-            .where(and(
-              eq(devices.orgId, orgId),
-              inArray(devices.id, resolvedDeviceIds),
-            ));
-
-          // Built-in EDR packages: resolve per-org keys server-side. Templates live on the
-          // version row (downloadUrl / silentInstallArgs). On any resolution failure, mark
-          // every result failed and skip dispatch — never send a broken installer.
-          let resolvedInstaller: { downloadUrl: string | null; silentInstallArgs: string | null } | null = null;
-          if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
-            const resolved = await resolveEdrInstaller({
-              provider: catalogItem.integrationProvider,
-              orgId,
-              downloadUrlTemplate: versionRecord.downloadUrl,
-              silentInstallArgsTemplate: versionRecord.silentInstallArgs,
-            });
-            if ('error' in resolved) {
-              await db.update(deploymentResults)
-                .set({ status: 'failed', errorMessage: (resolved as EdrResolveError).error, completedAt: new Date() })
-                .where(eq(deploymentResults.deploymentId, deployment!.id));
-              return c.json({ data: { id: deployment!.id, status: 'failed', message: (resolved as EdrResolveError).error } }, 200);
-            }
-            resolvedInstaller = resolved;
+        // Built-in EDR packages: resolve per-org keys server-side before the dispatch
+        // gate. On failure, fail the results and return — never dispatch, never no-op.
+        let resolvedInstaller: ResolvedInstaller | null = null;
+        if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
+          const resolved = await resolveEdrInstaller({
+            provider: catalogItem.integrationProvider,
+            orgId,
+            downloadUrlTemplate: versionRecord.downloadUrl,
+            silentInstallArgsTemplate: versionRecord.silentInstallArgs,
+          });
+          if ('error' in resolved) {
+            await db.update(deploymentResults)
+              .set({ status: 'failed', errorMessage: resolved.error, completedAt: new Date() })
+              .where(eq(deploymentResults.deploymentId, deployment!.id));
+            return c.json({ data: { id: deployment!.id, status: 'failed', message: resolved.error } }, 200);
           }
+          resolvedInstaller = resolved;
+        }
 
-          for (const device of targetDevices) {
-            const command: AgentCommand = {
-              id: `sw-install-${deployment!.id}-${device.id}`,
-              type: 'software_install',
-              payload: {
-                deploymentId: deployment!.id,
-                downloadUrl: resolvedInstaller?.downloadUrl ?? downloadUrl,
-                checksum: versionRecord.checksum,
-                fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
-                fileType: versionRecord.fileType ?? 'exe',
-                silentInstallArgs: resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs,
-                softwareName: catalogItem.name,
-                version: versionRecord.version,
-              },
-            };
-            sendCommandToAgent(device.agentId, command);
-          }
+        const finalDownloadUrl = resolvedInstaller?.downloadUrl ?? downloadUrl;
+        const finalSilentInstallArgs = resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs;
+
+        if (!finalDownloadUrl) {
+          await db.update(deploymentResults)
+            .set({
+              status: 'failed',
+              errorMessage: 'No installer available for this version — upload an installer (or check storage configuration) before deploying.',
+              completedAt: new Date(),
+            })
+            .where(eq(deploymentResults.deploymentId, deployment!.id));
+          return c.json({ data: { id: deployment!.id, status: 'failed', message: 'No installer available for this version' } }, 200);
+        }
+
+        const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
+          .from(devices)
+          .where(and(
+            eq(devices.orgId, orgId),
+            inArray(devices.id, resolvedDeviceIds),
+          ));
+
+        for (const device of targetDevices) {
+          const command: AgentCommand = {
+            id: `sw-install-${deployment!.id}-${device.id}`,
+            type: 'software_install',
+            payload: {
+              deploymentId: deployment!.id,
+              downloadUrl: finalDownloadUrl,
+              checksum: versionRecord.checksum,
+              fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
+              fileType: versionRecord.fileType ?? 'exe',
+              silentInstallArgs: finalSilentInstallArgs,
+              softwareName: catalogItem.name,
+              version: versionRecord.version,
+            },
+          };
+          sendCommandToAgent(device.agentId, command);
         }
       }
     }
