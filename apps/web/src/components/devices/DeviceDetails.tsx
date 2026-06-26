@@ -359,7 +359,7 @@ export default function DeviceDetails({ device, timezone, onBack, onAction }: De
       )}
 
       {activeTab === 'security' && (
-        <DeviceSecurityTab deviceId={device.id} timezone={effectiveTimezone} />
+        <DeviceSecurityTab deviceId={device.id} orgId={device.orgId} timezone={effectiveTimezone} />
       )}
 
       {activeTab === 'peripherals' && (
