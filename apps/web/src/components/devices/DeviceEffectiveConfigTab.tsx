@@ -28,7 +28,7 @@ type FeatureType =
   | 'compliance'
   | 'automation';
 
-type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
+type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device' | 'default';
 
 type ResolvedFeature = {
   featureType: FeatureType;
@@ -86,6 +86,7 @@ const LEVEL_LABELS: Record<AssignmentLevel, string> = {
   site: 'Site',
   device_group: 'Device Group',
   device: 'Device',
+  default: 'Breeze Defaults',
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -176,7 +177,10 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
 
   // ── Empty state ────────────────────────────────────────────────────
 
-  if (!data || Object.keys(data.features).length === 0) {
+  const hasRealFeatures = data
+    ? Object.values(data.features).some((f) => f.sourceLevel !== 'default')
+    : false;
+  if (!data || !hasRealFeatures) {
     return (
       <div className="rounded-lg border bg-card p-8 text-center shadow-sm">
         <Layers className="mx-auto h-10 w-10 text-muted-foreground/50" />
@@ -191,11 +195,18 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
         >
           Go to Config Policies
         </a>
+        <a
+          href="/configuration-policies/defaults"
+          className="mt-2 inline-block text-sm font-medium text-primary hover:underline"
+        >
+          View Breeze Defaults
+        </a>
       </div>
     );
   }
 
   const { features, inheritanceChain } = data;
+  const assignedChain = inheritanceChain.filter((e) => e.level !== 'default');
   const configuredTypes = ALL_FEATURE_TYPES.filter((ft) => features[ft]);
   const unconfiguredTypes = ALL_FEATURE_TYPES.filter((ft) => !features[ft]);
 
@@ -206,8 +217,8 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
         <div>
           <h3 className="text-lg font-semibold">Effective Configuration</h3>
           <p className="text-sm text-muted-foreground">
-            Resolved configuration from {inheritanceChain.length} assigned{' '}
-            {inheritanceChain.length === 1 ? 'policy' : 'policies'} across{' '}
+            Resolved configuration from {assignedChain.length} assigned{' '}
+            {assignedChain.length === 1 ? 'policy' : 'policies'} across{' '}
             {configuredTypes.length} feature{configuredTypes.length !== 1 ? 's' : ''}
           </p>
         </div>
