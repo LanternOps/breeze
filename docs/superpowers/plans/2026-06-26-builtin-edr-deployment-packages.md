@@ -101,6 +101,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS software_catalog_partner_provider_unique_idx
   WHERE integration_provider IS NOT NULL;
 
 -- Dual-axis RLS: org members see org packages; partner admins see partner built-ins.
+-- Drop the baseline org-only policies (from 0001-baseline.sql) so they don't linger
+-- alongside the new dual-axis policies.
+DROP POLICY IF EXISTS breeze_org_isolation_select ON software_catalog;
+DROP POLICY IF EXISTS breeze_org_isolation_insert ON software_catalog;
+DROP POLICY IF EXISTS breeze_org_isolation_update ON software_catalog;
+DROP POLICY IF EXISTS breeze_org_isolation_delete ON software_catalog;
+
 DROP POLICY IF EXISTS software_catalog_dual_isolation_select ON software_catalog;
 DROP POLICY IF EXISTS software_catalog_dual_isolation_insert ON software_catalog;
 DROP POLICY IF EXISTS software_catalog_dual_isolation_update ON software_catalog;
@@ -135,7 +142,7 @@ CREATE POLICY software_catalog_dual_isolation_delete ON software_catalog
   );
 ```
 
-> NOTE: If `software_catalog` had a pre-existing org-only RLS policy under a different name, this migration leaves it in place would double-gate. Before writing, grep prior migrations for `POLICY .* ON software_catalog` and add matching `DROP POLICY IF EXISTS` lines for any found, so only the dual-axis policies remain.
+> NOTE (resolved in pre-flight): `software_catalog` already has baseline org-only policies named `breeze_org_isolation_{select,insert,update,delete}` (from `0001-baseline.sql`). The migration above drops them explicitly so only the dual-axis policies remain. No other policy names exist on this table.
 
 - [ ] **Step 2: Update the Drizzle schema**
 
