@@ -11,7 +11,7 @@
 import './setup';
 import { describe, it, expect } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
-import { huntressIntegrations, huntressOrgMappings } from '../../db/schema';
+import { huntressIntegrations, huntressOrgMappings, s1Integrations, s1OrgMappings } from '../../db/schema';
 import { encryptSecret } from '../../services/secretCrypto';
 import { resolveEdrInstaller } from '../../services/edrInstallerResolver';
 import { createPartner, createOrganization } from './db-utils';
@@ -84,5 +84,75 @@ describe('resolveEdrInstaller — Huntress (db)', () => {
       silentInstallArgsTemplate: ARGS_TPL,
     });
     expect(result).toEqual({ error: 'Huntress integration is disconnected' });
+  });
+});
+
+const S1_ARGS_TPL = 'SITE_TOKEN={s1_site_token} /q /NORESTART';
+
+async function seedS1(opts: { siteToken: string | null; orgId: string; partnerId: string; isActive: boolean }) {
+  return withSystemDbAccessContext(async () => {
+    const [integration] = await db.insert(s1Integrations).values({
+      partnerId: opts.partnerId,
+      name: 'Test S1',
+      apiTokenEncrypted: encryptSecret('dummy-token', { aad: 's1_integrations.api_token_encrypted' })!,
+      managementUrl: 'https://example.sentinelone.net',
+      isActive: opts.isActive,
+    }).returning({ id: s1Integrations.id });
+
+    await db.insert(s1OrgMappings).values({
+      integrationId: integration!.id,
+      partnerId: opts.partnerId,
+      s1SiteId: `site-${Date.now()}`,
+      orgId: opts.orgId,
+      registrationToken: opts.siteToken
+        ? encryptSecret(opts.siteToken, { aad: 's1_org_mappings.registration_token' })!
+        : null,
+    });
+    return integration!.id;
+  });
+}
+
+describe('resolveEdrInstaller — SentinelOne (db)', () => {
+  it('decrypts and injects the per-org site token', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    await seedS1({ siteToken: 'eyJ-site-token', orgId: org.id, partnerId: partner.id, isActive: true });
+
+    const result = await resolveEdrInstaller({
+      provider: 'sentinelone',
+      orgId: org.id,
+      downloadUrlTemplate: null,
+      silentInstallArgsTemplate: S1_ARGS_TPL,
+    });
+
+    expect('error' in result).toBe(false);
+    if ('error' in result) return;
+    expect(result.silentInstallArgs).toBe('SITE_TOKEN=eyJ-site-token /q /NORESTART');
+  });
+
+  it('fails clean when the site token has not been synced', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    await seedS1({ siteToken: null, orgId: org.id, partnerId: partner.id, isActive: true });
+
+    const result = await resolveEdrInstaller({
+      provider: 'sentinelone',
+      orgId: org.id,
+      downloadUrlTemplate: null,
+      silentInstallArgsTemplate: S1_ARGS_TPL,
+    });
+    expect(result).toEqual({ error: 'SentinelOne site token not synced — run Sync in Integrations' });
+  });
+
+  it('fails clean when the org is not mapped', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const result = await resolveEdrInstaller({
+      provider: 'sentinelone',
+      orgId: org.id,
+      downloadUrlTemplate: null,
+      silentInstallArgsTemplate: S1_ARGS_TPL,
+    });
+    expect(result).toEqual({ error: 'Organization not mapped to SentinelOne' });
   });
 });

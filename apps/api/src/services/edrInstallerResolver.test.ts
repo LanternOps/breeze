@@ -7,7 +7,7 @@ vi.mock('../db', () => ({
   db: {},
 }));
 
-import { substituteHuntress } from './edrInstallerResolver';
+import { substituteHuntress, substituteS1 } from './edrInstallerResolver';
 
 describe('substituteHuntress', () => {
   it('replaces account + org key placeholders', () => {
@@ -20,5 +20,16 @@ describe('substituteHuntress', () => {
     );
     expect(out.downloadUrl).toBe('https://u/ACCT123/x.exe');
     expect(out.silentInstallArgs).toBe('/ACCT_KEY="ACCT123" /ORG_KEY="org-abc" /S');
+  });
+});
+
+describe('substituteS1', () => {
+  it('replaces the site token placeholder', () => {
+    const out = substituteS1(
+      { downloadUrlTemplate: null, silentInstallArgsTemplate: 'SITE_TOKEN={s1_site_token} /q /NORESTART' },
+      { siteToken: 'eyJ-token' },
+    );
+    expect(out.silentInstallArgs).toBe('SITE_TOKEN=eyJ-token /q /NORESTART');
+    expect(out.downloadUrl).toBeNull();
   });
 });

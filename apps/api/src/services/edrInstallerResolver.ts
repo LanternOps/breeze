@@ -1,6 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
-import { huntressIntegrations, huntressOrgMappings } from '../db/schema';
+import { huntressIntegrations, huntressOrgMappings, s1Integrations, s1OrgMappings } from '../db/schema';
 import { decryptForColumn } from './secretCrypto';
 import type { BuiltinProvider } from './builtinDeploymentPackages';
 
@@ -19,6 +19,18 @@ export function substituteHuntress(
     s == null ? null : s
       .replaceAll('{huntress_acct_key}', keys.acctKey)
       .replaceAll('{huntress_org_key}', keys.orgKey);
+  return {
+    downloadUrl: apply(templates.downloadUrlTemplate),
+    silentInstallArgs: apply(templates.silentInstallArgsTemplate),
+  };
+}
+
+export function substituteS1(
+  templates: { downloadUrlTemplate: string | null; silentInstallArgsTemplate: string | null },
+  keys: { siteToken: string },
+): ResolvedInstaller {
+  const apply = (s: string | null) =>
+    s == null ? null : s.replaceAll('{s1_site_token}', keys.siteToken);
   return {
     downloadUrl: apply(templates.downloadUrlTemplate),
     silentInstallArgs: apply(templates.silentInstallArgsTemplate),
@@ -86,11 +98,45 @@ async function resolveHuntress(params: {
   );
 }
 
-// Placeholder until Task 11 implements it.
-async function resolveSentinelOne(_params: {
+async function resolveSentinelOne(params: {
   orgId: string;
   downloadUrlTemplate: string | null;
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
-  return { error: 'SentinelOne resolution not yet implemented' };
+  const ctx = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [mapping] = await db
+        .select({
+          tokenEncrypted: s1OrgMappings.registrationToken,
+          integrationId: s1OrgMappings.integrationId,
+        })
+        .from(s1OrgMappings)
+        .where(eq(s1OrgMappings.orgId, params.orgId))
+        .limit(1);
+      if (!mapping) return { kind: 'unmapped' as const };
+
+      const [integration] = await db
+        .select({ isActive: s1Integrations.isActive })
+        .from(s1Integrations)
+        .where(eq(s1Integrations.id, mapping.integrationId))
+        .limit(1);
+      if (!integration || !integration.isActive) return { kind: 'inactive' as const };
+
+      return { kind: 'ok' as const, tokenEncrypted: mapping.tokenEncrypted };
+    })
+  );
+
+  if (ctx.kind === 'unmapped') return { error: 'Organization not mapped to SentinelOne' };
+  if (ctx.kind === 'inactive') return { error: 'SentinelOne integration is disconnected' };
+
+  if (!ctx.tokenEncrypted) {
+    return { error: 'SentinelOne site token not synced — run Sync in Integrations' };
+  }
+  const siteToken = decryptForColumn('s1_org_mappings', 'registration_token', ctx.tokenEncrypted);
+  if (!siteToken) return { error: 'SentinelOne site token could not be decrypted' };
+
+  return substituteS1(
+    { downloadUrlTemplate: params.downloadUrlTemplate, silentInstallArgsTemplate: params.silentInstallArgsTemplate },
+    { siteToken },
+  );
 }
