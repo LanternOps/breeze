@@ -31,6 +31,19 @@ type TargetNode = {
   children?: TargetNode[];
 };
 
+/**
+ * A deploy POST returns HTTP 200 even when the server fails the deployment up front
+ * (built-in EDR packages: target org unmapped / integration disconnected). runAction's
+ * isApiFailure does NOT treat a `{ status: 'failed' }` body as a failure, so callers
+ * must check explicitly. Returns the user-facing message, or null on success.
+ */
+export function extractDeployFailure(
+  result: { status?: string; message?: string } | null | undefined,
+): string | null {
+  if (result?.status === 'failed') return result.message ?? 'Deployment failed';
+  return null;
+}
+
 const steps: { id: WizardStep; label: string; icon: typeof CheckCircle }[] = [
   { id: 'software', label: 'Select Software', icon: CheckCircle },
   { id: 'targets', label: 'Select Targets', icon: CheckCircle },
@@ -411,10 +424,10 @@ export default function DeploymentWizard() {
 
       // Built-in EDR deploys return HTTP 200 with status 'failed' when the target
       // org is unmapped or the integration is disconnected — surface that.
-      if (result?.status === 'failed') {
-        const msg = result.message ?? 'Deployment failed';
-        setError(msg);
-        showToast({ message: msg, type: 'error' });
+      const failureMessage = extractDeployFailure(result);
+      if (failureMessage) {
+        setError(failureMessage);
+        showToast({ message: failureMessage, type: 'error' });
         return;
       }
 

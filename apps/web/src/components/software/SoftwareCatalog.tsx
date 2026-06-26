@@ -14,6 +14,8 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import DeploymentWizard from './DeploymentWizard';
 import SoftwareVersionManager from './SoftwareVersionManager';
 
+type IntegrationProvider = 'huntress' | 'sentinelone';
+
 type SoftwareItem = {
   id: string;
   name: string;
@@ -22,17 +24,19 @@ type SoftwareItem = {
   description: string;
   createdAt: string;
   /** Set for built-in integration packages (e.g. Huntress, SentinelOne). */
-  integrationProvider?: string;
+  integrationProvider?: IntegrationProvider;
   partnerId?: string;
   /** Number of uploaded versions; built-in S1 needs >=1 before it can deploy. */
   versionCount?: number;
 };
 
 /** Human label for a built-in package's integration provider, or null if not built-in. */
-const providerLabel = (provider?: string): string | null => {
-  if (provider === 'huntress') return 'Huntress';
-  if (provider === 'sentinelone') return 'SentinelOne';
-  return null;
+const providerLabel = (provider?: IntegrationProvider): string | null => {
+  switch (provider) {
+    case 'huntress': return 'Huntress';
+    case 'sentinelone': return 'SentinelOne';
+    default: return null;
+  }
 };
 
 /**
@@ -90,7 +94,9 @@ export default function SoftwareCatalog() {
           category: String(item.category ?? 'utility'),
           description: String(item.description ?? ''),
           createdAt: String(item.createdAt ?? ''),
-          integrationProvider: item.integrationProvider ? String(item.integrationProvider) : undefined,
+          integrationProvider: item.integrationProvider === 'huntress' || item.integrationProvider === 'sentinelone'
+            ? item.integrationProvider
+            : undefined,
           partnerId: item.partnerId ? String(item.partnerId) : undefined,
           versionCount: item.versionCount != null ? Number(item.versionCount) : undefined,
         })));
