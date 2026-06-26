@@ -46,11 +46,11 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
     setError(undefined);
     try {
       const [s1, hi] = await Promise.all([
-        fetchS1Threats(orgId, deviceId),
-        fetchHuntressIncidents(orgId, deviceId),
+        fetchS1Threats({ orgId, deviceId, limit: 50 }),
+        fetchHuntressIncidents({ orgId, deviceId, limit: 50 }),
       ]);
-      setThreats(s1);
-      setIncidents(hi);
+      setThreats(s1.rows);
+      setIncidents(hi.rows);
     } catch (err) {
       setError(friendlyFetchError(err));
     } finally {

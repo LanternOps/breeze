@@ -12,10 +12,11 @@ function ok(body: unknown) {
 beforeEach(() => fetchWithAuth.mockReset());
 
 describe('fetchS1Threats', () => {
-  it('passes orgId + deviceId and unwraps pagination shape', async () => {
-    fetchWithAuth.mockResolvedValue(ok({ data: [{ id: 't1' }], pagination: { total: 1, limit: 100, offset: 0 } }));
-    const rows = await fetchS1Threats('org-1', 'dev-1');
+  it('passes filters and returns { rows, total } from the pagination shape', async () => {
+    fetchWithAuth.mockResolvedValue(ok({ data: [{ id: 't1' }], pagination: { total: 5, limit: 100, offset: 0 } }));
+    const { rows, total } = await fetchS1Threats({ orgId: 'org-1', deviceId: 'dev-1' });
     expect(rows).toEqual([{ id: 't1' }]);
+    expect(total).toBe(5);
     const url = fetchWithAuth.mock.calls[0][0] as string;
     expect(url).toContain('/s1/threats');
     expect(url).toContain('orgId=org-1');
@@ -24,13 +25,14 @@ describe('fetchS1Threats', () => {
 });
 
 describe('fetchHuntressIncidents', () => {
-  it('unwraps the flat (non-pagination) shape', async () => {
-    fetchWithAuth.mockResolvedValue(ok({ data: [{ id: 'i1' }], total: 1, limit: 100, offset: 0 }));
-    const rows = await fetchHuntressIncidents('org-1', 'dev-1');
+  it('reads { rows, total } from the Huntress flat shape and omits empty filters', async () => {
+    fetchWithAuth.mockResolvedValue(ok({ data: [{ id: 'i1' }], total: 3, limit: 100, offset: 0 }));
+    const { rows, total } = await fetchHuntressIncidents({ severity: 'high' });
     expect(rows).toEqual([{ id: 'i1' }]);
-    expect(fetchWithAuth.mock.calls[0][0]).toContain('/huntress/incidents');
+    expect(total).toBe(3);
     const url = fetchWithAuth.mock.calls[0][0] as string;
-    expect(url).toContain('orgId=org-1');
-    expect(url).toContain('deviceId=dev-1');
+    expect(url).toContain('/huntress/incidents');
+    expect(url).toContain('severity=high');
+    expect(url).not.toContain('orgId=');
   });
 });

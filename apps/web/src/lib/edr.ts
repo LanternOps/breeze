@@ -43,29 +43,61 @@ export interface HuntressIncident {
   updatedAt: string;
 }
 
-export async function fetchS1Threats(orgId: string, deviceId: string): Promise<S1Threat[]> {
-  const params = new URLSearchParams({ orgId, deviceId, limit: '50' });
-  const res = await fetchWithAuth(`/s1/threats?${params.toString()}`);
+export interface S1ThreatFilters {
+  orgId?: string;
+  deviceId?: string;
+  status?: string;
+  severity?: string;
+  search?: string;
+  start?: string;
+  end?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface HuntressIncidentFilters {
+  orgId?: string;
+  deviceId?: string;
+  status?: string;
+  severity?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+function toParams(filters: Record<string, string | number | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  return params.toString();
+}
+
+export async function fetchS1Threats(filters: S1ThreatFilters = {}): Promise<{ rows: S1Threat[]; total: number }> {
+  const qs = toParams({ limit: 100, ...filters });
+  const res = await fetchWithAuth(`/s1/threats?${qs}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const body = await res.json();
   if (!Array.isArray(body?.data)) {
     console.warn('[edr] /s1/threats returned non-array data');
-    return [];
+    return { rows: [], total: 0 };
   }
-  return body.data as S1Threat[];
+  return { rows: body.data as S1Threat[], total: Number(body?.pagination?.total ?? body.data.length) };
 }
 
 // Huntress returns a flat { data, total, limit, offset } envelope, not S1's { data, pagination } shape.
-export async function fetchHuntressIncidents(orgId: string, deviceId: string): Promise<HuntressIncident[]> {
-  const params = new URLSearchParams({ orgId, deviceId, limit: '50' });
-  const res = await fetchWithAuth(`/huntress/incidents?${params.toString()}`);
+export async function fetchHuntressIncidents(
+  filters: HuntressIncidentFilters = {},
+): Promise<{ rows: HuntressIncident[]; total: number }> {
+  const qs = toParams({ limit: 100, ...filters });
+  const res = await fetchWithAuth(`/huntress/incidents?${qs}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const body = await res.json();
   if (!Array.isArray(body?.data)) {
     console.warn('[edr] /huntress/incidents returned non-array data');
-    return [];
+    return { rows: [], total: 0 };
   }
-  return body.data as HuntressIncident[];
+  return { rows: body.data as HuntressIncident[], total: Number(body?.total ?? body.data.length) };
 }
 
 export async function isolateDevice(orgId: string, deviceId: string, isolate: boolean): Promise<void> {
