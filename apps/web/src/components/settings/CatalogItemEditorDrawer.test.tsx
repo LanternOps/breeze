@@ -5,6 +5,7 @@ import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
 import type { CatalogItem } from '../../lib/api/catalog';
 import * as catalogApi from '../../lib/api/catalog';
 import * as authScope from '../../lib/authScope';
+import { showToast } from '../shared/Toast';
 
 // Keep the real presentation helpers + constants; stub only the network calls.
 vi.mock('../../lib/api/catalog', async (importActual) => {
@@ -14,6 +15,9 @@ vi.mock('../../lib/api/catalog', async (importActual) => {
     getCatalogItem: vi.fn(),
     setOrgPriceOverride: vi.fn(),
     removeOrgPriceOverride: vi.fn(),
+    createCatalogItem: vi.fn(),
+    updateCatalogItem: vi.fn(),
+    setBundleComponents: vi.fn(),
   };
 });
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
@@ -108,5 +112,94 @@ describe('CatalogItemEditorDrawer — per-org pricing (#1368)', () => {
     renderDrawer();
     await waitFor(() => expect(screen.getByTestId('catalog-item-editor')).toBeInTheDocument());
     expect(screen.queryByTestId('catalog-org-pricing')).not.toBeInTheDocument();
+  });
+});
+
+// #1944 — a failed detail load must NOT masquerade as "this bundle has no
+// components": empty `components` saved back would wipe the real bundle.
+describe('CatalogItemEditorDrawer — detail load failure (#1944)', () => {
+  const toastMock = vi.mocked(showToast);
+  const createMock = vi.mocked(catalogApi.createCatalogItem);
+  const updateMock = vi.mocked(catalogApi.updateCatalogItem);
+  const bundleMock = vi.mocked(catalogApi.setBundleComponents);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    claimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    updateMock.mockResolvedValue(json({ data: item({ isBundle: true }) }));
+    createMock.mockResolvedValue(json({ data: item({ isBundle: true }) }));
+    bundleMock.mockResolvedValue(json({ data: {} }));
+  });
+
+  const renderBundle = () =>
+    render(
+      <CatalogItemEditorDrawer
+        open
+        item={item({ isBundle: true })}
+        allItems={[]}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+  it('toasts and flags an inline error when the bundle detail load returns non-401 failure', async () => {
+    getMock.mockResolvedValue(json(null, false)); // status 500
+    renderBundle();
+    expect(await screen.findByTestId('catalog-bundle-load-error')).toBeInTheDocument();
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('treats a malformed (no data) body as a failure, not an empty bundle', async () => {
+    getMock.mockResolvedValue(json({ notData: true }));
+    renderBundle();
+    expect(await screen.findByTestId('catalog-bundle-load-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('catalog-bundle-empty')).not.toBeInTheDocument();
+  });
+
+  it('treats a rejected detail fetch as a failure', async () => {
+    getMock.mockRejectedValue(new Error('network'));
+    renderBundle();
+    expect(await screen.findByTestId('catalog-bundle-load-error')).toBeInTheDocument();
+  });
+
+  it('disables Save and never calls setBundleComponents after a failed bundle load', async () => {
+    getMock.mockResolvedValue(json(null, false));
+    renderBundle();
+    await screen.findByTestId('catalog-bundle-load-error');
+
+    const saveBtn = screen.getByTestId('catalog-form-save') as HTMLButtonElement;
+    expect(saveBtn).toBeDisabled();
+
+    // Even if invoked directly (e.g. enabled by other state), the guard holds.
+    fireEvent.click(saveBtn);
+    await waitFor(() => expect(screen.getByTestId('catalog-bundle-load-error')).toBeInTheDocument());
+    expect(bundleMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('still saves normally when the detail load succeeds (no false positive)', async () => {
+    getMock.mockResolvedValue(
+      json({ data: { item: item({ isBundle: true }), components: [{ componentItemId: 'c-1', quantity: '2', showOnInvoice: false }], overrides: [] } }),
+    );
+    render(
+      <CatalogItemEditorDrawer
+        open
+        item={item({ isBundle: true })}
+        allItems={[{ ...item(), id: 'c-1', name: 'Component', isBundle: false, isActive: true }]}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+    // Loaded component renders, no error banner.
+    await screen.findByTestId('catalog-bundle-row-0');
+    expect(screen.queryByTestId('catalog-bundle-load-error')).not.toBeInTheDocument();
+
+    const saveBtn = screen.getByTestId('catalog-form-save') as HTMLButtonElement;
+    expect(saveBtn).not.toBeDisabled();
+    fireEvent.click(saveBtn);
+    await waitFor(() => expect(bundleMock).toHaveBeenCalled());
+    expect(bundleMock).toHaveBeenCalledWith('item-1', [
+      { componentItemId: 'c-1', quantity: 2, showOnInvoice: false },
+    ]);
   });
 });
