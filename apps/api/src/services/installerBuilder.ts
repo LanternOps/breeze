@@ -395,11 +395,12 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
  *
  * The token is wrapped in PARENTHESES, not square brackets. At install time the
  * download path travels through MSI's Formatted-field engine (OriginalDatabase
- * -> SetBootstrapData -> CustomActionData), where a "[...]" substring is read
- * as a property reference and stripped to empty, silently dropping the token —
- * agents then log "no bootstrap token present" and never enroll (issue #1956).
- * Parens are not special in MSI Formatted fields, so they survive. The agent
- * parser (installer_filename.go) accepts both forms; macOS still uses brackets.
+ * -> SetBootstrapData -> CustomActionData), and a "[...]" substring (brackets
+ * are that engine's property-reference delimiter) gets stripped along the way,
+ * silently dropping the token — agents then log "no bootstrap token present"
+ * and never enroll (observed in #1956). Parens are not special in MSI Formatted
+ * fields, so they survive. The agent parser (installer_filename.go) accepts
+ * both forms; the macOS download carries the token in bootstrap.json instead.
  */
 export function serveWindowsBootstrapMsi(
   c: Context,

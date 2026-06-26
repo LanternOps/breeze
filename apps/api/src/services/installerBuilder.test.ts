@@ -9,7 +9,9 @@ import {
   buildWindowsInstallerZip,
   fetchRegularMsi,
   assertMacosInstallerPkgsReachable,
+  serveWindowsBootstrapMsi,
 } from './installerBuilder';
+import type { Context } from 'hono';
 
 // Real keys are 64 lowercase hex chars produced by randomBytes(32).toString('hex').
 // Tests use that exact generator so a future drift between generator and validator
@@ -344,5 +346,53 @@ describe('buildWindowsInstallerZip', () => {
     const successIdx = batScript.indexOf('installed and enrolled successfully');
     expect(guardIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(successIdx);
+  });
+});
+
+describe('serveWindowsBootstrapMsi', () => {
+  // Minimal Hono Context stub capturing headers + body. Both Windows download
+  // routes (enrollmentKeys.ts) delegate here, so this is the single source of
+  // truth for the download filename.
+  function fakeContext(): { c: Context; headers: Map<string, string>; body: Buffer | null } {
+    const headers = new Map<string, string>();
+    const state: { body: Buffer | null } = { body: null };
+    const c = {
+      header: (k: string, v: string) => headers.set(k.toLowerCase(), v),
+      body: (b: Buffer) => {
+        state.body = b;
+        return new Response();
+      },
+    } as unknown as Context;
+    return { c, headers, body: state.body };
+  }
+
+  it('wraps the bootstrap token in PARENTHESES, never square brackets', () => {
+    const { c, headers } = fakeContext();
+    serveWindowsBootstrapMsi(c, {
+      msi: Buffer.from('signed-msi-bytes'),
+      token: 'ABCDE12345',
+      apiHost: 'api.example.com',
+    });
+
+    const cd = headers.get('content-disposition');
+    expect(cd).toBe(
+      'attachment; filename="Breeze Agent (ABCDE12345@api.example.com).msi"',
+    );
+    // Regression guard for #1956: a square-bracket [TOKEN@HOST] delimiter is
+    // eaten by MSI's Formatted-field engine, dropping the token so agents never
+    // enroll. If someone reverts the delimiter, this fails — the route-level
+    // tests can't catch it because they mock this function.
+    expect(cd).not.toContain('[');
+    expect(cd).not.toContain(']');
+  });
+
+  it('serves the MSI bytes unmodified with octet-stream + no-store headers', () => {
+    const { c, headers } = fakeContext();
+    const msi = Buffer.from('signed-msi-bytes');
+    serveWindowsBootstrapMsi(c, { msi, token: 'ZZZZZ99999', apiHost: 'eu.2breeze.app' });
+
+    expect(headers.get('content-type')).toBe('application/octet-stream');
+    expect(headers.get('content-length')).toBe(String(msi.length));
+    expect(headers.get('cache-control')).toBe('no-store');
   });
 });

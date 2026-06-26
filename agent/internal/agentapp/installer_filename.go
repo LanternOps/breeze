@@ -12,17 +12,19 @@ var errNoFilenameToken = errors.New("no bootstrap token in installer filename")
 // installerTokenParenRe is the canonical Windows form: a 10-char base36 token
 // and a host wrapped in PARENTHESES. The Windows MSI download filename uses
 // parens (not brackets) because the path travels through MSI's Formatted-field
-// engine — OriginalDatabase -> SetBootstrapData -> CustomActionData — where a
-// "[...]" substring is interpreted as a property reference and stripped to
-// empty, silently dropping the token (issue #1956). Parens are not special in
-// MSI Formatted fields, so they survive intact.
+// engine — OriginalDatabase -> SetBootstrapData -> CustomActionData -> agent
+// --install-data — and a "[...]" substring (brackets are that engine's
+// property-reference delimiter) gets stripped along the way, silently dropping
+// the token (observed in #1956). Parens are not special in MSI Formatted
+// fields, so they survive intact.
 var installerTokenParenRe = regexp.MustCompile(`\(([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)\)`)
 
-// installerTokenBracketRe is the legacy / macOS form: [TOKEN@HOST] in square
-// brackets (mirrors FilenameTokenParser.swift). macOS reads the token from the
-// renamed .app bundle name or its embedded bootstrap.json and never passes
-// through MSI formatting, so brackets remain safe there. Still accepted here
-// for backward compatibility and cross-platform parity.
+// installerTokenBracketRe is the legacy form: [TOKEN@HOST] in square brackets
+// (mirrors FilenameTokenParser.swift). The current macOS path carries the token
+// in an embedded bootstrap.json (no filename delimiter); the bracketed .app
+// bundle name only appears under the opt-in MACOS_INSTALLER_FILENAME_TOKEN_COMPAT
+// mode. Neither macOS path passes through MSI formatting, so brackets are safe
+// there. Still accepted here for backward compatibility with older downloads.
 var installerTokenBracketRe = regexp.MustCompile(`\[([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)\]`)
 
 // parseInstallerFilenameToken extracts the bootstrap token and API host from an
