@@ -90,3 +90,42 @@ describe('SoftwareCatalog delete', () => {
     expect(screen.getAllByText('TestApp').length).toBeGreaterThan(0);
   });
 });
+
+const BUILTIN_ITEM = {
+  id: 'builtin-huntress',
+  name: 'Huntress EDR Agent',
+  vendor: 'Huntress',
+  category: 'security',
+  description: 'Managed detection and response agent.',
+  createdAt: '2026-06-26T00:00:00Z',
+  integrationProvider: 'huntress',
+  partnerId: 'partner-1'
+};
+
+describe('SoftwareCatalog built-in packages', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  it('renders a "Built-in · Huntress" badge for an integration package', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [BUILTIN_ITEM] }));
+
+    render(<SoftwareCatalog />);
+
+    expect(await screen.findByText(/Built-in · Huntress/)).toBeInTheDocument();
+  });
+
+  it('hides Delete for a built-in package and shows the managed-by note instead', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [BUILTIN_ITEM] }));
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('Huntress EDR Agent')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Huntress EDR Agent'));
+
+    // Detail modal open: managed note present, no Delete control.
+    expect(await screen.findByText(/managed by the Huntress integration/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
+  });
+});

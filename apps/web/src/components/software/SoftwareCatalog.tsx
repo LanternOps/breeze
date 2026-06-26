@@ -21,6 +21,16 @@ type SoftwareItem = {
   category: string;
   description: string;
   createdAt: string;
+  /** Set for built-in integration packages (e.g. Huntress, SentinelOne). */
+  integrationProvider?: string;
+  partnerId?: string;
+};
+
+/** Human label for a built-in package's integration provider, or null if not built-in. */
+const providerLabel = (provider?: string): string | null => {
+  if (provider === 'huntress') return 'Huntress';
+  if (provider === 'sentinelone') return 'SentinelOne';
+  return null;
 };
 
 const categoryStyles: Record<string, string> = {
@@ -71,6 +81,8 @@ export default function SoftwareCatalog() {
           category: String(item.category ?? 'utility'),
           description: String(item.description ?? ''),
           createdAt: String(item.createdAt ?? ''),
+          integrationProvider: item.integrationProvider ? String(item.integrationProvider) : undefined,
+          partnerId: item.partnerId ? String(item.partnerId) : undefined,
         })));
       }
     } catch (err) {
@@ -264,16 +276,23 @@ export default function SoftwareCatalog() {
                     <p className="text-xs text-muted-foreground">{item.vendor || 'Unknown vendor'}</p>
                   </div>
                 </div>
-                {item.category && (
-                  <span
-                    className={cn(
-                      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                      categoryStyles[item.category] ?? 'bg-muted text-muted-foreground'
-                    )}
-                  >
-                    {item.category.charAt(0).toUpperCase() + item.category.slice(1)}
-                  </span>
-                )}
+                <div className="flex flex-col items-end gap-1.5">
+                  {providerLabel(item.integrationProvider) && (
+                    <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                      Built-in · {providerLabel(item.integrationProvider)}
+                    </span>
+                  )}
+                  {item.category && (
+                    <span
+                      className={cn(
+                        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                        categoryStyles[item.category] ?? 'bg-muted text-muted-foreground'
+                      )}
+                    >
+                      {item.category.charAt(0).toUpperCase() + item.category.slice(1)}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {item.description && (
@@ -283,6 +302,7 @@ export default function SoftwareCatalog() {
               <div className="mt-4 flex items-center justify-end">
                 <button
                   type="button"
+                  title={item.integrationProvider ? 'Deploys to mapped organizations only' : undefined}
                   onClick={event => {
                     event.stopPropagation();
                     setShowDeployWizard(true);
@@ -365,16 +385,23 @@ export default function SoftwareCatalog() {
                   </div>
                 )}
                 <div className="mt-5 flex items-center justify-between">
+                  {selectedSoftware.integrationProvider ? (
+                    <p className="text-xs text-muted-foreground">
+                      Built-in package managed by the {providerLabel(selectedSoftware.integrationProvider)} integration.
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(selectedSoftware)}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-destructive/40 bg-background px-4 text-sm font-medium text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => setConfirmDelete(selectedSoftware)}
-                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-destructive/40 bg-background px-4 text-sm font-medium text-destructive hover:bg-destructive/10"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </button>
-                  <button
-                    type="button"
+                    title={selectedSoftware.integrationProvider ? 'Deploys to mapped organizations only' : undefined}
                     onClick={() => {
                       setSelectedSoftware(null);
                       setShowDeployWizard(true);
