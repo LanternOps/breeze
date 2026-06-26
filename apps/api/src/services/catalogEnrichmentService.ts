@@ -47,12 +47,84 @@ const SYSTEM_PROMPT =
   '"unitOfMeasure":string,"taxable":boolean,"taxCategory":string|null,' +
   '"priceLow":number|null,"priceHigh":number|null,"currency":string|null,' +
   '"confidence":number,"notes":string}\n' +
+  'itemType MUST be exactly one of "hardware", "software", or "service" — map any ' +
+  'subscription, SaaS, app, or license to "software". Keep description under 1000 ' +
+  'characters and name under 250 characters.\n' +
   'priceLow/priceHigh are a TYPICAL street-price RANGE in the item currency; never a ' +
   'single committed price. If unknown, use null. Do not invent a price you are unsure of.';
 
 function clampMoney(n: unknown): number | null {
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return null;
   return Math.min(n, MONEY_MAX);
+}
+
+// enrichDraftSchema bounds (mirrors catalog.ts). Keep in sync if the schema caps change.
+const NAME_MAX = 255;
+const DESCRIPTION_MAX = 10_000;
+const UNIT_OF_MEASURE_MAX = 50;
+const TAX_CATEGORY_MAX = 100;
+
+// Mainstream products (e.g. "Microsoft 365 Business Premium") routinely come back
+// with an itemType outside our 3-value enum ("subscription", "saas", "license",
+// or a capitalized "Software"). Map the common synonyms to the closest enum value
+// so the draft validates instead of throwing a blanket AI_PARSE/502 (issue #1950).
+const ITEM_TYPE_SYNONYMS: Record<string, CatalogItemType> = {
+  subscription: 'software',
+  saas: 'software',
+  license: 'software',
+  licence: 'software',
+  app: 'software',
+  application: 'software',
+  cloud: 'software',
+  device: 'hardware',
+  equipment: 'hardware',
+  appliance: 'hardware',
+  labor: 'service',
+  labour: 'service',
+  support: 'service',
+  managed: 'service',
+};
+
+function coerceString(v: unknown): string | null {
+  return typeof v === 'string' ? v : null;
+}
+
+function normalizeItemType(v: unknown, hint: CatalogItemType | undefined): CatalogItemType {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : '';
+  if (s === 'hardware' || s === 'software' || s === 'service') return s;
+  if (s && ITEM_TYPE_SYNONYMS[s]) return ITEM_TYPE_SYNONYMS[s];
+  return hint ?? 'service';
+}
+
+// Coerce the model's raw JSON into a draft that satisfies enrichDraftSchema.
+// The model output is advisory, not a contract: out-of-bounds values (a long
+// web-sourced description, an off-enum itemType, an oversized name/category) are
+// recoverable, so we trim/normalize them rather than reject the whole enrichment.
+// Returns null only when `name` is unsalvageable — the one field with no fallback.
+function coerceDraft(
+  raw: Record<string, unknown>,
+  query: string,
+  hint: CatalogItemType | undefined,
+): { name: string; description: string | null; itemType: CatalogItemType; unitOfMeasure: string; taxable: boolean; taxCategory: string | null } | null {
+  const rawName = coerceString(raw.name)?.trim() || query.trim();
+  const name = rawName.slice(0, NAME_MAX);
+  if (!name) return null;
+
+  const description = coerceString(raw.description)?.slice(0, DESCRIPTION_MAX) ?? null;
+
+  const rawUom = coerceString(raw.unitOfMeasure)?.trim();
+  const unitOfMeasure = (rawUom ? rawUom.slice(0, UNIT_OF_MEASURE_MAX) : '') || 'each';
+
+  const taxCategory = coerceString(raw.taxCategory)?.slice(0, TAX_CATEGORY_MAX) ?? null;
+
+  return {
+    name,
+    description,
+    itemType: normalizeItemType(raw.itemType, hint),
+    unitOfMeasure,
+    taxable: typeof raw.taxable === 'boolean' ? raw.taxable : true,
+    taxCategory,
+  };
 }
 
 function priceGuidanceFrom(low: number | null, high: number | null, currency: string | null): string | null {
@@ -147,15 +219,23 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
       throw new EnrichmentError('Could not parse AI response', 'AI_PARSE', 502);
     }
 
-    const draftParse = enrichDraftSchema.safeParse({
-      name: raw.name,
-      description: raw.description ?? null,
-      itemType: raw.itemType ?? hint ?? 'service',
-      unitOfMeasure: typeof raw.unitOfMeasure === 'string' && raw.unitOfMeasure ? raw.unitOfMeasure : 'each',
-      taxable: typeof raw.taxable === 'boolean' ? raw.taxable : true,
-      taxCategory: (raw.taxCategory as string | null) ?? null,
-    });
-    if (!draftParse.success) throw new EnrichmentError('AI response missing required fields', 'AI_PARSE', 502);
+    // Coerce the advisory model output to fit enrichDraftSchema's bounds before
+    // validating, so a long web-sourced description or an off-enum itemType is
+    // normalized rather than rejected with a blanket 502 (issue #1950). The schema
+    // parse below is then a safety net that should only trip on a truly empty name.
+    const coerced = coerceDraft(raw, query, hint);
+    if (!coerced) {
+      console.error('[catalog-enrich] no usable name in AI output', { query, preview: finalText.slice(0, 200) });
+      throw new EnrichmentError('AI response missing a product name', 'AI_PARSE', 502);
+    }
+    const draftParse = enrichDraftSchema.safeParse(coerced);
+    if (!draftParse.success) {
+      console.error('[catalog-enrich] coerced draft failed validation', {
+        query,
+        issues: draftParse.error.issues.map((iss) => `${iss.path.join('.')}: ${iss.message}`),
+      });
+      throw new EnrichmentError('AI response missing required fields', 'AI_PARSE', 502);
+    }
 
     const low = clampMoney(raw.priceLow);
     const high = clampMoney(raw.priceHigh);

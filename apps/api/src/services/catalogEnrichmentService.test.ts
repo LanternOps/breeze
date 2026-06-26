@@ -117,6 +117,63 @@ describe('enrichCatalogItem', () => {
     expect(res.provenance.suggestion).toEqual({ truncated: true });
   });
 
+  // Issue #1950: mainstream products (e.g. Microsoft 365 Business Premium) came
+  // back with off-enum itemTypes / oversized fields and were rejected with a
+  // blanket AI_PARSE/502. We now coerce the advisory output to fit the schema.
+  it('maps an off-enum itemType ("subscription") to software instead of rejecting', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'Microsoft 365 Business Premium', description: 'Office apps + security',
+      itemType: 'subscription', unitOfMeasure: 'user/month', taxable: true, taxCategory: null,
+      priceLow: 22, priceHigh: 22, currency: 'USD', confidence: 0.9, notes: '',
+    }));
+    const res = await enrichCatalogItem('Microsoft 365 Business Premium', undefined, actor);
+    expect(res.draft.itemType).toBe('software');
+    expect(res.draft.name).toBe('Microsoft 365 Business Premium');
+  });
+
+  it('normalizes a capitalized itemType ("Software")', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'Adobe Acrobat', description: null, itemType: 'Software',
+      unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
+    }));
+    const res = await enrichCatalogItem('Adobe Acrobat', undefined, actor);
+    expect(res.draft.itemType).toBe('software');
+  });
+
+  it('truncates an oversized description and name instead of throwing AI_PARSE', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'N'.repeat(400), description: 'd'.repeat(20_000), itemType: 'service',
+      unitOfMeasure: 'u'.repeat(80), taxable: true, taxCategory: 'c'.repeat(200),
+      priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
+    }));
+    const res = await enrichCatalogItem('Service X', undefined, actor);
+    expect(res.draft.name.length).toBe(255);
+    expect(res.draft.description?.length).toBe(10_000);
+    expect(res.draft.unitOfMeasure.length).toBe(50);
+    expect(res.draft.taxCategory?.length).toBe(100);
+  });
+
+  it('falls back to the query for the name when the model omits it', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      description: null, itemType: 'service',
+      unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: null, priceHigh: null, currency: null, confidence: 0.3, notes: '',
+    }));
+    const res = await enrichCatalogItem('Some Product', undefined, actor);
+    expect(res.draft.name).toBe('Some Product');
+  });
+
+  it('coerces a non-string description to null rather than failing', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'Thing', description: 42, itemType: 'service',
+      unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
+    }));
+    const res = await enrichCatalogItem('Thing', undefined, actor);
+    expect(res.draft.description).toBeNull();
+  });
+
   it('skips org-scoped guardrails and cost when orgId is null', async () => {
     create.mockResolvedValueOnce(aiMessage({
       name: 'N', description: null, itemType: 'service',
