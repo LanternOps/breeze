@@ -49,4 +49,19 @@ describe('DistributorLookup', () => {
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
     await waitFor(() => screen.getByTestId('quote-distributor-error-b1'));
   });
+
+  it('disables Import & add and ignores clicks for an invalid price', async () => {
+    ecExpressLookup.mockResolvedValue(ok([product]));
+    const onImportAdd = vi.fn();
+    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={onImportAdd} />);
+    fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('quote-distributor-add-ABC123'));
+    for (const bad of ['', '-5']) {
+      fireEvent.change(screen.getByTestId('quote-distributor-price-ABC123'), { target: { value: bad } });
+      expect((screen.getByTestId('quote-distributor-add-ABC123') as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
+    }
+    expect(onImportAdd).not.toHaveBeenCalled();
+  });
 });

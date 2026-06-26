@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
-import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
+import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
 import {
   addBlock,
@@ -13,7 +13,7 @@ import {
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
-import { ecExpressStatus, ecExpressImport, type EcProduct } from '../../../lib/api/distributors';
+import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import DistributorLookup from './DistributorLookup';
 import {
@@ -112,7 +112,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     if (!canCatalogWrite) { setEcActive(false); return; }
     const res = await ecExpressStatus();
     if (!res.ok) return; // optional context; never block the editor
-    const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
+    const body = (await res.json().catch(() => null)) as { data?: EcStatus } | null;
     setEcActive(Boolean(body?.data?.configured && body?.data?.enabled));
   }, [canCatalogWrite]);
 
@@ -247,7 +247,11 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     const fromState = catalog.find((i) => i.sku === sku);
     if (fromState) return fromState;
     const res = await listCatalog({ search: sku, isActive: true, limit: 200 });
-    if (!res.ok) return null;
+    // A failed lookup must NOT be treated as "not in catalog" — that would
+    // re-import and could strand the line. Throw a plain Error so the caller's
+    // handleActionError surfaces it (a manual ActionError would be assumed
+    // already-toasted and swallowed).
+    if (!res.ok) throw new Error('catalog lookup failed');
     const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
     return (body?.data ?? []).find((i) => i.sku === sku) ?? null;
   }, [catalog]);
@@ -256,8 +260,13 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      let item: CatalogItem;
-      try {
+      // Check the catalog first: if this SKU is already imported, add the existing
+      // item directly. This avoids the duplicate-SKU error toast (runAction toasts
+      // the failure before throwing) firing on the common "already in catalog" path,
+      // which otherwise produced a red error flash immediately followed by green
+      // "Item added".
+      let item = await resolveCatalogBySku(product.synnexSku);
+      if (!item) {
         item = await runAction<CatalogItem>({
           request: () => ecExpressImport({
             product,
@@ -274,17 +283,11 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
         });
-      } catch (err) {
-        // Already in the catalog → resolve the existing item and add that line.
-        if (err instanceof ActionError && err.code === 'DUPLICATE_SKU') {
-          const existing = await resolveCatalogBySku(product.synnexSku);
-          if (existing) { await doAddCatalog(blockId, existing); void loadCatalog(); return; }
-        }
-        handleActionError(err, 'Could not import the distributor item.');
-        return;
       }
       await doAddCatalog(blockId, item);
-      void loadCatalog(); // surface the new item in the catalog picker too
+      void loadCatalog(); // surface a newly-imported item in the catalog picker too
+    } catch (err) {
+      handleActionError(err, 'Could not add the distributor item.');
     } finally {
       setBusy(false);
     }
