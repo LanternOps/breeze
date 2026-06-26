@@ -13,6 +13,7 @@ export const ticketResponseTemplateRoutes = new Hono();
 
 ticketResponseTemplateRoutes.use('*', authMiddleware);
 
+const requireTicketRead = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action);
 // Reuse the tickets-write permission (same admin surface that manages ticket config).
 const requireTicketWrite = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
 
@@ -29,7 +30,7 @@ const createSchema = z.object({
 const updateSchema = createSchema.partial();
 const idParam = z.object({ id: z.string().guid() });
 
-ticketResponseTemplateRoutes.get('/ticket-response-templates', scopes, async (c) => {
+ticketResponseTemplateRoutes.get('/ticket-response-templates', scopes, requireTicketRead, async (c) => {
   const auth = c.get('auth') as AuthContext;
   const partnerId = auth.partnerId;
   if (!partnerId) return c.json({ error: 'Partner context required' }, 403);

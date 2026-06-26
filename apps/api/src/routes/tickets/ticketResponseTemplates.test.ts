@@ -58,6 +58,12 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
+vi.mock('drizzle-orm', () => ({
+  and: (...conditions: any[]) => ({ op: 'and', conditions }),
+  eq: (field: string, value: unknown) => ({ op: 'eq', field, value }),
+  asc: (field: string) => ({ op: 'asc', field }),
+}));
+
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
@@ -65,7 +71,6 @@ vi.mock('../../services/auditEvents', () => ({
 import { ticketResponseTemplateRoutes } from './ticketResponseTemplates';
 
 const TEMPLATE_ID = '3f2f1d8e-1111-4222-8333-444455556666';
-const OTHER_TEMPLATE_ID = '4f2f1d8e-1111-4222-8333-444455556666';
 
 const DEFAULT_AUTH = {
   scope: 'partner' as string,
@@ -95,6 +100,18 @@ function sortTemplates(rows: Record<string, any>[]) {
 function visibleRows() {
   const partnerId = authRef.current?.partnerId;
   return sortTemplates(storeRef.current.filter((row) => row.partnerId === partnerId && row.isActive === true));
+}
+
+function whereEqValue(condition: any, field: string): unknown {
+  if (!condition) return undefined;
+  if (condition.op === 'eq' && condition.field === field) return condition.value;
+  if (condition.op === 'and') {
+    for (const child of condition.conditions ?? []) {
+      const value = whereEqValue(child, field);
+      if (value !== undefined) return value;
+    }
+  }
+  return undefined;
 }
 
 function jsonRequest(method: string, path: string, body?: unknown) {
@@ -138,10 +155,12 @@ beforeEach(() => {
 
   dbMocks.update.mockImplementation(() => ({
     set: vi.fn((patch: Record<string, any>) => ({
-      where: vi.fn(() => ({
+      where: vi.fn((condition: any) => ({
         returning: vi.fn(() => {
+          const id = whereEqValue(condition, 'id');
+          const partnerId = whereEqValue(condition, 'partnerId');
           const row = storeRef.current.find((template) => (
-            template.id === TEMPLATE_ID && template.partnerId === authRef.current?.partnerId
+            template.id === id && template.partnerId === partnerId
           ));
           if (!row) return Promise.resolve([]);
           Object.assign(row, patch);
@@ -152,10 +171,12 @@ beforeEach(() => {
   }));
 
   dbMocks.delete.mockImplementation(() => ({
-    where: vi.fn(() => ({
+    where: vi.fn((condition: any) => ({
       returning: vi.fn(() => {
+        const id = whereEqValue(condition, 'id');
+        const partnerId = whereEqValue(condition, 'partnerId');
         const index = storeRef.current.findIndex((template) => (
-          template.id === TEMPLATE_ID && template.partnerId === authRef.current?.partnerId
+          template.id === id && template.partnerId === partnerId
         ));
         if (index === -1) return Promise.resolve([]);
         const [row] = storeRef.current.splice(index, 1);
@@ -258,7 +279,7 @@ describe('PATCH /ticket-response-templates/:id', () => {
   });
 
   it('404 when the row is not in the caller partner', async () => {
-    storeRef.current = [{ id: OTHER_TEMPLATE_ID, partnerId: 'partner-2', name: 'Other', body: 'Body', isActive: true }];
+    storeRef.current = [{ id: TEMPLATE_ID, partnerId: 'partner-2', name: 'Other', body: 'Body', isActive: true }];
     const res = await jsonRequest('PATCH', `/ticket-response-templates/${TEMPLATE_ID}`, { name: 'New' });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Template not found' });
@@ -272,5 +293,13 @@ describe('DELETE /ticket-response-templates/:id', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
     expect(storeRef.current).toEqual([]);
+  });
+
+  it('404 when the row is not in the caller partner', async () => {
+    storeRef.current = [{ id: TEMPLATE_ID, partnerId: 'partner-2', name: 'Other', body: 'Body', isActive: true }];
+    const res = await makeApp().request(`/ticket-response-templates/${TEMPLATE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Template not found' });
+    expect(storeRef.current).toEqual([{ id: TEMPLATE_ID, partnerId: 'partner-2', name: 'Other', body: 'Body', isActive: true }]);
   });
 });
