@@ -9,13 +9,20 @@ ALTER TABLE patch_approvals ADD COLUMN IF NOT EXISTS partner_id uuid REFERENCES 
 DO $$
 DECLARE n bigint;
 BEGIN
-  UPDATE patch_approvals a
-     SET partner_id = o.partner_id
-    FROM organizations o
-   WHERE a.org_id = o.id
-     AND a.partner_id IS NULL;
-  GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN RAISE WARNING 'patch_approvals partner backfill: % rows', n; END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'patch_approvals'
+       AND column_name = 'org_id'
+  ) THEN
+    UPDATE patch_approvals a
+       SET partner_id = o.partner_id
+      FROM organizations o
+     WHERE a.org_id = o.id
+       AND a.partner_id IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n > 0 THEN RAISE WARNING 'patch_approvals partner backfill: % rows', n; END IF;
+  END IF;
 END $$;
 
 -- 3. Dedup collisions BEFORE the new unique index. Two orgs under one partner can

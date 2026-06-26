@@ -53,6 +53,16 @@ export const CHECKSUM_RECONCILIATIONS: Record<
     to: '214ebca196629d81d54610bad9ff79fef8b2b5bfb19c0b024a4cf2a6b230f693',
     reason: '#994: canonical audit-chain fix (companion to 2026-05-25-b)',
   },
+  '2026-06-27-a-update-rings-partner-scope.sql': {
+    from: '116206c6dca9085c7b539ce9a0adc00ca686a290ccf103c77476198d2d8ea73d',
+    to: '343795b2cdc3ab7ac938d0b0ad71360b69f32e1a6219cd7e4c591842f14e9dd0',
+    reason: '#1936: guard patch_policies org_id backfill for already partner-scoped reruns',
+  },
+  '2026-06-27-b-patch-approvals-partner-scope.sql': {
+    from: 'e7047df7bf793525af48e8bd0f6ce9eadee38b8fdb10227bf7b387595fb44384',
+    to: '857bb9005dbdbda33f55295db45a685d7003442414386d94d9cb32e7ceb9f1a0',
+    reason: '#1936: guard patch_approvals org_id backfill for already partner-scoped reruns',
+  },
 };
 
 /**

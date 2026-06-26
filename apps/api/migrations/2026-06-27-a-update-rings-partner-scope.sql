@@ -9,13 +9,20 @@ ALTER TABLE patch_policies ADD COLUMN IF NOT EXISTS partner_id uuid REFERENCES p
 DO $$
 DECLARE n bigint;
 BEGIN
-  UPDATE patch_policies p
-     SET partner_id = o.partner_id
-    FROM organizations o
-   WHERE p.org_id = o.id
-     AND p.partner_id IS NULL;
-  GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN RAISE WARNING 'patch_policies partner backfill: % rows', n; END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'patch_policies'
+       AND column_name = 'org_id'
+  ) THEN
+    UPDATE patch_policies p
+       SET partner_id = o.partner_id
+      FROM organizations o
+     WHERE p.org_id = o.id
+       AND p.partner_id IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n > 0 THEN RAISE WARNING 'patch_policies partner backfill: % rows', n; END IF;
+  END IF;
 END $$;
 
 -- 3. Enforce NOT NULL once backfilled.
