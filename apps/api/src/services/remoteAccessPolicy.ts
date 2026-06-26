@@ -11,6 +11,7 @@
 import { resolveEffectiveConfig } from './configurationPolicy';
 import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
+import { getRemoteAccessBaseline } from './policyBaselineDefaults';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,29 +48,10 @@ export interface PolicyCheckResult {
 
 export type RemoteCapability = 'webrtcDesktop' | 'vncRelay' | 'remoteTools' | 'proxy';
 
-// Hosted multi-tenant SaaS defaults the silent-exfil direction (remote host
-// clipboard → operator viewer) OFF, so an MSP operator can't passively harvest
-// whatever a customer copies during a session. Operator→host paste stays on for
-// usability. Self-hosted (single-tenant, IS_HOSTED!='true') preserves the
-// historical bidirectional default so an upgrade doesn't silently change
-// behavior for an admin running their own instance. There's no dedicated
-// clipboard-direction UI yet (one is being added separately), but both
-// defaults are overridable via an explicit `remote_access` policy. Finding #7.
-const isHosted = process.env.IS_HOSTED === 'true';
-
-const DEFAULTS: RemoteAccessSettings = {
-  webrtcDesktop: true,
-  vncRelay: true,
-  remoteTools: true,
-  clipboardHostToViewer: !isHosted,
-  clipboardViewerToHost: true,
-  enableProxy: true,
-  defaultAllowedPorts: [],
-  autoEnableProxy: false,
-  maxConcurrentTunnels: 5,
-  idleTimeoutMinutes: 5,
-  maxSessionDurationHours: 8,
-};
+// Applied defaults for an unassigned device live in the canonical baseline
+// module (single source of truth, #1725). isHosted-dependent clipboard default
+// is encoded there.
+const DEFAULTS: RemoteAccessSettings = getRemoteAccessBaseline();
 
 const CAPABILITY_LABELS: Record<RemoteCapability, string> = {
   webrtcDesktop: 'Remote desktop',
