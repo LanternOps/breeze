@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type KeyboardEvent, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, useId, type KeyboardEvent, type ReactNode } from 'react';
 import { Activity, Plus, Trash2, Server, Cpu, FileWarning, Bell, ChevronDown, ChevronRight, Settings2 } from 'lucide-react';
 import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
@@ -247,6 +247,7 @@ function MonitoringSection({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen ?? count > 0);
+  const panelId = useId();
 
   return (
     <div className="rounded-lg border bg-card overflow-hidden">
@@ -254,6 +255,7 @@ function MonitoringSection({
         role="button"
         tabIndex={0}
         aria-expanded={open}
+        aria-controls={panelId}
         onClick={() => setOpen(!open)}
         onKeyDown={(event) => handleToggleKeyDown(event, () => setOpen(!open))}
         className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30 transition"
@@ -292,7 +294,7 @@ function MonitoringSection({
       </div>
 
       {open && (
-        <div className="border-t px-4 py-3">
+        <div id={panelId} className="border-t px-4 py-3">
           {children}
         </div>
       )}
@@ -691,6 +693,7 @@ function WatchCard({
   onRemove: () => void;
   nameInputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
+  const panelId = useId();
   const summaryParts: string[] = [];
   if (watch.alertOnStop) summaryParts.push('alert on stop');
   if (watch.autoRestart) summaryParts.push('auto-restart');
@@ -703,6 +706,7 @@ function WatchCard({
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
+        aria-controls={panelId}
         onClick={onToggle}
         onKeyDown={(event) => handleToggleKeyDown(event, onToggle)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
@@ -739,7 +743,7 @@ function WatchCard({
 
       {/* Expanded form */}
       {expanded && (
-        <div className="border-t px-4 py-3 space-y-4">
+        <div id={panelId} className="border-t px-4 py-3 space-y-4">
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Type</label>
@@ -859,6 +863,7 @@ function EventLogAlertCard({
   onRemove: () => void;
   nameInputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
+  const panelId = useId();
   return (
     <div className="rounded-md border bg-background">
       {/* Header */}
@@ -866,6 +871,7 @@ function EventLogAlertCard({
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
+        aria-controls={panelId}
         onClick={onToggle}
         onKeyDown={(event) => handleToggleKeyDown(event, onToggle)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
@@ -904,7 +910,7 @@ function EventLogAlertCard({
 
       {/* Expanded form */}
       {expanded && (
-        <div className="border-t px-4 py-3 space-y-4">
+        <div id={panelId} className="border-t px-4 py-3 space-y-4">
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Rule Name</label>
@@ -988,6 +994,7 @@ function AlertRuleCard({
   onRemoveCondition: (ci: number) => void;
   nameInputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
+  const panelId = useId();
   return (
     <div className="rounded-md border bg-background">
       {/* Header */}
@@ -995,6 +1002,7 @@ function AlertRuleCard({
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
+        aria-controls={panelId}
         onClick={onToggle}
         onKeyDown={(event) => handleToggleKeyDown(event, onToggle)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
@@ -1021,7 +1029,7 @@ function AlertRuleCard({
 
       {/* Expanded form */}
       {expanded && (
-        <div className="border-t px-4 pb-4 pt-3 space-y-4">
+        <div id={panelId} className="border-t px-4 pb-4 pt-3 space-y-4">
           {/* Name */}
           <div>
             <label className="text-xs font-medium text-muted-foreground">Rule Name</label>
