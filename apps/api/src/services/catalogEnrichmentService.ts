@@ -7,6 +7,7 @@ import { captureException } from './sentry';
 import {
   enrichDraftSchema,
   type CatalogItemType,
+  type EnrichDraft,
   type EnrichResponse,
   type EnrichmentProvenance,
 } from '@breeze/shared';
@@ -105,7 +106,7 @@ function coerceDraft(
   raw: Record<string, unknown>,
   query: string,
   hint: CatalogItemType | undefined,
-): { name: string; description: string | null; itemType: CatalogItemType; unitOfMeasure: string; taxable: boolean; taxCategory: string | null } | null {
+): EnrichDraft | null {
   const rawName = coerceString(raw.name)?.trim() || query.trim();
   const name = rawName.slice(0, NAME_MAX);
   if (!name) return null;
