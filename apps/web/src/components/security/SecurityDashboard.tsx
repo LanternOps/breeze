@@ -24,6 +24,8 @@ import {
 } from 'recharts';
 import { cn, formatNumber, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
+import EdrSummaryPanel from './EdrSummaryPanel';
 
 type Priority = 'critical' | 'high' | 'medium' | 'low';
 
@@ -607,6 +609,8 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
           </button>
         </div>
       )}
+
+      {ENABLE_EDR_INTEGRATIONS && <EdrSummaryPanel />}
 
       <div className="grid gap-6 lg:grid-cols-12">
         {isInitialLoading ? (
