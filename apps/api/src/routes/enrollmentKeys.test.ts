@@ -84,7 +84,7 @@ vi.mock("../services/installerBuilder", () => ({
   assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   fetchMacosInstallerAppZip: vi.fn(async () => null),
   serveWindowsBootstrapMsi: vi.fn((c: any, args: { msi: Buffer; token: string; apiHost: string }) => {
-    const filename = `Breeze Agent [${args.token}@${args.apiHost}].msi`;
+    const filename = `Breeze Agent (${args.token}@${args.apiHost}).msi`;
     c.header("Content-Type", "application/octet-stream");
     c.header("Content-Disposition", `attachment; filename="${filename}"`);
     c.header("Content-Length", String(args.msi.length));
@@ -863,7 +863,7 @@ describe("GET /public-download/:platform", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
     expect(res.headers.get("Content-Disposition")).toMatch(
-      /^attachment; filename="Breeze Agent \[ABCDE12345@api\.example\.com\]\.msi"$/,
+      /^attachment; filename="Breeze Agent \(ABCDE12345@api\.example\.com\)\.msi"$/,
     );
     // No db.update — download does not consume enrollment slots
     expect(db.update).not.toHaveBeenCalled();

@@ -300,8 +300,15 @@
     <!-- Capture the launched MSI path + bootstrap inputs while the original
          session properties are still readable (immediate CA). OriginalDatabase
          points at the user's downloaded file here; by deferred execution the
-         package is cached to C:\Windows\Installer and the [TOKEN@HOST] name is
-         gone. Packed pipe-delimited because deferred CAs only see CustomActionData. -->
+         package is cached to C:\Windows\Installer and the (TOKEN@HOST) name is
+         gone. Packed pipe-delimited because deferred CAs only see CustomActionData.
+
+         The download filename carries the token in PARENTHESES — Breeze Agent
+         (TOKEN@HOST).msi — NOT square brackets. OriginalDatabase is a Formatted
+         field, so a "[...]" substring in the path would be read as an MSI
+         property reference and stripped to empty, silently dropping the token
+         (issue #1956). Parens are literal in Formatted fields and survive into
+         CustomActionData. The agent parser accepts both forms. -->
     <CustomAction
       Id="SetBootstrapData"
       Property="BootstrapEnroll"

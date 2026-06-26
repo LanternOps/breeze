@@ -72,7 +72,7 @@ vi.mock('../services/installerBuilder', () => ({
   fetchMacosInstallerAppZip: vi.fn(async () => null),
   // Windows bootstrap path — serves static MSI with token in the filename.
   serveWindowsBootstrapMsi: vi.fn((c: any, args: { msi: Buffer; token: string; apiHost: string }) => {
-    const filename = `Breeze Agent [${args.token}@${args.apiHost}].msi`;
+    const filename = `Breeze Agent (${args.token}@${args.apiHost}).msi`;
     c.header('Content-Type', 'application/octet-stream');
     c.header('Content-Disposition', `attachment; filename="${filename}"`);
     c.header('Content-Length', String(args.msi.length));
@@ -301,7 +301,7 @@ describe('enrollment key routes — installer download', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toBe('application/octet-stream');
       expect(res.headers.get('content-disposition')).toBe(
-        'attachment; filename="Breeze Agent [ABCDE12345@breeze.example.com].msi"',
+        'attachment; filename="Breeze Agent (ABCDE12345@breeze.example.com).msi"',
       );
       // The static signed MSI bytes are served as-is.
       const body = Buffer.from(await res.arrayBuffer());

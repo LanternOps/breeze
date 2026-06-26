@@ -22,6 +22,14 @@ func TestResolveBootstrapInputs(t *testing.T) {
 			wantServer: "https://eu.2breeze.app",
 		},
 		{
+			// Real-world Windows shape: NinjaRMM silent install, parens delimiter,
+			// empty BOOTSTRAP_TOKEN/SERVER_URL properties (issue #1956).
+			name:       "paren filename token (windows MSI form)",
+			data:       `C:\ProgramData\NinjaRMMAgent\download\Breeze Agent (6KE9MDUG56@us.2breeze.app).msi||`,
+			wantToken:  "6KE9MDUG56",
+			wantServer: "https://us.2breeze.app",
+		},
+		{
 			name:       "property token + server wins over filename",
 			data:       `C:\dl\Breeze Agent [ABCDE12345@eu.2breeze.app].msi|ZZZZZ99999|https://us.2breeze.app`,
 			wantToken:  "ZZZZZ99999",
