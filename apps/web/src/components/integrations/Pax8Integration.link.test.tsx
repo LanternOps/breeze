@@ -108,4 +108,32 @@ describe('Pax8Integration subscription actions', () => {
     fireEvent.click(screen.getByTestId('pax8-subscription-link-sub-unlinked'));
     await waitFor(() => screen.getByTestId('mock-picker-done'));
   });
+
+  it('pauses sync by POSTing syncEnabled:false for a currently-syncing link', async () => {
+    routeFetch(true); // sub-linked starts syncEnabled: true
+    render(<Pax8Integration />);
+    await waitFor(() => screen.getByTestId('pax8-subscription-togglesync-sub-linked'));
+    fireEvent.click(screen.getByTestId('pax8-subscription-togglesync-sub-linked'));
+    await waitFor(() => {
+      const post = fetchWithAuth.mock.calls.find(([u, o]) => u === '/pax8/subscriptions/link' && o?.method === 'POST');
+      expect(post).toBeTruthy();
+      expect(JSON.parse((post![1] as { body: string }).body)).toMatchObject({
+        integrationId: 'int-1', subscriptionSnapshotId: 'sub-linked', contractLineId: 'line-1', syncEnabled: false,
+      });
+    });
+  });
+
+  it('shows "Map company first" and no Link action for an unmapped subscription', async () => {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url.startsWith('/pax8/integration')) return Promise.resolve(ok(integration));
+      if (url.startsWith('/pax8/companies')) return Promise.resolve(ok([]));
+      if (url.startsWith('/pax8/subscriptions')) return Promise.resolve(ok([{ ...subscriptions(true)[0], id: 'sub-unmapped', orgId: null }]));
+      if (url.startsWith('/orgs/organizations')) return Promise.resolve(ok([{ id: 'org-1', name: 'Acme' }]));
+      return Promise.resolve(ok(null));
+    });
+    render(<Pax8Integration />);
+    await waitFor(() => screen.getByTestId('pax8-subscription-sub-unmapped'));
+    expect(screen.queryByTestId('pax8-subscription-link-sub-unmapped')).toBeNull();
+    expect(screen.getByText('Map company first')).toBeTruthy();
+  });
 });

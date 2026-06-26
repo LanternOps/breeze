@@ -135,7 +135,13 @@ export default function Pax8Integration() {
   const reloadSubscriptions = useCallback(async () => {
     const res = await fetchWithAuth('/pax8/subscriptions?limit=100');
     const json = await res.json().catch(() => ({}));
-    if (res.ok) setSubscriptions((json as { data?: Pax8Subscription[] }).data ?? []);
+    if (res.ok) {
+      setSubscriptions((json as { data?: Pax8Subscription[] }).data ?? []);
+    } else {
+      // The mutation already toasted success; warn that the refreshed list could
+      // not load so the user knows the rows below may be stale.
+      showToast({ type: 'error', message: 'Subscriptions list could not be refreshed; it may be out of date.' });
+    }
   }, []);
 
   const fetchCompaniesAndSubs = useCallback(async () => {
@@ -669,10 +675,11 @@ export default function Pax8Integration() {
               </tbody>
             </table>
           )}
-          {linkingSub && integration && (
+          {linkingSub && integration && linkingSub.orgId && (
             <LinkSubscriptionPicker
+              key={linkingSub.id}
               integrationId={integration.id}
-              subscription={{ id: linkingSub.id, orgId: linkingSub.orgId as string, productName: linkingSub.productName, quantity: linkingSub.quantity }}
+              subscription={{ id: linkingSub.id, orgId: linkingSub.orgId, productName: linkingSub.productName, quantity: linkingSub.quantity }}
               onDone={() => { setLinkingSub(null); void reloadSubscriptions(); }}
               onCancel={() => setLinkingSub(null)}
             />

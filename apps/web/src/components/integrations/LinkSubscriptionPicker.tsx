@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { listContracts, getContract, addContractLine, type ContractSummary, type ContractLine } from '../../lib/api/contracts';
 
 const NEW_LINE = '__new__';
 const MONEY_RE = /^\d+(\.\d{1,2})?$/;
+const MFA_HINT = 'This change requires MFA. Set up or verify MFA in your profile, then retry.';
+
+/** Pax8 link/create writes are MFA-gated server-side; a 403 "MFA required" should
+ *  read as a setup hint, mirroring the sibling actions in Pax8Integration. */
+function isMfaError(err: unknown): boolean {
+  return err instanceof ActionError && err.status === 403 && /mfa required/i.test(err.message);
+}
 
 interface LinkSubscriptionPickerProps {
   integrationId: string;
@@ -22,11 +30,16 @@ export default function LinkSubscriptionPicker({ integrationId, subscription, on
   const [newPrice, setNewPrice] = useState('');
   const [syncEnabled, setSyncEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
       const res = await listContracts({ orgId: subscription.orgId });
-      if (!res.ok) return;
+      if (!res.ok) {
+        // Load-bearing read: an empty dropdown must not be mistaken for "no contracts".
+        setError('Could not load contracts for this organization. Close and retry.');
+        return;
+      }
       const body = (await res.json().catch(() => null)) as { data?: ContractSummary[] } | null;
       setContracts((body?.data ?? []).filter((c) => c.status !== 'cancelled' && c.status !== 'expired'));
     })();
@@ -36,9 +49,15 @@ export default function LinkSubscriptionPicker({ integrationId, subscription, on
     setContractId(id);
     setLineId('');
     setLines([]);
+    setError(null);
     if (!id) return;
     const res = await getContract(id);
-    if (!res.ok) return;
+    if (!res.ok) {
+      // Surface the failure: an empty line list would otherwise invite a duplicate
+      // manual line for one that exists but failed to load.
+      setError('Could not load this contract’s lines. Pick the contract again to retry.');
+      return;
+    }
     const body = (await res.json().catch(() => null)) as { data?: { lines?: ContractLine[] } } | null;
     setLines((body?.data?.lines ?? []).filter((l) => l.lineType === 'manual'));
   }, []);
@@ -75,6 +94,10 @@ export default function LinkSubscriptionPicker({ integrationId, subscription, on
       });
       onDone();
     } catch (err) {
+      // Mirror the sibling Unlink/Pause buttons: surface MFA as an actionable hint
+      // rather than the generic fallback (the 403 body is plain text, so runAction
+      // can't recover it on its own).
+      if (isMfaError(err)) { showToast({ type: 'error', message: MFA_HINT }); return; }
       handleActionError(err, 'Could not link the subscription.');
     } finally {
       setBusy(false);
@@ -83,6 +106,9 @@ export default function LinkSubscriptionPicker({ integrationId, subscription, on
 
   return (
     <div className="mt-2 rounded-md border bg-background/40 p-3 text-sm" data-testid="pax8-link-picker">
+      {error && (
+        <p className="mb-2 text-xs text-destructive" data-testid="pax8-link-error">{error}</p>
+      )}
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="space-y-1">
           <span className="text-xs text-muted-foreground">Contract</span>

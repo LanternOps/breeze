@@ -61,4 +61,28 @@ describe('LinkSubscriptionPicker', () => {
     const linkBody = JSON.parse(fetchWithAuth.mock.calls[0][1].body);
     expect(linkBody.contractLineId).toBe('line-new');
   });
+
+  it('keeps submit disabled for an invalid new-line price', async () => {
+    render(<LinkSubscriptionPicker integrationId="int-1" subscription={sub} onDone={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('pax8-link-contract'));
+    fireEvent.change(screen.getByTestId('pax8-link-contract'), { target: { value: 'c1' } });
+    await waitFor(() => screen.getByTestId('pax8-link-line'));
+    fireEvent.change(screen.getByTestId('pax8-link-line'), { target: { value: '__new__' } });
+    // Garbage and over-precise values must not satisfy MONEY_RE.
+    for (const bad of ['abc', '36.999', '']) {
+      fireEvent.change(screen.getByTestId('pax8-link-new-price'), { target: { value: bad } });
+      expect((screen.getByTestId('pax8-link-submit') as HTMLButtonElement).disabled).toBe(true);
+    }
+    // A valid 2-decimal value enables submit.
+    fireEvent.change(screen.getByTestId('pax8-link-new-price'), { target: { value: '36.00' } });
+    expect((screen.getByTestId('pax8-link-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('surfaces an inline error when the contract list fails to load', async () => {
+    listContracts.mockResolvedValue(new Response('{"error":"nope"}', { status: 500 }));
+    render(<LinkSubscriptionPicker integrationId="int-1" subscription={sub} onDone={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('pax8-link-error'));
+    // The dropdown must not silently look like "no contracts".
+    expect(addContractLine).not.toHaveBeenCalled();
+  });
 });

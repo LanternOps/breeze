@@ -420,6 +420,35 @@ describe('pax8 routes', () => {
     expect(res.status).toBe(404);
   });
 
+  it('returns 404 when the snapshot is missing', async () => {
+    mockSelectOnce([{ id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId }]);
+    mockSelectOnce([]); // snapshot lookup → none
+    const res = await app.request('/pax8/subscriptions/link', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+      }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 when the snapshot belongs to a different integration (resource-boundary)', async () => {
+    mockSelectOnce([{ id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId }]);
+    // snapshot exists but under a different integration id → must not be unlinkable here
+    mockSelectOnce([{ orgId: ORG_A, integrationId: '99999999-9999-9999-9999-999999999999' }]);
+    const res = await app.request('/pax8/subscriptions/link', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        integrationId: '44444444-4444-4444-4444-444444444444',
+        subscriptionSnapshotId: '66666666-6666-6666-6666-666666666666',
+      }),
+    });
+    expect(res.status).toBe(404);
+  });
+
   // -------------------------------------------------------------------------
   // GET /pax8/subscriptions — org-filter tests (cross-org billing leak fix)
   // -------------------------------------------------------------------------
