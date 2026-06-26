@@ -693,6 +693,161 @@ jobs:
           path: agent/coverage.out
           retention-days: 7
 
+  # ─── Windows runtime smoke (#1000) ────────────────────────────────────
+  # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
+  # it on Windows, so runtime-only Windows regressions shipped green. This
+  # bit the v0.68.x line twice — most severely #999, where a nil context
+  # passed to the PAM ETW consumer panicked `cannot create context from nil
+  # parent` on EVERY Windows agent at startup (dead-on-arrival), caught only
+  # by manual VM testing.
+  #
+  # This job natively boots the built breeze-agent.exe on a windows-latest
+  # runner against a throwaway enrolled config (an unreachable server URL —
+  # heartbeat/websocket failures are non-fatal background retries) with
+  # pam_enabled: true so the Windows-only ETW subscriber path actually runs.
+  # It then asserts the agent (a) logs "agent is running" within a deadline,
+  # (b) stays up a grace window without exiting, and (c) emits no Go panic.
+  # `breeze-agent start` launched from a shell is NOT detected as an SCM
+  # service (svc.IsWindowsService() == false), so it takes the console path
+  # straight into startAgent — the same pipeline that panicked in #999.
+  #
+  # Scope is deliberately the minimal valuable slice from #1000. The stretch
+  # items in that issue — scripted MSI install/upgrade smoke (Error-1920
+  # service-start failures) and a DB upgrade smoke from the prior release
+  # tag (the #998 checksum class) — are intentionally NOT covered here and
+  # remain open follow-ups.
+  windows-runtime-smoke:
+    name: Windows Runtime Smoke
+    runs-on: windows-latest
+    needs: [lint]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Download Go dependencies
+        working-directory: agent
+        run: go mod download
+
+      - name: Build Windows agent
+        working-directory: agent
+        env:
+          CGO_ENABLED: '0'
+          BUILD_VERSION: ${{ github.sha }}
+        run: |
+          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" `
+            -o breeze-agent.exe ./cmd/breeze-agent
+          if (-not (Test-Path breeze-agent.exe)) { throw "breeze-agent.exe was not produced" }
+
+      - name: Boot agent and assert it stays up
+        working-directory: agent
+        shell: pwsh
+        env:
+          # The agent treats Sentry as best-effort; force it off so the smoke
+          # never depends on network egress to sentry.io.
+          BREEZE_SENTRY_DSN: ''
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Start from a clean dir so a re-used (self-hosted) runner can't let a
+          # previous run's "agent is running" line or absent panic produce a
+          # vacuous green. GitHub-hosted windows-latest is ephemeral, but this
+          # is cheap insurance and keeps the assertion honest everywhere.
+          $smoke = Join-Path $env:RUNNER_TEMP 'breeze-smoke'
+          if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          $cfgPath = Join-Path $smoke 'agent.yaml'
+          $logPath = Join-Path $smoke 'agent.log'
+          $outPath = Join-Path $smoke 'stdout.log'
+          $errPath = Join-Path $smoke 'stderr.log'
+
+          # Throwaway *enrolled* config: a valid (non-real) UUID + token so
+          # config.IsEnrolled passes and `start` proceeds into startAgent
+          # instead of blocking in waitForEnrollment. server_url points at a
+          # closed port — heartbeat/websocket retries are non-fatal. The
+          # forward slashes in log_file are YAML-safe and accepted on Windows.
+          $logYaml = $logPath -replace '\\','/'
+          @"
+          server_url: http://127.0.0.1:9
+          agent_id: 00000000-0000-4000-8000-000000000001
+          auth_token: smoke-ci-token-not-a-real-secret
+          log_level: info
+          log_format: text
+          log_file: $logYaml
+          pam_enabled: true
+          heartbeat_interval_seconds: 60
+          "@ | Set-Content -Path $cfgPath -Encoding ascii
+          Write-Host "=== config ==="; Get-Content $cfgPath
+
+          Write-Host "=== launching breeze-agent start ==="
+          $proc = Start-Process -FilePath '.\breeze-agent.exe' `
+            -ArgumentList @('start','--config', $cfgPath) `
+            -RedirectStandardOutput $outPath `
+            -RedirectStandardError  $errPath `
+            -PassThru
+
+          function Get-AllLogText {
+            $parts = @()
+            foreach ($p in @($logPath, $outPath, $errPath)) {
+              if (Test-Path $p) { $parts += (Get-Content $p -Raw -ErrorAction SilentlyContinue) }
+            }
+            return ($parts -join "`n")
+          }
+
+          # (a) Wait up to 45s for "agent is running", failing fast if the
+          # process exits before reaching it.
+          $deadline = (Get-Date).AddSeconds(45)
+          $running  = $false
+          while ((Get-Date) -lt $deadline) {
+            if ((Get-AllLogText) -match 'agent is running') { $running = $true; break }
+            if ($proc.HasExited) {
+              Write-Host "::error::breeze-agent exited (code $($proc.ExitCode)) before logging 'agent is running'"
+              break
+            }
+            Start-Sleep -Seconds 1
+          }
+
+          # (b) Hold a grace window and confirm the process is still alive.
+          if ($running) {
+            Write-Host "agent reached 'agent is running' — holding 8s grace window"
+            Start-Sleep -Seconds 8
+          }
+          $stillAlive = -not $proc.HasExited
+
+          # Stop the agent regardless of outcome so the runner doesn't hang.
+          if (-not $proc.HasExited) {
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+          }
+          # Best-effort wait for clean exit so the redirected log files flush.
+          try { $proc.WaitForExit(5000) | Out-Null } catch {}
+
+          $allText = Get-AllLogText
+          Write-Host "=== agent.log (tail) ==="
+          if (Test-Path $logPath) { Get-Content $logPath -Tail 25 }
+          Write-Host "=== stderr ==="
+          if (Test-Path $errPath) { Get-Content $errPath }
+
+          # (c) Any Go panic is a hard failure — this is the #999 signal.
+          if ($allText -match 'panic:') {
+            Write-Host "::error::breeze-agent panicked on startup (the #999 class of regression)"
+            exit 1
+          }
+          if (-not $running) {
+            Write-Host "::error::breeze-agent never reached 'agent is running'"
+            exit 1
+          }
+          if (-not $stillAlive) {
+            Write-Host "::error::breeze-agent exited during the post-startup grace window"
+            exit 1
+          }
+          Write-Host "Windows runtime smoke passed: agent booted, stayed up, no panic."
+
   # ─── Rust Check (Tauri apps) ──────────────────────────────────────────
   # The release workflow is the only place the helper/viewer Rust actually
   # compiles — PR CI only runs cargo-audit (an advisory-DB scan). That let a
@@ -1132,7 +1287,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-web, build-portal, build-agent, test-agent, integration-test, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-web, build-portal, build-agent, test-agent, windows-runtime-smoke, integration-test, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -1153,6 +1308,7 @@ jobs:
           BUILD_PORTAL_RESULT: ${{ needs.build-portal.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
+          WINDOWS_RUNTIME_SMOKE_RESULT: ${{ needs.windows-runtime-smoke.result }}
           INTEGRATION_TEST_RESULT: ${{ needs.integration-test.result }}
           RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
           SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
@@ -1174,6 +1330,7 @@ jobs:
              [[ "${BUILD_PORTAL_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
+             [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${RUST_CHECK_RESULT}" != "success" ]]; then
             echo "One or more required jobs failed"
