@@ -253,6 +253,7 @@ function MonitoringSection({
       <div
         role="button"
         tabIndex={0}
+        aria-expanded={open}
         onClick={() => setOpen(!open)}
         onKeyDown={(event) => handleToggleKeyDown(event, () => setOpen(!open))}
         className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30 transition"
@@ -701,6 +702,7 @@ function WatchCard({
       <div
         role="button"
         tabIndex={0}
+        aria-expanded={expanded}
         onClick={onToggle}
         onKeyDown={(event) => handleToggleKeyDown(event, onToggle)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
@@ -863,6 +865,7 @@ function EventLogAlertCard({
       <div
         role="button"
         tabIndex={0}
+        aria-expanded={expanded}
         onClick={onToggle}
         onKeyDown={(event) => handleToggleKeyDown(event, onToggle)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
@@ -991,6 +994,7 @@ function AlertRuleCard({
       <div
         role="button"
         tabIndex={0}
+        aria-expanded={expanded}
         onClick={onToggle}
         onKeyDown={(event) => handleToggleKeyDown(event, onToggle)}
         className="flex w-full items-center gap-3 px-4 py-3 text-left"
