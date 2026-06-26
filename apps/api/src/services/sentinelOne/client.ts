@@ -36,6 +36,12 @@ export interface S1Agent {
   updatedAt: string | null;
 }
 
+export interface S1Site {
+  siteId: string;
+  siteName: string | null;
+  registrationToken: string | null;
+}
+
 export interface S1Threat {
   id: string;
   agentId: string | null;
@@ -209,6 +215,21 @@ export class SentinelOneClient {
     return { results, truncated: paged.truncated };
   }
 
+  async listSites(): Promise<S1Site[]> {
+    const payload = await this.requestJson<Record<string, unknown>>(
+      '/web/api/v2.1/sites',
+      'GET',
+      undefined,
+      { limit: '100' }
+    );
+
+    const data = asRecord(payload.data);
+    const sites = asArray(data?.sites);
+    return sites
+      .map((row) => this.normalizeSite(row))
+      .filter((row): row is S1Site => Boolean(row));
+  }
+
   async listThreats(updatedSince?: Date): Promise<PagedResult<S1Threat>> {
     const query: Record<string, string> = {
       limit: '200',
@@ -310,6 +331,22 @@ export class SentinelOneClient {
       policyName: str(row.policyName),
       lastSeen: str(row.lastSeen),
       updatedAt: str(row.updatedAt),
+    };
+  }
+
+  private normalizeSite(row: Record<string, unknown>): S1Site | null {
+    const id = str(row.id) ?? str(row.siteId);
+    if (!id) {
+      const msg = '[SentinelOneClient] Dropping site record with no recognizable ID';
+      console.warn(msg);
+      captureException(new Error(msg));
+      return null;
+    }
+
+    return {
+      siteId: id,
+      siteName: row.name == null ? null : String(row.name),
+      registrationToken: row.registrationToken == null ? null : String(row.registrationToken),
     };
   }
 
