@@ -89,6 +89,16 @@ export function addBlock(id: string, body: QuoteBlockInput): Promise<Response> {
   });
 }
 
+/** Update a block's content in place (PATCH /quotes/:id/blocks/:blockId). The
+ *  body restates the (immutable) blockType so content is validated by shape. */
+export function updateBlock(id: string, blockId: string, body: QuoteBlockInput): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/blocks/${blockId}`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
 /** Delete a block and its lines (DELETE /quotes/:id/blocks/:blockId). */
 export function deleteBlock(id: string, blockId: string): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/blocks/${blockId}`, { method: 'DELETE' });

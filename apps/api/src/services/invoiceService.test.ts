@@ -32,6 +32,7 @@ vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomi
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import * as svc from './invoiceService';
+import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice } from './catalogService';
 
@@ -147,6 +148,42 @@ describe('invoiceService guards', () => {
     );
     expect(row.currencyCode).toBe('EUR');
     expect(row.invoiceNumberPrefix).toBe('EU');
+  });
+
+  it('updatePartnerBillingSettings includes autoTaxHardware in the returned row', async () => {
+    queueResult([{ currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceFooter: null, autoTaxHardware: false }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, autoTaxHardware: false },
+      actor
+    );
+    expect(row.autoTaxHardware).toBe(false);
+  });
+
+  it('updatePartnerBillingSettings persists a scale-5 tax rate and a 2-decimal markup', async () => {
+    queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, defaultTaxRate: 0.08875, defaultMarkupPercent: 12.5 },
+      actor,
+    );
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(setArg.defaultTaxRate).toBe('0.08875'); // numeric(8,5): 3 percent decimals preserved
+    expect(setArg.defaultMarkupPercent).toBe('12.50'); // numeric(6,2)
+  });
+
+  it('updatePartnerBillingSettings clears the tax rate and markup when null', async () => {
+    queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, defaultTaxRate: null, defaultMarkupPercent: null },
+      actor,
+    );
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(setArg.defaultTaxRate).toBeNull();
+    expect(setArg.defaultMarkupPercent).toBeNull();
   });
 
   it('updateOrgBillingSettings denies an actor without access to the org (ORG_DENIED 403)', async () => {

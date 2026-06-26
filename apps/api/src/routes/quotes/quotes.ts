@@ -10,11 +10,12 @@ import {
 } from '@breeze/shared';
 import {
   createQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
-  addManualLine, addCatalogLine, updateLine, removeLine, addBlock, deleteBlock,
+  addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
 } from '../../services/quoteService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
 import { quoteImages } from '../../db/schema/quotes';
+import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
 
@@ -63,6 +64,10 @@ quoteCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), 
 });
 quoteCrudRoutes.post('/:id/blocks', scopes, writePerm, zValidator('param', idParam), zValidator('json', quoteBlockInputSchema), async (c) => {
   try { return c.json({ data: await addBlock(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.patch('/:id/blocks/:blockId', scopes, writePerm, zValidator('param', blockParam), zValidator('json', quoteBlockInputSchema), async (c) => {
+  try { const p = c.req.valid('param'); return c.json({ data: await updateBlock(p.id, p.blockId, c.req.valid('json'), quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.delete('/:id/blocks/:blockId', scopes, writePerm, zValidator('param', blockParam), async (c) => {
@@ -120,8 +125,16 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
       return img?.data ? { data: img.data } : null;
     };
 
+    // Product-image loader for catalog-sourced lines. RLS (partner-axis on
+    // catalog_item_images) scopes reads to this partner's items; a failed/absent
+    // image degrades to "no thumbnail" inside the renderer.
+    const loadCatalogImage = async (catalogItemId: string): Promise<{ data: Buffer } | null> => {
+      const img = await readCatalogItemImage(catalogItemId);
+      return img?.data ? { data: img.data } : null;
+    };
+
     const { renderQuotePdf } = await import('../../services/quotePdf');
-    const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding);
+    const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, loadCatalogImage);
 
     const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
     return new Response(new Uint8Array(pdf), {

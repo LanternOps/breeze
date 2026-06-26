@@ -36,6 +36,26 @@ describe('partnerBillingSettingsSchema', () => {
   it('accepts currency, tax rate, prefix, terms', () => {
     expect(partnerBillingSettingsSchema.safeParse({ currencyCode: 'USD', defaultTaxRate: 0.085, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }).success).toBe(true);
   });
+
+  it('accepts autoTaxHardware as a boolean and omits it when absent', () => {
+    const withTrue = partnerBillingSettingsSchema.parse({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, autoTaxHardware: true });
+    expect(withTrue.autoTaxHardware).toBe(true);
+    const withFalse = partnerBillingSettingsSchema.parse({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, autoTaxHardware: false });
+    expect(withFalse.autoTaxHardware).toBe(false);
+    const omitted = partnerBillingSettingsSchema.parse({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 });
+    expect(omitted.autoTaxHardware).toBeUndefined();
+  });
+
+  it('bounds defaultMarkupPercent to 0..9999.99 with 2-decimal precision', () => {
+    const base = { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 };
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 0 }).success).toBe(true);
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 150 }).success).toBe(true); // markup > 100% is valid
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 9999.99 }).success).toBe(true);
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: null }).success).toBe(true);
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: -1 }).success).toBe(false);
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 10000 }).success).toBe(false);
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 12.345 }).success).toBe(false); // multipleOf 0.01
+  });
 });
 
 

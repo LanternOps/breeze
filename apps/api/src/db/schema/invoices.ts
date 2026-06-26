@@ -35,7 +35,7 @@ export const invoices = pgTable('invoices', {
   issueDate: date('issue_date'),
   dueDate: date('due_date'),
   subtotal: numeric('subtotal', { precision: 12, scale: 2 }).notNull().default('0'),
-  taxRate: numeric('tax_rate', { precision: 6, scale: 3 }),
+  taxRate: numeric('tax_rate', { precision: 8, scale: 5 }),
   taxTotal: numeric('tax_total', { precision: 12, scale: 2 }).notNull().default('0'),
   total: numeric('total', { precision: 12, scale: 2 }).notNull().default('0'),
   amountPaid: numeric('amount_paid', { precision: 12, scale: 2 }).notNull().default('0'),

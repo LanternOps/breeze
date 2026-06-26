@@ -19,6 +19,7 @@ export type QuoteServiceErrorCode =
   | 'NOT_A_DRAFT'
   | 'LINE_NOT_FOUND'
   | 'BLOCK_NOT_FOUND'
+  | 'BLOCK_TYPE_MISMATCH'
   | 'IMAGE_NOT_FOUND'
   | 'INVALID_IMAGE'
   | 'CATALOG_ITEM_NOT_FOUND'

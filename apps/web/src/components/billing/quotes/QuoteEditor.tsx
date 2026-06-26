@@ -5,14 +5,17 @@ import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
 import {
   addBlock,
+  updateBlock,
   deleteBlock,
   addManualLine,
   addCatalogLine,
+  updateLine,
   removeLine,
   uploadQuoteImage,
   quoteImageUrl,
 } from '../../../lib/api/quotes';
-import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
+import type { QuoteBlockInput } from '@breeze/shared';
+import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
@@ -28,10 +31,11 @@ import {
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
-// Phase 2: the add-block menu now offers `image` as well. Because there is no
-// block-update endpoint (blocks are add/remove only), an image block is created
-// with its uploaded `imageId` already in `content` — the editor uploads the file
-// first (POST /:id/images), then adds the block with `{ imageId }`.
+// Phase 2: the add-block menu now offers `image` as well. An image block is
+// created with its uploaded `imageId` already in `content` — the editor uploads
+// the file first (POST /:id/images), then adds the block with `{ imageId }`.
+// Heading/rich-text block content is editable in place via PATCH /:id/blocks/:blockId
+// (updateBlock); the block type itself is immutable.
 type AddableBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
 const ADD_BLOCK_OPTIONS: { value: AddableBlockType; label: string }[] = [
   { value: 'heading', label: 'Heading' },
@@ -46,6 +50,17 @@ const BLOCK_TYPE_LABELS: Record<string, string> = {
   image: 'Image',
   line_items: 'Pricing table',
 };
+
+// Changed-fields payload for an inline line edit. Subset of
+// updateQuoteLineSchema (description/quantity/unitPrice/taxable/recurrence) —
+// the only fields the inline editor exposes.
+type LineUpdate = Partial<{
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  taxable: boolean;
+  recurrence: QuoteLineRecurrence;
+}>;
 
 interface Props {
   detail: QuoteDetailData;
@@ -363,6 +378,48 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     }
   }, [busy, quote.id, refresh]);
 
+  // Inline edit of an existing line. `body` carries only the changed fields
+  // (matches updateQuoteLineSchema). Routed through runAction so success/failure
+  // is surfaced, then refresh() re-pulls the quote so totals recompute.
+  const editLine = useCallback(async (lineId: string, body: LineUpdate) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => updateLine(quote.id, lineId, body),
+        errorFallback: 'Could not update the line.',
+        successMessage: 'Line updated',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not update the line.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, quote.id, refresh]);
+
+  // Inline edit of a block's content (heading text/level, rich-text html). The
+  // block type is restated so the server validates the content shape; it is
+  // immutable and never changes here.
+  const editBlock = useCallback(async (block: QuoteBlock, content: Record<string, unknown>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => updateBlock(quote.id, block.id, { blockType: block.blockType, content } as QuoteBlockInput),
+        errorFallback: 'Could not update the block.',
+        successMessage: 'Block updated',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not update the block.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, quote.id, refresh]);
+
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
 
@@ -390,6 +447,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 onAddCatalog={addCatalog}
                 onImportAddDistributor={importAndAddDistributor}
                 onAddManual={addManual}
+                onEditLine={editLine}
+                onEditBlock={editBlock}
                 onRemoveLine={deleteLine}
                 onRemoveBlock={removeBlock}
               />
@@ -551,7 +610,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, catalog, busy, canWrite, ecActive, onAddCatalog, onImportAddDistributor, onAddManual, onRemoveLine, onRemoveBlock,
+  block, quoteId, lines, currency, catalog, busy, canWrite, ecActive, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onRemoveLine, onRemoveBlock,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -567,6 +626,8 @@ function BlockCard({
     blockId: string,
     form: { description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
   ) => void;
+  onEditLine: (lineId: string, body: LineUpdate) => void;
+  onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => void;
   onRemoveLine: (lineId: string) => void;
   onRemoveBlock: (block: QuoteBlock) => void;
 }) {
@@ -584,6 +645,23 @@ function BlockCard({
   const tableLabel = (block.content?.label as string | undefined) ?? '';
   const imageId = (block.content?.imageId as string | undefined) ?? '';
   const imageCaption = (block.content?.caption as string | undefined) ?? '';
+
+  // Inline drafts for editable block content; resync if the persisted value
+  // changes (e.g. after a refresh) so server normalization wins.
+  const [headingDraft, setHeadingDraft] = useState(heading);
+  const [richDraft, setRichDraft] = useState(html);
+  useEffect(() => { setHeadingDraft(heading); }, [heading]);
+  useEffect(() => { setRichDraft(html); }, [html]);
+
+  const commitHeading = () => {
+    const text = headingDraft.trim();
+    if (!text || text === heading) { setHeadingDraft(heading); return; }
+    onEditBlock(block, { text, level: (block.content?.level as number | undefined) ?? 2 });
+  };
+  const commitRich = () => {
+    if (richDraft === html) return;
+    onEditBlock(block, { html: richDraft });
+  };
 
   const submitManual = () => {
     onAddManual(block.id, { description: desc, quantity: qty, unitPrice: price, taxable, recurrence, saveToCatalog });
@@ -612,10 +690,33 @@ function BlockCard({
 
       <div className="p-4">
         {block.blockType === 'heading' && (
-          <p className="text-lg font-semibold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
+          canWrite ? (
+            <input
+              value={headingDraft}
+              onChange={(e) => setHeadingDraft(e.target.value)}
+              onBlur={commitHeading}
+              disabled={busy}
+              data-testid={`quote-block-heading-input-${block.id}`}
+              className="w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold"
+            />
+          ) : (
+            <p className="text-lg font-semibold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
+          )
         )}
         {block.blockType === 'rich_text' && (
-          <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
+          canWrite ? (
+            <textarea
+              value={richDraft}
+              onChange={(e) => setRichDraft(e.target.value)}
+              onBlur={commitRich}
+              disabled={busy}
+              rows={4}
+              data-testid={`quote-block-rich-input-${block.id}`}
+              className="w-full resize-y rounded-md border bg-background px-2 py-1 text-sm"
+            />
+          ) : (
+            <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
+          )
         )}
         {block.blockType === 'image' && (
           imageId ? (
@@ -649,32 +750,36 @@ function BlockCard({
                     </td>
                   </tr>
                 ) : (
-                  lines.map((l) => (
-                    <tr key={l.id} className="border-t" data-testid={`quote-line-${l.id}`}>
-                      <td className="px-2 py-2">{l.description}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{l.quantity}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
-                      <td className="px-2 py-2">
-                        <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                          {formatRecurrence(l.recurrence)}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
-                      <td className="px-2 py-2 text-right">
-                        {canWrite && (
-                          <button
-                            type="button"
-                            onClick={() => onRemoveLine(l.id)}
-                            disabled={busy}
-                            data-testid={`quote-line-remove-${l.id}`}
-                            className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))
+                  lines.map((l) =>
+                    canWrite ? (
+                      <EditableLineRow
+                        key={l.id}
+                        line={l}
+                        currency={currency}
+                        busy={busy}
+                        onEdit={onEditLine}
+                        onRemove={onRemoveLine}
+                      />
+                    ) : (
+                      <tr key={l.id} className="border-t" data-testid={`quote-line-${l.id}`}>
+                        <td className="px-2 py-2">
+                          <div className="flex items-start gap-2">
+                            {l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
+                            <span>{l.description}</span>
+                          </div>
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums">{l.quantity}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
+                        <td className="px-2 py-2">
+                          <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            {formatRecurrence(l.recurrence)}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
+                        <td className="px-2 py-2 text-right" />
+                      </tr>
+                    ),
+                  )
                 )}
               </tbody>
             </table>
@@ -730,12 +835,13 @@ function BlockCard({
                       setTaxable(d.taxable);
                     }}
                   />
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_70px_90px_110px]">
-                    <input
-                      type="text" placeholder="Description" value={desc}
+                  <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-[1fr_70px_90px_110px]">
+                    <textarea
+                      placeholder="Description" value={desc}
                       onChange={(e) => setDesc(e.target.value)}
+                      rows={2}
                       data-testid={`quote-manual-desc-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="min-h-[2.25rem] resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                     <input
                       type="number" min="0" step="0.01" placeholder="Qty" value={qty}
@@ -790,6 +896,152 @@ function BlockCard({
       </div>
     </div>
   );
+}
+
+// ── A single editable pricing-table line (writers only) ───────────────────
+// Each field is locally controlled and committed on blur (text/number) or on
+// change (taxable checkbox, recurrence select) — but only when the value
+// actually differs from the persisted line, so a focus-without-edit doesn't
+// fire a redundant PATCH. The parent's onEdit routes through updateLine +
+// runAction and then refresh()es, which re-pulls the line; we resync local
+// state to the incoming prop so server-side normalization (e.g. recomputed
+// totals, clamped quantity) wins.
+function EditableLineRow({
+  line, currency, busy, onEdit, onRemove,
+}: {
+  line: QuoteLine;
+  currency: string;
+  busy: boolean;
+  onEdit: (lineId: string, body: LineUpdate) => void;
+  onRemove: (lineId: string) => void;
+}) {
+  const [desc, setDesc] = useState(line.description);
+  const [qty, setQty] = useState(line.quantity);
+  const [price, setPrice] = useState(line.unitPrice);
+
+  // Resync when the persisted line changes (after a refresh()).
+  useEffect(() => { setDesc(line.description); }, [line.description]);
+  useEffect(() => { setQty(line.quantity); }, [line.quantity]);
+  useEffect(() => { setPrice(line.unitPrice); }, [line.unitPrice]);
+
+  const commitDesc = () => {
+    const next = desc.trim();
+    if (!next || next === line.description) { setDesc(line.description); return; }
+    onEdit(line.id, { description: next });
+  };
+  const commitQty = () => {
+    const n = Number(qty);
+    if (!Number.isFinite(n) || n <= 0 || n === Number(line.quantity)) { setQty(line.quantity); return; }
+    onEdit(line.id, { quantity: n });
+  };
+  const commitPrice = () => {
+    const n = Number(price);
+    if (!Number.isFinite(n) || n < 0 || n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; }
+    onEdit(line.id, { unitPrice: n });
+  };
+
+  return (
+    <tr className="border-t align-top" data-testid={`quote-line-${line.id}`}>
+      <td className="px-2 py-2">
+        <div className="flex items-start gap-2">
+          {line.catalogItemId && <CatalogLineThumb catalogItemId={line.catalogItemId} />}
+          <textarea
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            onBlur={commitDesc}
+            rows={2}
+            disabled={busy}
+            data-testid={`quote-line-desc-${line.id}`}
+            className="min-h-[2.25rem] w-full resize-y rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+          />
+        </div>
+      </td>
+      <td className="px-2 py-2 text-right">
+        <input
+          type="number" min="0" step="0.01"
+          value={qty}
+          onChange={(e) => setQty(e.target.value)}
+          onBlur={commitQty}
+          disabled={busy}
+          data-testid={`quote-line-qty-${line.id}`}
+          className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+        />
+      </td>
+      <td className="px-2 py-2 text-right">
+        <input
+          type="number" min="0" step="0.01"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+          onBlur={commitPrice}
+          disabled={busy}
+          data-testid={`quote-line-price-${line.id}`}
+          className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+        />
+      </td>
+      <td className="px-2 py-2">
+        <select
+          value={line.recurrence}
+          onChange={(e) => onEdit(line.id, { recurrence: e.target.value as QuoteLineRecurrence })}
+          disabled={busy}
+          data-testid={`quote-line-recurrence-${line.id}`}
+          className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+        >
+          <option value="one_time">One-time</option>
+          <option value="monthly">Monthly</option>
+          <option value="annual">Annual</option>
+        </select>
+        <label className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={line.taxable}
+            onChange={(e) => onEdit(line.id, { taxable: e.target.checked })}
+            disabled={busy}
+            data-testid={`quote-line-taxable-${line.id}`}
+          />
+          Taxable
+        </label>
+      </td>
+      <td className="px-2 py-2 text-right tabular-nums">{formatMoney(line.lineTotal, currency)}</td>
+      <td className="px-2 py-2 text-right">
+        <button
+          type="button"
+          onClick={() => onRemove(line.id)}
+          disabled={busy}
+          data-testid={`quote-line-remove-${line.id}`}
+          className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+        >
+          Remove
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// Small product thumbnail for a catalog-sourced quote line. GET /catalog/:id/image
+// needs the Bearer header (a bare <img src> would 401), and 404s when the item has
+// no image — so we fetchWithAuth → blob → object URL and render nothing on miss.
+function CatalogLineThumb({ catalogItemId }: { catalogItemId: string }) {
+  const [url, setUrl] = useState<string>();
+  useEffect(() => {
+    let objectUrl: string | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(catalogItemImagePath(catalogItemId));
+        if (!res.ok) return; // 404 = no image; render nothing
+        const blob = await res.blob();
+        if (cancelled) return;
+        objectUrl = window.URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      } catch {
+        // no image / load failure — render nothing
+      }
+    })();
+    return () => { cancelled = true; if (objectUrl) window.URL.revokeObjectURL(objectUrl); };
+  }, [catalogItemId]);
+
+  if (!url) return null;
+  return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded border object-contain" data-testid="quote-line-thumb" />;
 }
 
 // Editor image preview. GET /quotes/:id/images/:imageId requires the Bearer auth

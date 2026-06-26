@@ -32,7 +32,7 @@ export const quotes = pgTable('quotes', {
   declinedAt: timestamp('declined_at'),
   convertedAt: timestamp('converted_at'),
   subtotal: numeric('subtotal', { precision: 12, scale: 2 }).notNull().default('0'),
-  taxRate: numeric('tax_rate', { precision: 6, scale: 3 }),
+  taxRate: numeric('tax_rate', { precision: 8, scale: 5 }),
   taxTotal: numeric('tax_total', { precision: 12, scale: 2 }).notNull().default('0'),
   total: numeric('total', { precision: 12, scale: 2 }).notNull().default('0'),
   oneTimeTotal: numeric('one_time_total', { precision: 12, scale: 2 }).notNull().default('0'),

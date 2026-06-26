@@ -119,7 +119,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
           <div>
             <label className="text-sm font-medium" htmlFor="ob-taxrate">Tax rate (%)</label>
             <input
-              id="ob-taxrate" type="number" min={0} max={100} step="0.1" value={taxPercent}
+              id="ob-taxrate" type="number" min={0} max={100} step="0.001" value={taxPercent}
               onChange={(e) => setTaxPercent(e.target.value)} placeholder="Partner default"
               disabled={taxExempt}
               data-testid="org-billing-taxrate"

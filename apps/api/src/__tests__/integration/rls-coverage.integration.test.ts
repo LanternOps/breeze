@@ -151,6 +151,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // is NOT here — it carries a direct org_id column and is auto-discovered
   // as an ordinary shape-1 org-tenant table.
   ['catalog_items', 'partner_id'],
+  ['catalog_item_images', 'partner_id'],
   ['catalog_bundle_components', 'partner_id'],
   ['td_synnex_digital_bridge_integrations', 'partner_id'],
   ['td_synnex_ec_express_integrations', 'partner_id'],

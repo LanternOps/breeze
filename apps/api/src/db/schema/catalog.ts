@@ -1,10 +1,10 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
-  pgTable, uuid, text, varchar, boolean, numeric, integer, jsonb, timestamp, pgEnum,
+  pgTable, uuid, text, varchar, char, boolean, numeric, integer, jsonb, timestamp, pgEnum,
   index, uniqueIndex
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
-import { users } from './users';
+import { users, bytea } from './users';
 
 export const catalogItemTypeEnum = pgEnum('catalog_item_type', ['hardware', 'software', 'service']);
 export const catalogBillingTypeEnum = pgEnum('catalog_billing_type', ['one_time', 'recurring']);
@@ -47,6 +47,23 @@ export const catalogItems = pgTable('catalog_items', {
   // (the real partial unique index is created in the SQL migration; drizzle-kit
   // only needs the predicate for drift detection)
   uniqueIndex('catalog_items_partner_sku_uq').on(t.partnerId, t.sku).where(sqlSkuNotNull(t))
+]);
+
+// Partner-axis (RLS shape 3). One manually-uploaded product image per catalog
+// item, stored as a bytea blob (mirrors quote_images). partner_id denormalized
+// for the partner-axis policy; cascades when the item is deleted.
+export const catalogItemImages = pgTable('catalog_item_images', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  catalogItemId: uuid('catalog_item_id').notNull().references(() => catalogItems.id, { onDelete: 'cascade' }),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  imageData: bytea('image_data').notNull(),
+  mime: varchar('mime', { length: 64 }).notNull(),
+  byteSize: integer('byte_size').notNull(),
+  sha256: char('sha256', { length: 64 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('catalog_item_images_item_uq').on(t.catalogItemId),
+  index('catalog_item_images_partner_idx').on(t.partnerId)
 ]);
 
 // Org-axis (RLS shape 1, direct org_id). Per-customer sell-price override.

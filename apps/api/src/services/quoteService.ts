@@ -152,7 +152,7 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   if (input.termsAndConditions !== undefined) set.termsAndConditions = input.termsAndConditions;
   if (input.billToName !== undefined) set.billToName = input.billToName;
   // Numeric tax_rate takes a fixed-string value; null clears it.
-  if (input.taxRate !== undefined) set.taxRate = input.taxRate === null ? null : Number(input.taxRate).toFixed(3);
+  if (input.taxRate !== undefined) set.taxRate = input.taxRate === null ? null : Number(input.taxRate).toFixed(5);
   await db.update(quotes).set(set).where(eq(quotes.id, id));
   await recomputeAndPersist(id);
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
@@ -178,6 +178,30 @@ export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: Q
     content: input.content,
     sortOrder,
   }).returning();
+  return row!;
+}
+
+/**
+ * Update a block's content in place (heading text/level, rich-text html, image
+ * caption/width, or a line_items section title). The block type is immutable —
+ * the request must restate the existing type so the discriminated-union content
+ * shape is validated, and a mismatch is rejected. Content edits never touch
+ * lines, so no totals recompute is needed.
+ */
+export async function updateBlock(quoteId: string, blockId: string, input: QuoteBlockInput, actor: QuoteActor) {
+  await loadDraft(quoteId, actor);
+  const [existing] = await db.select({ blockType: quoteBlocks.blockType })
+    .from(quoteBlocks)
+    .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
+    .limit(1);
+  if (!existing) throw new QuoteServiceError('Block not found', 404, 'BLOCK_NOT_FOUND');
+  if (existing.blockType !== input.blockType) {
+    throw new QuoteServiceError('Block type cannot be changed', 400, 'BLOCK_TYPE_MISMATCH');
+  }
+  const [row] = await db.update(quoteBlocks)
+    .set({ content: input.content })
+    .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
+    .returning();
   return row!;
 }
 

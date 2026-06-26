@@ -305,7 +305,8 @@ export async function listInvoices(query: { orgId?: string; status?: string; lim
 export async function updatePartnerBillingSettings(
   patch: {
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
-    invoiceTermsDays: number; invoiceFooter?: string | null;
+    invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
+    invoiceFooter?: string | null;
     billingCompanyName?: string | null; billingPhone?: string | null; billingWebsite?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
     billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
@@ -321,8 +322,12 @@ export async function updatePartnerBillingSettings(
   };
   // Numeric columns take fixed-string values; null clears the optional rate/footer.
   if (patch.defaultTaxRate !== undefined) {
-    set.defaultTaxRate = patch.defaultTaxRate === null ? null : Number(patch.defaultTaxRate).toFixed(3);
+    set.defaultTaxRate = patch.defaultTaxRate === null ? null : Number(patch.defaultTaxRate).toFixed(5);
   }
+  if (patch.defaultMarkupPercent !== undefined) {
+    set.defaultMarkupPercent = patch.defaultMarkupPercent === null ? null : Number(patch.defaultMarkupPercent).toFixed(2);
+  }
+  if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
   for (const key of [
     'billingCompanyName', 'billingPhone', 'billingWebsite', 'billingAddressLine1', 'billingAddressLine2',
@@ -334,6 +339,7 @@ export async function updatePartnerBillingSettings(
   const [row] = await db.update(partners).set(set).where(eq(partners.id, partnerId)).returning({
     currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
+    defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
     invoiceFooter: partners.invoiceFooter,
   });
   if (!row) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -354,7 +360,7 @@ export async function updateOrgBillingSettings(
   const set: Record<string, unknown> = {};
   if (patch.taxId !== undefined) set.taxId = patch.taxId;
   if (patch.taxExempt !== undefined) set.taxExempt = patch.taxExempt;
-  if (patch.taxRate !== undefined) set.taxRate = patch.taxRate === null ? null : Number(patch.taxRate).toFixed(3);
+  if (patch.taxRate !== undefined) set.taxRate = patch.taxRate === null ? null : Number(patch.taxRate).toFixed(5);
   if (patch.billingAddressLine1 !== undefined) set.billingAddressLine1 = patch.billingAddressLine1;
   if (patch.billingAddressLine2 !== undefined) set.billingAddressLine2 = patch.billingAddressLine2;
   if (patch.billingAddressCity !== undefined) set.billingAddressCity = patch.billingAddressCity;
