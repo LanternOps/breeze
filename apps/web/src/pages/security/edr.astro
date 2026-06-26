@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import EdrPage from '../../components/security/EdrPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+---
+
+<DashboardLayout title="EDR">
+  <Breadcrumbs client:load items={[{ label: 'Security', href: '/security' }, { label: 'EDR' }]} />
+  <EdrPage client:load />
+</DashboardLayout>
