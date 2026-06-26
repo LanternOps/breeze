@@ -755,7 +755,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $smoke   = Join-Path $env:RUNNER_TEMP 'breeze-smoke'
+          # Start from a clean dir so a re-used (self-hosted) runner can't let a
+          # previous run's "agent is running" line or absent panic produce a
+          # vacuous green. GitHub-hosted windows-latest is ephemeral, but this
+          # is cheap insurance and keeps the assertion honest everywhere.
+          $smoke = Join-Path $env:RUNNER_TEMP 'breeze-smoke'
+          if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
           New-Item -ItemType Directory -Force -Path $smoke | Out-Null
           $cfgPath = Join-Path $smoke 'agent.yaml'
           $logPath = Join-Path $smoke 'agent.log'
