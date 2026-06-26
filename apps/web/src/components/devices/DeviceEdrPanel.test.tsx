@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
+const navigateTo = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+vi.mock('@/lib/navigation', () => ({ navigateTo: (...a: unknown[]) => navigateTo(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 import DeviceEdrPanel from './DeviceEdrPanel';
@@ -22,6 +24,7 @@ function routeFetch(map: { s1?: unknown; huntress?: unknown }) {
 
 beforeEach(() => {
   fetchWithAuth.mockReset();
+  navigateTo.mockReset();
 });
 
 describe('DeviceEdrPanel', () => {
@@ -72,6 +75,22 @@ describe('DeviceEdrPanel threat actions', () => {
     render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
     fireEvent.click(await screen.findByTestId('edr-threat-quarantine-t1'));
     await waitFor(() => expect(body).toEqual({ orgId: 'org-1', action: 'quarantine', threatIds: ['t1'] }));
+  });
+});
+
+describe('DeviceEdrPanel promote to incident', () => {
+  it('promotes an S1 threat then navigates to the new incident', async () => {
+    let body: unknown;
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [{ id: 't1', orgId: 'org-1', deviceId: 'dev-1', threatName: 'Emotet', severity: 'critical', status: 'active', detectedAt: '2026-06-20T00:00:00Z' }], pagination: { total: 1, limit: 50, offset: 0 } }));
+      if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
+      if (url === '/incidents') { body = JSON.parse(String(init?.body)); return Promise.resolve({ ok: true, status: 201, json: async () => ({ id: 'inc-9' }) } as Response); }
+      return Promise.resolve(ok({ data: [] }));
+    });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    fireEvent.click(await screen.findByTestId('edr-s1-promote-t1'));
+    await waitFor(() => expect((body as any).classification).toBe('sentinelone-threat'));
+    expect(navigateTo).toHaveBeenCalledWith('/incidents/inc-9');
   });
 });
 

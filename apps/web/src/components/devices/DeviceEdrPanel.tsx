@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, ShieldAlert, Activity } from 'lucide-react';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
+import { navigateTo } from '@/lib/navigation';
 import { friendlyFetchError } from '../../lib/utils';
 import {
   fetchS1Threats,
@@ -11,6 +12,7 @@ import {
   type HuntressIncident,
   type S1ThreatActionType,
 } from '../../lib/edr';
+import { promoteToIncident, s1ThreatToIncident, huntressIncidentToIncident } from '../../lib/incidents';
 import { handleActionError } from '../../lib/runAction';
 
 const severityBadge: Record<string, string> = {
@@ -40,6 +42,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   const [confirmAction, setConfirmAction] = useState<null | 'isolate' | 'unisolate'>(null);
   const [isolating, setIsolating] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [promotingId, setPromotingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -80,6 +83,18 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
       handleActionError(err, `Failed to ${action} threat`);
     } finally {
       setActingId(null);
+    }
+  };
+
+  const promote = async (key: string, input: import('../../lib/incidents').CreateIncidentInput) => {
+    setPromotingId(key);
+    try {
+      const { id } = await promoteToIncident(input);
+      navigateTo(`/incidents/${id}`);
+    } catch (err) {
+      handleActionError(err, 'Failed to create incident');
+    } finally {
+      setPromotingId(null);
     }
   };
 
@@ -149,6 +164,17 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
                       ))}
                     </div>
                   )}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid={`edr-s1-promote-${t.id}`}
+                      onClick={() => promote(t.id, s1ThreatToIncident(t))}
+                      disabled={promotingId === t.id}
+                      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
+                    >
+                      Promote to Incident
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -175,6 +201,17 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
                   </div>
                   {i.recommendation && <p className="mt-1 text-xs text-muted-foreground">{i.recommendation}</p>}
                   <p className="mt-1 text-xs text-muted-foreground">Reported: {fmt(i.reportedAt, timezone)}</p>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid={`edr-huntress-promote-${i.id}`}
+                      onClick={() => promote(i.id, huntressIncidentToIncident(i))}
+                      disabled={promotingId === i.id}
+                      className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
+                    >
+                      Promote to Incident
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
