@@ -32,6 +32,21 @@ let offlineQueue: Queue | null = null;
 // Default offline threshold in minutes
 const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 5;
 
+// Re-evaluation sweep (issue #1982): how far back a device may have last been
+// seen and still be re-evaluated for longer-duration offline rules. Bounds the
+// per-run cost — a device offline longer than this has already had every
+// offline rule up to this horizon fire (dedup prevents re-firing). Default 24h.
+const DEFAULT_REEVAL_HORIZON_MINUTES = 1440;
+
+// How often the re-evaluation sweep runs. A longer-duration rule fires within
+// roughly this interval of its configured duration. Default 60s.
+const DEFAULT_REEVAL_INTERVAL_MS = 60 * 1000;
+
+/** Whether the offline re-evaluation sweep is enabled (default true). */
+function isReevalEnabled(): boolean {
+  return (process.env.OFFLINE_DETECTOR_REEVAL_ENABLED ?? 'true') !== 'false';
+}
+
 let _configPolicyTableWarningLogged = false;
 
 /** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
@@ -66,7 +81,25 @@ interface MarkOfflineJobData {
   lastSeenAt: string;
 }
 
-type OfflineJobData = DetectOfflineJobData | MarkOfflineJobData;
+// Periodic fan-out: re-queue still-offline devices so config-policy offline
+// rules with durations longer than the global threshold fire when their
+// duration elapses (issue #1982).
+interface ReevaluateOfflineSweepJobData {
+  type: 'reevaluate-offline-sweep';
+}
+
+// Per-device: re-evaluate config-policy offline rules for one offline device.
+interface ReevaluateOfflineJobData {
+  type: 'reevaluate-offline';
+  deviceId: string;
+  orgId: string;
+}
+
+type OfflineJobData =
+  | DetectOfflineJobData
+  | MarkOfflineJobData
+  | ReevaluateOfflineSweepJobData
+  | ReevaluateOfflineJobData;
 
 /**
  * Create the offline detection worker
@@ -82,6 +115,12 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
 
           case 'mark-offline':
             return await processMarkOffline(job.data);
+
+          case 'reevaluate-offline-sweep':
+            return await processReevaluateOfflineSweep();
+
+          case 'reevaluate-offline':
+            return await processReevaluateOffline(job.data);
 
           default:
             throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
@@ -426,6 +465,131 @@ function hasOfflineCondition(conditions: unknown): boolean {
 }
 
 /**
+ * Re-evaluate configuration-policy offline rules for a single still-offline
+ * device (issue #1982).
+ *
+ * The detector only marks a device offline once (online→offline transition), so
+ * a config-policy offline rule whose duration is longer than the global ~5-min
+ * threshold (e.g. "offline for 60 min") would never fire — nothing re-evaluates
+ * the device after it's marked offline. This per-device job, fanned out by
+ * processReevaluateOfflineSweep(), re-runs the config-policy offline evaluation
+ * so those longer rules fire once their duration elapses. The offline condition
+ * handler honours each rule's own duration, and evaluateDeviceAlertsFromPolicy
+ * dedups + cools down, so repeated re-evaluation never double-fires.
+ *
+ * Skips the (cheap) work if the device reconnected since the sweep queued it.
+ * Re-throws unexpected errors so BullMQ fails + retries the job; the benign
+ * "tables not migrated yet" (42P01) case is swallowed inside
+ * triggerConfigPolicyOfflineAlerts.
+ */
+export async function processReevaluateOffline(data: ReevaluateOfflineJobData): Promise<{
+  deviceId: string;
+  alertCreated: boolean;
+  durationMs: number;
+}> {
+  const startTime = Date.now();
+
+  const [device] = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.id, data.deviceId))
+    .limit(1);
+
+  // Device is gone or has reconnected — nothing to re-evaluate. (The offline
+  // handler keys off lastSeenAt and wouldn't fire for a reconnected device
+  // anyway, but skipping here avoids needless evaluation work.)
+  if (!device || device.status !== 'offline') {
+    return { deviceId: data.deviceId, alertCreated: false, durationMs: Date.now() - startTime };
+  }
+
+  const result = await triggerConfigPolicyOfflineAlerts(device);
+  if (result.fatalError) throw result.fatalError;
+
+  return { deviceId: data.deviceId, alertCreated: result.created, durationMs: Date.now() - startTime };
+}
+
+/**
+ * Periodic sweep that re-queues still-offline devices for config-policy offline
+ * rule re-evaluation (issue #1982).
+ *
+ * Finds devices that are already `offline` and were last seen within the
+ * re-evaluation horizon, and fans out one `reevaluate-offline` job per device.
+ * Bounded by the same chunk/cap shape as the detect sweep, plus a recency
+ * horizon, so the cost is capped even on large fleets. Disable entirely with
+ * OFFLINE_DETECTOR_REEVAL_ENABLED=false.
+ */
+export async function processReevaluateOfflineSweep(): Promise<{
+  queued: number;
+  durationMs: number;
+}> {
+  const startTime = Date.now();
+
+  if (!isReevalEnabled()) {
+    return { queued: 0, durationMs: Date.now() - startTime };
+  }
+
+  const horizonMinutes = Math.max(
+    1,
+    Number(process.env.OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES ?? String(DEFAULT_REEVAL_HORIZON_MINUTES))
+  );
+  const horizonTime = new Date(Date.now() - horizonMinutes * 60 * 1000);
+
+  // Env tunables — same shape as the detect sweep. cap=0 means unlimited per run.
+  const cap = Number(process.env.OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN ?? '5000');
+  const chunkSize = Math.max(1, Number(process.env.OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE ?? '500'));
+
+  const queue = getOfflineQueue();
+  let totalQueued = 0;
+  let cursor: string | null = null;
+
+  while (true) {
+    const remaining = cap > 0 ? Math.max(0, cap - totalQueued) : chunkSize;
+    if (cap > 0 && remaining === 0) {
+      console.warn(`[OfflineDetector] Hit OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN=${cap}; remainder will be picked up next run`);
+      break;
+    }
+
+    const limit = Math.min(chunkSize, remaining || chunkSize);
+
+    const conditions = [
+      eq(devices.status, 'offline'),
+      gt(devices.lastSeenAt, horizonTime)
+    ];
+    if (cursor) conditions.push(gt(devices.id, cursor));
+
+    const chunk = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(and(...conditions))
+      .orderBy(asc(devices.id))
+      .limit(limit);
+
+    if (chunk.length === 0) break;
+
+    const jobs = chunk.map(device => ({
+      name: 'reevaluate-offline',
+      data: {
+        type: 'reevaluate-offline' as const,
+        deviceId: device.id,
+        orgId: device.orgId
+      }
+    }));
+
+    await queue.addBulk(jobs);
+    totalQueued += jobs.length;
+    cursor = chunk[chunk.length - 1]!.id;
+
+    if (chunk.length < limit) break;
+  }
+
+  if (totalQueued > 0) {
+    console.log(`[OfflineDetector] Re-queued ${totalQueued} offline device(s) for config-policy offline rule re-evaluation`);
+  }
+
+  return { queued: totalQueued, durationMs: Date.now() - startTime };
+}
+
+/**
  * Schedule repeatable offline detection jobs
  */
 async function scheduleOfflineJobs(): Promise<void> {
@@ -449,6 +613,28 @@ async function scheduleOfflineJobs(): Promise<void> {
       removeOnFail: { count: 50 }
     }
   );
+
+  // Schedule the re-evaluation sweep so longer-duration config-policy offline
+  // rules fire when their duration elapses (issue #1982). Gated by env so it can
+  // be disabled independently of offline detection.
+  if (isReevalEnabled()) {
+    const reevalIntervalMs = Math.max(
+      5_000,
+      Number(process.env.OFFLINE_DETECTOR_REEVAL_INTERVAL_MS ?? String(DEFAULT_REEVAL_INTERVAL_MS))
+    );
+    await queue.add(
+      'reevaluate-offline-sweep',
+      { type: 'reevaluate-offline-sweep' },
+      {
+        repeat: {
+          every: reevalIntervalMs
+        },
+        removeOnComplete: { count: 10 },
+        removeOnFail: { count: 50 }
+      }
+    );
+    console.log(`[OfflineDetector] Scheduled offline re-evaluation sweep every ${reevalIntervalMs}ms`);
+  }
 
   console.log('[OfflineDetector] Scheduled repeatable offline detection jobs');
 }

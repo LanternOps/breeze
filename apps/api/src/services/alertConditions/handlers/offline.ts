@@ -31,8 +31,14 @@ export const offlineHandler: ConditionHandler = {
     const durationMinutes = resolveDurationMinutes(condition);
     const offlineThreshold = new Date(Date.now() - durationMinutes * 60 * 1000);
 
-    const isOffline = device.status === 'offline' ||
-      (device.lastSeenAt !== null && device.lastSeenAt < offlineThreshold);
+    // Honor the rule's own duration: the device counts as offline only once its
+    // last heartbeat is older than `durationMinutes`. We intentionally do NOT
+    // short-circuit on `device.status === 'offline'` — that flag is set by the
+    // global ~5-min offline detector and would fire every rule at ~5 min,
+    // ignoring longer per-rule durations (issue #1982). `lastSeenAt` is the
+    // authoritative last-heartbeat timestamp; a null value means we have no
+    // baseline to measure a duration against, so we don't fire.
+    const isOffline = device.lastSeenAt !== null && device.lastSeenAt < offlineThreshold;
 
     return {
       passed: isOffline,
