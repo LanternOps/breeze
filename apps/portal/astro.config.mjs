@@ -1,6 +1,6 @@
 import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
-import tailwind from '@astrojs/tailwind';
+import tailwindcss from '@tailwindcss/vite';
 import node from '@astrojs/node';
 
 // Base path the portal is served under. Defaults to `/portal` so the portal can be
@@ -36,15 +36,13 @@ export default defineConfig({
     }
   },
   integrations: [
-    react(),
-    tailwind({
-      applyBaseStyles: false
-    })
+    react()
   ],
   server: {
     port: 4322
   },
   vite: {
+    plugins: [tailwindcss()],
     ssr: {
       noExternal: ['@tanstack/react-query']
     }
