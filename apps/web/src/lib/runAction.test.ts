@@ -14,13 +14,20 @@ function res(body: unknown, status = 200): Response {
 beforeEach(() => showToast.mockReset());
 
 describe('runAction', () => {
-  it('returns parsed data and toasts success when successMessage given', async () => {
+  it('returns parsed data and toasts success EXACTLY ONCE when successMessage given', async () => {
+    // Regression guard for #1301 ("duplicate success toasts on runAction").
+    // The ×2 toast reported there was an Astro/Vite dev-server render
+    // double-invoke that does not exist in a production build (the app has no
+    // <StrictMode>, and the prod bundle ships production React). runAction must
+    // emit a single success toast per call — asserting the call COUNT, not just
+    // `toHaveBeenCalledWith`, is what locks that single-emit guarantee in.
     const out = await runAction<{ id: string }>({
       request: async () => res({ id: 'x' }),
       successMessage: 'Done',
       errorFallback: 'fb',
     });
     expect(out).toEqual({ id: 'x' });
+    expect(showToast).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledWith({ message: 'Done', type: 'success' });
   });
 
