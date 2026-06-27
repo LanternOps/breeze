@@ -79,7 +79,7 @@ function isConditionGroup(condition: RootCondition): condition is ConditionGroup
 async function evaluateConditionRecursive(
   condition: RootCondition,
   deviceId: string,
-  results: { met: string[]; notMet: string[] }
+  results: { met: string[]; notMet: string[]; primaryActualValue?: number }
 ): Promise<boolean> {
   if (isConditionGroup(condition)) {
     const evaluations = await Promise.all(
@@ -102,6 +102,19 @@ async function evaluateConditionRecursive(
       results.met.push(result.description);
     } else {
       results.notMet.push(result.description);
+    }
+
+    // Capture the value the threshold/metric handler actually evaluated (the
+    // window average) so context.actualValue reflects what drove the decision
+    // rather than the latest raw sample — which can be sub-threshold once the
+    // window is averaged (#1980).
+    const condType = (condition as { type?: string }).type;
+    if (
+      (condType === 'threshold' || condType === 'metric') &&
+      results.primaryActualValue === undefined &&
+      typeof result.actualValue === 'number'
+    ) {
+      results.primaryActualValue = result.actualValue;
     }
 
     return result.passed;
@@ -148,7 +161,11 @@ export async function evaluateConditions(
     };
   }
 
-  const results = { met: [] as string[], notMet: [] as string[] };
+  const results = { met: [] as string[], notMet: [] as string[] } as {
+    met: string[];
+    notMet: string[];
+    primaryActualValue?: number;
+  };
   const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results);
 
   // Get latest metric for context
@@ -164,17 +181,20 @@ export async function evaluateConditions(
         if (found) return found;
       }
       return undefined;
-    } else if (cond.type === 'threshold') {
+    } else if (cond.type === 'threshold' || cond.type === 'metric') {
       return cond as ThresholdCondition;
     }
     return undefined;
   };
 
   const primaryThreshold = findFirstThreshold(rootCondition);
-  if (primaryThreshold && latestMetric) {
+  if (primaryThreshold) {
     const normalizedMetric = normalizeMetricName(primaryThreshold.metric);
+    const latestValue = normalizedMetric ? latestMetric?.[normalizedMetric] ?? undefined : undefined;
     context.metric = primaryThreshold.metric;
-    context.actualValue = normalizedMetric ? latestMetric[normalizedMetric] ?? undefined : undefined;
+    // Prefer the averaged value the handler evaluated; fall back to the latest
+    // raw sample only when no handler value was captured (e.g. window empty).
+    context.actualValue = results.primaryActualValue ?? latestValue;
     context.threshold = primaryThreshold.value;
     context.operator = getOperatorDisplay(primaryThreshold.operator);
     context.durationMinutes = primaryThreshold.durationMinutes;
