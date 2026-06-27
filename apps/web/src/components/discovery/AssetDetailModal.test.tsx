@@ -133,8 +133,8 @@ describe('AssetDetailModal — proxy bridge agent (decoupled from link)', () => 
 
   it('lists only ONLINE devices in the bridge picker and connects through the chosen one', async () => {
     const mixed = [
-      { id: 'dev-online', name: 'FC-ESME', online: true },
-      { id: 'dev-offline', name: 'DRJJ-CHECKOUT', online: false },
+      { id: 'dev-online', name: 'WS-101', online: true },
+      { id: 'dev-offline', name: 'WS-102', online: false },
     ];
     render(<AssetDetailModal open asset={proxyAsset} devices={mixed} onClose={() => {}} />);
 
@@ -142,8 +142,8 @@ describe('AssetDetailModal — proxy bridge agent (decoupled from link)', () => 
     // Scope to the bridge select — the identity Link dropdown lists all devices.
     expect(screen.getByText('Proxy through agent')).toBeInTheDocument();
     const bridge = screen.getByTestId('proxy-bridge-select');
-    expect(within(bridge).getByRole('option', { name: 'FC-ESME' })).toBeInTheDocument();
-    expect(within(bridge).queryByRole('option', { name: 'DRJJ-CHECKOUT' })).not.toBeInTheDocument();
+    expect(within(bridge).getByRole('option', { name: 'WS-101' })).toBeInTheDocument();
+    expect(within(bridge).queryByRole('option', { name: 'WS-102' })).not.toBeInTheDocument();
 
     // Connect uses the selected (online) bridge device, NOT the (null) linked device.
     fetchMock.mockResolvedValueOnce(makeResponse({ id: 'tunnel-xyz' }));
@@ -163,7 +163,7 @@ describe('AssetDetailModal — proxy bridge agent (decoupled from link)', () => 
   });
 
   it('shows a no-online-agent message when no device can bridge', () => {
-    const offlineOnly = [{ id: 'dev-offline', name: 'DRJJ-CHECKOUT', online: false }];
+    const offlineOnly = [{ id: 'dev-offline', name: 'WS-102', online: false }];
     render(<AssetDetailModal open asset={proxyAsset} devices={offlineOnly} onClose={() => {}} />);
 
     expect(screen.getByText(/No online agent available to proxy to this device/i)).toBeInTheDocument();
@@ -177,7 +177,7 @@ describe('AssetDetailModal — proxy bridge agent (decoupled from link)', () => 
 });
 
 describe('AssetDetailModal — proxy scheme + self-signed certificate (#1916)', () => {
-  const onlineDevices = [{ id: 'dev-online', name: 'FC-ESME', online: true }];
+  const onlineDevices = [{ id: 'dev-online', name: 'WS-101', online: true }];
 
   const assetWithHttpsPort: AssetDetail = {
     id: 'asset-https',

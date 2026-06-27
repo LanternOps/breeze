@@ -595,7 +595,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
 - [ ] **Step 2: Integration test** — add an API integration test (`__tests__/integration/*.integration.test.ts`) exercising mint-ticket → proxy GET through a stubbed agent (assert the `http_request` command shape + response relay). Run with `--config vitest.integration.config.ts`.
 - [ ] **Step 3: Agent race + full suites** — `cd agent && go test -race ./...`; `pnpm test --filter=@breeze/api`; web discovery + remote tests.
 - [ ] **Step 4: Release** — bump agent version, build, tag off `main` (full release), register on US, **promote per region** (platformAdmin + MFA). Deploy API + web. Upgrade (or wait for) the bridge endpoint(s) to the new agent.
-- [ ] **Step 5: Verify on US** — with the printer `10.1.2.209` linked/whitelisted and a healthy online bridge agent on its subnet, click Connect → the printer's web UI renders in the iframe; `tunnel_sessions` shows the request path working. (Separately: DRJJ-CHECKOUT + FC-ESME are in watchdog failover — restart those agents out-of-band; unrelated to this fix.)
+- [ ] **Step 5: Verify on US** — with the printer (a private LAN IP) linked/whitelisted and a healthy online bridge agent on its subnet, click Connect → the printer's web UI renders in the iframe; `tunnel_sessions` shows the request path working. (Separately: a couple of customer agents are in watchdog failover — restart those out-of-band; unrelated to this fix.)
 
 ---
 
