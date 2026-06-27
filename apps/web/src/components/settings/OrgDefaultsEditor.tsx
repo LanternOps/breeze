@@ -125,9 +125,10 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
 
   // If the stored window was invalid, the editor is already showing a corrected
   // value — mark the form dirty on mount so saving actually persists the fix.
+  // Mount-only: intentionally empty deps (onDirty/storedWindowInvalid are stable
+  // for the editor's lifetime).
   useEffect(() => {
     if (storedWindowInvalid) onDirty?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSave = () => {
