@@ -463,11 +463,15 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                 <button
                   type="button" onClick={() => void recordPayment()} disabled={busy || !payAmount}
                   title={!payAmount ? 'Enter a payment amount to record it' : undefined}
+                  aria-describedby={!payAmount ? 'invoice-payment-submit-hint' : undefined}
                   data-testid="invoice-payment-submit"
                   className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
                   Record payment
                 </button>
+                <span id="invoice-payment-submit-hint" className="sr-only">
+                  Enter a payment amount to record it
+                </span>
               </div>
             )}
           </div>

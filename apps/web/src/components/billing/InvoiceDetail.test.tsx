@@ -83,9 +83,13 @@ describe('InvoiceDetail', () => {
     // Submit disabled until an amount is entered, with a tooltip explaining why (#1975).
     expect(screen.getByTestId('invoice-payment-submit')).toBeDisabled();
     expect(screen.getByTestId('invoice-payment-submit')).toHaveAttribute('title', 'Enter a payment amount to record it');
+    // Reason is also exposed to assistive tech via aria-describedby (#1975).
+    expect(screen.getByTestId('invoice-payment-submit')).toHaveAttribute('aria-describedby', 'invoice-payment-submit-hint');
+    expect(document.getElementById('invoice-payment-submit-hint')).toHaveTextContent('Enter a payment amount to record it');
     fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '50' } });
-    // Tooltip clears once an amount is present.
+    // Tooltip and aria-describedby clear once an amount is present.
     expect(screen.getByTestId('invoice-payment-submit')).not.toHaveAttribute('title');
+    expect(screen.getByTestId('invoice-payment-submit')).not.toHaveAttribute('aria-describedby');
     fireEvent.change(screen.getByTestId('invoice-payment-method'), { target: { value: 'check' } });
     fireEvent.click(screen.getByTestId('invoice-payment-submit'));
 
