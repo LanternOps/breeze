@@ -11,6 +11,7 @@ type Site = { id: string; name: string };
 type Group = { id: string; name: string };
 type Script = { id: string; name: string };
 type NotificationChannel = { id: string; name: string; type: string };
+type SoftwareCatalogItem = { id: string; name: string; vendor?: string };
 
 type AutomationEditPageProps = {
   automationId?: string;
@@ -51,6 +52,13 @@ function normalizeActionForForm(value: unknown): ActionFormValues {
     };
   }
 
+  if (type === 'deploy_software') {
+    return {
+      type,
+      catalogId: asString(action.catalogId) ?? asString(action.catalog_id)
+    };
+  }
+
   return {
     type: 'run_script',
     scriptId: asString(action.scriptId) ?? asString(action.script_id)
@@ -80,6 +88,13 @@ function buildActionPayload(action: ActionFormValues) {
     };
   }
 
+  if (action.type === 'deploy_software') {
+    return {
+      type: action.type,
+      catalogId: action.catalogId
+    };
+  }
+
   return {
     type: action.type,
     command: action.command
@@ -96,6 +111,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   const [groups, setGroups] = useState<Group[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
+  const [softwareCatalog, setSoftwareCatalog] = useState<SoftwareCatalogItem[]>([]);
 
   const fetchAutomation = useCallback(async () => {
     if (!automationId || isNew) return;
@@ -211,13 +227,26 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
     }
   }, []);
 
+  const fetchSoftwareCatalog = useCallback(async () => {
+    try {
+      const response = await fetchWithAuth('/software/catalog');
+      if (response.ok) {
+        const data = await response.json();
+        setSoftwareCatalog(data.data ?? data.catalog ?? []);
+      }
+    } catch {
+      // Silently fail
+    }
+  }, []);
+
   useEffect(() => {
     fetchAutomation();
     fetchSites();
     fetchGroups();
     fetchScripts();
     fetchChannels();
-  }, [fetchAutomation, fetchSites, fetchGroups, fetchScripts, fetchChannels]);
+    fetchSoftwareCatalog();
+  }, [fetchAutomation, fetchSites, fetchGroups, fetchScripts, fetchChannels, fetchSoftwareCatalog]);
 
   const handleSubmit = async (values: AutomationFormValues) => {
     setSaving(true);
@@ -356,6 +385,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         groups={groups}
         scripts={scripts}
         notificationChannels={notificationChannels}
+        softwareCatalog={softwareCatalog}
       />
     </div>
   );
