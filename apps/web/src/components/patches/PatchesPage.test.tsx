@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // PatchList renders through ResponsiveTable — a desktop <table> and a mobile
@@ -450,6 +450,93 @@ describe('PatchesPage', () => {
 
     // Rings-only body content must NOT be rendered.
     expect(screen.queryByRole('button', { name: /New Ring/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
+  });
+
+  // Standard empty-data fetch mock shared by the hash-sync tests below.
+  const emptyDataFetch = async (input: unknown): Promise<Response> => {
+    const url = String(input);
+    if (url === '/update-rings') return makeJsonResponse({ data: [] });
+    if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+    if (url === '/patches/compliance') {
+      return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+    }
+    if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+    return makeJsonResponse({}, false, 404);
+  };
+
+  // The tab nav buttons are the only buttons carrying the `border-b-2` class; this
+  // disambiguates them from any same-named buttons rendered by the tab bodies
+  // (e.g. PatchComplianceView also surfaces "Compliance" text).
+  const navTab = (name: string) =>
+    screen.getAllByRole('button', { name }).find(b => b.className.includes('border-b-2'))!;
+
+  it('syncs the active tab on hashchange (browser back/forward, manual hash edits)', async () => {
+    // Mirrors DiscoveryPage: a hashchange (back/forward navigation or a manual
+    // URL edit) must re-select the active tab, not just the initial mount read.
+    jwtScope.scope = 'partner';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#compliance');
+    fetchMock.mockImplementation(emptyDataFetch);
+
+    render(<PatchesPage />);
+
+    // Starts on Compliance.
+    await waitFor(() => expect(navTab('Compliance')).toHaveClass('border-primary'));
+
+    // Forward-nav to #patches re-selects the Patches tab.
+    act(() => {
+      window.location.hash = '#patches';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await waitFor(() => expect(navTab('Patches')).toHaveClass('border-primary'));
+    expect(navTab('Compliance')).not.toHaveClass('border-primary');
+
+    // Back-nav to the default (empty hash) restores Compliance.
+    act(() => {
+      window.location.hash = '';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await waitFor(() => expect(navTab('Compliance')).toHaveClass('border-primary'));
+    expect(navTab('Patches')).not.toHaveClass('border-primary');
+  });
+
+  it('clears the stale #rings hash when an org user is downgraded to Compliance at init', async () => {
+    // An org user landing on /patches#rings (stale bookmark / shared partner link)
+    // falls back to Compliance — and the URL must not keep #rings while Compliance
+    // is shown.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#rings');
+    fetchMock.mockImplementation(emptyDataFetch);
+
+    render(<PatchesPage />);
+
+    await screen.findByRole('button', { name: /Compliance/i });
+    // Stale hash wiped from the URL.
+    await waitFor(() => expect(window.location.hash).toBe(''));
+    // Rings-only chrome/body never rendered.
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /New Ring/i })).toBeNull();
+  });
+
+  it('re-applies the org-scope guard on hashchange and clears the hash (back/forward to #rings)', async () => {
+    // Post-mount navigation to a #rings history entry the org user can't access
+    // must re-downgrade to Compliance and clear the stale hash, not just on mount.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#compliance');
+    fetchMock.mockImplementation(emptyDataFetch);
+
+    render(<PatchesPage />);
+    await screen.findByRole('button', { name: /Compliance/i });
+
+    act(() => {
+      window.location.hash = '#rings';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+
+    await waitFor(() => expect(window.location.hash).toBe(''));
     expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
   });
 
