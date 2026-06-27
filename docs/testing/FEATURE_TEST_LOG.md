@@ -3375,3 +3375,159 @@ Pulled main 61983fbd9 → 6c880e0ce (10 commits). Test list: `docs/testing/UI_TE
 - **Filed #1949** [Billing/AI] catalog enrich never records usage — `'catalog-enrich-'+uuid` written to `ai_sessions.id` (uuid col) → insert fails → budget bypass. `catalogEnrichmentService.ts:125`. CONFIRMED (ai_sessions.id data_type=uuid). medium.
 - **Filed #1950** [AI] catalog auto-fill 502/AI_PARSE for common products (M365 Business Premium ×2). Local `ANTHROPIC_API_KEY` IS set, so not a missing-key artifact; `enrichDraftSchema.safeParse` rejects model output. `catalogEnrichmentService.ts:158`. medium.
 - Stack left healthy on 6c880e0ce (api/web/caddy/pg/redis all up; health/web/login 200).
+---
+
+## UI QA Sweep — 2026-06-15
+
+**Scope:** Integration branch `qa/integration-2026-06-15` = `origin/main` (65 commits since `v0.70.0`)
++ 10 merged-for-QA PRs: #1411 Recurring Contracts, #1369 Authenticator step-up, #1413/#1414 ticketing
+fixes, #1381 catalog delete, #1390 watchdog version, #1385 OS labels, #1380 observability, #1376 last-login RLS,
+#1402 claude-agent-sdk bump. **Dropped:** #1218 (zod 3→4) — breaks ~20 validator typechecks; non-UI dep bump.
+**Stack:** dev compose re-pointed at this worktree; api+web healthy; authenticator + recurring-contracts
+migrations applied (2 checksum drifts reconciled). Login: admin@breeze.local / E2E_ADMIN_PASSWORD.
+
+### Running UI/UX observations (papercuts)
+_(appended continuously)_
+
+
+### [#1383 Invoice Engine routing] — FAIL (HIGH) — caddy `/billing/*` collision
+- ❌ BUG: Nav "Invoices" → `/billing/invoices` returns **502** through the standard caddy ingress.
+  Root cause: `docker/Caddyfile.prod` has `@billing path /billing /billing/*` → `reverse_proxy billing:3002`
+  (the hosted-SaaS billing sidecar), evaluated **before** the catch-all `handle { reverse_proxy web:4321 }`.
+  The Invoice Engine put its only nav-linked MSP page at `/billing/invoices` (`apps/web/src/pages/billing/invoices.astro`,
+  Sidebar.tsx:161 `href:'/billing/invoices'`), so caddy shadows it with the sidecar route.
+  - **API actual:** caddy 502 (no `billing` container locally); web:4321/billing/invoices = **200** (page is fine).
+  - **Prod impact:** where the billing sidecar runs, clicking "Invoices" reaches the SaaS billing portal, NOT the
+    MSP invoice-management UI → Invoice Engine UI unreachable via its own nav link.
+  - Contracts (#1411) is unaffected — it lives at `/contracts` (works through caddy).
+  - Fix options: move MSP invoice pages off `/billing/*` (e.g. `/invoices`), OR narrow the caddy `@billing`
+    matcher to the sidecar's actual paths and let `/billing/invoices*` fall through to web. → **file issue (architectural, not a small inline fix).**
+  - ✅ Candidate fix verified locally: added a `@webBillingInvoices path /billing/invoices /billing/invoices/*`
+    → `web:4321` handle **above** the `@billing` sidecar rule in `docker/Caddyfile.prod`. After caddy reload,
+    `/billing/invoices` and `/billing/invoices/[id]` → 200; `/contracts`, `/health`, `/` unaffected. (Local QA scaffold
+    on the throwaway integration branch; offer as the fix in the issue — maintainers should confirm the sidecar
+    doesn't itself need `/billing/invoices`.)
+
+### [#1411 Recurring Contracts] — FAIL→FIXED — create & add-line both 400 (feature was non-functional)
+- ❌ BUG 1 (create): `POST /api/v1/contracts` → **400** for the common case (no end date / no notes).
+  UI sends `endDate: endDate || null` + `notes: notes.trim() || null` (ContractEditor.tsx:164,166), but
+  `createContractSchema` had `endDate: isoDate.optional()` / `notes: ...optional()` (no `.nullable()`), so `null`
+  is rejected: `ZodError "Expected string, received null"`. `updateContractSchema` already used `.nullable().optional()`
+  → create was inconsistent. Route/validator tests only ever omit these fields (undefined), never null → green CI.
+  - ✅ FIX: `packages/shared/src/validators/contracts.ts` — `endDate`/`notes`/`terms` → `.nullable().optional()`;
+    refine `c.endDate == null || c.endDate > c.startDate`. Verified: UI payload now 201; endDate<startDate still 400.
+- ❌ BUG 2 (add line): `POST /api/v1/contracts/:id/lines` → **400** for EVERY line. UI (ContractEditor.tsx:216-219)
+  sent `unitPrice: Number(linePrice)` (a **number**, but `contractLineInputSchema.unitPrice` is the `money` **string**
+  regex) and `catalogItemId`/`siteId`/`manualQuantity` as **null** (schema = optional string). ZodError on all of them.
+  → no line can be added → contract can never be activated → **the whole feature is unusable via the UI.**
+  - ✅ FIX: ContractEditor.tsx — send `unitPrice: linePrice` (string), omit absent optionals (undefined not null).
+- **Why CI missed both:** unit/route tests construct payloads with correct string types and omit optionals; the real
+  browser payload (number price, `|| null` optionals) was never exercised end-to-end. → classic UI-QA-only catch.
+- Severity: HIGH (headline PR feature non-functional). Both fixed on integration branch; needs cherry-pick to #1411.
+
+### [#1411 Recurring Contracts — full lifecycle] — PASS (after the 2 fixes above)
+- ✅ Create contract (org, name, advance/monthly, no end date) → 201, navigates to detail, "Draft" badge.
+- ✅ Add flat-fee line ($99.99) → line row renders, "Estimated this period" → $99.99, Activate button enables.
+- ✅ Activate → "Active" badge, read-only detail (Next billing 6/15/2026, Auto-issue "No (drafts)"), Pause/Cancel + Generate-now.
+- ✅ "Generate invoice now" → creates a DRAFT invoice, navigates to /billing/invoices/[id]; line + Subtotal/Tax(8.5%)/Total
+  ($99.99) correct; contract notes carried over. (Also proves the caddy fix serves /billing/invoices/[id].)
+- ✅ Issue → invoice persisted as `status=sent`, `INV-2026-0002` (verified in DB).
+
+### [#1383 Invoice Engine — issue action] — PARTIAL (MEDIUM) — stale header after Issue
+- ❌ BUG: After clicking **Issue** on a draft invoice, the line fields + Issue buttons correctly disable, but the page
+  header still reads **"Draft invoice"** with no invoice number/status — the view doesn't refetch the invoice after the
+  mutation. DB was already `sent`/`INV-2026-0002`. A manual reload then shows "INV-2026-0002 / Sent / Due 7/15/2026"
+  correctly. → mutation succeeds but the detail view renders stale state until reload. (Medium: looks like the action
+  half-failed.) Likely missing a refetch/state-refresh in the invoice issue handler. → file issue.
+- ⚠️ UI/UX: issued invoice "Bill to" shows "Set on the organization billing settings." — good empty-state nudge.
+  "Record payment" is disabled with no tooltip explaining why (org billing not configured?) — minor.
+
+### [Devices — #1385 OS labels, #1390 watchdog, #1284 sortable, #1306 overview] — PASS
+- ✅ Devices list: 7 devices / 3 orgs; every column header sortable (#1284, sort icons present); OS column shows
+  normalized Windows/macOS/Linux labels+icons (#1385); status chips with rich tooltips ("Watchdog still reporting…
+  agent wedged"); page-size selector 10–500.
+- ✅ Device detail → Details tab: **Watchdog Version "0.68.2"** renders in Agent section (#1390); **OS Version**
+  "Microsoft Windows Server 2022 Standard Evaluation" + OS Build + Architecture amd64 normalized correctly (#1385,
+  no kernel-prefix mangling — the merge-conflict resolution that dropped the redundant local formatter is correct).
+- ✅ Device Overview (#1306): CPU/RAM/uptime, perf charts (24h/7d/30d) render in real browser (no ResizeObserver
+  issue — that's jsdom-only), warranty, activity feed empty-state.
+
+### [Tickets — #1413 assignee dark theme, #1414 perf, Phase 4] — PASS
+- ✅ #1413: in dark theme the ticket Assignee `<select>` renders light text rgb(232,234,238) on dark bg rgb(13,16,23)
+  — readable contrast (the white-on-dark bug is fixed). Status/Priority selects keep their semantic color tints.
+- ✅ Queue UI: tabs My/Unassigned/All open/Breaching soon/Closed with counts; SLA states (Breached, "Paused · 22m left");
+  org/priority/category/assignee filters; split list+detail layout loads cleanly (#1414 refetch-cascade perf — no visible
+  thrash on open). Ticket detail: Status/Priority/Assignee selects, Reply/Internal note, SLA panel, Time & Billing
+  (Start timer / Log time), Parts, Requester/Source/Created. "Create invoice" action links ticket→Invoice Engine.
+- ⚠️ UI/UX: footer version string reads **"Web dev · API 0.63.5"** on every page — stale/incorrect (branch is past
+  v0.70.0). Minor but visible on all screens. → note (low).
+
+### [#1381 Software Library catalog delete] — PASS
+- ✅ Add Package (metadata-only modal) → package appears. Select package → detail shows Deploy/Details/Versions/**Delete**.
+  Delete → "Delete package?" confirm modal → Confirm → `DELETE /software/catalog/:id`, package removed, list returns to
+  empty state, modal dismissed. Cancel path also present (per the PR's test).
+- ⚠️ UI/UX: Delete only appears in the package DETAIL (after selecting), not on the grid card — reasonable (avoids
+  accidental deletes) but a tester scanning the grid won't see it. Acceptable.
+
+### [Product Catalog #1365 / Authenticator #1369] — routes/locations:
+- ✅ #1365 Product Catalog (/settings/catalog): renders items table — "QA Starter Bundle" (service/bundle/$2000),
+  "QA Test Laptop" (hardware/QA-LAP-001/$1500); Add item / Edit / Archive actions. Items feed the contract line
+  catalog picker (cross-feature integration confirmed). PASS.
+- ⓘ #1369 Authenticator: no dedicated web page (no /authenticator route/component); ships dark (L1 default) as
+  enforcement on the approval flow. Not UI-testable in a browser sweep beyond non-regression of existing approvals.
+  Migrations applied (authenticator_devices, authenticator_policies, approval_requests tables present). Mark
+  CODE-VERIFIED / UI-N/A.
+
+### Other observations
+- ⚠️ Side panels (Breeze AI + Documentation) render docked open by default and sit off the right edge at 1680px width
+  — the AI panel close button was off-viewport (couldn't click). Minor layout/space issue.
+- ⚠️ Onboarding product tour ("Navigate your tools", 1 of 4) auto-shows on first load — expected for a fresh session.
+- ✅ Nav crawl: all 41 sidebar destinations + settings return SSR 200 (after the caddy /billing fix). No whole-page 500s.
+
+## Summary (UI QA Sweep 2026-06-15)
+
+| Area | PR(s) | Result |
+|---|---|---|
+| Recurring Contracts lifecycle | #1411 | FAIL→**FIXED** (2 HIGH: create & add-line 400; now full create→line→activate→invoice works) |
+| Invoice Engine — caddy routing | #1383 | **FAIL (HIGH)** — `/billing/invoices` shadowed by billing sidecar; candidate caddy fix verified |
+| Invoice Engine — issue action | #1383 | PARTIAL (MEDIUM) — header stale after Issue until reload |
+| Contracts intervalMonths bound | #1411 | bug (MEDIUM) — client max 120 vs server max 60 mismatch |
+| Devices: OS labels/watchdog/sortable/overview | #1385/#1390/#1284/#1306 | PASS |
+| Tickets: assignee dark theme / queue | #1413/#1414 | PASS |
+| Software Library delete | #1381 | PASS |
+| Product Catalog | #1365 | PASS |
+| Authenticator | #1369 | CODE-VERIFIED / UI-N/A (ships dark) |
+| Nav crawl (41 routes) | — | PASS (all 200 after caddy fix) |
+
+**Top findings:** (1) Recurring Contracts was fully non-functional via UI — two client/server payload mismatches
+(null vs undefined for optional fields; number vs money-string for price) — both fixed. (2) Invoice Engine MSP page
+unreachable through caddy ingress (`/billing/*` reserved for the hosted billing sidecar). (3) Recurring pattern across
+the billing feature: **the UI sends `null`/`Number()` where Zod schemas expect `undefined`/money-strings, and unit
+tests never exercised the real browser payloads** — worth a validator/UI-contract audit across the billing routes.
+
+### Issues filed / fixes applied (2026-06-15)
+- **Filed #1417** — caddy `/billing/*` shadows the Invoice Engine MSP page (HIGH, main via #1383). Includes verified caddy fix.
+- **Filed #1418** — invoice detail header stale after Issue until reload (MEDIUM, main via #1383).
+- **Fixed on integration branch (belong on open PR #1411 — NOT yet on that branch):**
+  - `packages/shared/src/validators/contracts.ts` — createContractSchema endDate/notes/terms `.nullable().optional()` + null-safe refine; + regression test in `contracts.test.ts` (7/7 pass).
+  - `apps/web/src/components/contracts/ContractEditor.tsx` — add-line payload sends money strings + omits absent optionals (no `Number()`/`null`).
+  - **Open (needs product decision):** contracts `intervalMonths` — client allows ≤120 (ContractEditor.tsx:127,339) vs server `.max(60)` (contracts.ts:27). Pick one bound and align both.
+- **Local QA scaffold (throwaway branch only):** `docker/Caddyfile.prod` `/billing/invoices*`→web route (= the #1417 fix); worktree `.env` symlink → root `.env`.
+
+**Stack state:** dev compose re-pointed at this worktree (`qa/integration-2026-06-15`), api+web healthy. To restore to the prior worktree: bring web/api/caddy back up from `/Users/toddhebebrand/breeze/.claude/worktrees/invoice-engine-impl` (or wherever desired) and remove this worktree's `.env` symlink.
+
+### Resolution (2026-06-15, end of sweep)
+- **Pushed contract fixes to PR #1411** as `68dec3cc` (createContractSchema nullable + regression test, ContractEditor
+  add-line money-string/omit-null, intervalMonths client→60 to match server). PR comment posted. Verified E2E after fix.
+- **#1417** (caddy `/billing/*`) + **#1418** (invoice issue staleness) filed against main.
+- **Dev DB test data left:** contract "QA Managed Services — Monthly" (+ a few curl replay contracts), invoice
+  INV-2026-0002 (number burned), software package created then deleted. All on the dev DB (5432).
+- **Local-only scaffold (NOT pushed):** `docker/Caddyfile.prod` /billing/invoices route (= #1417 fix) + `.env` symlink
+  remain on `qa/integration-2026-06-15` for the running stack.
+
+> **Reconciliation (2026-06-26):** every code fix prototyped on `qa/integration-2026-06-15`
+> (contracts validator `.nullable()`, ContractEditor money-string payload, the
+> `docker/Caddyfile.prod` `/billing/invoices` route = #1417) was independently fixed
+> forward on `main` — verified present in `origin/main`, which is also well ahead of the
+> throwaway branch (Zod-4 migration, contract auto-renew, quotes + portal Caddy routes).
+> The QA branch was discarded; only this log + `UI_IMPROVEMENTS.md` + the checklist were salvaged.
