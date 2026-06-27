@@ -43,6 +43,7 @@ import { relativeTime } from '../../../lib/relativeTime';
 import { Toast } from '../../../components/Toast';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
+import { ApproverSetupSheet } from '../../approvals/components/ApproverSetupSheet';
 import type { PairedMobileDevice } from '../../../services/mobileDevices';
 import type { ConnectedApp } from '../../../services/connectedApps';
 
@@ -92,6 +93,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const [notificationsOn, setNotificationsOn] = useState(true);
   const [criticalOnly, setCriticalOnly] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [approverSetupOpen, setApproverSetupOpen] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
@@ -210,6 +212,10 @@ export function SettingsSheet({ visible, onCancel }: Props) {
     setPasswordOpen(true);
   }
 
+  function onPressApproverSetup() {
+    setApproverSetupOpen(true);
+  }
+
   function onPasswordSuccess() {
     setPasswordOpen(false);
     setToast({ kind: 'success', text: 'Password updated.' });
@@ -290,6 +296,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             onToggleNotifications={onToggleNotifications}
             onToggleCriticalOnly={onToggleCriticalOnly}
             onPressChangePassword={onPressChangePassword}
+            onPressApproverSetup={onPressApproverSetup}
             onPressTerms={() => safeOpen(TERMS_URL)}
             onPressPrivacy={() => safeOpen(PRIVACY_URL)}
             onPressDeleteAccount={onPressDeleteAccount}
@@ -314,6 +321,11 @@ export function SettingsSheet({ visible, onCancel }: Props) {
         onCancel={() => setPasswordOpen(false)}
         onSuccess={onPasswordSuccess}
       />
+
+      <ApproverSetupSheet
+        visible={approverSetupOpen}
+        onClose={() => setApproverSetupOpen(false)}
+      />
     </Modal>
   );
 }
@@ -336,6 +348,7 @@ function SheetBody({
   onToggleNotifications,
   onToggleCriticalOnly,
   onPressChangePassword,
+  onPressApproverSetup,
   onPressTerms,
   onPressPrivacy,
   onPressDeleteAccount,
@@ -360,6 +373,7 @@ function SheetBody({
   onToggleNotifications: (v: boolean) => void;
   onToggleCriticalOnly: (v: boolean) => void;
   onPressChangePassword: () => void;
+  onPressApproverSetup: () => void;
   onPressTerms: () => void;
   onPressPrivacy: () => void;
   onPressDeleteAccount: () => void;
@@ -437,6 +451,7 @@ function SheetBody({
           onPress={onPressChangePassword}
           theme={theme}
         />
+        <LinkRow label="Set up Authenticator" onPress={onPressApproverSetup} theme={theme} />
         <LinkRow label="Terms of Service" onPress={onPressTerms} theme={theme} />
         <LinkRow label="Privacy Policy" onPress={onPressPrivacy} theme={theme} />
 
