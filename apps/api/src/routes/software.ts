@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { createSoftwareDeployment } from '../services/softwareDeployment';
 
 export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -1059,123 +1060,33 @@ softwareRoutes.post(
     }
     const targetDeviceIds = resolvedTargets.deviceIds;
 
-    // Insert deployment
-    const [deployment] = await db.insert(softwareDeployments).values({
+    const result = await createSoftwareDeployment({
       orgId,
-      name: payload.name,
       softwareVersionId: payload.softwareVersionId,
       deploymentType: payload.deploymentType,
+      deviceIds: targetDeviceIds,
+      scheduleType: payload.scheduleType,
+      createdBy: auth.user?.id ?? null,
+      name: payload.name,
+      scheduledAt: payload.scheduledAt ? new Date(payload.scheduledAt) : undefined,
+      maintenanceWindowId: payload.maintenanceWindowId ?? null,
       targetType: payload.targetType,
       targetIds: payload.targetIds ?? null,
-      scheduleType: payload.scheduleType,
-      scheduledAt: payload.scheduledAt ? new Date(payload.scheduledAt) : null,
-      maintenanceWindowId: payload.maintenanceWindowId ?? null,
-      options: payload.targetType === 'filter'
-        ? {
-            ...(payload.options ?? {}),
-            targetFilter: payload.targetFilter ?? null,
-          }
-        : payload.options ?? null,
-      createdBy: auth.user?.id ?? null,
-    }).returning();
+      options:
+        payload.targetType === 'filter'
+          ? { ...(payload.options ?? {}), targetFilter: payload.targetFilter ?? null }
+          : payload.options ?? undefined,
+    });
 
-    // Insert per-device results
-    if (targetDeviceIds.length > 0) {
-      await db.insert(deploymentResults).values(
-        targetDeviceIds.map(deviceId => ({
-          deploymentId: deployment!.id,
-          deviceId,
-          status: 'pending' as const,
-        }))
-      );
-    }
-
-    // For immediate deployments, dispatch install commands to online agents
-    if (payload.scheduleType === 'immediate' && payload.deploymentType === 'install' && targetDeviceIds.length > 0) {
-      // Get presigned URL for download
-      let downloadUrl: string | null = null;
-      if (versionRecord.s3Key && isS3Configured()) {
-        try {
-          downloadUrl = await getPresignedUrl(versionRecord.s3Key, 3600);
-        } catch (err) {
-          // Don't swallow: a transport/auth fault must be visible even though we
-          // still fall back to the stored downloadUrl below (#1808).
-          console[isS3NotFound(err) ? 'warn' : 'error'](
-            `[software-deploy] S3 presign failed for ${versionRecord.s3Key}, falling back to stored downloadUrl:`,
-            err,
-          );
-        }
-      }
-      downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
-
-      // Built-in EDR packages: resolve per-org keys server-side BEFORE the dispatch
-      // gate. On resolution failure, mark every result failed and return — never
-      // dispatch and never silently no-op.
-      let resolvedInstaller: ResolvedInstaller | null = null;
-      if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
-        const resolved = await resolveEdrInstaller({
-          provider: catalogItem.integrationProvider,
-          orgId,
-          downloadUrlTemplate: versionRecord.downloadUrl,
-          silentInstallArgsTemplate: versionRecord.silentInstallArgs,
-        });
-        if ('error' in resolved) {
-          await db.update(deploymentResults)
-            .set({ status: 'failed', errorMessage: resolved.error, completedAt: new Date() })
-            .where(eq(deploymentResults.deploymentId, deployment!.id));
-          return c.json({ data: { id: deployment!.id, status: 'failed', message: resolved.error } }, 200);
-        }
-        resolvedInstaller = resolved;
-      }
-
-      const finalDownloadUrl = resolvedInstaller?.downloadUrl ?? downloadUrl;
-      const finalSilentInstallArgs = resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs;
-
-      if (!finalDownloadUrl) {
-        // No installer binary/URL to dispatch — fail the results instead of leaving
-        // them 'pending' forever and reporting a false success to the caller.
-        await db.update(deploymentResults)
-          .set({
-            status: 'failed',
-            errorMessage: 'No installer available for this version — upload an installer (or check storage configuration) before deploying.',
-            completedAt: new Date(),
-          })
-          .where(eq(deploymentResults.deploymentId, deployment!.id));
-        return c.json({ data: { id: deployment!.id, status: 'failed', message: 'No installer available for this version' } }, 200);
-      }
-
-      // Get agentIds for target devices
-      const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
-        .from(devices)
-        .where(and(
-          eq(devices.orgId, orgId),
-          inArray(devices.id, targetDeviceIds),
-        ));
-
-      for (const device of targetDevices) {
-        const command: AgentCommand = {
-          id: `sw-install-${deployment!.id}-${device.id}`,
-          type: 'software_install',
-          payload: {
-            deploymentId: deployment!.id,
-            downloadUrl: finalDownloadUrl,
-            checksum: versionRecord.checksum,
-            fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
-            fileType: versionRecord.fileType ?? 'exe',
-            silentInstallArgs: finalSilentInstallArgs,
-            softwareName: catalogItem.name,
-            version: versionRecord.version,
-          },
-        };
-        sendCommandToAgent(device.agentId, command);
-      }
+    if (result.status === 'failed') {
+      return c.json({ data: { id: result.deploymentId, status: result.status, message: result.message } }, 200);
     }
 
     writeRouteAudit(c, {
       orgId,
       action: 'software.deployment.create',
       resourceType: 'software_deployment',
-      resourceId: deployment!.id,
+      resourceId: result.deploymentId,
       resourceName: payload.name,
       details: {
         deploymentType: payload.deploymentType,
@@ -1184,7 +1095,7 @@ softwareRoutes.post(
       },
     });
 
-    return c.json({ data: deployment }, 201);
+    return c.json({ data: result.deployment }, 201);
   }
 );
 

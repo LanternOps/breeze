@@ -223,13 +223,44 @@ export const automationTriggerSchema = z.discriminatedUnion('type', [
   })
 ]);
 
+export const automationActionSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('run_script'),
+    scriptId: z.string().guid(),
+    parameters: z.record(z.string(), z.unknown()).optional(),
+    runAs: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('send_notification'),
+    notificationChannelId: z.string().guid(),
+    title: z.string().optional(),
+    message: z.string().optional(),
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+  }),
+  z.object({
+    type: z.literal('create_alert'),
+    alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
+    alertMessage: z.string(),
+    alertTitle: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('execute_command'),
+    command: z.string(),
+    shell: z.enum(['bash', 'powershell', 'cmd']).optional(),
+  }),
+  z.object({
+    type: z.literal('deploy_software'),
+    catalogId: z.string().guid(),
+  }),
+]);
+
 export const createAutomationSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().max(2000).optional(),
   enabled: z.boolean().default(true),
   trigger: automationTriggerSchema,
   conditions: z.record(z.string(), z.unknown()).optional(),
-  actions: z.array(z.record(z.string(), z.unknown())).min(1),
+  actions: z.array(automationActionSchema).min(1),
   onFailure: z.enum(['stop', 'continue', 'notify']).default('stop'),
   notificationTargets: z.record(z.string(), z.unknown()).optional()
 });

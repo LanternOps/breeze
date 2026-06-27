@@ -54,12 +54,13 @@ const conditionSchema = z.object({
 });
 
 const actionSchema = z.object({
-  type: z.enum(['run_script', 'send_notification', 'create_alert', 'execute_command']),
+  type: z.enum(['run_script', 'send_notification', 'create_alert', 'execute_command', 'deploy_software']),
   scriptId: z.string().optional(),
   notificationChannelId: z.string().optional(),
   alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
   alertMessage: z.string().optional(),
-  command: z.string().optional()
+  command: z.string().optional(),
+  catalogId: z.string().optional()
 });
 
 const automationSchema = z.object({
@@ -84,6 +85,7 @@ type Site = { id: string; name: string };
 type Group = { id: string; name: string };
 type Script = { id: string; name: string };
 type NotificationChannel = { id: string; name: string; type: string };
+type SoftwareCatalogItem = { id: string; name: string; vendor?: string };
 
 type AutomationFormProps = {
   onSubmit?: (values: AutomationFormValues) => void | Promise<void>;
@@ -96,6 +98,7 @@ type AutomationFormProps = {
   groups?: Group[];
   scripts?: Script[];
   notificationChannels?: NotificationChannel[];
+  softwareCatalog?: SoftwareCatalogItem[];
 };
 
 const triggerTypeOptions: { value: TriggerType; label: string; description: string; icon: typeof Clock }[] = [
@@ -159,7 +162,8 @@ const actionTypeOptions = [
   { value: 'run_script', label: 'Run Script' },
   { value: 'send_notification', label: 'Send Notification' },
   { value: 'create_alert', label: 'Create Alert' },
-  { value: 'execute_command', label: 'Execute Command' }
+  { value: 'execute_command', label: 'Execute Command' },
+  { value: 'deploy_software', label: 'Deploy Software' }
 ];
 
 const severityOptions = [
@@ -186,7 +190,8 @@ export default function AutomationForm({
   sites = [],
   groups = [],
   scripts = [],
-  notificationChannels = []
+  notificationChannels = [],
+  softwareCatalog = []
 }: AutomationFormProps) {
   const [conditionsExpanded, setConditionsExpanded] = useState(true);
   const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>(
@@ -685,6 +690,26 @@ export default function AutomationForm({
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.command`)}
                         />
+                      </div>
+                    )}
+
+                    {watchActions?.[index]?.type === 'deploy_software' && (
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-muted-foreground">Software</label>
+                        <select
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          {...register(`actions.${index}.catalogId`)}
+                        >
+                          <option value="">Select software...</option>
+                          {softwareCatalog.map(item => (
+                            <option key={item.id} value={item.id}>
+                              {item.vendor ? `${item.name} (${item.vendor})` : item.name}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-muted-foreground">
+                          Installs the latest version of the selected software; skips devices that already have it.
+                        </p>
                       </div>
                     )}
                   </div>

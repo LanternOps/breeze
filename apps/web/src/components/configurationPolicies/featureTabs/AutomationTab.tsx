@@ -7,7 +7,7 @@ import FeatureTabShell from './FeatureTabShell';
 import InlineEntityPicker from './InlineEntityPicker';
 
 type TriggerType = 'schedule' | 'event' | 'manual';
-type ActionType = 'run_script' | 'send_notification' | 'create_alert' | 'execute_command';
+type ActionType = 'run_script' | 'send_notification' | 'create_alert' | 'execute_command' | 'deploy_software';
 type OnFailure = 'stop' | 'continue' | 'notify';
 
 type Action = {
@@ -17,6 +17,7 @@ type Action = {
   alertSeverity?: string;
   alertMessage?: string;
   notificationChannelId?: string;
+  catalogId?: string;
 };
 
 type AutomationItem = {
@@ -64,6 +65,7 @@ const actionTypeOptions: { value: ActionType; label: string }[] = [
   { value: 'send_notification', label: 'Send Notification' },
   { value: 'create_alert', label: 'Create Alert' },
   { value: 'execute_command', label: 'Execute Command' },
+  { value: 'deploy_software', label: 'Deploy Software' },
 ];
 
 const onFailureOptions: { value: OnFailure; label: string; description: string }[] = [
@@ -146,6 +148,18 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
         const actions = item.actions.map((a, ai) => (ai === actionIndex ? { ...a, ...patch } : a));
+        return { ...item, actions };
+      })
+    );
+  };
+
+  // Replace the action with a clean object that carries only the new type, so
+  // stale fields from a previously selected action type are not emitted.
+  const changeActionType = (itemIndex: number, actionIndex: number, type: ActionType) => {
+    setItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== itemIndex) return item;
+        const actions = item.actions.map((a, ai) => (ai === actionIndex ? { type } : a));
         return { ...item, actions };
       })
     );
@@ -425,7 +439,7 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
                                 <label className="text-xs font-medium text-muted-foreground">Action Type</label>
                                 <select
                                   value={action.type}
-                                  onChange={(e) => updateAction(index, ai, { type: e.target.value as ActionType })}
+                                  onChange={(e) => changeActionType(index, ai, e.target.value as ActionType)}
                                   className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                 >
                                   {actionTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -502,6 +516,27 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
                                     extra: ch.type,
                                   }))}
                                 />
+                              )}
+
+                              {action.type === 'deploy_software' && (
+                                <div className="space-y-1.5">
+                                  <InlineEntityPicker
+                                    value={action.catalogId ?? ''}
+                                    onChange={(id) => updateAction(index, ai, { catalogId: id })}
+                                    endpoint="/software/catalog?limit=100"
+                                    label="Software"
+                                    placeholder="Select software..."
+                                    compact
+                                    transform={(items) => items.map((s: any) => ({
+                                      id: s.id,
+                                      name: s.name || 'Unnamed Software',
+                                      extra: s.vendor || s.category,
+                                    }))}
+                                  />
+                                  <p className="text-xs text-muted-foreground">
+                                    Installs the latest version of the selected software; skips devices that already have it.
+                                  </p>
+                                </div>
                               )}
                             </div>
                             <button
