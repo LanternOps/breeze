@@ -1432,6 +1432,13 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     .where(eq(sites.id, id))
     .returning();
 
+  // A 0-row write here means the RLS UPDATE policy rejected it even though the
+  // prior SELECT + ensureOrgAccess passed (RLS/app mismatch or a race). Surface
+  // it instead of returning 200 + null, which reads to the client as a success.
+  if (!updated) {
+    return c.json({ error: 'Failed to update site' }, 500);
+  }
+
   writeRouteAudit(c, {
     orgId: site.orgId,
     action: 'site.update',
