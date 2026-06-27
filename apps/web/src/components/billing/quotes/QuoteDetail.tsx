@@ -36,9 +36,14 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
 
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
+
+  // Sending emails the customer and is irreversible, so it goes through a
+  // confirm step — and an empty quote (no blocks, no lines) can't be sent at all.
+  const isEmpty = blocks.length === 0 && lines.length === 0;
 
   const send = useCallback(async () => {
     if (sending) return;
@@ -50,6 +55,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
         successMessage: 'Proposal sent',
         onUnauthorized: UNAUTHORIZED,
       });
+      setSendOpen(false);
       refresh();
     } catch (err) {
       handleActionError(err, 'Could not send the proposal.');
@@ -242,11 +248,37 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
             </div>
           )}
 
-          {/* Actions */}
+          {/* Actions — the primary action leads. On a draft that's "Send proposal"
+              (the irreversible money-moment); on an issued quote only "Download PDF"
+              remains, as a secondary affordance. */}
           <div className="space-y-2">
+            {/* Send a draft proposal: issues a number, emails the customer's billing
+                contact with the PDF + a public accept link, and flips draft→sent.
+                Gated on quotes:send. Only a draft can be sent — once sent, the
+                button drops out (the status pill above reflects the new state). The
+                click opens a confirm step; an empty quote can't be sent. */}
+            {can('quotes', 'send') && quote.status === 'draft' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setSendOpen(true)}
+                  disabled={sending || isEmpty}
+                  title={isEmpty ? 'Add at least one item before sending.' : undefined}
+                  data-testid="quote-send"
+                  className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  {sending ? 'Sending…' : 'Send proposal'}
+                </button>
+                {isEmpty && (
+                  <p className="text-center text-xs text-muted-foreground" data-testid="quote-send-empty-hint">
+                    Add at least one item before sending.
+                  </p>
+                )}
+              </>
+            )}
             {/* PDF download is a read affordance — quotes has no dedicated export
                 action, so it's gated on quotes:read (visible to anyone who can view
-                the quote). */}
+                the quote). Secondary to the send action. */}
             {can('quotes', 'read') && (
               <button
                 type="button"
@@ -256,21 +288,6 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
                 className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 Download PDF
-              </button>
-            )}
-            {/* Send a draft proposal: issues a number, emails the customer's billing
-                contact with the PDF + a public accept link, and flips draft→sent.
-                Gated on quotes:send. Only a draft can be sent — once sent, the
-                button drops out (the status pill above reflects the new state). */}
-            {can('quotes', 'send') && quote.status === 'draft' && (
-              <button
-                type="button"
-                onClick={() => void send()}
-                disabled={sending}
-                data-testid="quote-send"
-                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
-              >
-                {sending ? 'Sending…' : 'Send proposal'}
               </button>
             )}
             {can('quotes', 'write') && quote.status === 'draft' && (
@@ -286,6 +303,17 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={sendOpen}
+        onClose={() => setSendOpen(false)}
+        onConfirm={() => void send()}
+        isLoading={sending}
+        variant="warning"
+        title="Send this proposal?"
+        message={`We'll email this proposal to ${orgName} and mark it Sent — ${formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)} due on acceptance. This can't be undone.`}
+        confirmLabel="Send proposal"
+        confirmTestId="quote-send-confirm"
+      />
       <ConfirmDialog
         open={delOpen}
         onClose={() => setDelOpen(false)}

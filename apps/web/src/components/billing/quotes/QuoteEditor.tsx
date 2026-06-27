@@ -20,6 +20,7 @@ import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus } from 
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
 import DistributorLookup from './DistributorLookup';
+import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -218,6 +219,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       setBusy(false);
     }
   }, [busy, addType, headingText, richText, tableLabel, imageFile, imageCaption, quote.id, refresh]);
+
+  // Removing a line_items block cascades to every line under it (server-side), so
+  // the card's Remove button opens a confirm step instead of deleting outright.
+  const [pendingRemove, setPendingRemove] = useState<QuoteBlock | null>(null);
 
   // Real block delete: removes the block and (server-side) any lines attached to
   // it. Works for every block type — heading, rich_text, and line_items — so the
@@ -450,7 +455,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 onEditLine={editLine}
                 onEditBlock={editBlock}
                 onRemoveLine={deleteLine}
-                onRemoveBlock={removeBlock}
+                onRemoveBlock={setPendingRemove}
               />
             ))
           )}
@@ -604,6 +609,27 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        onClose={() => setPendingRemove(null)}
+        onConfirm={() => {
+          const block = pendingRemove;
+          setPendingRemove(null);
+          if (block) void removeBlock(block);
+        }}
+        isLoading={busy}
+        title="Remove block"
+        message={
+          pendingRemove?.blockType === 'line_items' && linesForBlock(pendingRemove.id).length > 0
+            ? `This removes the pricing table and its ${linesForBlock(pendingRemove.id).length} line item${
+                linesForBlock(pendingRemove.id).length === 1 ? '' : 's'
+              }. This can't be undone.`
+            : 'This removes this block. This can’t be undone.'
+        }
+        confirmLabel="Remove block"
+        confirmTestId="quote-block-remove-confirm"
+      />
     </div>
   );
 }
