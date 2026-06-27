@@ -9,7 +9,14 @@ import {
 
 export interface IssueBootstrapTokenInput {
   parentEnrollmentKeyId: string;
-  createdByUserId: string;
+  /**
+   * Creator user id, or null when the token is issued by an unauthenticated
+   * path (e.g. the public /s/:code short-link installer download) whose parent
+   * enrollment key may itself have no recorded creator. The created_by column
+   * is a nullable uuid FK — pass null, never an empty string (an empty string
+   * fails the uuid cast: `invalid input syntax for type uuid: ""`).
+   */
+  createdByUserId: string | null;
   maxUsage?: number;
   installerPlatform?: "windows" | "macos";
 }
