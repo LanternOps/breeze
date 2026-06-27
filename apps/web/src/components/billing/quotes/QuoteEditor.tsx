@@ -29,6 +29,7 @@ import {
   type QuoteLineRecurrence,
   formatMoney,
   formatRecurrence,
+  pctFromFraction,
 } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -80,6 +81,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const [ecActive, setEcActive] = useState(false);
   const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
   const [termsDirty, setTermsDirty] = useState(false);
+  // Tax rate is stored as a fraction ('0.07'); the input edits it as a percent ('7').
+  const [taxPct, setTaxPct] = useState(pctFromFraction(quote.taxRate));
+  const [taxDirty, setTaxDirty] = useState(false);
   const canCatalogWrite = can('catalog', 'write');
 
   // ---- add-block form ------------------------------------------------------
@@ -91,6 +95,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const [imageCaption, setImageCaption] = useState('');
 
   useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
+  useEffect(() => { setTaxPct(pctFromFraction(quote.taxRate)); setTaxDirty(false); }, [quote.taxRate]);
 
   const refresh = useCallback(() => onChanged(), [onChanged]);
 
@@ -114,6 +119,44 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       setBusy(false);
     }
   }, [busy, termsDirty, terms, quote.id, refresh]);
+
+  // Persist the tax rate as a fraction. Empty clears it (null); otherwise the
+  // percent is clamped to 0–100 (fraction 0–1, matching updateQuoteSchema) and an
+  // out-of-range/non-numeric entry resets to the persisted value rather than
+  // saving garbage. The server recomputes taxTotal/total, so refresh() re-pulls.
+  const saveTaxRate = useCallback(async () => {
+    if (busy || !taxDirty) return;
+    const trimmed = taxPct.trim();
+    let fraction: number | null;
+    if (trimmed === '') {
+      fraction = null;
+    } else {
+      const pct = Number(trimmed);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+        setTaxPct(pctFromFraction(quote.taxRate));
+        setTaxDirty(false);
+        return;
+      }
+      fraction = Number((pct / 100).toFixed(5));
+    }
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify({ taxRate: fraction }),
+        }),
+        errorFallback: 'Could not save the tax rate.',
+        successMessage: 'Tax rate saved',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setTaxDirty(false);
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not save the tax rate.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, taxDirty, taxPct, quote.id, quote.taxRate, refresh]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -576,6 +619,31 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 </div>
               )}
             </dl>
+            {canWrite && (
+              <div className="mt-2 border-t pt-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="quote-tax-rate" className="text-sm text-muted-foreground">Tax rate</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="quote-tax-rate"
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.001"
+                      value={taxPct}
+                      onChange={(e) => { setTaxPct(e.target.value); setTaxDirty(true); }}
+                      onBlur={() => void saveTaxRate()}
+                      disabled={busy}
+                      placeholder="0"
+                      data-testid="quote-tax-rate"
+                      className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${taxDirty ? 'ring-1 ring-warning' : ''}`}
+                    />
+                    <span className="text-sm text-muted-foreground">%</span>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">Applies to lines marked taxable.</p>
+              </div>
+            )}
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
               <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
               <span className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums" data-testid="quote-total-due-on-acceptance">
@@ -877,26 +945,27 @@ function BlockCard({
                   />
                   <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-[1fr_70px_90px_110px]">
                     <textarea
-                      placeholder="Description" value={desc}
+                      placeholder="Description" aria-label="Line description" value={desc}
                       onChange={(e) => setDesc(e.target.value)}
                       rows={2}
                       data-testid={`quote-manual-desc-${block.id}`}
                       className="min-h-[2.25rem] resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                     <input
-                      type="number" min="0" step="0.01" placeholder="Qty" value={qty}
+                      type="number" min="0" step="0.01" placeholder="Qty" aria-label="Quantity" value={qty}
                       onChange={(e) => setQty(e.target.value)}
                       data-testid={`quote-manual-qty-${block.id}`}
                       className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                     <input
-                      type="number" min="0" step="0.01" placeholder="Unit price" value={price}
+                      type="number" min="0" step="0.01" placeholder="Unit price" aria-label="Unit price" value={price}
                       onChange={(e) => setPrice(e.target.value)}
                       data-testid={`quote-manual-price-${block.id}`}
                       className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                     <select
                       value={recurrence}
+                      aria-label="Billing frequency"
                       onChange={(e) => setRecurrence(e.target.value as QuoteLineRecurrence)}
                       data-testid={`quote-manual-recurrence-${block.id}`}
                       className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"

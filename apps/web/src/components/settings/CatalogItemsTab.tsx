@@ -333,7 +333,17 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                   const isOpen = !!exp;
                   return (
                     <FragmentRow key={it.id}>
-                      <tr className="border-t transition hover:bg-muted/40" data-testid={`catalog-item-row-${it.id}`}>
+                      <tr
+                        className="cursor-pointer border-t transition hover:bg-muted/40"
+                        data-testid={`catalog-item-row-${it.id}`}
+                        onClick={(e) => {
+                          // Open the details drawer when the row body is clicked, but
+                          // let the inline controls (bundle toggle, row-actions menu,
+                          // the name button) handle their own clicks.
+                          if ((e.target as HTMLElement).closest('button,a,input,select,[role="menu"]')) return;
+                          openEdit(it);
+                        }}
+                      >
                         <td className="px-3 py-3 font-medium">
                           <span className="flex items-center gap-1.5">
                             {it.isBundle ? (
@@ -352,7 +362,14 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                             ) : (
                               <span className="inline-block w-[18px]" />
                             )}
-                            {it.name}
+                            <button
+                              type="button"
+                              onClick={() => openEdit(it)}
+                              className="rounded text-left hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              data-testid={`catalog-item-name-${it.id}`}
+                            >
+                              {it.name}
+                            </button>
                             {it.isBundle && (
                               <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                                 Bundle

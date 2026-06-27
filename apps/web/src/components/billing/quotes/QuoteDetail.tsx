@@ -16,6 +16,8 @@ import {
   formatDate,
   formatMoney,
   formatRecurrence,
+  lineTaxAmount,
+  pctFromFraction,
   sellerLines,
 } from './quoteTypes';
 
@@ -126,6 +128,9 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
 
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
+  // Show the per-line Tax column only when this quote carries tax (mirrors the
+  // header Tax row); otherwise it'd be a column of dashes.
+  const showTax = Number(quote.taxTotal) > 0;
 
   // Customer label: prefer the explicit bill-to name; otherwise resolve the real
   // organization name from the client-side org list (same source the org switcher
@@ -169,12 +174,14 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
                 block={block}
                 lines={linesForBlock(block.id)}
                 currency={currency}
+                taxRate={quote.taxRate}
+                showTax={showTax}
               />
             ))
           )}
 
           {looseLines.length > 0 && (
-            <LineTable lines={looseLines} currency={currency} label="Other items" testId="quote-detail-loose-lines" />
+            <LineTable lines={looseLines} currency={currency} label="Other items" testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
           )}
         </div>
 
@@ -209,8 +216,8 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
               <div className="flex justify-between"><dt className="text-muted-foreground">One-time</dt><dd>{formatMoney(quote.oneTimeTotal, currency)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Monthly</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Annual</dt><dd>{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>
-              {Number(quote.taxTotal) > 0 && (
-                <div className="flex justify-between"><dt className="text-muted-foreground">Tax</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
+              {showTax && (
+                <div className="flex justify-between"><dt className="text-muted-foreground">Tax{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
               )}
             </dl>
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
@@ -340,7 +347,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
   );
 }
 
-function BlockView({ block, lines, currency }: { block: QuoteBlock; lines: QuoteLine[]; currency: string }) {
+function BlockView({ block, lines, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; currency: string; taxRate: string | null; showTax: boolean }) {
   const heading = (block.content?.text as string | undefined) ?? '';
   const html = (block.content?.html as string | undefined) ?? '';
   const tableLabel = (block.content?.label as string | undefined) ?? '';
@@ -364,12 +371,13 @@ function BlockView({ block, lines, currency }: { block: QuoteBlock; lines: Quote
   // line_items
   return (
     <div data-testid={`quote-detail-block-${block.id}`}>
-      <LineTable lines={lines} currency={currency} label={tableLabel || 'Pricing'} testId={`quote-detail-lines-${block.id}`} />
+      <LineTable lines={lines} currency={currency} label={tableLabel || 'Pricing'} testId={`quote-detail-lines-${block.id}`} taxRate={taxRate} showTax={showTax} />
     </div>
   );
 }
 
-function LineTable({ lines, currency, label, testId }: { lines: QuoteLine[]; currency: string; label: string; testId: string }) {
+function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines: QuoteLine[]; currency: string; label: string; testId: string; taxRate: string | null; showTax: boolean }) {
+  const colSpan = showTax ? 6 : 5;
   return (
     <div className="rounded-lg border bg-card shadow-sm">
       {label && (
@@ -382,28 +390,35 @@ function LineTable({ lines, currency, label, testId }: { lines: QuoteLine[]; cur
             <th className="px-3 py-2 text-right font-medium">Qty</th>
             <th className="px-3 py-2 text-right font-medium">Unit</th>
             <th className="px-3 py-2 font-medium">Recurrence</th>
+            {showTax && <th className="px-3 py-2 text-right font-medium">Tax</th>}
             <th className="px-3 py-2 text-right font-medium">Total</th>
           </tr>
         </thead>
         <tbody>
           {lines.length === 0 ? (
             <tr>
-              <td colSpan={5} className="px-3 py-6 text-center text-sm text-muted-foreground">No lines.</td>
+              <td colSpan={colSpan} className="px-3 py-6 text-center text-sm text-muted-foreground">No lines.</td>
             </tr>
           ) : (
-            lines.map((l) => (
-              <tr key={l.id} className="border-t" data-testid={`quote-detail-line-${l.id}`}>
-                <td className="px-3 py-2">{l.description}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{l.quantity}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
-                <td className="px-3 py-2">
-                  <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    {formatRecurrence(l.recurrence)}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
-              </tr>
-            ))
+            lines.map((l) => {
+              const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, taxRate) : null;
+              return (
+                <tr key={l.id} className="border-t" data-testid={`quote-detail-line-${l.id}`}>
+                  <td className="px-3 py-2">{l.description}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{l.quantity}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
+                  <td className="px-3 py-2">
+                    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {formatRecurrence(l.recurrence)}
+                    </span>
+                  </td>
+                  {showTax && (
+                    <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>
+                  )}
+                  <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>

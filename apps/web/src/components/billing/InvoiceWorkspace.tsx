@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type KeyboardEvent } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import InvoiceEditor from './InvoiceEditor';
@@ -81,6 +81,24 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
     if (typeof window !== 'undefined') window.location.hash = `#${next}`;
   }, []);
 
+  // Roving keyboard navigation across the tablist (WAI-ARIA tabs pattern):
+  // Left/Right move between tabs, Home/End jump to the ends, and the moved-to
+  // tab is both activated and focused.
+  const onTabKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>, tabs: { value: Tab }[], current: Tab) => {
+    const idx = tabs.findIndex((t) => t.value === current);
+    if (idx < 0) return;
+    let nextIdx: number | null = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextIdx = (idx + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = tabs.length - 1;
+    if (nextIdx === null) return;
+    e.preventDefault();
+    const next = tabs[nextIdx].value;
+    selectTab(next);
+    if (typeof document !== 'undefined') document.getElementById(`invoice-tab-${next}`)?.focus();
+  }, [selectTab]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16" data-testid="invoice-workspace-loading">
@@ -120,13 +138,21 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b" role="tablist" data-testid="invoice-workspace-tabs">
+      <div
+        className="flex gap-1 border-b"
+        role="tablist"
+        data-testid="invoice-workspace-tabs"
+        onKeyDown={(e) => onTabKeyDown(e, visibleTabs, activeTab)}
+      >
         {visibleTabs.map((t) => (
           <button
             key={t.value}
             type="button"
             role="tab"
+            id={`invoice-tab-${t.value}`}
             aria-selected={activeTab === t.value}
+            aria-controls={`invoice-tabpanel-${t.value}`}
+            tabIndex={activeTab === t.value ? 0 : -1}
             onClick={() => selectTab(t.value)}
             data-testid={`invoice-tab-${t.value}`}
             className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition ${
@@ -140,11 +166,23 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
         ))}
       </div>
 
-      {activeTab === 'editor' && isDraft && <InvoiceEditor detail={detail} onChanged={() => void reload()} />}
+      {activeTab === 'editor' && isDraft && (
+        <div role="tabpanel" id="invoice-tabpanel-editor" aria-labelledby="invoice-tab-editor" tabIndex={0}>
+          <InvoiceEditor detail={detail} onChanged={() => void reload()} />
+        </div>
+      )}
 
-      {activeTab === 'preview' && <InvoiceDocumentPreview detail={detail} />}
+      {activeTab === 'preview' && (
+        <div role="tabpanel" id="invoice-tabpanel-preview" aria-labelledby="invoice-tab-preview" tabIndex={0}>
+          <InvoiceDocumentPreview detail={detail} />
+        </div>
+      )}
 
-      {activeTab === 'detail' && <InvoiceDetail detail={detail} onChanged={() => void reload()} />}
+      {activeTab === 'detail' && (
+        <div role="tabpanel" id="invoice-tabpanel-detail" aria-labelledby="invoice-tab-detail" tabIndex={0}>
+          <InvoiceDetail detail={detail} onChanged={() => void reload()} />
+        </div>
+      )}
     </div>
   );
 }

@@ -181,6 +181,23 @@ export function pctFromFraction(frac: string | number | null): string {
   return String(Number((Number(frac) * 100).toFixed(3)));
 }
 
+/** Per-line tax amount for the line-table Tax column: taxable lines get
+ *  lineTotal × rate rounded to cents; non-taxable lines, a null/empty rate, or a
+ *  non-positive rate return null (rendered as '—'). The header Tax stays the
+ *  server's authoritative `taxTotal`, so a quote/invoice with many taxable lines
+ *  can differ from the summed column by a rounding cent. Mirrors quoteTypes. */
+export function lineTaxAmount(
+  lineTotal: string | number,
+  taxable: boolean,
+  taxRate: string | number | null,
+): number | null {
+  if (!taxable) return null;
+  const rate = taxRate === null || taxRate === '' ? 0 : Number(taxRate);
+  const cents = Math.round(Number(lineTotal) * 100);
+  if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(cents)) return null;
+  return Math.round(cents * rate) / 100;
+}
+
 /** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */
 export function formatDate(value: string | null | undefined): string {
   if (!value) return '—';

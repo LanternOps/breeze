@@ -115,6 +115,37 @@ describe('CatalogItemsTab', () => {
     });
   });
 
+  it('opens the editor drawer with the item when its row is clicked', async () => {
+    render(<CatalogItemsTab />);
+    await screen.findByText('Widget Service');
+
+    fireEvent.click(screen.getByTestId('catalog-item-row-w1'));
+
+    const drawer = await screen.findByTestId('catalog-item-editor');
+    expect(within(drawer).getByText('Edit item')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('catalog-form-name')).toHaveValue('Widget Service');
+  });
+
+  it('opens the editor when the item name is clicked (keyboard-focusable affordance)', async () => {
+    render(<CatalogItemsTab />);
+    await screen.findByText('Laptop');
+
+    fireEvent.click(screen.getByTestId('catalog-item-name-l1'));
+
+    const drawer = await screen.findByTestId('catalog-item-editor');
+    expect(within(drawer).getByTestId('catalog-form-name')).toHaveValue('Laptop');
+  });
+
+  it('does not open the editor when the bundle toggle is clicked', async () => {
+    render(<CatalogItemsTab />);
+    await screen.findByText('Starter Bundle');
+
+    fireEvent.click(screen.getByTestId('catalog-bundle-toggle-b1'));
+
+    await screen.findByTestId('catalog-bundle-detail-b1');
+    expect(screen.queryByTestId('catalog-item-editor')).not.toBeInTheDocument();
+  });
+
   it('creates a bundle and PUTs components including showOnInvoice', async () => {
     render(<CatalogItemsTab />);
     await screen.findByText('Widget Service');

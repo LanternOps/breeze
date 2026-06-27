@@ -16,6 +16,8 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  lineTaxAmount,
+  pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
 
@@ -45,6 +47,9 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
   // Payment confirm dialog
   const [payConfirmOpen, setPayConfirmOpen] = useState(false);
+  // Reverse-a-payment confirm: reversing is a financial mutation, so it goes
+  // through a confirm step that names the specific payment.
+  const [reversePayment, setReversePayment] = useState<InvoicePayment | null>(null);
   // Void dialog
   const [voidOpen, setVoidOpen] = useState(false);
   // Delete dialog
@@ -83,6 +88,10 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     const cost = Number(l.costBasis) * Number(l.quantity);
     return formatMoney(revenue - cost, currency);
   };
+
+  // Per-line Tax column appears only when this invoice carries tax (mirrors the
+  // header Tax row), otherwise it'd be a column of dashes.
+  const showTax = Number(invoice.taxTotal) > 0;
 
   const canRecordPayment = invoice.status !== 'void' && invoice.status !== 'paid' && Number(invoice.balance) > 0;
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
@@ -174,13 +183,14 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     try {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/payments/${paymentId}`, { method: 'DELETE' }),
-        errorFallback: 'Could not void the payment.',
-        successMessage: 'Payment voided',
+        errorFallback: 'Could not reverse the payment.',
+        successMessage: 'Payment reversed',
         onUnauthorized: UNAUTHORIZED,
       });
+      setReversePayment(null);
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not void the payment.');
+      handleActionError(err, 'Could not reverse the payment.');
     } finally {
       setBusy(false);
     }
@@ -256,11 +266,14 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                   <th className="px-3 py-2 text-right font-medium">Price</th>
                   {accountingView && <th className="px-3 py-2 text-right font-medium">Cost</th>}
                   {accountingView && <th className="px-3 py-2 text-right font-medium">Margin</th>}
+                  {showTax && <th className="px-3 py-2 text-right font-medium">Tax</th>}
                   <th className="px-3 py-2 text-right font-medium">Total</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleLines.map((l) => (
+                {visibleLines.map((l) => {
+                  const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, invoice.taxRate) : null;
+                  return (
                   <tr
                     key={l.id}
                     data-testid={`invoice-detail-line-${l.id}`}
@@ -274,9 +287,11 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
                     {accountingView && <td className="px-3 py-2 text-right">{l.costBasis == null ? '—' : formatMoney(l.costBasis, currency)}</td>}
                     {accountingView && <td className="px-3 py-2 text-right">{lineMargin(l)}</td>}
+                    {showTax && <td className="px-3 py-2 text-right text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>}
                     <td className="px-3 py-2 text-right">{formatMoney(l.lineTotal, currency)}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -293,8 +308,8 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
             </div>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd>{formatMoney(invoice.subtotal, currency)}</dd></div>
-              {Number(invoice.taxTotal) > 0 && (
-                <div className="flex justify-between"><dt className="text-muted-foreground">Tax</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
+              {showTax && (
+                <div className="flex justify-between"><dt className="text-muted-foreground">Tax{invoice.taxRate ? ` (${pctFromFraction(invoice.taxRate)}%)` : ''}</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
               )}
               <div className="flex min-w-0 justify-between gap-2 font-semibold"><dt>Total</dt><dd className="break-words">{formatMoney(invoice.total, currency)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Paid</dt><dd>{formatMoney(invoice.amountPaid, currency)}</dd></div>
@@ -406,7 +421,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                       <span className="whitespace-nowrap text-[11px] text-muted-foreground">via Stripe</span>
                     ) : can('invoices', 'send') ? (
                       <button
-                        type="button" onClick={() => void voidPayment(p.id)} disabled={busy || invoice.status === 'void'}
+                        type="button" onClick={() => setReversePayment(p)} disabled={busy || invoice.status === 'void'}
                         aria-label={`Reverse payment of ${formatMoney(p.amount, currency)}`}
                         data-testid={`invoice-payment-void-${p.id}`}
                         className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
@@ -486,6 +501,18 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Reverse-a-payment confirm dialog */}
+      <ConfirmDialog
+        open={reversePayment !== null}
+        onClose={() => setReversePayment(null)}
+        onConfirm={() => { if (reversePayment) void voidPayment(reversePayment.id); }}
+        isLoading={busy}
+        title="Reverse this payment?"
+        message={reversePayment ? `This reverses the ${formatMoney(reversePayment.amount, currency)} ${PAYMENT_METHOD_LABELS[reversePayment.method]} payment and removes it from the invoice balance. This can't be undone.` : ''}
+        confirmLabel="Reverse payment"
+        confirmTestId="invoice-payment-reverse-confirm"
+      />
 
       {/* Record payment confirm dialog */}
       <ConfirmDialog

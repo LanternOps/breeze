@@ -12,6 +12,8 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  lineTaxAmount,
+  pctFromFraction,
   sellerLines,
 } from './quoteTypes';
 
@@ -95,7 +97,7 @@ function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: str
   );
 }
 
-function PricingTable({ lines, currency, label }: { lines: QuoteLine[]; currency: string; label?: string }) {
+function PricingTable({ lines, currency, label, taxRate, showTax }: { lines: QuoteLine[]; currency: string; label?: string; taxRate: string | null; showTax: boolean }) {
   if (lines.length === 0) return null;
   const sorted = [...lines].sort((a, b) => a.sortOrder - b.sortOrder);
   return (
@@ -110,6 +112,7 @@ function PricingTable({ lines, currency, label }: { lines: QuoteLine[]; currency
               <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
               <th className="px-2 py-2.5 text-right font-medium">Qty</th>
               <th className="px-2 py-2.5 text-right font-medium">Unit price</th>
+              {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
               <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
             </tr>
           </thead>
@@ -117,6 +120,7 @@ function PricingTable({ lines, currency, label }: { lines: QuoteLine[]; currency
             {sorted.map((l) => {
               const suffix = RECURRENCE_SUFFIX[l.recurrence];
               const tag = RECURRENCE_LABEL[l.recurrence];
+              const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, taxRate) : null;
               return (
                 <tr key={l.id} className="border-b align-top last:border-0">
                   <td className="px-4 py-3 text-foreground sm:px-5">
@@ -131,6 +135,11 @@ function PricingTable({ lines, currency, label }: { lines: QuoteLine[]; currency
                   <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
                     {formatMoney(l.unitPrice, currency)}{suffix && <span className="text-xs">{suffix}</span>}
                   </td>
+                  {showTax && (
+                    <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
+                      {tax === null ? '—' : formatMoney(tax, currency)}
+                    </td>
+                  )}
                   <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">
                     {formatMoney(l.lineTotal, currency)}{suffix && <span className="text-xs text-muted-foreground">{suffix}</span>}
                   </td>
@@ -144,7 +153,7 @@ function PricingTable({ lines, currency, label }: { lines: QuoteLine[]; currency
   );
 }
 
-function DocBlock({ block, lines, currency }: { block: QuoteBlock; lines: QuoteLine[]; currency: string }) {
+function DocBlock({ block, lines, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; currency: string; taxRate: string | null; showTax: boolean }) {
   if (block.blockType === 'heading') {
     const text = (block.content?.text as string | undefined)?.trim();
     if (!text) return null;
@@ -163,7 +172,7 @@ function DocBlock({ block, lines, currency }: { block: QuoteBlock; lines: QuoteL
   }
   // line_items
   const label = (block.content?.label as string | undefined)?.trim() || 'Pricing';
-  return <PricingTable lines={lines} currency={currency} label={label} />;
+  return <PricingTable lines={lines} currency={currency} label={label} taxRate={taxRate} showTax={showTax} />;
 }
 
 interface DocumentProps {
@@ -193,6 +202,9 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
   const dueOnAcceptance = quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
+  // Only surface the per-line Tax column when this quote actually carries tax —
+  // otherwise it's a column of dashes. Mirrors the header Tax row's visibility.
+  const showTax = Number(quote.taxTotal) > 0;
 
   return (
     <div
@@ -265,9 +277,9 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
         ) : (
           <div className="space-y-6">
             {sortedBlocks.map((block) => (
-              <DocBlock key={block.id} block={block} lines={linesForBlock(block.id)} currency={currency} />
+              <DocBlock key={block.id} block={block} lines={linesForBlock(block.id)} currency={currency} taxRate={quote.taxRate} showTax={showTax} />
             ))}
-            {looseLines.length > 0 && <PricingTable lines={looseLines} currency={currency} label="Additional items" />}
+            {looseLines.length > 0 && <PricingTable lines={looseLines} currency={currency} label="Additional items" taxRate={quote.taxRate} showTax={showTax} />}
           </div>
         )}
 
@@ -279,9 +291,11 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                 <span className="text-muted-foreground">Subtotal</span>
                 <span className="tabular-nums text-foreground">{formatMoney(quote.subtotal, currency)}</span>
               </div>
-              {Number(quote.taxTotal) > 0 && (
+              {showTax && (
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Tax</span>
+                  <span className="text-muted-foreground">
+                    Tax{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}
+                  </span>
                   <span className="tabular-nums text-foreground">{formatMoney(quote.taxTotal, currency)}</span>
                 </div>
               )}

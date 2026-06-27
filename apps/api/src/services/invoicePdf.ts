@@ -55,6 +55,17 @@ function formatDate(value: string | Date | null | undefined): string {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit', timeZone: 'UTC' });
 }
 
+/** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
+ *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
+ *  as '—'). The header Tax stays invoice.tax_total (authoritative), so the summed
+ *  column can differ by a rounding cent on many-line invoices. */
+function lineTax(lineTotal: string | number | null | undefined, taxable: boolean, rate: number): number | null {
+  if (!taxable || !(rate > 0)) return null;
+  const cents = Math.round(Number(lineTotal ?? 0) * 100);
+  if (!Number.isFinite(cents)) return null;
+  return Math.round(cents * rate) / 100;
+}
+
 interface BillToAddress {
   line1?: string | null; line2?: string | null; city?: string | null;
   region?: string | null; postalCode?: string | null; country?: string | null;
@@ -93,6 +104,10 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
     ? (branding.primaryColor.startsWith('#') ? branding.primaryColor : `#${branding.primaryColor}`)
     : '#2563eb';
   const groups = groupVisibleLinesByTicket(lines);
+  // Per-line Tax column appears only when this invoice carries tax (mirrors the
+  // header Tax row); otherwise it'd be a column of dashes.
+  const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
+  const showTax = Number(invoice.taxTotal ?? 0) > 0;
   const billTo = addressLines(invoice.billToAddress as BillToAddress | null);
   const seller = (invoice.sellerSnapshot as SellerSnapshot | null) ?? null;
   const sellerLines = sellerAddressLines(seller);
@@ -103,14 +118,21 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
 
   const rowsHtml = groups.map((g) => {
     const header = g.ticketId
-      ? `<tr><td colspan="3" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#6b7280;border-top:1px solid #e5e7eb;">Ticket work</td></tr>`
+      ? `<tr><td colspan="${showTax ? 4 : 3}" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#6b7280;border-top:1px solid #e5e7eb;">Ticket work</td></tr>`
       : '';
-    const lineRows = g.lines.map((l) => `
+    const lineRows = g.lines.map((l) => {
+      const t = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
+      const taxCell = showTax
+        ? `<td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">${t === null ? '&mdash;' : escapeHtml(formatMoney(t, currency))}</td>`
+        : '';
+      return `
       <tr>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(l.description)}</td>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(l.quantity)))}</td>
+        ${taxCell}
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency))}</td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
     return header + lineRows;
   }).join('');
 
@@ -151,6 +173,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
           <tr>
             <th style="padding:8px;text-align:left;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Description</th>
             <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Qty</th>
+            ${showTax ? '<th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Tax</th>' : ''}
             <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Amount</th>
           </tr>
         </thead>
@@ -193,6 +216,9 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
     try {
       const currency = invoice.currencyCode ?? branding.currencyCode ?? 'USD';
       const primary = hexToColor(branding.primaryColor, '#2563eb');
+      // Per-line Tax column only when this invoice carries tax (mirrors the header).
+      const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
+      const showTax = Number(invoice.taxTotal ?? 0) > 0;
       const doc = new PDFDocument({ size: 'A4', margin: 50 });
       const chunks: Buffer[] = [];
       doc.on('data', (d: Buffer) => chunks.push(d));
@@ -235,12 +261,15 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       if (invoice.issueDate) { doc.text(`Issued: ${formatDate(invoice.issueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
       if (invoice.dueDate) { doc.text(`Due: ${formatDate(invoice.dueDate)}`, rightX, billY, { width: rightW }); billY += 14; }
 
-      // Line table starts below the taller of the two columns.
+      // Line table starts below the taller of the two columns. When a Tax column
+      // is shown, the money columns narrow to 0.15 each to fit qty | tax | amount;
+      // otherwise the original two-column (qty | amount) layout is preserved.
       y = Math.max(fromY, billY) + 20;
-      const colQtyX = left + contentWidth * 0.62;
-      const colAmtX = left + contentWidth * 0.80;
-      const colDescW = contentWidth * 0.60;
-      const colNumW = contentWidth * 0.18;
+      const colNumW = contentWidth * (showTax ? 0.15 : 0.18);
+      const colQtyX = left + contentWidth * (showTax ? 0.52 : 0.62);
+      const colTaxX = left + contentWidth * 0.68;
+      const colAmtX = left + contentWidth * (showTax ? 0.83 : 0.80);
+      const colDescW = contentWidth * (showTax ? 0.50 : 0.60);
 
       doc.save();
       doc.rect(left - 6, y - 5, contentWidth + 12, 22).fill('#f8fafc');
@@ -248,6 +277,7 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
       doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
       doc.text('DESCRIPTION', left, y);
       doc.text('QTY', colQtyX, y, { width: colNumW, align: 'right' });
+      if (showTax) doc.text('TAX', colTaxX, y, { width: colNumW, align: 'right' });
       doc.text('AMOUNT', colAmtX, y, { width: colNumW, align: 'right' });
       y += 18;
       y += 6;
@@ -262,6 +292,11 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
           const descHeight = doc.heightOfString(l.description, { width: colDescW });
           doc.text(l.description, left, y, { width: colDescW });
           doc.text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
+          if (showTax) {
+            const t = lineTax(l.lineTotal, l.taxable, taxRate);
+            doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), colTaxX, y, { width: colNumW, align: 'right' });
+            doc.fillColor('#1f2937');
+          }
           doc.text(formatMoney(l.lineTotal, currency), colAmtX, y, { width: colNumW, align: 'right' });
           y += Math.max(descHeight, 12) + 6;
         }

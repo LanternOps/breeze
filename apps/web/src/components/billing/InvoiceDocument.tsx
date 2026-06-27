@@ -10,13 +10,16 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  lineTaxAmount,
+  pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
-function LineRow({ line, currency }: { line: InvoiceLine; currency: string }) {
+function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean }) {
   const child = !!line.parentLineId;
+  const tax = showTax ? lineTaxAmount(line.lineTotal, line.taxable, taxRate) : null;
   return (
     <tr className="border-b align-top last:border-0">
       <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
@@ -24,6 +27,9 @@ function LineRow({ line, currency }: { line: InvoiceLine; currency: string }) {
       </td>
       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{line.quantity}</td>
       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{formatMoney(line.unitPrice, currency)}</td>
+      {showTax && (
+        <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>
+      )}
       <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{formatMoney(line.lineTotal, currency)}</td>
     </tr>
   );
@@ -55,6 +61,9 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
   );
   const isEmpty = visibleLines.length === 0;
   const amountPaid = Number(invoice.amountPaid);
+  // Only surface the per-line Tax column when this invoice carries tax — mirrors
+  // the header Tax row's visibility (otherwise it's a column of dashes).
+  const showTax = Number(invoice.taxTotal) > 0;
 
   return (
     <div
@@ -136,11 +145,12 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
                     <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
                     <th className="px-2 py-2.5 text-right font-medium">Qty</th>
                     <th className="px-2 py-2.5 text-right font-medium">Unit price</th>
+                    {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
                     <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleLines.map((l) => <LineRow key={l.id} line={l} currency={currency} />)}
+                  {visibleLines.map((l) => <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} />)}
                 </tbody>
               </table>
             </div>
@@ -155,9 +165,9 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
                 <span className="text-muted-foreground">Subtotal</span>
                 <span className="tabular-nums text-foreground">{formatMoney(invoice.subtotal, currency)}</span>
               </div>
-              {Number(invoice.taxTotal) > 0 && (
+              {showTax && (
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Tax</span>
+                  <span className="text-muted-foreground">Tax{invoice.taxRate ? ` (${pctFromFraction(invoice.taxRate)}%)` : ''}</span>
                   <span className="tabular-nums text-foreground">{formatMoney(invoice.taxTotal, currency)}</span>
                 </div>
               )}

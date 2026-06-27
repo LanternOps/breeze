@@ -318,19 +318,19 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             {addMode === 'manual' ? (
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_80px_100px_auto_auto]">
                 <input
-                  type="text" placeholder="Description" value={manualDesc}
+                  type="text" placeholder="Description" aria-label="Line description" value={manualDesc}
                   onChange={(e) => setManualDesc(e.target.value)}
                   data-testid="invoice-manual-desc"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
                 <input
-                  type="number" min="0" step="0.01" placeholder="Qty" value={manualQty}
+                  type="number" min="0" step="0.01" placeholder="Qty" aria-label="Quantity" value={manualQty}
                   onChange={(e) => setManualQty(e.target.value)}
                   data-testid="invoice-manual-qty"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 />
                 <input
-                  type="number" min="0" step="0.01" placeholder="Price" value={manualPrice}
+                  type="number" min="0" step="0.01" placeholder="Price" aria-label="Unit price" value={manualPrice}
                   onChange={(e) => setManualPrice(e.target.value)}
                   data-testid="invoice-manual-price"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
