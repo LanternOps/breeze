@@ -216,7 +216,7 @@ export default function GoogleWorkspaceIntegration() {
       )}
 
       {/* Connection card */}
-      <div className="rounded-xl border bg-card p-6 shadow-sm">
+      <div className="rounded-xl border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Connection</h2>
         <p className="mb-4 text-sm text-muted-foreground">
           Paste the service-account JSON key and the super-admin it impersonates. Breeze makes a live
@@ -250,7 +250,7 @@ export default function GoogleWorkspaceIntegration() {
             </li>
           </ol>
           <p className="mt-3 font-medium text-foreground">OAuth scopes to authorize:</p>
-          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-[11px] leading-relaxed text-muted-foreground">{GOOGLE_DWD_SCOPES_CSV}</pre>
+          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 chart-legend-xs leading-relaxed text-muted-foreground">{GOOGLE_DWD_SCOPES_CSV}</pre>
         </details>
 
         <div className="grid gap-4 md:grid-cols-2">
@@ -261,7 +261,7 @@ export default function GoogleWorkspaceIntegration() {
               value={customerDomain}
               onChange={(e) => setCustomerDomain(e.target.value)}
               placeholder="example.com"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
             />
           </div>
 
@@ -272,7 +272,7 @@ export default function GoogleWorkspaceIntegration() {
               value={adminEmail}
               onChange={(e) => setAdminEmail(e.target.value)}
               placeholder="admin@example.com"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
             />
           </div>
 
@@ -289,7 +289,7 @@ export default function GoogleWorkspaceIntegration() {
                 onChange={(e) => setServiceAccountKey(e.target.value)}
                 rows={showKey ? 10 : 3}
                 placeholder={isConnected ? '•••••••••• (stored, encrypted)' : 'Paste the full service-account JSON key file here'}
-                className={`w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 ${showKey ? '' : 'blur-[3px] focus:blur-0'}`}
+                className={`w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 ${showKey ? '' : 'blur-[3px] focus:blur-0'}`}
               />
               <button
                 type="button"
@@ -334,7 +334,7 @@ export default function GoogleWorkspaceIntegration() {
 
       {/* Status card */}
       {isConnected && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="rounded-xl border bg-card p-6 shadow-xs">
           <h2 className="text-lg font-semibold">Connection details</h2>
           <div className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between text-muted-foreground">

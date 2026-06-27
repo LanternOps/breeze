@@ -493,7 +493,7 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
       {/* Create/Edit Modal */}
       {(modalMode === 'create' || modalMode === 'edit') && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4">
-          <div className="flex w-full max-w-3xl max-h-[calc(100vh-2rem)] flex-col rounded-lg border bg-card shadow-sm">
+          <div className="flex w-full max-w-3xl max-h-[calc(100vh-2rem)] flex-col rounded-lg border bg-card shadow-xs">
             <div className="flex items-center justify-between border-b px-6 py-4 shrink-0">
               <h2 className="text-lg font-semibold">
                 {modalMode === 'create' ? 'Create Software Policy' : 'Edit Software Policy'}
@@ -527,7 +527,7 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedPolicy && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Deactivate Policy</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to deactivate{' '}

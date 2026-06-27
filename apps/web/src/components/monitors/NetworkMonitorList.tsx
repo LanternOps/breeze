@@ -170,7 +170,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
 
   if (loading && monitors.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-4 text-sm text-muted-foreground">Loading monitors...</p>
@@ -205,7 +205,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
           <select
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="">All Types</option>
             <option value="icmp_ping">ICMP Ping</option>
@@ -216,7 +216,7 @@ export default function NetworkMonitorList({ assetId }: NetworkMonitorListProps)
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="">All Status</option>
             <option value="online">Online</option>

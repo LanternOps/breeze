@@ -345,7 +345,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={!isNew && value?.name === '(Default)'}
-              className="w-full px-3 py-2 border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+              className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
               placeholder="Enter value name"
             />
           </div>
@@ -356,7 +356,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
               value={type}
               onChange={(e) => setType(e.target.value as RegistryValueType)}
               disabled={!isNew}
-              className="w-full px-3 py-2 border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+              className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
             >
               {Object.entries(VALUE_TYPE_CONFIG).map(([key, config]) => (
                 <option key={key} value={key}>{key} - {config.label}</option>
@@ -372,7 +372,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                 type="text"
                 value={stringValue}
                 onChange={(e) => setStringValue(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50"
+                className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                 placeholder="Enter string value"
               />
             )}
@@ -409,7 +409,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                   type="text"
                   value={numberValue}
                   onChange={(e) => setNumberValue(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-md bg-background font-mono focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="w-full px-3 py-2 border rounded-md bg-background font-mono focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                   placeholder={isHex ? 'Enter hex value (e.g., 1A2B)' : 'Enter decimal value'}
                 />
               </div>
@@ -419,7 +419,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
               <textarea
                 value={binaryValue}
                 onChange={(e) => setBinaryValue(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md bg-background font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 h-32"
+                className="w-full px-3 py-2 border rounded-md bg-background font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50 h-32"
                 placeholder="Enter hex bytes separated by spaces (e.g., 00 01 02 03)"
               />
             )}
@@ -428,7 +428,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
               <textarea
                 value={multiValue}
                 onChange={(e) => setMultiValue(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 h-32"
+                className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50 h-32"
                 placeholder="Enter each string on a new line"
               />
             )}
@@ -526,7 +526,7 @@ function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModa
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50"
+              className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50"
               placeholder="Enter key name"
               autoFocus
               onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
@@ -924,7 +924,7 @@ export default function RegistryEditor({
         <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
           {pathSegments.map((segment, index) => (
             <div key={segment.path} className="flex items-center">
-              {index > 0 && <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />}
+              {index > 0 && <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
               <button
                 type="button"
                 onClick={() => handleBreadcrumbClick(index)}
@@ -941,7 +941,7 @@ export default function RegistryEditor({
         <button
           type="button"
           onClick={copyPath}
-          className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted flex-shrink-0"
+          className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted shrink-0"
           title="Copy path"
         >
           <Copy className="h-3.5 w-3.5" />
@@ -951,7 +951,7 @@ export default function RegistryEditor({
       {/* Main Content */}
       <div className="flex flex-1 min-h-0">
         {/* Tree View (30%) */}
-        <div className="w-[30%] border-r overflow-auto">
+        <div className="u-w-pct-30 border-r overflow-auto">
           <div className="py-2">
             {REGISTRY_HIVES.map((hive) => (
               <TreeNode
@@ -980,7 +980,7 @@ export default function RegistryEditor({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50"
+                className="w-full pl-9 pr-3 py-1.5 text-sm border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                 placeholder="Search values..."
               />
             </div>

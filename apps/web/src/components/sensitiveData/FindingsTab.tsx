@@ -151,7 +151,7 @@ export default function FindingsTab() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search file paths..."
-            className="h-9 rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         {selectedIds.size > 0 && (

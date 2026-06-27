@@ -645,7 +645,7 @@ export default function NotificationChannelsPage() {
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedChannel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Notification Channel</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete{' '}
@@ -734,7 +734,7 @@ function RoutingRuleForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Critical to PagerDuty"
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <div>
@@ -745,7 +745,7 @@ function RoutingRuleForm({
             max={100}
             value={priority}
             onChange={(e) => setPriority(Number(e.target.value) || 10)}
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
       </div>

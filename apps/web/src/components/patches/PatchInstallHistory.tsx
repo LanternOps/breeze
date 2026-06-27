@@ -267,7 +267,7 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading patch history...</p>
@@ -294,7 +294,7 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <History className="h-4 w-4 text-muted-foreground" />
@@ -312,7 +312,7 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
               setTypeFilter(e.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Types</option>
             <option value="install">Install</option>
@@ -325,7 +325,7 @@ export default function PatchInstallHistory({ deviceId }: PatchInstallHistoryPro
               setStatusFilter(e.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Status</option>
             <option value="completed">Completed</option>
@@ -614,7 +614,7 @@ function HistoryDetail({ entry }: { entry: PatchHistoryEntry }) {
                         <td className="px-4 py-2 font-medium">{getPatchResultName(patch)}</td>
                         <td className="px-4 py-2 text-xs text-muted-foreground">
                           {kb ? (
-                            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                            <span className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground">
                               {kb}
                             </span>
                           ) : (
@@ -638,7 +638,7 @@ function HistoryDetail({ entry }: { entry: PatchHistoryEntry }) {
                             </span>
                           )}
                           {patch.rebootRequired && (
-                            <span className="ml-1.5 inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+                            <span className="ml-1.5 inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
                               Reboot
                             </span>
                           )}

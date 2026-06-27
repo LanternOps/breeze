@@ -161,7 +161,7 @@ export default function AlertRuleEditor() {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 items-center justify-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
@@ -171,7 +171,7 @@ export default function AlertRuleEditor() {
 
   if (error && templates.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
           <p>{error}</p>
           <button
@@ -187,7 +187,7 @@ export default function AlertRuleEditor() {
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Alert Rule Editor</h2>
@@ -220,7 +220,7 @@ export default function AlertRuleEditor() {
                 <select
                   value={templateId}
                   onChange={event => setTemplateId(event.target.value)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {templates.map(template => (
                     <option key={template.id} value={template.id}>
@@ -251,7 +251,7 @@ export default function AlertRuleEditor() {
                 <select
                   value={targetType}
                   onChange={event => handleTargetTypeChange(event.target.value as TargetType)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="org">Organization</option>
                   <option value="site">Site</option>
@@ -264,7 +264,7 @@ export default function AlertRuleEditor() {
                 <select
                   value={targetId}
                   onChange={event => setTargetId(event.target.value)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {targetOptions.length === 0 ? (
                     <option value="">No targets available</option>
@@ -308,7 +308,7 @@ export default function AlertRuleEditor() {
                   <select
                     value={overrideSeverity}
                     onChange={event => setOverrideSeverity(event.target.value as AlertSeverity)}
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="critical">Critical</option>
                     <option value="high">High</option>
@@ -323,7 +323,7 @@ export default function AlertRuleEditor() {
                     type="number"
                     value={overrideCooldown}
                     onChange={event => setOverrideCooldown(Number(event.target.value))}
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
               </div>

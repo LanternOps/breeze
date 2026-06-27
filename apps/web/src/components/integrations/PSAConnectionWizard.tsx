@@ -83,7 +83,7 @@ export default function PSAConnectionWizard() {
   };
 
   return (
-    <div className="rounded-xl border bg-card p-6 shadow-sm">
+    <div className="rounded-xl border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-lg font-semibold">PSA connection wizard</h2>
@@ -148,7 +148,7 @@ export default function PSAConnectionWizard() {
                   type="url"
                   value={apiUrl}
                   onChange={event => setApiUrl(event.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -157,7 +157,7 @@ export default function PSAConnectionWizard() {
                   type="password"
                   value={apiKey}
                   onChange={event => setApiKey(event.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -166,7 +166,7 @@ export default function PSAConnectionWizard() {
                   type="text"
                   value={clientId}
                   onChange={event => setClientId(event.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -174,7 +174,7 @@ export default function PSAConnectionWizard() {
                 <select
                   value={region}
                   onChange={event => setRegion(event.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="US">United States</option>
                   <option value="EU">Europe</option>

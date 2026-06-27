@@ -48,7 +48,7 @@ export default function PortalLoginForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="space-y-2">
         <label htmlFor="organization" className="text-sm font-medium">
@@ -60,7 +60,7 @@ export default function PortalLoginForm({
             type="text"
             autoComplete="organization"
             placeholder="Acme Corp or ORG-123"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('organization')}
           />
           <button
@@ -85,7 +85,7 @@ export default function PortalLoginForm({
           type="email"
           autoComplete="email"
           placeholder="you@company.com"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
         {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
@@ -100,7 +100,7 @@ export default function PortalLoginForm({
           type="password"
           autoComplete="current-password"
           placeholder="Enter your password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
         />
         {errors.password && (

@@ -192,7 +192,7 @@ export default function NetworkChangeDetailModal({
                   onChange={(update) => setAckNotes(update.target.value)}
                   placeholder="Optional acknowledgement notes"
                   rows={3}
-                  className="mt-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <button
                   type="button"
@@ -218,7 +218,7 @@ export default function NetworkChangeDetailModal({
                 <select
                   value={selectedDeviceId}
                   onChange={(update) => setSelectedDeviceId(update.target.value)}
-                  className="mt-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="">Select device</option>
                   {devices.map((device) => (

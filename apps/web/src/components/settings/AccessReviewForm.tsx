@@ -113,7 +113,7 @@ export default function AccessReviewForm({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Create Access Review</h2>
           <p className="text-sm text-muted-foreground">
@@ -157,7 +157,7 @@ export default function AccessReviewForm({
                 <input
                   id="review-name"
                   placeholder="Q1 2024 Access Review"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('name')}
                 />
                 {errors.name && (
@@ -173,7 +173,7 @@ export default function AccessReviewForm({
                   id="review-description"
                   placeholder="Describe the purpose of this access review..."
                   rows={3}
-                  className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
                   {...register('description')}
                 />
               </div>
@@ -188,7 +188,7 @@ export default function AccessReviewForm({
                 </label>
                 <select
                   id="review-scope"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('scope')}
                 >
                   <option value="current">Current workspace</option>
@@ -210,7 +210,7 @@ export default function AccessReviewForm({
                   placeholder="Search reviewers"
                   value={reviewerQuery}
                   onChange={(event) => setReviewerQuery(event.target.value)}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border bg-muted/20 p-3">
                   {filteredReviewers.length === 0 && (
@@ -249,7 +249,7 @@ export default function AccessReviewForm({
                 <input
                   id="review-due-date"
                   type="date"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('dueDate')}
                 />
                 <p className="text-xs text-muted-foreground">

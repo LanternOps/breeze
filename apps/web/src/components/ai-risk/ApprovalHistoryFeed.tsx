@@ -76,7 +76,7 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
           ))}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-sm">
+        <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-xs">
           No Tier 3 tool executions found.
         </div>
       ) : (
@@ -93,13 +93,13 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
             return (
               <div
                 key={exec.id}
-                className="rounded-lg border bg-card shadow-sm"
+                className="rounded-lg border bg-card shadow-xs"
               >
                 <button
                   onClick={() => setExpandedId(isExpanded ? null : exec.id)}
                   className="flex w-full items-center gap-3 p-4 text-left"
                 >
-                  <div className="flex-shrink-0">
+                  <div className="shrink-0">
                     {isExpanded ? (
                       <ChevronDown className="h-4 w-4 text-muted-foreground" />
                     ) : (

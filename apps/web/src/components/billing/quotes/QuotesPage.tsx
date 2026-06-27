@@ -287,7 +287,7 @@ export function QuotesPage() {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search number or org"
           aria-label="Search quotes"
-          className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="quotes-search"
         />
         <select
@@ -295,7 +295,7 @@ export function QuotesPage() {
           onChange={(e) => applyFilter({ orgId: e.target.value })}
           data-testid="quotes-filter-org"
           aria-label="Filter by organization"
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="">All organizations</option>
           {orgs.map((o) => (
@@ -307,7 +307,7 @@ export function QuotesPage() {
           onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
           data-testid="quotes-filter-status"
           aria-label="Filter by status"
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           {STATUS_OPTIONS.map((s) => (
             <option key={s.value} value={s.value}>{s.label}</option>
@@ -316,7 +316,7 @@ export function QuotesPage() {
       </div>
 
       {/* Table */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
           <div className="divide-y" data-testid="quotes-loading">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -469,7 +469,7 @@ export function QuotesPage() {
               value={newOrgId}
               onChange={(e) => { setNewOrgId(e.target.value); void loadNewSites(e.target.value); }}
               data-testid="quotes-create-org"
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="">Select an organization…</option>
               {orgs.map((o) => (
@@ -484,7 +484,7 @@ export function QuotesPage() {
               onChange={(e) => setNewSiteId(e.target.value)}
               data-testid="quotes-create-site"
               disabled={!newOrgId || newSites.length === 0}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
             >
               <option value="">No specific site</option>
               {newSites.map((s) => (

@@ -186,7 +186,7 @@ export default function FileActivityPanel({
                     {activity.paths.map((p, i) => (
                       <p
                         key={`${activity.id}-path-${i}`}
-                        className="truncate text-[11px] text-gray-400"
+                        className="truncate chart-legend-xs text-gray-400"
                         title={p}
                       >
                         {truncatePath(p)}
@@ -198,7 +198,7 @@ export default function FileActivityPanel({
                   {(isFailure || isUnverified) && activity.error && (
                     <p
                       className={cn(
-                        'mt-1 truncate text-[11px]',
+                        'mt-1 truncate chart-legend-xs',
                         isUnverified ? 'text-amber-400/80' : 'text-red-400/80',
                       )}
                       title={activity.error}

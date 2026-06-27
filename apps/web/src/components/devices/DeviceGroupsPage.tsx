@@ -791,7 +791,7 @@ export default function DeviceGroupsPage() {
           </button>
         </div>
       ) : (
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-3 text-sm font-medium text-muted-foreground">
             <input
               type="checkbox"
@@ -943,7 +943,7 @@ export default function DeviceGroupsPage() {
 
       {(modalMode === 'create' || modalMode === 'edit') && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
-          <div className="w-full max-w-3xl my-8 rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-3xl my-8 rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">
@@ -972,7 +972,7 @@ export default function DeviceGroupsPage() {
                     type="text"
                     value={groupForm.name}
                     onChange={event => setGroupForm(prev => ({ ...prev, name: event.target.value }))}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     placeholder="e.g. Production Linux"
                   />
                 </div>
@@ -981,7 +981,7 @@ export default function DeviceGroupsPage() {
                   <select
                     value={groupForm.policyId}
                     onChange={event => setGroupForm(prev => ({ ...prev, policyId: event.target.value }))}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="">No policy assigned</option>
                     {policies.map(policy => (
@@ -998,7 +998,7 @@ export default function DeviceGroupsPage() {
                 <textarea
                   value={groupForm.description}
                   onChange={event => setGroupForm(prev => ({ ...prev, description: event.target.value }))}
-                  className="mt-2 min-h-[96px] w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 u-min-h-px-96 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   placeholder="Optional description to help your team."
                 />
               </div>
@@ -1085,7 +1085,7 @@ export default function DeviceGroupsPage() {
                       value={assignmentQuery}
                       onChange={event => setAssignmentQuery(event.target.value)}
                       placeholder="Search devices by hostname or tag"
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="mt-3 max-h-56 overflow-y-auto space-y-2">
@@ -1165,7 +1165,7 @@ export default function DeviceGroupsPage() {
 
       {modalMode === 'delete' && selectedGroup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Group</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete <span className="font-medium">{selectedGroup.name}</span>?
@@ -1177,7 +1177,7 @@ export default function DeviceGroupsPage() {
               <select
                 value={deleteReassignGroupId}
                 onChange={event => setDeleteReassignGroupId(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="">Leave unassigned</option>
                 {groups
@@ -1217,7 +1217,7 @@ export default function DeviceGroupsPage() {
 
       {modalMode === 'bulk-script' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Run Script on Groups</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Choose a script to run on {selectedGroupIds.size} selected group
@@ -1228,7 +1228,7 @@ export default function DeviceGroupsPage() {
               <select
                 value={bulkScriptId}
                 onChange={event => setBulkScriptId(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="">Select a script</option>
                 {scripts.map(script => (
@@ -1261,7 +1261,7 @@ export default function DeviceGroupsPage() {
 
       {modalMode === 'bulk-policy' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Apply Policy to Groups</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Assign a policy to {selectedGroupIds.size} selected group
@@ -1272,7 +1272,7 @@ export default function DeviceGroupsPage() {
               <select
                 value={bulkPolicyId}
                 onChange={event => setBulkPolicyId(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="">Select a policy</option>
                 {policies.map(policy => (

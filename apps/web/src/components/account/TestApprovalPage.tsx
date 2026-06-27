@@ -84,7 +84,7 @@ export default function TestApprovalPage() {
         </dl>
       </section>
 
-      <div className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex gap-3">
           <BellRing className="h-6 w-6 flex-none text-primary" aria-hidden />
           <div className="space-y-1">

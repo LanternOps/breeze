@@ -212,7 +212,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // While the CF Access config check is in flight, render an empty placeholder
   // so the user doesn't see the password form flash before a redirect kicks in.
   if (!cfAccessRedirectChecked) {
-    return <div data-testid="login-cf-access-check" className="min-h-[160px]" />;
+    return <div data-testid="login-cf-access-check" className="u-min-h-px-160" />;
   }
 
   if (mfaRequired) {

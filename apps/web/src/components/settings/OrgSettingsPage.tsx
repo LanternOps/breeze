@@ -475,7 +475,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       default:
         return (
           <div className="space-y-6">
-            <section className="rounded-lg border bg-card p-6 shadow-sm">
+            <section className="rounded-lg border bg-card p-6 shadow-xs">
               <div className="space-y-2">
                 <h2 className="text-lg font-semibold">Organization overview</h2>
                 <p className="text-sm text-muted-foreground">
@@ -498,7 +498,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                           void handleSaveName();
                         }
                       }}
-                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-primary"
+                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary"
                       placeholder="Organization name"
                       aria-label="Organization name"
                     />
@@ -626,7 +626,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
-        <aside className="space-y-2 rounded-lg border bg-card p-4 shadow-sm">
+        <aside className="space-y-2 rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Settings
           </p>

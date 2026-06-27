@@ -89,7 +89,7 @@ export default function StripePaymentsIntegration() {
   }, [busy, load]);
 
   return (
-    <section className="rounded-lg border bg-card p-6 shadow-sm" data-testid="stripe-connect-card">
+    <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="stripe-connect-card">
       <h2 className="text-lg font-semibold">Online payments</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         Paste your Stripe secret key to let customers pay invoices online. Charges run directly on
@@ -156,7 +156,7 @@ export default function StripePaymentsIntegration() {
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="sk_live_… or rk_live_…"
               data-testid="stripe-key-input"
-              className="min-w-[16rem] flex-1 rounded-md border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="min-w-[16rem] flex-1 rounded-md border bg-background px-3 py-2 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <button
               type="submit" disabled={busy || !apiKey.trim()}

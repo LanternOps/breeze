@@ -60,7 +60,7 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
     : entries;
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -75,13 +75,13 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
             placeholder="Search hostname or baseline..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <select
           value={osFilter}
           onChange={(e) => setOsFilter(e.target.value)}
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="all">All OS types</option>
           <option value="windows">Windows</option>

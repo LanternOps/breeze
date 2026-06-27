@@ -73,7 +73,7 @@ export default function PartnerCompanyTab({
   return (
     <div className="space-y-6">
       {/* Company */}
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-6 flex items-center gap-2">
           <Building2 className="h-5 w-5 text-muted-foreground" />
           <h2 className="text-lg font-semibold">Company</h2>
@@ -94,7 +94,7 @@ export default function PartnerCompanyTab({
       </section>
 
       {/* Address */}
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <MapPin className="h-5 w-5 text-muted-foreground" />
@@ -172,7 +172,7 @@ export default function PartnerCompanyTab({
       </section>
 
       {/* Contact */}
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <User className="h-5 w-5 text-muted-foreground" />

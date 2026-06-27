@@ -223,7 +223,7 @@ export default function SNMPTemplateList({
 
   if (loading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           Loading SNMP templates...
@@ -234,7 +234,7 @@ export default function SNMPTemplateList({
 
   return (
     <>
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">SNMP Templates</h2>
@@ -243,7 +243,7 @@ export default function SNMPTemplateList({
         <button
           type="button"
           onClick={handleCreateTemplate}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs"
         >
           <PlusCircle className="h-4 w-4" />
           Add template

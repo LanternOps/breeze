@@ -615,19 +615,19 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
       <div className="grid gap-6 lg:grid-cols-12">
         {isInitialLoading ? (
           <>
-            <div className="h-64 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-4" />
-            <div className="h-64 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-8" />
-            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-4" />
-            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-4" />
-            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-4" />
-            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-4" />
-            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-4" />
-            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-4" />
-            <div className="h-64 rounded-lg border bg-muted/30 p-6 shadow-sm lg:col-span-12" />
+            <div className="h-64 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
+            <div className="h-64 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-8" />
+            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
+            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
+            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
+            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
+            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
+            <div className="h-56 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-4" />
+            <div className="h-64 rounded-lg border bg-muted/30 p-6 shadow-xs lg:col-span-12" />
           </>
         ) : (
           <>
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">Security Score</p>
@@ -668,7 +668,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-8">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-8">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Security Score Trend</p>
@@ -714,7 +714,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Vulnerabilities</p>
@@ -749,7 +749,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Antivirus Coverage</p>
@@ -790,7 +790,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Firewall Status</p>
@@ -831,7 +831,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Encryption Status</p>
@@ -868,7 +868,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Password Policy</p>
@@ -899,7 +899,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Admin Account Audit</p>
@@ -949,7 +949,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-12">
+            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-12">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">Security Recommendations</p>
@@ -974,7 +974,7 @@ export default function SecurityDashboard({ timezone }: SecurityDashboardProps) 
                         </div>
                         <span
                           className={cn(
-                            'rounded-full border px-2 py-1 text-[11px] font-semibold uppercase',
+                            'rounded-full border px-2 py-1 chart-legend-xs font-semibold uppercase',
                             priorityStyles[rec.priority]
                           )}
                         >

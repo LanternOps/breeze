@@ -176,7 +176,7 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading management posture...</p>
@@ -206,7 +206,7 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
 
   if (!data?.collected || !data.posture) {
     return (
-      <div className="rounded-lg border bg-card p-8 text-center shadow-sm">
+      <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <Monitor className="mx-auto h-10 w-10 text-muted-foreground/50" />
         <h3 className="mt-4 font-semibold">No Management Data</h3>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -233,7 +233,7 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
   return (
     <div className="space-y-6">
       {/* ── Identity / Directory Status ───────────────────────────── */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 mb-4">
             <Building2 className="h-4 w-4 text-muted-foreground" />
@@ -292,7 +292,7 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
       </div>
 
       {/* ── Detected Management Tools ─────────────────────────────── */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-2 mb-1">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
           <h3 className="text-sm font-semibold">Detected Management Tools</h3>

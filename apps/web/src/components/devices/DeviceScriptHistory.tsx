@@ -183,7 +183,7 @@ function OutputSection({
             <p className="text-sm text-muted-foreground italic">No output</p>
           ) : (
             <pre className={cn(
-              'max-h-80 overflow-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap break-words',
+              'max-h-80 overflow-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap wrap-break-word',
               variant === 'error' ? 'bg-red-500/5 text-red-800' : 'bg-muted/40 text-foreground'
             )}>
               {normalized}
@@ -248,7 +248,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading script history...</p>
@@ -276,7 +276,7 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
 
   return (
     <>
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Terminal className="h-4 w-4 text-muted-foreground" />

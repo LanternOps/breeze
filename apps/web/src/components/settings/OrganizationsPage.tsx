@@ -511,7 +511,7 @@ export default function OrganizationsPage() {
       {/* Split view: org list (left) + detail panel (right) */}
       <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
         {/* Left panel - Organization list */}
-        <div className="rounded-lg border bg-card shadow-sm">
+        <div className="rounded-lg border bg-card shadow-xs">
           <div className="border-b px-4 py-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Organizations
@@ -521,7 +521,7 @@ export default function OrganizationsPage() {
               placeholder="Search..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="mt-2 h-8 w-full rounded-md border bg-background px-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-8 w-full rounded-md border bg-background px-2.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 
@@ -629,7 +629,7 @@ export default function OrganizationsPage() {
         </div>
 
         {/* Right panel - Detail view */}
-        <div className="rounded-lg border bg-card shadow-sm">
+        <div className="rounded-lg border bg-card shadow-xs">
           {selectedOrg ? (
             <>
               {/* Org header */}
@@ -712,7 +712,7 @@ export default function OrganizationsPage() {
       {modalMode === 'add' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4 rounded-lg border bg-card p-6 shadow-sm">
+            <div className="mb-4 rounded-lg border bg-card p-6 shadow-xs">
               <h2 className="text-lg font-semibold">Add Organization</h2>
               <p className="text-sm text-muted-foreground">
                 Create a new organization with the details below.
@@ -731,7 +731,7 @@ export default function OrganizationsPage() {
       {/* Org Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedOrg && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Organization</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete <span className="font-medium">{selectedOrg.name}</span>?
@@ -762,7 +762,7 @@ export default function OrganizationsPage() {
       {(siteModalMode === 'add' || siteModalMode === 'edit') && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4 flex items-start justify-between gap-4 rounded-lg border bg-card p-6 shadow-sm">
+            <div className="mb-4 flex items-start justify-between gap-4 rounded-lg border bg-card p-6 shadow-xs">
               <div>
                 <h2 className="text-lg font-semibold">
                   {siteModalMode === 'edit'
@@ -815,7 +815,7 @@ export default function OrganizationsPage() {
       {/* Site Delete Confirmation Modal */}
       {siteModalMode === 'delete' && selectedSite && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Site</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete <span className="font-medium">{selectedSite.name}</span>?

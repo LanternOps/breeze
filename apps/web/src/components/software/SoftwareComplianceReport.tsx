@@ -65,7 +65,7 @@ export default function SoftwareComplianceReport() {
         </button>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Version drift analysis</h2>

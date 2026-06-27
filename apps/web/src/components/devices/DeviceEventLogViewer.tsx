@@ -227,7 +227,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex flex-col gap-3">
           {/* Title */}
           <div className="flex items-center gap-2">
@@ -250,7 +250,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
                 placeholder="Search activities..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="h-8 w-full rounded-md border bg-background pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                className="h-8 w-full rounded-md border bg-background pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
               />
             </div>
 
@@ -260,7 +260,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
               <select
                 value={categoryFilter}
                 onChange={(e) => setCategoryFilter(e.target.value)}
-                className="h-8 rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                className="h-8 rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
               >
                 {CATEGORY_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -272,7 +272,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
             <select
               value={initiatedByFilter}
               onChange={(e) => setInitiatedByFilter(e.target.value)}
-              className="h-8 rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className="h-8 rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
             >
               {INITIATED_BY_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -305,7 +305,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
       </div>
 
       {/* Activity list */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="text-center">
@@ -413,7 +413,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
                         <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs sm:grid-cols-3 lg:grid-cols-4">
                           <div>
                             <span className="font-medium text-muted-foreground">Action</span>
-                            <p className="mt-0.5 font-mono text-[11px]">{activity.action}</p>
+                            <p className="mt-0.5 font-mono chart-legend-xs">{activity.action}</p>
                           </div>
                           <div>
                             <span className="font-medium text-muted-foreground">Result</span>
@@ -454,7 +454,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
                           {activity.ipAddress && (
                             <div>
                               <span className="font-medium text-muted-foreground">IP Address</span>
-                              <p className="mt-0.5 font-mono text-[11px]">{activity.ipAddress}</p>
+                              <p className="mt-0.5 font-mono chart-legend-xs">{activity.ipAddress}</p>
                             </div>
                           )}
                           <div>
@@ -475,7 +475,7 @@ export default function DeviceEventLogViewer({ deviceId, timezone }: DeviceEvent
                         {activity.details && Object.keys(activity.details).length > 0 && (
                           <div>
                             <span className="text-xs font-medium text-muted-foreground">Details</span>
-                            <pre className="mt-1 max-h-48 overflow-auto rounded-md border bg-background p-3 text-[11px] leading-relaxed font-mono">
+                            <pre className="mt-1 max-h-48 overflow-auto rounded-md border bg-background p-3 chart-legend-xs leading-relaxed font-mono">
                               {JSON.stringify(activity.details, null, 2)}
                             </pre>
                           </div>

@@ -465,7 +465,7 @@ export default function PartnerSettingsPage() {
       {/* Regional Tab */}
       {activeTab === 'regional' && (
         <>
-          <section className="rounded-lg border bg-card p-6 shadow-sm">
+          <section className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="mb-6">
               <div className="flex items-center gap-2">
                 <Globe className="h-5 w-5 text-muted-foreground" />
@@ -516,7 +516,7 @@ export default function PartnerSettingsPage() {
           </section>
 
           {/* Business Hours */}
-          <section className="rounded-lg border bg-card p-6 shadow-sm">
+          <section className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="mb-6">
               <div className="flex items-center gap-2">
                 <Clock className="h-5 w-5 text-muted-foreground" />
@@ -577,43 +577,43 @@ export default function PartnerSettingsPage() {
 
       {/* Inheritable Settings Tabs */}
       {activeTab === 'security' && (
-        <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <section className="rounded-lg border bg-card p-6 shadow-xs">
           <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
         </section>
       )}
 
       {activeTab === 'notifications' && (
-        <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <section className="rounded-lg border bg-card p-6 shadow-xs">
           <PartnerNotificationsTab data={notificationsData} onChange={setNotificationsData} />
         </section>
       )}
 
       {activeTab === 'eventLogs' && (
-        <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <section className="rounded-lg border bg-card p-6 shadow-xs">
           <PartnerEventLogsTab data={eventLogsData} onChange={setEventLogsData} />
         </section>
       )}
 
       {activeTab === 'defaults' && (
-        <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <section className="rounded-lg border bg-card p-6 shadow-xs">
           <PartnerDefaultsTab data={defaultsData} onChange={setDefaultsData} />
         </section>
       )}
 
       {activeTab === 'branding' && (
-        <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <section className="rounded-lg border bg-card p-6 shadow-xs">
           <PartnerBrandingTab data={brandingData} onChange={setBrandingData} />
         </section>
       )}
 
       {activeTab === 'aiBudgets' && (
-        <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <section className="rounded-lg border bg-card p-6 shadow-xs">
           <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} />
         </section>
       )}
 
       {activeTab === 'remoteAccess' && (
-        <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <section className="rounded-lg border bg-card p-6 shadow-xs">
           <PartnerRemoteAccessTab data={remoteAccessData} onChange={setRemoteAccessData} />
         </section>
       )}

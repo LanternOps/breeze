@@ -92,7 +92,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
             onClick={() => onSelect(t)}
             data-testid={`ticket-row-${t.id}`}
             className={cn(
-              'w-full px-3 py-2.5 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+              'w-full px-3 py-2.5 text-left hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary',
               onToggleSelect && 'pl-8', // reserve the checkbox gutter
               t.id === selectedId && 'bg-primary/5 border-l-0' // selection tint; brand color reserved for selection
             )}

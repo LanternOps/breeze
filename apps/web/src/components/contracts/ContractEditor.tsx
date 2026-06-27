@@ -324,7 +324,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header form + lines ─────────────────────────────────────── */}
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-header-form">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header-form">
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contract</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {isCreate && (
@@ -334,7 +334,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     value={orgId}
                     onChange={(e) => setOrgId(e.target.value)}
                     data-testid="contract-form-org"
-                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="">Select an organization…</option>
                     {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -347,7 +347,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   type="text" value={name} onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. Managed Services — Acme Co"
                   data-testid="contract-form-name"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -355,7 +355,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <select
                   value={billingTiming} onChange={(e) => setBillingTiming(e.target.value as ContractBillingTiming)}
                   data-testid="contract-form-timing"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="advance">In advance</option>
                   <option value="arrears">In arrears</option>
@@ -371,7 +371,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     setIntervalMonths(Number(e.target.value));
                   }}
                   data-testid="contract-form-interval"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                   <option value="custom">Custom…</option>
@@ -384,7 +384,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     type="number" min="1" max="60" value={intervalMonths}
                     onChange={(e) => setIntervalMonths(Number(e.target.value))}
                     data-testid="contract-form-interval-custom"
-                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </label>
               )}
@@ -393,7 +393,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <input
                   type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
                   data-testid="contract-form-start"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -401,7 +401,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <input
                   type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); if (!e.target.value) setAutoRenew(false); }}
                   data-testid="contract-form-end"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
               <label className="flex items-center gap-2 text-sm sm:col-span-2">
@@ -427,7 +427,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         type="number" min={1} max={120} value={renewalTermMonths}
                         onChange={(e) => setRenewalTermMonths(e.target.value)}
                         data-testid="contract-renewal-term"
-                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                     </label>
                     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -436,7 +436,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         type="number" min={0} max={365} value={renewalNoticeDays}
                         onChange={(e) => setRenewalNoticeDays(e.target.value)}
                         data-testid="contract-renewal-notice-days"
-                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                     </label>
                   </div>
@@ -447,7 +447,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <textarea
                   value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
                   data-testid="contract-form-notes"
-                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
@@ -456,7 +456,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   value={terms} onChange={(e) => setTerms(e.target.value)} rows={2}
                   data-testid="contract-form-terms"
                   placeholder="e.g. Net 30. Auto-renews unless cancelled 30 days prior."
-                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
             </div>
@@ -465,7 +465,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           {/* Lines (edit mode only — a contract needs an id before lines attach) */}
           {!isCreate && (
             <div className="space-y-4">
-              <div className="rounded-lg border bg-card shadow-sm">
+              <div className="rounded-lg border bg-card shadow-xs">
                 <table className="w-full text-sm" data-testid="contract-editor-lines">
                   <thead>
                     <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -522,7 +522,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
               </div>
 
               {/* Add line */}
-              <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-add-line">
+              <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-add-line">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                     Line type
@@ -530,7 +530,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       value={lineType}
                       onChange={(e) => { setLineType(e.target.value as ContractLineType); setLineSiteId(''); }}
                       data-testid="contract-line-type"
-                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       {(Object.keys(LINE_TYPE_LABELS) as ContractLineType[]).map((t) => (
                         <option key={t} value={t}>{LINE_TYPE_LABELS[t]}</option>
@@ -543,7 +543,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       type="text" value={lineDesc} onChange={(e) => setLineDesc(e.target.value)}
                       placeholder="e.g. Workstation management"
                       data-testid="contract-line-desc"
-                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </label>
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -552,7 +552,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       type="number" min="0" step="0.01" value={linePrice}
                       onChange={(e) => setLinePrice(e.target.value)}
                       data-testid="contract-line-price"
-                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </label>
                   {lineType === 'manual' && (
@@ -562,7 +562,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         type="number" min="0" step="0.01" value={lineQty}
                         onChange={(e) => setLineQty(e.target.value)}
                         data-testid="contract-line-qty"
-                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                     </label>
                   )}
@@ -572,7 +572,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       <select
                         value={lineSiteId} onChange={(e) => setLineSiteId(e.target.value)}
                         data-testid="contract-line-site"
-                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         <option value="">All sites</option>
                         {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -633,7 +633,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
         {/* ── summary + actions ───────────────────────────────────────── */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-estimate">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-estimate">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Estimated this period</h3>
             {isCreate ? (
               <p className="text-sm text-muted-foreground">Save the contract, then add lines to see an estimate.</p>

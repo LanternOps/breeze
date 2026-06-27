@@ -56,7 +56,7 @@ export default function AlertsSummary({
 
   return (
     <div className={cn(
-      'rounded-lg border bg-gradient-to-b from-card to-secondary/30 p-5',
+      'rounded-lg border bg-linear-to-b from-card to-secondary/30 p-5',
       className
     )}>
       <div className="flex items-center justify-between mb-4">
@@ -101,7 +101,7 @@ export default function AlertsSummary({
               className={cn(
                 'flex flex-1 flex-col items-center justify-center rounded-lg border py-3 transition-all',
                 hasAlerts
-                  ? cn(config.bg, config.border, 'hover:shadow-sm')
+                  ? cn(config.bg, config.border, 'hover:shadow-xs')
                   : 'border-transparent bg-muted/30 hover:bg-muted/50',
                 isUrgent && 'ring-1 ring-inset',
                 alert.severity === 'critical' && hasAlerts && 'ring-red-500/40',
@@ -118,7 +118,7 @@ export default function AlertsSummary({
                 {alert.count}
               </span>
               <span className={cn(
-                'text-[11px] mt-0.5',
+                'chart-legend-xs mt-0.5',
                 hasAlerts ? 'text-muted-foreground font-medium' : 'text-muted-foreground/50'
               )}>
                 {config.label}
@@ -150,7 +150,7 @@ export default function AlertsSummary({
       </div>
 
       {totalPrevious !== undefined && (
-        <p className="text-[11px] text-muted-foreground/70 text-center mt-3">
+        <p className="chart-legend-xs text-muted-foreground/70 text-center mt-3">
           vs. yesterday: {totalPrevious} total
         </p>
       )}

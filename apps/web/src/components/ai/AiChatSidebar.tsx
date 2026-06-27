@@ -194,7 +194,7 @@ export default function AiChatSidebar() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search conversations..."
-                  className="w-full rounded-md border bg-muted py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-none focus:border-primary"
+                  className="w-full rounded-md border bg-muted py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-hidden focus:border-primary"
                 />
               </div>
             </div>
@@ -249,7 +249,7 @@ export default function AiChatSidebar() {
                 <select
                   value={selectedM365ConnectionId ?? ''}
                   onChange={(e) => setSelectedM365Connection(e.target.value || null)}
-                  className="w-full rounded-md border bg-muted px-2 py-1 text-xs text-foreground outline-none focus:border-primary"
+                  className="w-full rounded-md border bg-muted px-2 py-1 text-xs text-foreground outline-hidden focus:border-primary"
                   aria-label="M365 customer"
                 >
                   <option value="">No M365 customer</option>

@@ -417,7 +417,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
 
   if (loading) {
     return (
-      <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-center py-12">
           <div className="text-center">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
@@ -429,7 +429,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
   }
 
   return (
-    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">Branding editor</h2>
@@ -723,7 +723,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                     )}
                     <div>
                       <p className="text-xs font-semibold">Dark mode header</p>
-                      <p className="text-[11px] text-slate-400">Preview of dark assets</p>
+                      <p className="chart-legend-xs text-slate-400">Preview of dark assets</p>
                     </div>
                   </div>
                 </div>

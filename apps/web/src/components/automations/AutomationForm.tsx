@@ -269,7 +269,7 @@ export default function AutomationForm({
           targetConfig: conditionMode === 'advanced' ? automationTargetConfig : undefined
         });
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Basic Information */}
       <div className="grid gap-6 md:grid-cols-2">
@@ -280,7 +280,7 @@ export default function AutomationForm({
           <input
             id="automation-name"
             placeholder="Daily maintenance check"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -294,7 +294,7 @@ export default function AutomationForm({
             id="automation-description"
             placeholder="Describe what this automation does..."
             rows={2}
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
             {...register('description')}
           />
         </div>
@@ -345,7 +345,7 @@ export default function AutomationForm({
                 <input
                   id="cron-expression"
                   placeholder="0 9 * * *"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('cronExpression')}
                 />
                 {cronDescription && (
@@ -401,7 +401,7 @@ export default function AutomationForm({
               </label>
               <select
                 id="event-type"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('eventType')}
               >
                 {eventTypeOptions.map(opt => (
@@ -447,7 +447,7 @@ export default function AutomationForm({
                   id="webhook-secret"
                   type="text"
                   placeholder="Leave blank to auto-generate"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('webhookSecret')}
                 />
               </div>
@@ -522,7 +522,7 @@ export default function AutomationForm({
                   <div key={field.id} className="flex items-center gap-2 rounded-md border bg-background p-3">
                     <GripVertical className="h-4 w-4 text-muted-foreground cursor-move" />
                     <select
-                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       {...register(`conditions.${index}.type`)}
                     >
                       {conditionTypeOptions.map(opt => (
@@ -532,7 +532,7 @@ export default function AutomationForm({
                       ))}
                     </select>
                     <select
-                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       {...register(`conditions.${index}.operator`)}
                     >
                       {operatorOptions.map(opt => (
@@ -543,7 +543,7 @@ export default function AutomationForm({
                     </select>
                     <input
                       placeholder="Value"
-                      className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       {...register(`conditions.${index}.value`)}
                     />
                     <button
@@ -609,7 +609,7 @@ export default function AutomationForm({
                   <div className="flex-1 space-y-3">
                     <div className="flex items-center gap-3">
                       <select
-                        className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`actions.${index}.type`)}
                       >
                         {actionTypeOptions.map(opt => (
@@ -624,7 +624,7 @@ export default function AutomationForm({
                       <div className="space-y-2">
                         <label className="text-xs font-medium text-muted-foreground">Script</label>
                         <select
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.scriptId`)}
                         >
                           <option value="">Select a script...</option>
@@ -643,7 +643,7 @@ export default function AutomationForm({
                           Notification Channel
                         </label>
                         <select
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.notificationChannelId`)}
                         >
                           <option value="">Select a channel...</option>
@@ -661,7 +661,7 @@ export default function AutomationForm({
                         <div className="space-y-2">
                           <label className="text-xs font-medium text-muted-foreground">Severity</label>
                           <select
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`actions.${index}.alertSeverity`)}
                           >
                             {severityOptions.map(opt => (
@@ -675,7 +675,7 @@ export default function AutomationForm({
                           <label className="text-xs font-medium text-muted-foreground">Message</label>
                           <input
                             placeholder="Alert message..."
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`actions.${index}.alertMessage`)}
                           />
                         </div>
@@ -687,7 +687,7 @@ export default function AutomationForm({
                         <label className="text-xs font-medium text-muted-foreground">Command</label>
                         <input
                           placeholder="systemctl restart nginx"
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.command`)}
                         />
                       </div>
@@ -768,7 +768,7 @@ export default function AutomationForm({
           <div className="mt-4 space-y-2">
             <label className="text-sm font-medium">Failure Notification Channel</label>
             <select
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('notifyOnFailureChannelId')}
             >
               <option value="">Select a channel...</option>

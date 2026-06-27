@@ -368,7 +368,7 @@ function BlockDialog({
             onChange={(e) => onChange(e.target.value)}
             maxLength={500}
             placeholder="Lost phone, employee offboarded, suspected compromise…"
-            className="w-full rounded-md border bg-background p-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full rounded-md border bg-background p-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             required
           />
           {!reasonValid && (

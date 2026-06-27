@@ -203,14 +203,14 @@ export default function ScriptPickerModal({
                   placeholder="Search scripts..."
                   value={query}
                   onChange={e => setQuery(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               {categories.length > 0 && (
                 <select
                   value={categoryFilter}
                   onChange={e => setCategoryFilter(e.target.value)}
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="all">All Categories</option>
                   {categories.map(cat => (
@@ -223,7 +223,7 @@ export default function ScriptPickerModal({
               <select
                 value={runAs}
                 onChange={e => setRunAs(e.target.value as ScriptRunAsSelection)}
-                className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="system">Run as: System</option>
                 <option value="user">Run as: Logged-in user</option>

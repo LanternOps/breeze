@@ -97,7 +97,7 @@ export default function AlertTemplateList() {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 items-center justify-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
@@ -107,7 +107,7 @@ export default function AlertTemplateList() {
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground" data-testid="alert-template-list-error">
           <p>{error}</p>
           <button type="button" onClick={() => void fetchTemplates()} className="text-sm text-primary hover:underline">
@@ -119,7 +119,7 @@ export default function AlertTemplateList() {
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="alert-template-list">
+    <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="alert-template-list">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-3">
@@ -145,7 +145,7 @@ export default function AlertTemplateList() {
         <select
           value={severityFilter}
           onChange={event => setSeverityFilter(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
         >
           <option value="all">All severity</option>
           <option value="critical">Critical</option>
@@ -158,7 +158,7 @@ export default function AlertTemplateList() {
           value={scopeFilter}
           onChange={event => setScopeFilter(event.target.value)}
           data-testid="alert-template-scope-filter"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-44"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-44"
         >
           <option value="all">All scopes</option>
           <option value="partner">Partner-wide</option>

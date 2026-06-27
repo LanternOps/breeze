@@ -77,7 +77,7 @@ const severityOptions: { value: Severity; label: string; active: string }[] = [
 ];
 
 const inputClass =
-  'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+  'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 const labelClass = 'text-xs font-medium text-muted-foreground';
 
 /** A switch styled toggle that is a real checkbox underneath (keeps `toBeChecked`
@@ -102,7 +102,7 @@ function ApproveToggle({
           className="peer sr-only"
         />
         <span className="absolute inset-0 rounded-full bg-muted transition-colors peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-1" />
-        <span className="pointer-events-none absolute left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-4" />
+        <span className="pointer-events-none absolute left-0.5 h-4 w-4 rounded-full bg-white shadow-xs transition-transform peer-checked:translate-x-4" />
       </span>
       <span className={cn('font-medium', checked ? 'text-foreground' : 'text-muted-foreground')}>
         {checked ? 'Auto-approve' : 'Manual'}
@@ -157,7 +157,7 @@ function HoldField({ field, testId }: { field: UseFormRegisterReturn; testId?: s
           max={365}
           {...field}
           data-testid={testId}
-          className="h-10 w-20 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-20 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <span className="text-xs text-muted-foreground">days</span>
       </div>
@@ -387,7 +387,7 @@ export default function UpdateRingForm({
                   <select
                     {...register(`categoryRules.${index}.category`)}
                     aria-label="Category"
-                    className="h-10 w-48 shrink-0 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-48 shrink-0 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {categoryOptions
                       .filter((c) => c.value === rule?.category || !usedCategories.includes(c.value))

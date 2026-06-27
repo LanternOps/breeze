@@ -223,7 +223,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
               value={filters.orgId}
               onChange={(e) => applyFilter({ orgId: e.target.value })}
               data-testid="contracts-filter-org"
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="">All organizations</option>
               {orgs.map((o) => (
@@ -238,7 +238,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
             value={filters.status}
             onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
             data-testid="contracts-filter-status"
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {STATUS_OPTIONS.map((s) => (
               <option key={s.value} value={s.value}>{s.label}</option>
@@ -257,7 +257,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       )}
 
       {/* Table */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
           <div className="flex items-center justify-center py-12" data-testid="contracts-loading">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />

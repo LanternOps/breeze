@@ -199,7 +199,7 @@ export default function SecurityTab({ policyId, existingLink, onLinkChanged, lin
             onChange={(e) => setNewExclusion(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddExclusion())}
             placeholder="Add path or process"
-            className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <button type="button" onClick={handleAddExclusion} className="inline-flex items-center gap-1 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">
             <Plus className="h-4 w-4" /> Add

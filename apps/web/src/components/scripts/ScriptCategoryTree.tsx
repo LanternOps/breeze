@@ -428,7 +428,7 @@ export default function ScriptCategoryTree({
 
   if (loading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-center py-12">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
@@ -441,7 +441,7 @@ export default function ScriptCategoryTree({
 
   if (error && categories.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
         </div>
@@ -457,7 +457,7 @@ export default function ScriptCategoryTree({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-6 lg:flex-row">
         <div className="w-full lg:w-1/2">
           <div className="flex items-center justify-between">
@@ -586,7 +586,7 @@ export default function ScriptCategoryTree({
             <input
               value={renameValue}
               onChange={event => setRenameValue(event.target.value)}
-              className="mt-4 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-4 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -625,7 +625,7 @@ export default function ScriptCategoryTree({
             <input
               value={newCategoryName}
               onChange={event => setNewCategoryName(event.target.value)}
-              className="mt-4 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-4 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <div className="mt-6 flex justify-end gap-3">
               <button

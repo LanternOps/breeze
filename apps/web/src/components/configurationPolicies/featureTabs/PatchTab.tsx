@@ -291,7 +291,7 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
               data-testid="approval-ring-select"
               value={selectedRingId}
               onChange={(e) => setSelectedRingId(e.target.value)}
-              className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="">No ring (manual approvals only)</option>
               {rings.map((ring) => (

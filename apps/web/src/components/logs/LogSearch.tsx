@@ -221,7 +221,7 @@ export default function LogSearch() {
         <h1 className="text-xl font-semibold tracking-tight">Event Logs</h1>
         <p className="text-sm text-muted-foreground">Search and analyze logs from your fleet.</p>
       </div>
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="grid gap-3 lg:grid-cols-6">
           <div className="lg:col-span-2">
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Search</label>
@@ -326,7 +326,7 @@ export default function LogSearch() {
         )}
       </div>
 
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h2 className="text-sm font-semibold">Search Results</h2>
           <span className="text-xs text-muted-foreground">

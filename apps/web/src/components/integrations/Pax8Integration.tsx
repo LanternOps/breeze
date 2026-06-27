@@ -398,7 +398,7 @@ export default function Pax8Integration() {
       )}
 
       {/* Connection card */}
-      <div className="rounded-xl border bg-card p-6 shadow-sm">
+      <div className="rounded-xl border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Connection</h2>
         <p className="mb-4 text-sm text-muted-foreground">
           Enter your Pax8 OAuth client credentials. Secrets are stored encrypted and never returned;
@@ -413,7 +413,7 @@ export default function Pax8Integration() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Pax8"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               data-testid="pax8-name"
             />
           </div>
@@ -432,7 +432,7 @@ export default function Pax8Integration() {
               value={clientId}
               onChange={(e) => setClientId(e.target.value)}
               placeholder={integration?.hasClientId ? '•••••••••• (stored)' : 'Pax8 client ID'}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               data-testid="pax8-client-id"
             />
           </div>
@@ -452,7 +452,7 @@ export default function Pax8Integration() {
                 value={clientSecret}
                 onChange={(e) => setClientSecret(e.target.value)}
                 placeholder={integration?.hasClientSecret ? '•••••••••• (stored)' : 'Pax8 client secret'}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                 data-testid="pax8-client-secret"
               />
               <button
@@ -480,7 +480,7 @@ export default function Pax8Integration() {
               value={webhookSecret}
               onChange={(e) => setWebhookSecret(e.target.value)}
               placeholder={integration?.hasWebhookSecret ? '•••••••••• (stored)' : 'Pax8 webhook signing secret'}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               data-testid="pax8-webhook-secret"
             />
           </div>
@@ -535,7 +535,7 @@ export default function Pax8Integration() {
 
       {/* Sync status */}
       {isConfigured && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="pax8-sync-status">
+        <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="pax8-sync-status">
           <h2 className="text-lg font-semibold">Sync status</h2>
           <div className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between text-muted-foreground">
@@ -564,7 +564,7 @@ export default function Pax8Integration() {
 
       {/* Company mapping */}
       {isConfigured && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="pax8-companies">
+        <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="pax8-companies">
           <h2 className="text-lg font-semibold">Company mapping</h2>
           <p className="mb-4 text-sm text-muted-foreground">
             Map each Pax8 company to a Breeze organization. Subscriptions sync to the mapped org for
@@ -595,7 +595,7 @@ export default function Pax8Integration() {
                         value={company.mappedOrgId ?? ''}
                         disabled={mappingCompanyId === company.pax8CompanyId}
                         onChange={(e) => void mapCompany(company, e.target.value || null)}
-                        className="h-9 w-full rounded-md border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                        className="h-9 w-full rounded-md border bg-background px-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                         data-testid={`pax8-company-map-${company.pax8CompanyId}`}
                         aria-label={`Map ${company.pax8CompanyName ?? company.pax8CompanyId} to a Breeze organization`}
                       >
@@ -617,7 +617,7 @@ export default function Pax8Integration() {
 
       {/* Subscriptions */}
       {isConfigured && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="pax8-subscriptions">
+        <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="pax8-subscriptions">
           <h2 className="text-lg font-semibold">Subscriptions</h2>
           <p className="mb-4 text-sm text-muted-foreground">
             License subscriptions pulled from Pax8. Link a subscription to a contract line from the

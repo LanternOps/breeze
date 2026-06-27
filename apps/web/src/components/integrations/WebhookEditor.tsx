@@ -153,7 +153,7 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
   };
 
   return (
-    <div className="rounded-xl border bg-card p-6 shadow-sm">
+    <div className="rounded-xl border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Webhook editor</h2>
@@ -191,7 +191,7 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
               type="text"
               value={name}
               onChange={event => setName(event.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div>
@@ -201,7 +201,7 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
               value={url}
               onBlur={() => setTouchedUrl(true)}
               onChange={event => setUrl(event.target.value)}
-              className={`mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${
+              className={`mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${
                 urlError ? 'border-destructive/60' : ''
               }`}
             />
@@ -218,7 +218,7 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
               type="password"
               value={secret}
               onChange={event => setSecret(event.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <p className="mt-2 text-xs text-muted-foreground">
               Use the shared secret to verify signatures on incoming events.
@@ -268,14 +268,14 @@ export default function WebhookEditor({ webhookId, initialValues, onSave, onTest
                 placeholder="Header key"
                 value={header.key}
                 onChange={event => updateHeader(header.id, 'key', event.target.value)}
-                className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <input
                 type="text"
                 placeholder="Header value"
                 value={header.value}
                 onChange={event => updateHeader(header.id, 'value', event.target.value)}
-                className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <button
                 type="button"

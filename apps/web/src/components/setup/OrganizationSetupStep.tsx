@@ -209,7 +209,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
             value={orgName}
             onChange={(e) => setOrgName(e.target.value)}
             placeholder="e.g. Downtown Dental, Smith Law Office"
-            className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           <p className="text-xs text-muted-foreground">
             Typically your client's company name. Your own company ({orgData.partner?.name || 'your MSP'}) is already set up as the partner account.
@@ -227,7 +227,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
             value={siteName}
             onChange={(e) => setSiteName(e.target.value)}
             placeholder="e.g. Main Office, HQ, Building A"
-            className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           <p className="text-xs text-muted-foreground">
             A physical location where devices are managed. You can add more sites later.
@@ -250,7 +250,7 @@ export default function OrganizationSetupStep({ onNext }: OrganizationSetupStepP
           <button
             type="submit"
             disabled={saving}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
           >
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}
             Save & Continue

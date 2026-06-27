@@ -209,7 +209,7 @@ export default function DiscoveryProfileForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Profile Details</h2>
         <p className="text-sm text-muted-foreground">Define the network scope and discovery methods.</p>
 
@@ -221,7 +221,7 @@ export default function DiscoveryProfileForm({
               value={formValues.name}
               onChange={event => setFormValues(prev => ({ ...prev, name: event.target.value }))}
               placeholder="Headquarters scan"
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div>
@@ -229,7 +229,7 @@ export default function DiscoveryProfileForm({
             <select
               value={formValues.siteId}
               onChange={event => setFormValues(prev => ({ ...prev, siteId: event.target.value }))}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="">Select a site...</option>
               {sites.map(site => (
@@ -257,7 +257,7 @@ export default function DiscoveryProfileForm({
                   }
                 }));
               }}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="hourly">Hourly</option>
               <option value="interval">Custom interval</option>
@@ -272,7 +272,7 @@ export default function DiscoveryProfileForm({
               value={subnetsText}
               onChange={event => handleSubnetsChange(event.target.value)}
               placeholder={"10.0.0.0/24\n10.0.1.0/24"}
-              className={`mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${subnetErrors.length > 0 ? 'border-destructive' : ''}`}
+              className={`mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${subnetErrors.length > 0 ? 'border-destructive' : ''}`}
             />
             <p className="mt-2 text-xs text-muted-foreground">
               Enter CIDR ranges separated by commas or new lines.
@@ -308,7 +308,7 @@ export default function DiscoveryProfileForm({
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Schedule</h2>
         <p className="text-sm text-muted-foreground">Set when discovery jobs should run.</p>
 
@@ -324,7 +324,7 @@ export default function DiscoveryProfileForm({
                     schedule: { ...prev.schedule, intervalHours: Math.max(1, Number(event.target.value) || 1) }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 {hourlyIntervalOptions.map(hours => (
                   <option key={hours} value={hours}>
@@ -350,7 +350,7 @@ export default function DiscoveryProfileForm({
                     }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           ) : (
@@ -366,7 +366,7 @@ export default function DiscoveryProfileForm({
                       schedule: { ...prev.schedule, time: event.target.value }
                     }))
                   }
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -379,7 +379,7 @@ export default function DiscoveryProfileForm({
                       schedule: { ...prev.schedule, timezone: event.target.value }
                     }))
                   }
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="UTC">UTC</option>
                   <option value="America/New_York">America/New_York</option>
@@ -401,7 +401,7 @@ export default function DiscoveryProfileForm({
                     schedule: { ...prev.schedule, dayOfWeek: event.target.value }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 {dayOptions.map(day => (
                   <option key={day} value={day}>
@@ -425,7 +425,7 @@ export default function DiscoveryProfileForm({
                     schedule: { ...prev.schedule, dayOfMonth: event.target.value }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           )}
@@ -433,7 +433,7 @@ export default function DiscoveryProfileForm({
       </div>
 
       {isSnmpEnabled && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="discovery-snmp-settings">
+        <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="discovery-snmp-settings">
           <h2 className="text-lg font-semibold">SNMP Settings</h2>
           <p className="text-sm text-muted-foreground">Credentials used for SNMP discovery probes.</p>
 
@@ -448,7 +448,7 @@ export default function DiscoveryProfileForm({
                     snmp: { ...prev.snmp, version: event.target.value as SnmpSettings['version'] }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="v2c">v2c</option>
                 <option value="v3">v3</option>
@@ -465,7 +465,7 @@ export default function DiscoveryProfileForm({
                     snmp: { ...prev.snmp, port: Number(event.target.value) }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -479,7 +479,7 @@ export default function DiscoveryProfileForm({
                     snmp: { ...prev.snmp, timeout: Number(event.target.value) }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -493,7 +493,7 @@ export default function DiscoveryProfileForm({
                     snmp: { ...prev.snmp, retries: Number(event.target.value) }
                   }))
                 }
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
 
@@ -509,7 +509,7 @@ export default function DiscoveryProfileForm({
                       snmp: { ...prev.snmp, community: event.target.value }
                     }))
                   }
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             ) : (
@@ -525,7 +525,7 @@ export default function DiscoveryProfileForm({
                         snmp: { ...prev.snmp, username: event.target.value }
                       }))
                     }
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <div>
@@ -538,7 +538,7 @@ export default function DiscoveryProfileForm({
                         snmp: { ...prev.snmp, authProtocol: event.target.value as SnmpSettings['authProtocol'] }
                       }))
                     }
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="sha">SHA</option>
                     <option value="md5">MD5</option>
@@ -555,7 +555,7 @@ export default function DiscoveryProfileForm({
                         snmp: { ...prev.snmp, authPassphrase: event.target.value }
                       }))
                     }
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <div>
@@ -568,7 +568,7 @@ export default function DiscoveryProfileForm({
                         snmp: { ...prev.snmp, privacyProtocol: event.target.value as SnmpSettings['privacyProtocol'] }
                       }))
                     }
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="aes">AES</option>
                     <option value="des">DES</option>
@@ -585,7 +585,7 @@ export default function DiscoveryProfileForm({
                         snmp: { ...prev.snmp, privacyPassphrase: event.target.value }
                       }))
                     }
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
               </>
@@ -594,7 +594,7 @@ export default function DiscoveryProfileForm({
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Network Alerting</h2>
         <p className="text-sm text-muted-foreground">Alert when new or changed devices are detected on this subnet.</p>
 
@@ -638,7 +638,7 @@ export default function DiscoveryProfileForm({
                   ...prev,
                   alertSettings: { ...prev.alertSettings, changeRetentionDays: Number(e.target.value) || 90 }
                 }))}
-                className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>

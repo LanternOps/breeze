@@ -101,7 +101,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   useEffect(() => { void load(); }, [load]);
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="device-edr-panel">
+    <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="device-edr-panel">
       <div className="mb-4 flex items-center gap-2">
         <ShieldAlert className="h-4 w-4 text-primary" />
         <h3 className="text-lg font-semibold">Endpoint Protection (EDR)</h3>

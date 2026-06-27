@@ -54,7 +54,7 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
   }, [closeSession, interruptResponse]);
 
   return (
-    <div className="flex h-[600px] w-96 shrink-0 flex-col overflow-hidden border-l bg-background">
+    <div className="flex u-h-px-600 w-96 shrink-0 flex-col overflow-hidden border-l bg-background">
       {/* Header */}
       <div className="flex items-center justify-between border-b px-3 py-2">
         <span className="text-sm font-medium">AI Script Assistant</span>

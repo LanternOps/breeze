@@ -150,12 +150,12 @@ export default function OnboardingTour() {
     <>
       {/* Subtle backdrop — non-blocking so the page beneath stays interactive.
           Any mousedown outside the tooltip dismisses the tour (see effect above). */}
-      <div className="pointer-events-none fixed inset-0 z-[60] bg-background/40" />
+      <div className="pointer-events-none fixed inset-0 z-60 bg-background/40" />
 
       {/* Tooltip */}
       <div
         ref={tooltipRef}
-        className="fixed z-[61] w-72 rounded-lg border bg-card p-4 shadow-xl"
+        className="fixed z-61 w-72 rounded-lg border bg-card p-4 shadow-xl"
         style={{
           top: tooltipPos.top,
           left: tooltipPos.left,

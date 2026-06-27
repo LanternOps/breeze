@@ -555,7 +555,7 @@ export default function MonitoringTab({ policyId, existingLink, onLinkChanged, l
                     checkIntervalSeconds: Math.max(10, Math.min(3600, Number(e.target.value) || 60)),
                   }))
                 }
-                className="h-9 w-24 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-24 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <span className="text-sm text-muted-foreground">seconds</span>
             </div>
@@ -750,7 +750,7 @@ function WatchCard({
               <select
                 value={watch.watchType}
                 onChange={(e) => onChange({ watchType: e.target.value as WatchType })}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="service">Service</option>
                 <option value="process">Process</option>
@@ -772,7 +772,7 @@ function WatchCard({
                 value={watch.displayName ?? ''}
                 onChange={(e) => onChange({ displayName: e.target.value || undefined })}
                 placeholder="Friendly label (optional)"
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -796,7 +796,7 @@ function WatchCard({
               <input
                 type="number" min={1} max={100} value={watch.alertAfterConsecutiveFailures}
                 onChange={(e) => onChange({ alertAfterConsecutiveFailures: Math.max(1, Math.min(100, Number(e.target.value) || 2)) })}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -806,15 +806,15 @@ function WatchCard({
             <div className="grid gap-4 sm:grid-cols-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground">CPU threshold (%)</label>
-                <input type="number" min={0} max={100} value={watch.cpuThresholdPercent ?? ''} onChange={(e) => onChange({ cpuThresholdPercent: e.target.value ? Number(e.target.value) : undefined })} placeholder="None" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                <input type="number" min={0} max={100} value={watch.cpuThresholdPercent ?? ''} onChange={(e) => onChange({ cpuThresholdPercent: e.target.value ? Number(e.target.value) : undefined })} placeholder="None" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Memory threshold (MB)</label>
-                <input type="number" min={0} value={watch.memoryThresholdMb ?? ''} onChange={(e) => onChange({ memoryThresholdMb: e.target.value ? Number(e.target.value) : undefined })} placeholder="None" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                <input type="number" min={0} value={watch.memoryThresholdMb ?? ''} onChange={(e) => onChange({ memoryThresholdMb: e.target.value ? Number(e.target.value) : undefined })} placeholder="None" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Threshold duration (s)</label>
-                <input type="number" min={0} max={86400} value={watch.thresholdDurationSeconds} onChange={(e) => onChange({ thresholdDurationSeconds: Math.max(0, Math.min(86400, Number(e.target.value) || 300)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                <input type="number" min={0} max={86400} value={watch.thresholdDurationSeconds} onChange={(e) => onChange({ thresholdDurationSeconds: Math.max(0, Math.min(86400, Number(e.target.value) || 300)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
               </div>
             </div>
           )}
@@ -829,11 +829,11 @@ function WatchCard({
               <>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Max restart attempts</label>
-                  <input type="number" min={0} max={50} value={watch.maxRestartAttempts} onChange={(e) => onChange({ maxRestartAttempts: Math.max(0, Math.min(50, Number(e.target.value) || 3)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                  <input type="number" min={0} max={50} value={watch.maxRestartAttempts} onChange={(e) => onChange({ maxRestartAttempts: Math.max(0, Math.min(50, Number(e.target.value) || 3)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Cooldown (seconds)</label>
-                  <input type="number" min={30} max={86400} value={watch.restartCooldownSeconds} onChange={(e) => onChange({ restartCooldownSeconds: Math.max(30, Math.min(86400, Number(e.target.value) || 300)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                  <input type="number" min={30} max={86400} value={watch.restartCooldownSeconds} onChange={(e) => onChange({ restartCooldownSeconds: Math.max(30, Math.min(86400, Number(e.target.value) || 300)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
                 </div>
               </>
             )}
@@ -914,17 +914,17 @@ function EventLogAlertCard({
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Rule Name</label>
-              <input ref={nameInputRef} value={alert.name} onChange={(e) => onChange({ name: e.target.value })} placeholder="e.g. Security errors" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <input ref={nameInputRef} value={alert.name} onChange={(e) => onChange({ name: e.target.value })} placeholder="e.g. Security errors" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Category</label>
-              <select value={alert.category} onChange={(e) => onChange({ category: e.target.value as EventLogCategory })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+              <select value={alert.category} onChange={(e) => onChange({ category: e.target.value as EventLogCategory })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring">
                 {categoryOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Minimum Level</label>
-              <select value={alert.level} onChange={(e) => onChange({ level: e.target.value as EventLogLevel })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+              <select value={alert.level} onChange={(e) => onChange({ level: e.target.value as EventLogLevel })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring">
                 {levelOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
               <p className="mt-1 text-[10px] text-muted-foreground">Matches this level and above</p>
@@ -942,12 +942,12 @@ function EventLogAlertCard({
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Source Pattern (optional)</label>
-              <input value={alert.sourcePattern ?? ''} onChange={(e) => onChange({ sourcePattern: e.target.value || undefined })} placeholder="e.g. EventLog or sshd" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <input value={alert.sourcePattern ?? ''} onChange={(e) => onChange({ sourcePattern: e.target.value || undefined })} placeholder="e.g. EventLog or sshd" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
               <p className="mt-1 text-[10px] text-muted-foreground">Regex to match the event source</p>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Message Pattern (optional)</label>
-              <input value={alert.messagePattern ?? ''} onChange={(e) => onChange({ messagePattern: e.target.value || undefined })} placeholder="e.g. failed login|authentication" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <input value={alert.messagePattern ?? ''} onChange={(e) => onChange({ messagePattern: e.target.value || undefined })} placeholder="e.g. failed login|authentication" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
               <p className="mt-1 text-[10px] text-muted-foreground">Regex to match the event message</p>
             </div>
           </div>
@@ -955,12 +955,12 @@ function EventLogAlertCard({
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Count Threshold</label>
-              <input type="number" min={1} max={10000} value={alert.countThreshold} onChange={(e) => onChange({ countThreshold: Math.max(1, Math.min(10000, Number(e.target.value) || 1)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <input type="number" min={1} max={10000} value={alert.countThreshold} onChange={(e) => onChange({ countThreshold: Math.max(1, Math.min(10000, Number(e.target.value) || 1)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
               <p className="mt-1 text-[10px] text-muted-foreground">Alert when this many events occur</p>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Time Window (minutes)</label>
-              <input type="number" min={1} max={1440} value={alert.windowMinutes} onChange={(e) => onChange({ windowMinutes: Math.max(1, Math.min(1440, Number(e.target.value) || 15)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <input type="number" min={1} max={1440} value={alert.windowMinutes} onChange={(e) => onChange({ windowMinutes: Math.max(1, Math.min(1440, Number(e.target.value) || 15)) })} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
             </div>
           </div>
         </div>
@@ -1033,7 +1033,7 @@ function AlertRuleCard({
           {/* Name */}
           <div>
             <label className="text-xs font-medium text-muted-foreground">Rule Name</label>
-            <input ref={nameInputRef} value={rule.name} onChange={(e) => onUpdate({ name: e.target.value })} placeholder="e.g. High CPU Alert" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+            <input ref={nameInputRef} value={rule.name} onChange={(e) => onUpdate({ name: e.target.value })} placeholder="e.g. High CPU Alert" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
           </div>
 
           {/* Severity */}
@@ -1213,7 +1213,7 @@ function AlertRuleCard({
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Cooldown (minutes)</label>
-              <input type="number" min={1} max={1440} value={rule.cooldownMinutes} onChange={(e) => onUpdate({ cooldownMinutes: Number(e.target.value) || 15 })} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              <input type="number" min={1} max={1440} value={rule.cooldownMinutes} onChange={(e) => onUpdate({ cooldownMinutes: Number(e.target.value) || 15 })} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
               <p className="mt-1 text-xs text-muted-foreground">Min time between alerts</p>
             </div>
             <div>
@@ -1287,7 +1287,7 @@ function ServiceNameAutocomplete({
         }}
         onFocus={() => setOpen(true)}
         placeholder={placeholder}
-        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         autoComplete="off"
       />
       {open && filtered.length > 0 && (

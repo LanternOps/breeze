@@ -242,7 +242,7 @@ function statusDotUri(status: TopologyNodeStatus): string {
 function NodeBadge({ type, size = 30 }: { type: TopologyNodeType; size?: number }) {
   return (
     <span
-      className="flex shrink-0 items-center justify-center rounded-md shadow-sm"
+      className="flex shrink-0 items-center justify-center rounded-md shadow-xs"
       style={{ width: size, height: size, backgroundColor: typeColors[type] ?? typeColors.unknown }}
     >
       <img src={nodeIconUri(type)} alt="" width={Math.round(size * 0.6)} height={Math.round(size * 0.6)} />
@@ -1286,7 +1286,7 @@ export default function NetworkTopologyMap({
 
   if (loading && nodes.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-4 text-sm text-muted-foreground">Loading topology...</p>
@@ -1314,7 +1314,7 @@ export default function NetworkTopologyMap({
     <div
       ref={cardRef}
       className={cn(
-        'rounded-lg border bg-card p-6 shadow-sm',
+        'rounded-lg border bg-card p-6 shadow-xs',
         expanded && 'fixed inset-0 z-40 m-0 overflow-auto rounded-none p-4'
       )}
     >
@@ -1332,7 +1332,7 @@ export default function NetworkTopologyMap({
               data-testid="topology-fit-view"
               onClick={resetView}
               title="Fit the whole map to view"
-              className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
+              className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-xs transition hover:bg-muted active:scale-[0.98]"
             >
               <Frame className="h-4 w-4 text-muted-foreground" aria-hidden />
               Fit
@@ -1344,7 +1344,7 @@ export default function NetworkTopologyMap({
             aria-pressed={expanded}
             onClick={() => setExpanded((v) => !v)}
             title={expanded ? 'Exit full screen (Esc)' : 'Expand map to full screen'}
-            className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
+            className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-xs transition hover:bg-muted active:scale-[0.98]"
           >
             {expanded ? (
               <Minimize2 className="h-4 w-4 text-muted-foreground" aria-hidden />
@@ -1358,7 +1358,7 @@ export default function NetworkTopologyMap({
               type="button"
               data-testid="topology-auto-arrange"
               onClick={autoArrange}
-              className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted active:scale-[0.98]"
+              className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-sm font-medium text-foreground shadow-xs transition hover:bg-muted active:scale-[0.98]"
             >
               <LayoutGrid className="h-4 w-4 text-muted-foreground" aria-hidden />
               Auto-arrange
@@ -1371,7 +1371,7 @@ export default function NetworkTopologyMap({
               aria-pressed={editMode}
               onClick={() => setEditMode((v) => !v)}
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium shadow-sm transition active:scale-[0.98]',
+                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium shadow-xs transition active:scale-[0.98]',
                 editMode
                   ? 'bg-foreground text-background hover:opacity-90'
                   : 'bg-primary text-primary-foreground hover:opacity-90'
@@ -1506,7 +1506,7 @@ export default function NetworkTopologyMap({
             <>
               <span
                 className={cn(
-                  'flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md shadow-sm',
+                  'flex u-h-px-34 w-[34px] shrink-0 items-center justify-center rounded-md shadow-xs',
                   selected.method === 'manual' ? 'bg-foreground text-background' : 'text-white'
                 )}
                 style={
@@ -1603,7 +1603,7 @@ export default function NetworkTopologyMap({
         <details
           open
           data-testid="topology-legend"
-          className="absolute right-3 top-3 z-10 max-w-[240px] overflow-hidden rounded-lg border bg-card text-[11px] shadow-md"
+          className="absolute right-3 top-3 z-10 max-w-[240px] overflow-hidden rounded-lg border bg-card chart-legend-xs shadow-md"
         >
           <summary className="flex cursor-pointer select-none items-center gap-1.5 px-2.5 py-1.5 font-semibold text-muted-foreground transition hover:text-foreground">
             <Network className="h-3.5 w-3.5" aria-hidden />
@@ -1624,16 +1624,16 @@ export default function NetworkTopologyMap({
                 className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-2 text-muted-foreground"
               >
                 <span className="flex items-center gap-1.5">
-                  <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#2563eb' }} />
+                  <span className="inline-block u-h-px-3 w-5 rounded-full" style={{ backgroundColor: '#2563eb' }} />
                   LLDP/CDP
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="inline-block h-[3px] w-5 rounded-full" style={{ backgroundColor: '#16a34a' }} />
+                  <span className="inline-block u-h-px-3 w-5 rounded-full" style={{ backgroundColor: '#16a34a' }} />
                   Bridge FDB
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span
-                    className="inline-block h-[3px] w-5 rounded-full"
+                    className="inline-block u-h-px-3 w-5 rounded-full"
                     style={{ backgroundColor: 'hsl(var(--foreground))' }}
                   />
                   Manual
@@ -1666,7 +1666,7 @@ export default function NetworkTopologyMap({
       {links.length === 0 && nodes.length > 0 && (
         <div
           data-testid="topology-adjacency-note"
-          className="mt-4 rounded-md border border-info/30 bg-info/[0.06] px-3 py-2 text-xs text-info"
+          className="mt-4 rounded-md border border-info/30 bg-info/6 px-3 py-2 text-xs text-info"
         >
           Connection lines appear only where real adjacency is measured (LLDP/CDP/SNMP). None has
           been collected yet, so assets are grouped by subnet without inferred links.
@@ -1682,7 +1682,7 @@ export default function NetworkTopologyMap({
             ? `Network topology map: ${nodes.length} device${nodes.length === 1 ? '' : 's'}. Use the device list below to inspect each device with the keyboard.`
             : 'Network topology map: no devices discovered yet.'
         }
-        className="relative w-full overflow-hidden rounded-md border bg-muted/30 [background-image:radial-gradient(hsl(var(--border))_1px,transparent_0)] [background-size:22px_22px]"
+        className="relative w-full overflow-hidden rounded-md border bg-muted/30 bg-[radial-gradient(hsl(var(--border))_1px,transparent_0)] bg-size-[22px_22px]"
         // Cytoscape requires a real pixel height on its container. An inline style
         // is used deliberately: the `u-h-px-*` utility classes are runtime-built
         // (`u-h-px-${n}`) and get purged from the production CSS, so a class-based
@@ -1692,7 +1692,7 @@ export default function NetworkTopologyMap({
       >
         {nodes.length === 0 && !loading && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
-            <span className="flex h-12 w-12 items-center justify-center rounded-xl border bg-card text-muted-foreground/70 shadow-sm">
+            <span className="flex h-12 w-12 items-center justify-center rounded-xl border bg-card text-muted-foreground/70 shadow-xs">
               <Network className="h-6 w-6" aria-hidden />
             </span>
             <p className="text-sm font-medium text-foreground">No assets discovered yet</p>

@@ -69,7 +69,7 @@ export function ValueInput({
         data-testid="value-enum-select"
         value={String(value)}
         onChange={(e) => onChange(e.target.value)}
-        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
       >
         {field.enumValues.map((enumValue) => (
           <option key={enumValue} value={enumValue}>
@@ -87,7 +87,7 @@ export function ValueInput({
         data-testid="value-boolean-select"
         value={String(value)}
         onChange={(e) => onChange(e.target.value === 'true')}
-        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
       >
         <option value="true">Yes</option>
         <option value="false">No</option>
@@ -103,7 +103,7 @@ export function ValueInput({
         data-testid="value-number-input"
         value={typeof value === 'number' ? value : ''}
         onChange={(e) => onChange(e.target.valueAsNumber || 0)}
-        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
         placeholder="Enter a number"
       />
     );
@@ -123,7 +123,7 @@ export function ValueInput({
         data-testid="value-date-input"
         value={dateValue}
         onChange={(e) => onChange(e.target.value)}
-        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+        className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
       />
     );
   }
@@ -135,7 +135,7 @@ export function ValueInput({
       data-testid="value-text-input"
       value={typeof value === 'string' ? value : ''}
       onChange={(e) => onChange(e.target.value)}
-      className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring ${className}`}
+      className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${className}`}
       placeholder={getPlaceholder(field, operator)}
     />
   );
@@ -175,12 +175,12 @@ function DurationInput({
         value={safeValue.amount}
         onChange={(e) => handleAmountChange(e.target.valueAsNumber)}
         min={1}
-        className="w-20 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="w-20 rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       />
       <select
         value={safeValue.unit}
         onChange={(e) => handleUnitChange(e.target.value)}
-        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       >
         <option value="minutes">minutes</option>
         <option value="hours">hours</option>
@@ -219,14 +219,14 @@ function DateRangeInput({
         type="date"
         value={fromStr}
         onChange={(e) => onChange({ ...safeValue, from: new Date(e.target.value) })}
-        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       />
       <span className="text-sm text-muted-foreground">to</span>
       <input
         type="date"
         value={toStr}
         onChange={(e) => onChange({ ...safeValue, to: new Date(e.target.value) })}
-        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="rounded-md border bg-background px-2 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       />
     </div>
   );
@@ -301,7 +301,7 @@ function MultiValueInput({
 
   return (
     <div data-testid="value-multi-input" className={className}>
-      <div className="flex flex-wrap gap-1 min-h-[36px] p-1 rounded-md border bg-background">
+      <div className="flex flex-wrap gap-1 u-min-h-px-36 p-1 rounded-md border bg-background">
         {value.map((v) => (
           <span
             key={v}
@@ -324,7 +324,7 @@ function MultiValueInput({
           onKeyDown={handleKeyDown}
           onBlur={() => inputValue && addValue(inputValue)}
           placeholder={value.length === 0 ? 'Type and press Enter' : ''}
-          className="flex-1 min-w-[100px] h-7 bg-transparent px-2 text-sm outline-none"
+          className="flex-1 min-w-[100px] h-7 bg-transparent px-2 text-sm outline-hidden"
         />
       </div>
     </div>

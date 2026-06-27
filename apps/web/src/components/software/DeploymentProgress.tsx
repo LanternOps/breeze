@@ -97,7 +97,7 @@ export default function DeploymentProgress({
         )}
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between mb-4">
           <div>
             <p className="text-sm font-semibold">Overall progress</p>
@@ -155,7 +155,7 @@ export default function DeploymentProgress({
         )}
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Per-device status</h2>
         <p className="text-sm text-muted-foreground">Track status updates as devices report back.</p>
 

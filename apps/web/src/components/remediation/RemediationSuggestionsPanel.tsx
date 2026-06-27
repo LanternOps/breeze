@@ -435,27 +435,27 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
                           <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
                             <div className="min-w-0">
                               <dt className="font-medium text-muted-foreground">Will run</dt>
-                              <dd className="break-words text-foreground">{targetLabel(suggestion)}: {targetIdentifier(suggestion)}</dd>
+                              <dd className="wrap-break-word text-foreground">{targetLabel(suggestion)}: {targetIdentifier(suggestion)}</dd>
                             </div>
                             <div className="min-w-0">
                               <dt className="font-medium text-muted-foreground">Where</dt>
-                              <dd className="break-words text-foreground">{targetDeviceLabel(suggestion)}</dd>
+                              <dd className="wrap-break-word text-foreground">{targetDeviceLabel(suggestion)}</dd>
                             </div>
                             <div className="min-w-0">
                               <dt className="font-medium text-muted-foreground">Source</dt>
-                              <dd className="break-words text-foreground">{suggestion.sourceType} {suggestion.sourceId}</dd>
+                              <dd className="wrap-break-word text-foreground">{suggestion.sourceType} {suggestion.sourceId}</dd>
                             </div>
                             <div className="min-w-0">
                               <dt className="font-medium text-muted-foreground">Risk</dt>
-                              <dd className="break-words text-foreground">{suggestion.riskTier}</dd>
+                              <dd className="wrap-break-word text-foreground">{suggestion.riskTier}</dd>
                             </div>
                             <div className="min-w-0 sm:col-span-2">
                               <dt className="font-medium text-muted-foreground">Why</dt>
-                              <dd className="break-words text-foreground">{suggestion.rationale}</dd>
+                              <dd className="wrap-break-word text-foreground">{suggestion.rationale}</dd>
                             </div>
                             <div className="min-w-0 sm:col-span-2">
                               <dt className="font-medium text-muted-foreground">Expected action</dt>
-                              <dd className="break-words text-foreground">{suggestion.expectedAction}</dd>
+                              <dd className="wrap-break-word text-foreground">{suggestion.expectedAction}</dd>
                             </div>
                           </dl>
                           {parameterJson && (

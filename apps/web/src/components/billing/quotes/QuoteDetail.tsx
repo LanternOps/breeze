@@ -163,7 +163,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
 
         {/* ── summary + actions ─────────────────────────────────────────── */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-detail-summary">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-summary">
             <div className="mb-3 flex items-center justify-between">
               <span
                 className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[quote.status]}`}
@@ -183,7 +183,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
           </div>
 
           {/* Recurring + totals summary */}
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-detail-totals">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-totals">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Totals</h3>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">One-time</dt><dd>{formatMoney(quote.oneTimeTotal, currency)}</dd></div>
@@ -212,7 +212,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
 
           {/* Seller From block */}
           {quote.sellerSnapshot && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-detail-from">
+            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-from">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</h3>
               <div className="space-y-0.5 text-sm">
                 {quote.sellerSnapshot.name && (
@@ -236,7 +236,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
 
           {/* Terms & Conditions */}
           {quote.termsAndConditions && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-detail-terms">
+            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-terms">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
               <p className="whitespace-pre-wrap text-sm text-muted-foreground">{quote.termsAndConditions}</p>
             </div>
@@ -331,7 +331,7 @@ function BlockView({ block, lines, currency }: { block: QuoteBlock; lines: Quote
 
 function LineTable({ lines, currency, label, testId }: { lines: QuoteLine[]; currency: string; label: string; testId: string }) {
   return (
-    <div className="rounded-lg border bg-card shadow-sm">
+    <div className="rounded-lg border bg-card shadow-xs">
       {label && (
         <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h3>
       )}

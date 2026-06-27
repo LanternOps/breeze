@@ -122,7 +122,7 @@ export default function EnableMonitoringForm({
           <select
             value={snmpVersion}
             onChange={(e) => setSnmpVersion(e.target.value as 'v1' | 'v2c' | 'v3')}
-            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="v1">v1</option>
             <option value="v2c">v2c</option>
@@ -137,7 +137,7 @@ export default function EnableMonitoringForm({
               type="text"
               value={community}
               onChange={(e) => setCommunity(e.target.value)}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               placeholder="public"
             />
           </div>
@@ -151,7 +151,7 @@ export default function EnableMonitoringForm({
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -160,7 +160,7 @@ export default function EnableMonitoringForm({
                 <select
                   value={authProtocol}
                   onChange={(e) => setAuthProtocol(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="md5">MD5</option>
                   <option value="sha">SHA</option>
@@ -173,7 +173,7 @@ export default function EnableMonitoringForm({
                   type="password"
                   value={authPassword}
                   onChange={(e) => setAuthPassword(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             </div>
@@ -183,7 +183,7 @@ export default function EnableMonitoringForm({
                 <select
                   value={privProtocol}
                   onChange={(e) => setPrivProtocol(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="des">DES</option>
                   <option value="aes">AES</option>
@@ -196,7 +196,7 @@ export default function EnableMonitoringForm({
                   type="password"
                   value={privPassword}
                   onChange={(e) => setPrivPassword(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             </div>
@@ -211,7 +211,7 @@ export default function EnableMonitoringForm({
             <select
               value={templateId}
               onChange={(e) => setTemplateId(e.target.value)}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="">No template</option>
               {templates.map((t) => (
@@ -231,7 +231,7 @@ export default function EnableMonitoringForm({
             onChange={(e) => setPollingInterval(Number(e.target.value))}
             min={30}
             max={86400}
-            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
 

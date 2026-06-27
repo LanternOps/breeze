@@ -657,9 +657,9 @@ export default function DashboardCustomizer() {
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[260px,1fr,320px]">
+      <div className="grid gap-6 xl:grid-cols-[260px_1fr_320px]">
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4">
               <h3 className="text-sm font-semibold">Widget Library</h3>
               <p className="text-xs text-muted-foreground">
@@ -674,7 +674,7 @@ export default function DashboardCustomizer() {
                     key={widget.type}
                     draggable
                     onDragStart={(event) => handleLibraryDragStart(event, widget.type)}
-                    className="flex items-center gap-3 rounded-md border bg-background p-3 shadow-sm"
+                    className="flex items-center gap-3 rounded-md border bg-background p-3 shadow-xs"
                   >
                     <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
                       <Icon className="h-4 w-4" />
@@ -696,7 +696,7 @@ export default function DashboardCustomizer() {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <Share2 className="h-4 w-4 text-muted-foreground" />
               Share dashboard
@@ -740,7 +740,7 @@ export default function DashboardCustomizer() {
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-sm font-semibold">Dashboard Grid</h3>
@@ -759,7 +759,7 @@ export default function DashboardCustomizer() {
             onDragEnter={() => setIsDragOver(true)}
             onDragLeave={() => setIsDragOver(false)}
             className={cn(
-              'grid min-h-[520px] grid-cols-12 auto-rows-[120px] gap-4 rounded-lg border border-dashed bg-muted/30 p-4 transition',
+              'grid u-min-h-px-520 grid-cols-12 u-grid-auto-rows-px-120 gap-4 rounded-lg border border-dashed bg-muted/30 p-4 transition',
               isDragOver && 'border-primary/60 ring-2 ring-primary/20'
             )}
           >
@@ -774,7 +774,7 @@ export default function DashboardCustomizer() {
                   onDragEnd={handleWidgetDragEnd}
                   onClick={() => setSelectedWidgetId(widget.id)}
                   className={cn(
-                    'group relative flex h-full flex-col rounded-md border bg-background p-3 shadow-sm transition',
+                    'group relative flex h-full flex-col rounded-md border bg-background p-3 shadow-xs transition',
                     gridColStartClass(widget.x + 1),
                     gridColSpanClass(widget.w),
                     gridRowStartClass(widget.y + 1),
@@ -840,7 +840,7 @@ export default function DashboardCustomizer() {
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-sm font-semibold">Dashboard Settings</h3>
               <span className="text-xs text-muted-foreground">Layout</span>
@@ -861,7 +861,7 @@ export default function DashboardCustomizer() {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-sm font-semibold">Widget Settings</h3>
               {selectedWidget && (
@@ -995,7 +995,7 @@ export default function DashboardCustomizer() {
             )}
           </div>
 
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-4 flex items-center gap-2">
               <LayoutDashboard className="h-4 w-4 text-muted-foreground" />
               <h3 className="text-sm font-semibold">Default dashboard per role</h3>

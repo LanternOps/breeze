@@ -160,7 +160,7 @@ export default function ScriptList({
   const paginatedScripts = sortedScripts.slice(startIndex, startIndex + pageSize);
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
           <div className="relative">
@@ -173,7 +173,7 @@ export default function ScriptList({
                 setQuery(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
             />
           </div>
           <select
@@ -182,7 +182,7 @@ export default function ScriptList({
               setCategoryFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Categories</option>
             {availableCategories.map(cat => (
@@ -197,7 +197,7 @@ export default function ScriptList({
               setLanguageFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Languages</option>
             <option value="powershell">PowerShell</option>
@@ -211,7 +211,7 @@ export default function ScriptList({
               setOsFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
           >
             <option value="all">All OS</option>
             <option value="windows">Windows</option>
@@ -275,7 +275,7 @@ export default function ScriptList({
                   key={script.id}
                   tabIndex={0}
                   role="button"
-                  className="transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+                  className="transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden"
                   onClick={() => onEdit?.(script)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') { e.preventDefault(); onEdit?.(script); }

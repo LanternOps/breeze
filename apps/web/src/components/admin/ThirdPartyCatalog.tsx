@@ -218,7 +218,7 @@ export default function ThirdPartyCatalog() {
           data-testid="catalog-requires-platform-admin"
           className="bg-blue-50 border border-blue-200 text-blue-900 px-6 py-8 rounded flex items-start gap-4"
         >
-          <Lock className="w-6 h-6 flex-shrink-0 mt-0.5" />
+          <Lock className="w-6 h-6 shrink-0 mt-0.5" />
           <div>
             <div className="font-semibold mb-1">Platform-admin access required</div>
             <div className="text-sm">

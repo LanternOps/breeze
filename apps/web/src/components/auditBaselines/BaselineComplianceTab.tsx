@@ -89,7 +89,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
 
   if (!summary || !baselineSummary || baselineSummary.total === 0) {
     return (
-      <div className="rounded-lg border bg-card p-8 text-center shadow-sm">
+      <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <h3 className="text-sm font-semibold">No compliance results</h3>
         <p className="mt-1 text-sm text-muted-foreground">
           No devices have been evaluated against this baseline yet.
@@ -102,11 +102,11 @@ export default function BaselineComplianceTab({ baseline }: Props) {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Devices Evaluated</p>
           <p className="mt-1 text-xl font-semibold">{baselineSummary.total}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Compliant</p>
           <p className="mt-1 text-xl font-semibold text-green-600">
             {baselineSummary.compliant}
@@ -117,7 +117,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
             </span>
           </p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Average Score</p>
           <p className={cn('mt-1 text-xl font-semibold', scoreColor(baselineSummary.averageScore))}>
             {baselineSummary.averageScore}
@@ -125,7 +125,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold">Device Results</h3>
           <div className="flex gap-1 rounded-md border bg-muted/40 p-0.5">
@@ -137,7 +137,7 @@ export default function BaselineComplianceTab({ baseline }: Props) {
                 className={cn(
                   'rounded px-2.5 py-1 text-xs font-medium transition',
                   filter === f
-                    ? 'bg-background text-foreground shadow-sm'
+                    ? 'bg-background text-foreground shadow-xs'
                     : 'text-muted-foreground hover:text-foreground'
                 )}
               >

@@ -230,7 +230,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       ]} />
 
       {/* Header Card */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-start gap-4">
             <div
@@ -304,7 +304,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       </div>
 
       {/* Alert Message */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="text-sm font-semibold text-muted-foreground mb-2">Message</h3>
         <p className="text-sm">{alert.message}</p>
       </div>
@@ -312,7 +312,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} />
 
       {alert.anomalyContext && (
-        <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-6 shadow-sm">
+        <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">ML Anomaly Evidence</h3>
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
@@ -354,7 +354,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
       {/* Linked Tickets */}
       {(linkedTickets.length > 0 || linkedError) && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="alert-linked-tickets">
+        <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="alert-linked-tickets">
           <h3 className="text-sm font-semibold text-muted-foreground mb-3">Linked Tickets</h3>
           {linkedError ? (
             <p className="text-sm text-muted-foreground">
@@ -381,7 +381,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       {/* Details Grid */}
       <div className="grid gap-6 md:grid-cols-2">
         {/* Device Info */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">Device Information</h3>
           <div className="space-y-3">
             <div>
@@ -408,7 +408,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         </div>
 
         {/* Timeline */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">Timeline</h3>
           <div className="space-y-3">
             <div className="flex items-start gap-3">
@@ -458,7 +458,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
       {/* Context Data */}
       {alert.contextData && Object.keys(alert.contextData).length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">Context Data</h3>
           <pre className="overflow-x-auto rounded-md bg-muted/40 p-4 text-xs">
             {JSON.stringify(alert.contextData, null, 2)}

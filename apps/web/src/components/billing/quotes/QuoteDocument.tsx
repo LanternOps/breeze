@@ -104,7 +104,7 @@ function PricingTable({ lines, currency, label }: { lines: QuoteLine[]; currency
         <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold text-foreground sm:px-5">{label}</div>
       )}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[30rem] text-sm">
+        <table className="w-full min-w-120 text-sm">
           <thead>
             <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
@@ -198,7 +198,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
     <div
       style={accentStyle}
       data-testid="quote-document"
-      className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-sm"
+      className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xs"
     >
       {/* Accent top rule */}
       <div className="h-1.5 w-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />

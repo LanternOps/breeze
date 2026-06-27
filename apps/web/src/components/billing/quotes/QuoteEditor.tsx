@@ -457,7 +457,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
           {/* Add block */}
           {canWrite && (
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-add-block">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-add-block">
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Add block</h3>
             <div className="mb-3 flex flex-wrap gap-2">
               {ADD_BLOCK_OPTIONS.map((o) => (
@@ -482,7 +482,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 onChange={(e) => setHeadingText(e.target.value)}
                 placeholder="Heading text"
                 data-testid="quote-block-heading-text"
-                className="mb-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mb-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             )}
             {addType === 'rich_text' && (
@@ -492,7 +492,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 placeholder="Proposal text…"
                 rows={4}
                 data-testid="quote-block-rich-text"
-                className="mb-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mb-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             )}
             {addType === 'image' && (
@@ -510,7 +510,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                   onChange={(e) => setImageCaption(e.target.value)}
                   placeholder="Caption (optional)"
                   data-testid="quote-block-image-caption"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <p className="text-xs text-muted-foreground">PNG, JPEG, or WebP, up to 5 MB.</p>
               </div>
@@ -522,7 +522,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 onChange={(e) => setTableLabel(e.target.value)}
                 placeholder="Table label (optional, e.g. Monthly services)"
                 data-testid="quote-block-table-label"
-                className="mb-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mb-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             )}
 
@@ -548,7 +548,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
         {/* ── live totals + terms ────────────────────────────────────── */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-live-totals">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-live-totals">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live totals</h3>
             <dl className="space-y-2 text-sm tabular-nums">
               <div className="flex items-baseline justify-between">
@@ -589,7 +589,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
             )}
           </div>
 
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
             <textarea
               value={terms}
@@ -598,7 +598,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="quote-terms"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
               placeholder="Payment terms, warranty clauses, etc."
             />
           </div>
@@ -669,7 +669,7 @@ function BlockCard({
   };
 
   return (
-    <div className="rounded-lg border bg-card shadow-sm" data-testid={`quote-block-${block.id}`}>
+    <div className="rounded-lg border bg-card shadow-xs" data-testid={`quote-block-${block.id}`}>
       <div className="flex items-center justify-between border-b px-4 py-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {BLOCK_TYPE_LABELS[block.blockType] ?? block.blockType}
@@ -841,25 +841,25 @@ function BlockCard({
                       onChange={(e) => setDesc(e.target.value)}
                       rows={2}
                       data-testid={`quote-manual-desc-${block.id}`}
-                      className="min-h-[2.25rem] resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="min-h-9 resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                     <input
                       type="number" min="0" step="0.01" placeholder="Qty" value={qty}
                       onChange={(e) => setQty(e.target.value)}
                       data-testid={`quote-manual-qty-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                     <input
                       type="number" min="0" step="0.01" placeholder="Unit price" value={price}
                       onChange={(e) => setPrice(e.target.value)}
                       data-testid={`quote-manual-price-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                     <select
                       value={recurrence}
                       onChange={(e) => setRecurrence(e.target.value as QuoteLineRecurrence)}
                       data-testid={`quote-manual-recurrence-${block.id}`}
-                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       <option value="one_time">One-time</option>
                       <option value="monthly">Monthly</option>
@@ -952,7 +952,7 @@ function EditableLineRow({
             rows={2}
             disabled={busy}
             data-testid={`quote-line-desc-${line.id}`}
-            className="min-h-[2.25rem] w-full resize-y rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+            className="min-h-9 w-full resize-y rounded-md border bg-background px-2 py-1 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
           />
         </div>
       </td>
@@ -964,7 +964,7 @@ function EditableLineRow({
           onBlur={commitQty}
           disabled={busy}
           data-testid={`quote-line-qty-${line.id}`}
-          className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
         />
       </td>
       <td className="px-2 py-2 text-right">
@@ -975,7 +975,7 @@ function EditableLineRow({
           onBlur={commitPrice}
           disabled={busy}
           data-testid={`quote-line-price-${line.id}`}
-          className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
         />
       </td>
       <td className="px-2 py-2">
@@ -984,7 +984,7 @@ function EditableLineRow({
           onChange={(e) => onEdit(line.id, { recurrence: e.target.value as QuoteLineRecurrence })}
           disabled={busy}
           data-testid={`quote-line-recurrence-${line.id}`}
-          className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
         >
           <option value="one_time">One-time</option>
           <option value="monthly">Monthly</option>

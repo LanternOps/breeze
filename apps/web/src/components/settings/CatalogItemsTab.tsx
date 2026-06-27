@@ -207,7 +207,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search name or SKU"
           aria-label="Search catalog"
-          className="h-9 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="catalog-search"
         />
 
@@ -220,7 +220,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
               onClick={() => setTypeFilter(t)}
               aria-pressed={typeFilter === t}
               className={`rounded px-2.5 py-1 text-xs font-medium transition ${
-                typeFilter === t ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                typeFilter === t ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
               }`}
               data-testid={`catalog-filter-type-${t}`}
             >
@@ -238,7 +238,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
               onClick={() => setView(v)}
               aria-pressed={view === v}
               className={`rounded px-2.5 py-1 text-xs font-medium capitalize transition ${
-                view === v ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                view === v ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
               }`}
               data-testid={`catalog-view-${v}`}
             >
@@ -260,7 +260,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
       </div>
 
       {/* Table card */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
           <div className="divide-y" data-testid="catalog-items-loading">
             {Array.from({ length: 5 }).map((_, i) => (

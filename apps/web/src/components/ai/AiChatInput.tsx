@@ -50,7 +50,7 @@ export default function AiChatInput({ onSend, onInterrupt, disabled, isStreaming
           placeholder={isStreaming ? 'Waiting for response...' : 'Ask about your devices...'}
           disabled={disabled || isStreaming}
           rows={1}
-          className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+          className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary disabled:opacity-50"
         />
         {isStreaming ? (
           <button

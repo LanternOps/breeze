@@ -367,13 +367,13 @@ export default function HypervDashboard() {
       )}
 
       {/* Filters */}
-      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-sm md:grid-cols-3">
+      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-xs md:grid-cols-3">
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
           <Search className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
           <label htmlFor="hyperv-search" className="sr-only">Search VMs</label>
           <input
             id="hyperv-search"
-            className="w-full bg-transparent text-sm outline-none"
+            className="w-full bg-transparent text-sm outline-hidden"
             placeholder="Search VM name..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -384,7 +384,7 @@ export default function HypervDashboard() {
           <label htmlFor="hyperv-state-filter" className="sr-only">Filter by state</label>
           <select
             id="hyperv-state-filter"
-            className="w-full appearance-none bg-transparent text-sm outline-none"
+            className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={stateFilter}
             onChange={(e) => setStateFilter(e.target.value as VmState | 'all')}
           >
@@ -400,7 +400,7 @@ export default function HypervDashboard() {
           <label htmlFor="hyperv-host-filter" className="sr-only">Filter by host</label>
           <select
             id="hyperv-host-filter"
-            className="w-full appearance-none bg-transparent text-sm outline-none"
+            className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={hostFilter}
             onChange={(e) => setHostFilter(e.target.value)}
           >
@@ -415,7 +415,7 @@ export default function HypervDashboard() {
       </div>
 
       {/* VM Table */}
-      <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+      <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>

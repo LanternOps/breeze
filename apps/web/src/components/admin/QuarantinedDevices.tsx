@@ -169,7 +169,7 @@ export default function QuarantinedDevices() {
           </p>
         </div>
       ) : (
-        <div className="rounded-lg border bg-card shadow-sm">
+        <div className="rounded-lg border bg-card shadow-xs">
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-sm">
               <thead className="bg-muted/40">
@@ -246,7 +246,7 @@ export default function QuarantinedDevices() {
       {/* Deny Confirmation Modal */}
       {modal.type === 'deny' && modal.device && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">

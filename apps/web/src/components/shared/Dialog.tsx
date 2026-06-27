@@ -129,7 +129,7 @@ export function Dialog({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className={`dialog-panel w-full ${maxWidthClass[maxWidth]} rounded-lg border bg-card shadow-lg focus:outline-none ${className}`}
+        className={`dialog-panel w-full ${maxWidthClass[maxWidth]} rounded-lg border bg-card shadow-lg focus:outline-hidden ${className}`}
         style={{ animation: 'dialog-panel-in 200ms cubic-bezier(0.25, 1, 0.5, 1)' }}
       >
         {children}

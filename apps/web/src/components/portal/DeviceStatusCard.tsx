@@ -32,7 +32,7 @@ export default function DeviceStatusCard({ device, onSelect }: DeviceStatusCardP
     <button
       type="button"
       onClick={() => onSelect?.(device)}
-      className="flex w-full items-center justify-between rounded-lg border bg-card p-4 text-left shadow-sm transition hover:border-primary/40 hover:shadow"
+      className="flex w-full items-center justify-between rounded-lg border bg-card p-4 text-left shadow-xs transition hover:border-primary/40 hover:shadow-sm"
     >
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted text-muted-foreground">

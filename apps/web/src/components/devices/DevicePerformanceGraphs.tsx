@@ -182,7 +182,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading performance graphs...</p>
@@ -207,7 +207,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
   }
 
   return (
-    <div className={`rounded-lg border bg-card shadow-sm ${compact ? 'p-4' : 'p-6'}`}>
+    <div className={`rounded-lg border bg-card shadow-xs ${compact ? 'p-4' : 'p-6'}`}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />

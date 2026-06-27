@@ -535,7 +535,7 @@ export default function CorrelatedAlertGroups() {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
@@ -545,7 +545,7 @@ export default function CorrelatedAlertGroups() {
 
   if (alertCorrelationDisabled) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
           <Brain className="h-8 w-8" />
           <h2 className="text-base font-semibold text-foreground">Alert correlation disabled</h2>
@@ -559,7 +559,7 @@ export default function CorrelatedAlertGroups() {
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
           <p>{error}</p>
           <button
@@ -598,7 +598,7 @@ export default function CorrelatedAlertGroups() {
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-6 py-4">
           <div>
             <h2 className="text-lg font-semibold">Correlated Alert Groups</h2>
@@ -752,7 +752,7 @@ export default function CorrelatedAlertGroups() {
                                 <div className="flex items-center gap-2">
                                   <span
                                     className={cn(
-                                      'rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                                      'rounded-full border px-2 py-0.5 chart-legend-xs font-medium',
                                       severityStyles[alert.severity]
                                     )}
                                   >
@@ -760,7 +760,7 @@ export default function CorrelatedAlertGroups() {
                                   </span>
                                   <span
                                     className={cn(
-                                      'rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                                      'rounded-full border px-2 py-0.5 chart-legend-xs font-medium',
                                       statusStyles[alert.status] ?? 'bg-muted text-muted-foreground border-border'
                                     )}
                                   >
@@ -846,7 +846,7 @@ export default function CorrelatedAlertGroups() {
                                       <div key={step.title} className="rounded-md border bg-muted/20 px-3 py-2">
                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                           <p className="text-sm font-medium">{step.title}</p>
-                                          <span className="rounded-full border bg-background px-2 py-0.5 text-[11px] capitalize text-muted-foreground">
+                                          <span className="rounded-full border bg-background px-2 py-0.5 chart-legend-xs capitalize text-muted-foreground">
                                             {step.riskTier} risk
                                           </span>
                                         </div>

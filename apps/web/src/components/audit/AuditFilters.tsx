@@ -185,7 +185,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
                 onFocus={() => setUserMenuOpen(true)}
                 onBlur={() => setTimeout(() => setUserMenuOpen(false), 150)}
                 placeholder="Search users"
-                className="w-full bg-transparent text-sm text-foreground outline-none"
+                className="w-full bg-transparent text-sm text-foreground outline-hidden"
               />
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             </div>
@@ -297,7 +297,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
             value={detailsSearch}
             onChange={event => setDetailsSearch(event.target.value)}
             placeholder="Search activity details"
-            className="w-full bg-transparent text-sm text-foreground outline-none"
+            className="w-full bg-transparent text-sm text-foreground outline-hidden"
           />
         </div>
       </div>

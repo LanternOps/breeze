@@ -389,7 +389,7 @@ const TemplatePreviewCard = ({ template }: { template: ReportTemplate }) => {
         <div className="h-2 w-20 rounded-full bg-muted-foreground/20" />
         <div className={cn('h-2 w-10 rounded-full', template.preview.accent)} />
       </div>
-      <div className={cn('mt-3 flex h-10 items-end gap-1 rounded-md bg-gradient-to-br p-1.5', template.preview.gradient)}>
+      <div className={cn('mt-3 flex h-10 items-end gap-1 rounded-md bg-linear-to-br p-1.5', template.preview.gradient)}>
         {template.preview.bars.map((height, index) => (
           <div
             key={`${template.id}-bar-${index}`}
@@ -513,7 +513,7 @@ export default function ReportTemplates() {
           return (
             <div
               key={template.id}
-              className="group flex h-full flex-col rounded-lg border bg-card p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
+              className="group flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs transition hover:-translate-y-1 hover:shadow-md"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">

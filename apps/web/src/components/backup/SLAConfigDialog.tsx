@@ -274,7 +274,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
                 alertOnBreach ? 'bg-primary' : 'bg-muted'
               )}
             >
-              <span className={cn('pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform', alertOnBreach ? 'translate-x-5' : 'translate-x-0')} />
+              <span className={cn('pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-xs transition-transform', alertOnBreach ? 'translate-x-5' : 'translate-x-0')} />
             </button>
           </div>
 
@@ -291,7 +291,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
                 active ? 'bg-primary' : 'bg-muted'
               )}
             >
-              <span className={cn('pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform', active ? 'translate-x-5' : 'translate-x-0')} />
+              <span className={cn('pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-xs transition-transform', active ? 'translate-x-5' : 'translate-x-0')} />
             </button>
           </div>
         </div>

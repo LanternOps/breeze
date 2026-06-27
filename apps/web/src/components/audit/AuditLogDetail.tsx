@@ -38,7 +38,7 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="flex max-h-[calc(100vh-4rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
+      <div className="flex max-h-[calc(100vh-4rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border bg-card shadow-xs">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold">Audit Log Detail</h2>
@@ -108,9 +108,9 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
                 User Info
               </div>
               <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-                <p className="break-words text-base font-semibold text-foreground">{entry.user.name}</p>
+                <p className="wrap-break-word text-base font-semibold text-foreground">{entry.user.name}</p>
                 <p className="break-all">{entry.user.email}</p>
-                <p className="break-words">
+                <p className="wrap-break-word">
                   {entry.user.role} - {entry.user.department}
                 </p>
               </div>

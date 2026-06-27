@@ -274,7 +274,7 @@ export default function ReportPreview({
       {/* Table View */}
       {previewMode === 'table' && rows.length > 0 && (
         <>
-          <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+          <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="border-b bg-muted/50">

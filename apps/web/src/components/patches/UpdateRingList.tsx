@@ -105,7 +105,7 @@ export default function UpdateRingList({
   const paginatedRings = filteredRings.slice(startIndex, startIndex + pageSize);
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <Layers className="h-5 w-5 text-primary" />
@@ -126,7 +126,7 @@ export default function UpdateRingList({
               setQuery(e.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
           />
         </div>
       </div>

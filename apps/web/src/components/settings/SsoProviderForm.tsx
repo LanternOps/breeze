@@ -133,7 +133,7 @@ export default function SsoProviderForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Basic Information */}
       <div className="space-y-4">
@@ -148,7 +148,7 @@ export default function SsoProviderForm({
             <input
               id="provider-name"
               placeholder="e.g., Okta Production"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('name')}
             />
             {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -160,7 +160,7 @@ export default function SsoProviderForm({
             </label>
             <select
               id="provider-preset"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('preset')}
             >
               {presetOptions.map(option => (
@@ -190,7 +190,7 @@ export default function SsoProviderForm({
               id="provider-issuer"
               type="url"
               placeholder="https://your-tenant.okta.com"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('issuer')}
             />
             {errors.issuer && <p className="text-sm text-destructive">{errors.issuer.message}</p>}
@@ -206,7 +206,7 @@ export default function SsoProviderForm({
             <input
               id="provider-client-id"
               placeholder="your-client-id"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('clientId')}
             />
             {errors.clientId && <p className="text-sm text-destructive">{errors.clientId.message}</p>}
@@ -224,7 +224,7 @@ export default function SsoProviderForm({
                 id="provider-client-secret"
                 type={showSecret ? 'text' : 'password'}
                 placeholder={isEditing && hasClientSecret ? '********' : 'your-client-secret'}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('clientSecret')}
               />
               <button
@@ -254,7 +254,7 @@ export default function SsoProviderForm({
             <input
               id="provider-scopes"
               placeholder="openid profile email"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('scopes')}
             />
             <p className="text-xs text-muted-foreground">
@@ -280,7 +280,7 @@ export default function SsoProviderForm({
             <input
               id="attr-email"
               placeholder="email"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.email')}
             />
             {errors.attributeMapping?.email && (
@@ -295,7 +295,7 @@ export default function SsoProviderForm({
             <input
               id="attr-name"
               placeholder="name"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.name')}
             />
             {errors.attributeMapping?.name && (
@@ -310,7 +310,7 @@ export default function SsoProviderForm({
             <input
               id="attr-first-name"
               placeholder="given_name"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.firstName')}
             />
           </div>
@@ -322,7 +322,7 @@ export default function SsoProviderForm({
             <input
               id="attr-last-name"
               placeholder="family_name"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.lastName')}
             />
           </div>
@@ -334,7 +334,7 @@ export default function SsoProviderForm({
             <input
               id="attr-groups"
               placeholder="groups"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('attributeMapping.groups')}
             />
             <p className="text-xs text-muted-foreground">
@@ -370,7 +370,7 @@ export default function SsoProviderForm({
             </label>
             <select
               id="default-role"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring md:w-1/2"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring md:w-1/2"
               {...register('defaultRoleId')}
             >
               <option value="">Select a role...</option>
@@ -392,7 +392,7 @@ export default function SsoProviderForm({
             <input
               id="allowed-domains"
               placeholder="example.com, company.org"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring md:w-1/2"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring md:w-1/2"
               {...register('allowedDomains')}
             />
             <p className="text-xs text-muted-foreground">
@@ -426,7 +426,7 @@ export default function SsoProviderForm({
             <div className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950">
               <div className="flex gap-3">
                 <svg
-                  className="h-5 w-5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                  className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400"
                   fill="currentColor"
                   viewBox="0 0 20 20"
                 >

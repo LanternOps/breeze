@@ -1426,7 +1426,7 @@ export default function ReportBuilder({
           </div>
         )}
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div>
             <h2 className="text-sm font-semibold">Report details</h2>
             <p className="text-xs text-muted-foreground">Name the report and decide if it becomes a template.</p>
@@ -1442,7 +1442,7 @@ export default function ReportBuilder({
                 placeholder="Monthly Security Overview"
                 value={reportName}
                 onChange={event => setReportName(event.target.value)}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="flex items-end gap-2">
@@ -1468,13 +1468,13 @@ export default function ReportBuilder({
                 placeholder="Quarterly Compliance Pack"
                 value={templateName}
                 onChange={event => setTemplateName(event.target.value)}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           )}
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
             <Monitor className="h-4 w-4 text-muted-foreground" />
             <div>
@@ -1507,7 +1507,7 @@ export default function ReportBuilder({
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-muted-foreground" />
             <div>
@@ -1544,7 +1544,7 @@ export default function ReportBuilder({
                         [field.id]: event.target.value
                       }))
                     }
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {field.options?.map(option => (
                       <option key={option.value} value={option.value}>
@@ -1558,7 +1558,7 @@ export default function ReportBuilder({
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
             <Columns className="h-4 w-4 text-muted-foreground" />
             <div>
@@ -1640,7 +1640,7 @@ export default function ReportBuilder({
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
@@ -1692,7 +1692,7 @@ export default function ReportBuilder({
                         <select
                           value={condition.logic}
                           onChange={event => updateFilterCondition(condition.id, { logic: event.target.value as 'and' | 'or' })}
-                          className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                         >
                           <option value="and">AND</option>
                           <option value="or">OR</option>
@@ -1701,7 +1701,7 @@ export default function ReportBuilder({
                       <select
                         value={condition.field}
                         onChange={event => updateFilterCondition(condition.id, { field: event.target.value })}
-                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         {fieldDefinitions.map(field => (
                           <option key={field.id} value={field.id}>
@@ -1712,7 +1712,7 @@ export default function ReportBuilder({
                       <select
                         value={condition.operator}
                         onChange={event => updateFilterCondition(condition.id, { operator: event.target.value })}
-                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         {filterOperators.map(operator => (
                           <option key={operator.value} value={operator.value}>
@@ -1723,7 +1723,7 @@ export default function ReportBuilder({
                       <input
                         value={condition.value}
                         onChange={event => updateFilterCondition(condition.id, { value: event.target.value })}
-                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                         placeholder="Value"
                       />
                       <button
@@ -1769,7 +1769,7 @@ export default function ReportBuilder({
           )}
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
             <div>
@@ -1784,7 +1784,7 @@ export default function ReportBuilder({
               <select
                 value={groupBy}
                 onChange={event => setGroupBy(event.target.value)}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="">No grouping</option>
                 {groupByOptions.map(field => (
@@ -1808,7 +1808,7 @@ export default function ReportBuilder({
                     return { type: nextType, field: numericFallback };
                   });
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="count">Count</option>
                 <option value="sum">Sum</option>
@@ -1823,7 +1823,7 @@ export default function ReportBuilder({
               <select
                 value={aggregation.field ?? ''}
                 onChange={event => setAggregation(prev => ({ ...prev, field: event.target.value }))}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 {numericFields.length === 0 && <option value="">No numeric fields</option>}
                 {numericFields.map(field => (
@@ -1836,7 +1836,7 @@ export default function ReportBuilder({
           )}
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-4">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-4">
           <div className="flex items-center gap-2">
             <PieChart className="h-4 w-4 text-muted-foreground" />
             <div>
@@ -1867,7 +1867,7 @@ export default function ReportBuilder({
         </div>
 
         {showDelivery && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm space-y-5">
+          <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
             <div className="flex items-center gap-2">
               <Calendar className="h-4 w-4 text-muted-foreground" />
               <div>
@@ -1903,7 +1903,7 @@ export default function ReportBuilder({
                     type="time"
                     value={scheduleTime}
                     onChange={event => setScheduleTime(event.target.value)}
-                    className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 {schedule === 'weekly' && (
@@ -1912,7 +1912,7 @@ export default function ReportBuilder({
                     <select
                       value={scheduleDay}
                       onChange={event => setScheduleDay(event.target.value)}
-                      className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       {weekDays.map(day => (
                         <option key={day.value} value={day.value}>
@@ -1928,7 +1928,7 @@ export default function ReportBuilder({
                     <select
                       value={scheduleDate}
                       onChange={event => setScheduleDate(event.target.value)}
-                      className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       {monthDays.map(day => (
                         <option key={day} value={day}>
@@ -1994,7 +1994,7 @@ export default function ReportBuilder({
                     }
                   }}
                   placeholder="name@company.com"
-                  className="h-9 flex-1 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 flex-1 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <button
                   type="button"
@@ -2044,7 +2044,7 @@ export default function ReportBuilder({
       </div>
 
       <div className="space-y-6 lg:sticky lg:top-6 self-start">
-        <div className="rounded-lg border bg-card p-6 shadow-sm space-y-5">
+        <div className="rounded-lg border bg-card p-6 shadow-xs space-y-5">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold">Live preview</h2>

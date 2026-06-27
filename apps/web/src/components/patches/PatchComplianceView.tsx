@@ -429,13 +429,13 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             placeholder="Search devices..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+            className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
         </div>
         <select
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="all">All Devices ({devices.length})</option>
           <option value="needs-patches">Pending Patches ({nonCompliantCount})</option>

@@ -136,7 +136,7 @@ export default function ChangeSiteModal({ device, isOpen, onClose, onSaved }: Ch
               value={siteId}
               onChange={e => setSiteId(e.target.value)}
               disabled={saving || sites.length === 0}
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               {sites.map(site => (
                 <option key={site.id} value={site.id}>

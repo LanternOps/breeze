@@ -378,7 +378,7 @@ export default function WebhooksPage() {
 
       {activeWebhook ? (
         <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold">Webhook details</h2>
@@ -416,7 +416,7 @@ export default function WebhooksPage() {
                   <select
                     value={testEvent}
                     onChange={event => setTestEvent(event.target.value)}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {testEventOptions.map(eventType => (
                       <option key={eventType} value={eventType}>
@@ -454,7 +454,7 @@ export default function WebhooksPage() {
 
           <div>
             {deliveriesLoading ? (
-              <div className="flex items-center justify-center rounded-lg border bg-card p-6 shadow-sm">
+              <div className="flex items-center justify-center rounded-lg border bg-card p-6 shadow-xs">
                 <div className="text-center">
                   <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                   <p className="mt-3 text-sm text-muted-foreground">Loading delivery history...</p>
@@ -512,7 +512,7 @@ export default function WebhooksPage() {
 
       {modalMode === 'delete' && selectedWebhook && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Webhook</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete{' '}

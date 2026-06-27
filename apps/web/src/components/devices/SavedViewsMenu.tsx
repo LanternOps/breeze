@@ -206,7 +206,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
         title="Saved views"
       >
         <Bookmark className="h-3.5 w-3.5" />
-        <span className="max-w-[10rem] truncate">{activeView ? activeView.name : 'Views'}</span>
+        <span className="max-w-40 truncate">{activeView ? activeView.name : 'Views'}</span>
       </button>
 
       {open && (
@@ -294,7 +294,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
                   if (e.key === 'Enter') void saveCurrent();
                   if (e.key === 'Escape') { setNaming(false); setName(''); }
                 }}
-                className="h-8 w-full rounded border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-8 w-full rounded border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <button
                 type="button"

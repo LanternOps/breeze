@@ -232,7 +232,7 @@ function GpuInfoRow({ value }: { value: string | null | undefined }) {
 
 function Section({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center gap-2 mb-4">
         {icon}
         <h3 className="text-sm font-semibold">{title}</h3>
@@ -417,7 +417,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
   };
 
   const renderFieldEditor = (def: CustomFieldDef) => {
-    const inputClass = 'h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+    const inputClass = 'h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
     switch (def.type) {
       case 'text':
         return (
@@ -485,7 +485,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading device details...</p>
@@ -543,7 +543,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                   }}
                   maxLength={255}
                   placeholder="Leave blank to clear"
-                  className="h-8 w-48 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-8 w-48 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   autoFocus
                 />
                 <button
@@ -590,7 +590,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow label="Model" value={formatHardwareIdentityValue(hw?.model)} />
       </Section>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-2 mb-4">
           {(() => {
             const role = (info?.deviceRole ?? 'unknown') as string;
@@ -608,7 +608,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                   <select
                     value={selectedRole}
                     onChange={e => setSelectedRole(e.target.value)}
-                    className="h-8 w-40 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 w-40 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     autoFocus
                   >
                     {DEVICE_ROLES.map(role => (
@@ -751,7 +751,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
       )}
 
       {tags.length > 0 && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center gap-2 mb-4">
               <Tag className="h-4 w-4 text-muted-foreground" />
               <h3 className="text-sm font-semibold">Tags</h3>
@@ -770,7 +770,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         )}
 
       {applicableFields.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-2">
+        <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-2">
           <div className="flex items-center gap-2 mb-4">
             <ListChecks className="h-4 w-4 text-muted-foreground" />
             <h3 className="text-sm font-semibold">Custom Fields</h3>

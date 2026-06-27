@@ -79,7 +79,7 @@ export default function SetupSummaryStep({ stepsVisited }: SetupSummaryStepProps
         <button
           onClick={handleFinish}
           disabled={loading}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
         >
           {loading && <Loader2 className="h-4 w-4 animate-spin" />}
           Go to Dashboard

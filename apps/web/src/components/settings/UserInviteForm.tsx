@@ -134,7 +134,7 @@ export default function UserInviteForm({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{title}</h2>
           <p className="text-sm text-muted-foreground">{description}</p>
@@ -156,7 +156,7 @@ export default function UserInviteForm({
                 type="text"
                 autoComplete="name"
                 placeholder="Jane Smith"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('name')}
               />
               {errors.name && (
@@ -173,7 +173,7 @@ export default function UserInviteForm({
                 type="email"
                 autoComplete="email"
                 placeholder="name@company.com"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('email')}
               />
               {errors.email && (
@@ -188,7 +188,7 @@ export default function UserInviteForm({
             </label>
             <select
               id="invite-role"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('roleId')}
             >
               {roles.map(role => (
@@ -214,7 +214,7 @@ export default function UserInviteForm({
                 </label>
                 <select
                   id="invite-access"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('orgAccess')}
                 >
                   <option value="all">All organizations</option>
@@ -268,7 +268,7 @@ export default function UserInviteForm({
                       }}
                       onFocus={() => setOrgDropdownOpen(true)}
                       placeholder="Search organizations..."
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                     {orgDropdownOpen && (
                       <div className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-card shadow-md">

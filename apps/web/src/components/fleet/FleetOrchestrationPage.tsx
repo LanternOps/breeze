@@ -258,7 +258,7 @@ export default function FleetOrchestrationPage() {
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[...Array(8)].map((_, i) => (
-            <div key={i} className="rounded-lg border bg-card p-6 shadow-sm">
+            <div key={i} className="rounded-lg border bg-card p-6 shadow-xs">
               <div className="flex items-center justify-center h-20">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
@@ -308,7 +308,7 @@ export default function FleetOrchestrationPage() {
       {warnings.length > 0 && (
         <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-4">
           <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
-            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            <AlertTriangle className="h-4 w-4 shrink-0" />
             <span className="text-sm">
               Some data may be incomplete. Failed to load: {warnings.join(', ')}
             </span>
@@ -387,7 +387,7 @@ export default function FleetOrchestrationPage() {
       </div>
 
       {/* Quick Actions */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-2 mb-4">
           <MessageSquare className="h-5 w-5 text-primary" />
           <h2 className="text-lg font-semibold">AI Fleet Actions</h2>
@@ -413,7 +413,7 @@ export default function FleetOrchestrationPage() {
       {/* Status Overview Panels */}
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Deployment Status */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Rocket className="h-4 w-4" />
             Deployment Status
@@ -427,7 +427,7 @@ export default function FleetOrchestrationPage() {
         </div>
 
         {/* Alert Breakdown */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Bell className="h-4 w-4" />
             Alert Breakdown
@@ -441,7 +441,7 @@ export default function FleetOrchestrationPage() {
         </div>
 
         {/* Patch Posture */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Package className="h-4 w-4" />
             Patch Posture
@@ -469,7 +469,7 @@ export default function FleetOrchestrationPage() {
         </div>
 
         {/* Policy Compliance */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Shield className="h-4 w-4" />
             Policy Compliance
@@ -524,7 +524,7 @@ function StatCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-lg border bg-card p-6 shadow-sm text-left hover:bg-muted/50 transition-colors cursor-pointer w-full"
+      className="rounded-lg border bg-card p-6 shadow-xs text-left hover:bg-muted/50 transition-colors cursor-pointer w-full"
     >
       <div className="flex items-center justify-between">
         <Icon className={cn('h-5 w-5', accentColors[accent])} />

@@ -109,7 +109,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
 
   return (
     <div className="space-y-6" data-testid="org-billing-settings">
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Tax</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
@@ -133,7 +133,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
         </label>
       </section>
 
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Billing address</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div className="sm:col-span-2">

@@ -220,7 +220,7 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
         </div>
       )}
 
-      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-sm lg:grid-cols-[1.5fr_1fr_1fr]">
+      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-xs lg:grid-cols-[1.5fr_1fr_1fr]">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -228,13 +228,13 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
             placeholder="Search software, vendor, version"
             value={query}
             onChange={event => setQuery(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <select
           value={deviceFilter}
           onChange={event => setDeviceFilter(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="all">All devices</option>
           {devices.map(device => (
@@ -246,7 +246,7 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
         <select
           value={managedFilter}
           onChange={event => setManagedFilter(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="all">All software</option>
           <option value="managed">Managed only</option>
@@ -254,7 +254,7 @@ export default function SoftwareInventoryView({ timezone }: SoftwareInventoryVie
         </select>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Inventory list</h2>

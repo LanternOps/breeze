@@ -272,7 +272,7 @@ export default function Header() {
         </div>
 
         {/* Global Search — icon-width until xl, flexible bar at xl+ */}
-        <div data-tour="search" className="shrink-0 xl:min-w-0 xl:flex-1 xl:max-w-[28rem]">
+        <div data-tour="search" className="shrink-0 xl:min-w-0 xl:flex-1 xl:max-w-md">
           <CommandPalette />
         </div>
       </div>
@@ -345,7 +345,7 @@ export default function Header() {
 
           {showThemeMenu && (
             <div ref={themePanelRef} className="absolute right-0 top-full z-50 mt-2 w-52 rounded-lg border bg-popover py-1 shadow-lg">
-              <p className="px-3 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Theme</p>
+              <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-medium uppercase tracking-wide text-muted-foreground">Theme</p>
               {([
                 { value: 'light' as const, label: 'Light', Icon: Sun },
                 { value: 'dark' as const, label: 'Dark', Icon: Moon },
@@ -365,7 +365,7 @@ export default function Header() {
 
               {/* Interface density — account-wide; applies across the whole app. */}
               <div className="my-1 border-t" />
-              <p className="px-3 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Interface density</p>
+              <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-medium uppercase tracking-wide text-muted-foreground">Interface density</p>
               {([
                 { value: 'comfortable' as const, label: 'Comfortable', Icon: Rows3 },
                 { value: 'compact' as const, label: 'Compact', Icon: Rows4 },
@@ -383,7 +383,7 @@ export default function Header() {
                   {density === value && <Check className="h-4 w-4 text-primary" />}
                 </button>
               ))}
-              <p className="px-3 pb-1.5 pt-1 text-[11px] leading-snug text-muted-foreground">Applies across the entire app.</p>
+              <p className="px-3 pb-1.5 pt-1 chart-legend-xs leading-snug text-muted-foreground">Applies across the entire app.</p>
             </div>
           )}
         </div>
@@ -449,7 +449,7 @@ export default function Header() {
 
               {/* Account */}
               <div className="p-1">
-                <p className="px-3 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Account
                 </p>
                 <a
@@ -472,7 +472,7 @@ export default function Header() {
 
               {/* Security */}
               <div className="border-t p-1">
-                <p className="px-3 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Security
                 </p>
                 <a
@@ -504,7 +504,7 @@ export default function Header() {
               {/* Billing & support */}
               {(features.billing || features.support) && (
                 <div className="border-t p-1">
-                  <p className="px-3 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <p className="px-3 pb-1 pt-1.5 chart-legend-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     Billing &amp; support
                   </p>
                   {features.billing && (

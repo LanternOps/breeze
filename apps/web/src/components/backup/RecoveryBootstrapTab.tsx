@@ -187,7 +187,7 @@ function renderTrustMetadata(metadata: Record<string, unknown> | null | undefine
   if (rows.length === 0) return null;
 
   return (
-    <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+    <div className="mt-2 space-y-1 chart-legend-xs text-muted-foreground">
       {rows.map((row) => (
         <p key={row.key}>
           {row.key}: <span className="break-all font-mono">{row.value}</span>
@@ -451,7 +451,7 @@ function renderJson(value: unknown): string {
 function DetailLine({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="rounded-md border bg-background/80 p-3">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="chart-legend-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
       <div className="mt-1 text-sm text-foreground">{value}</div>
     </div>
   );
@@ -1053,7 +1053,7 @@ export default function RecoveryBootstrapTab() {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border border-warning/30 bg-warning/5 p-5 shadow-sm">
+      <div className="rounded-lg border border-warning/30 bg-warning/5 p-5 shadow-xs">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-1">
             <div className="inline-flex items-center gap-2 rounded-md bg-warning/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-warning">
@@ -1068,7 +1068,7 @@ export default function RecoveryBootstrapTab() {
           </div>
           <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground">
             <p className="font-medium text-foreground">CLI template</p>
-            <p className="mt-1 font-mono text-[11px]">
+            <p className="mt-1 font-mono chart-legend-xs">
               breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;
             </p>
           </div>
@@ -1088,7 +1088,7 @@ export default function RecoveryBootstrapTab() {
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-lg font-semibold text-foreground">Create recovery token</h3>
@@ -1187,7 +1187,7 @@ export default function RecoveryBootstrapTab() {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-lg font-semibold text-foreground">Bootstrap detail</h3>
@@ -1379,10 +1379,10 @@ export default function RecoveryBootstrapTab() {
                             </div>
                           </div>
                           {artifact.checksumSha256 ? (
-                            <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{artifact.checksumSha256}</p>
+                            <p className="mt-2 break-all font-mono chart-legend-xs text-muted-foreground">{artifact.checksumSha256}</p>
                           ) : null}
                           {(artifact.signingKeyId || artifact.signedAt || artifact.status === 'legacy_unsigned') ? (
-                            <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                            <div className="mt-2 space-y-1 chart-legend-xs text-muted-foreground">
                               <p>
                                 Signing: {artifact.status === 'legacy_unsigned'
                                   ? 'Unsigned legacy bundle'
@@ -1489,10 +1489,10 @@ export default function RecoveryBootstrapTab() {
                             </div>
                           </div>
                           {artifact.checksumSha256 ? (
-                            <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{artifact.checksumSha256}</p>
+                            <p className="mt-2 break-all font-mono chart-legend-xs text-muted-foreground">{artifact.checksumSha256}</p>
                           ) : null}
                           {(artifact.signingKeyId || artifact.signedAt) ? (
-                            <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                            <div className="mt-2 space-y-1 chart-legend-xs text-muted-foreground">
                               <p>Signing: {artifact.signatureFormat ?? 'signed'} via {artifact.signingKeyId ?? 'unknown key'}</p>
                               {artifact.signedAt ? <p>Signed at: {formatTime(artifact.signedAt)}</p> : null}
                             </div>
@@ -1528,7 +1528,7 @@ export default function RecoveryBootstrapTab() {
                       <DetailLine label="Restored files" value={selectedToken.linkedRestoreJob?.restoredFiles ?? '-'} />
                       <DetailLine label="Restored size" value={selectedToken.linkedRestoreJob?.restoredSize ?? '-'} />
                       <DetailLine label="Completed" value={selectedToken.linkedRestoreJob?.completedAt ? formatTime(selectedToken.linkedRestoreJob.completedAt) : '-'} />
-                      <DetailLine label="Restore result" value={<pre className="whitespace-pre-wrap break-words text-xs text-foreground">{renderJson(selectedToken.restoreResult)}</pre>} />
+                      <DetailLine label="Restore result" value={<pre className="whitespace-pre-wrap wrap-break-word text-xs text-foreground">{renderJson(selectedToken.restoreResult)}</pre>} />
                     </div>
                   ) : (
                     <p className="mt-3 text-sm text-muted-foreground">No linked restore job or result has been loaded for this token yet.</p>
@@ -1560,7 +1560,7 @@ export default function RecoveryBootstrapTab() {
 
                     <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       <DetailLine label="Provider type" value={selectedBootstrap.providerType ?? '-'} />
-                      <DetailLine label="Target config" value={<pre className="whitespace-pre-wrap break-words text-xs">{renderJson(selectedBootstrap.targetConfig)}</pre>} />
+                      <DetailLine label="Target config" value={<pre className="whitespace-pre-wrap wrap-break-word text-xs">{renderJson(selectedBootstrap.targetConfig)}</pre>} />
                       <DetailLine label="Backup config" value={selectedBootstrap.backupConfig?.name ?? selectedBootstrap.backupConfig?.id ?? '-'} />
                       <DetailLine label="Snapshot label" value={selectedBootstrap.snapshot?.label ?? selectedBootstrap.snapshot?.id ?? '-'} />
                       <DetailLine label="Snapshot time" value={selectedBootstrap.snapshot?.timestamp ? formatTime(selectedBootstrap.snapshot.timestamp) : '-'} />
@@ -1580,7 +1580,7 @@ export default function RecoveryBootstrapTab() {
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -1619,7 +1619,7 @@ export default function RecoveryBootstrapTab() {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-lg font-semibold text-foreground">Filter catalog</h3>
@@ -1643,7 +1643,7 @@ export default function RecoveryBootstrapTab() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search token, snapshot, device..."
-                  className="w-full bg-transparent outline-none"
+                  className="w-full bg-transparent outline-hidden"
                 />
               </div>
 
@@ -1657,7 +1657,7 @@ export default function RecoveryBootstrapTab() {
                     id="recovery-bootstrap-status"
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value as TokenStatusFilter)}
-                    className="w-full bg-transparent outline-none"
+                    className="w-full bg-transparent outline-hidden"
                   >
                     <option value="all">All statuses</option>
                     <option value="active">Active</option>
@@ -1677,7 +1677,7 @@ export default function RecoveryBootstrapTab() {
                     id="recovery-bootstrap-type"
                     value={restoreTypeFilter}
                     onChange={(e) => setRestoreTypeFilter(e.target.value as RestoreTypeFilter)}
-                    className="w-full bg-transparent outline-none"
+                    className="w-full bg-transparent outline-hidden"
                   >
                     <option value="all">All restore types</option>
                     <option value="bare_metal">Bare metal</option>
@@ -1689,7 +1689,7 @@ export default function RecoveryBootstrapTab() {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-foreground">Token catalog</h3>
               <div className="text-xs text-muted-foreground">
@@ -1743,7 +1743,7 @@ export default function RecoveryBootstrapTab() {
                           <td className="py-3 pr-4 text-muted-foreground">
                             <div className="space-y-1">
                               <p className="font-mono text-xs text-foreground">{token.snapshotId ?? '-'}</p>
-                              <p className="text-[11px]">{token.createdAt ? formatTime(token.createdAt) : '-'}</p>
+                              <p className="chart-legend-xs">{token.createdAt ? formatTime(token.createdAt) : '-'}</p>
                             </div>
                           </td>
                           <td className="py-3 pr-4 text-muted-foreground">

@@ -26,7 +26,7 @@ export default function ForgotPasswordPage() {
 
   if (submitted) {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-2 text-center">
           <StatusIcon variant="success" />
           <h2 className="text-lg font-semibold">Check your email</h2>

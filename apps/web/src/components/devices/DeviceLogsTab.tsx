@@ -204,7 +204,7 @@ export default function DeviceLogsTab({ deviceId, timezone, osType }: DeviceLogs
   return (
     <div className="space-y-4">
       {/* Filters */}
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex items-center gap-2 mb-3">
           <Filter className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Filters</span>
@@ -337,21 +337,21 @@ export default function DeviceLogsTab({ deviceId, timezone, osType }: DeviceLogs
 
       {/* Log entries */}
       {loading ? (
-        <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+        <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
           <div className="text-center">
             <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
             <p className="mt-3 text-sm text-muted-foreground">Loading device logs...</p>
           </div>
         </div>
       ) : logs.length === 0 ? (
-        <div className="rounded-lg border bg-card py-12 text-center shadow-sm">
+        <div className="rounded-lg border bg-card py-12 text-center shadow-xs">
           <ScrollText className="mx-auto h-8 w-8 text-muted-foreground" />
           <p className="mt-3 text-sm text-muted-foreground">
             {hasFilters ? 'No logs match the selected filters.' : 'No device logs recorded yet.'}
           </p>
         </div>
       ) : (
-        <div className="rounded-lg border bg-card shadow-sm divide-y">
+        <div className="rounded-lg border bg-card shadow-xs divide-y">
           {logs.map((log) => {
             const lc = levelConfig[log.level] ?? levelConfig.info;
             const cc = categoryConfig[log.category] ?? categoryConfig.system;

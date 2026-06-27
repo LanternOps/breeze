@@ -172,7 +172,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
   );
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -192,14 +192,14 @@ export default function ThreatList({ timezone }: ThreatListProps) {
               placeholder="Search by threat name"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div className="flex flex-wrap gap-2">
             <select
               value={severityFilter}
               onChange={(event) => setSeverityFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All severities</option>
               <option value="low">Low</option>
@@ -210,7 +210,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
             <select
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All statuses</option>
               <option value="active">Active</option>
@@ -220,7 +220,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
             <select
               value={deviceFilter}
               onChange={(event) => setDeviceFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All devices</option>
               {deviceOptions.map((device) => (
@@ -235,14 +235,14 @@ export default function ThreatList({ timezone }: ThreatListProps) {
                 type="date"
                 value={startDate}
                 onChange={(event) => setStartDate(event.target.value)}
-                className="bg-transparent text-sm focus:outline-none"
+                className="bg-transparent text-sm focus:outline-hidden"
               />
               <span className="text-muted-foreground">to</span>
               <input
                 type="date"
                 value={endDate}
                 onChange={(event) => setEndDate(event.target.value)}
-                className="bg-transparent text-sm focus:outline-none"
+                className="bg-transparent text-sm focus:outline-hidden"
               />
             </div>
             <button

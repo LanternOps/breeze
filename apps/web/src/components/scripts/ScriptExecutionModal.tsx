@@ -246,7 +246,7 @@ export default function ScriptExecutionModal({
             <select
               value={runAs}
               onChange={e => setRunAs(e.target.value as 'system' | 'user')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-80"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-80"
             >
               <option value="system">System</option>
               <option value="user">Logged-in user</option>
@@ -300,14 +300,14 @@ export default function ScriptExecutionModal({
                   placeholder="Search by hostname..."
                   value={query}
                   onChange={e => setQuery(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               {sites.length > 0 && (
                 <select
                   value={siteFilter}
                   onChange={e => setSiteFilter(e.target.value)}
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="all">All Sites</option>
                   {sites.map(site => (
@@ -320,7 +320,7 @@ export default function ScriptExecutionModal({
               <select
                 value={statusFilter}
                 onChange={e => setStatusFilter(e.target.value)}
-                className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="all">All Status</option>
                 <option value="online">Online</option>

@@ -485,7 +485,7 @@ export default function DeploymentWizard() {
 
   if (deploymentComplete) {
     return (
-      <div className="rounded-lg border bg-card p-6 text-center shadow-sm space-y-4">
+      <div className="rounded-lg border bg-card p-6 text-center shadow-xs space-y-4">
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20">
           <CheckCircle className="h-8 w-8 text-emerald-500" />
         </div>
@@ -521,7 +521,7 @@ export default function DeploymentWizard() {
                 placeholder="Search software..."
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-3">
@@ -566,7 +566,7 @@ export default function DeploymentWizard() {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center gap-2">
               <Server className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-semibold">Selected software</h3>
@@ -584,7 +584,7 @@ export default function DeploymentWizard() {
                       <select
                         value={selectedVersionId}
                         onChange={(event) => setSelectedVersionId(event.target.value)}
-                        className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         {selectedSoftware.versions.map((version) => (
                           <option key={version.id} value={version.id}>
@@ -697,7 +697,7 @@ export default function DeploymentWizard() {
         <div>
           {targetModeToggle}
           <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-            <div className="rounded-lg border bg-card p-5 shadow-sm">
+            <div className="rounded-lg border bg-card p-5 shadow-xs">
               <h3 className="text-sm font-semibold">Organization targets</h3>
               <p className="text-xs text-muted-foreground">Select groups or devices for deployment.</p>
               <div className="mt-4 space-y-4">
@@ -713,7 +713,7 @@ export default function DeploymentWizard() {
               </div>
             </div>
             <div className="space-y-4">
-              <div className="rounded-lg border bg-card p-5 shadow-sm">
+              <div className="rounded-lg border bg-card p-5 shadow-xs">
                 <h3 className="text-sm font-semibold">Selected targets</h3>
                 <p className="mt-2 text-2xl font-semibold">{targetSummary.headline}</p>
                 <p className="text-xs text-muted-foreground">{targetSummary.detail}</p>
@@ -729,7 +729,7 @@ export default function DeploymentWizard() {
 
     if (activeStep === 'configure') {
       return (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <CalendarClock className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold">Deployment schedule</h3>
@@ -759,7 +759,7 @@ export default function DeploymentWizard() {
                 type="datetime-local"
                 value={scheduledAt}
                 onChange={(event) => setScheduledAt(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           )}
@@ -774,7 +774,7 @@ export default function DeploymentWizard() {
 
     return (
       <div className="space-y-4">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <ClipboardList className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold">Review deployment</h3>
@@ -859,7 +859,7 @@ export default function DeploymentWizard() {
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           {steps.map((step, index) => {
             const isActive = index === activeStepIndex;

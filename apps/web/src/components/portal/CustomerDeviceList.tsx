@@ -15,7 +15,7 @@ const statusBadge: Record<CustomerDeviceStatus, string> = {
 
 export default function CustomerDeviceList({ devices, onSelect }: CustomerDeviceListProps) {
   return (
-    <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+    <div className="overflow-hidden rounded-lg border bg-card shadow-xs">
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div>
           <h2 className="text-sm font-semibold text-foreground">My Devices</h2>

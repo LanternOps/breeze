@@ -316,7 +316,7 @@ export default function SecurityIntegration() {
 
       {/* Org scope, partner not connected: SentinelOne is partner-level. */}
       {!isPartnerView && !partnerConnected && (
-        <div className="rounded-xl border bg-card p-8 text-center shadow-sm" data-testid="s1-org-not-connected">
+        <div className="rounded-xl border bg-card p-8 text-center shadow-xs" data-testid="s1-org-not-connected">
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <Unplug className="h-5 w-5" />
           </div>
@@ -337,7 +337,7 @@ export default function SecurityIntegration() {
 
       {/* Partner connection form */}
       {isPartnerView && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-connection">
+        <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-connection">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold">Partner connection</h2>
@@ -356,7 +356,7 @@ export default function SecurityIntegration() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="My S1 Tenant"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                 data-testid="s1-name"
               />
             </div>
@@ -367,7 +367,7 @@ export default function SecurityIntegration() {
                 value={managementUrl}
                 onChange={(e) => setManagementUrl(e.target.value)}
                 placeholder="https://your-tenant.sentinelone.net"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                 data-testid="s1-management-url"
               />
             </div>
@@ -382,7 +382,7 @@ export default function SecurityIntegration() {
                   value={apiToken}
                   onChange={(e) => setApiToken(e.target.value)}
                   placeholder={integration ? '••••••••••••••••' : 'Paste your API token'}
-                  className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                   data-testid="s1-api-token"
                 />
                 <button
@@ -437,7 +437,7 @@ export default function SecurityIntegration() {
       {/* Sync status + coverage (any scope, once connected) */}
       {integration && (
         <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-          <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-sync-status">
+          <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-sync-status">
             <div className="flex items-center justify-between gap-4">
               <h2 className="text-lg font-semibold">Sync status</h2>
               {syncStatusBadge(integration)}
@@ -454,7 +454,7 @@ export default function SecurityIntegration() {
           </div>
 
           {summary && (
-            <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-coverage">
+            <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-coverage">
               <h2 className="text-lg font-semibold">Coverage</h2>
               <div className="mt-4 grid grid-cols-2 gap-4">
                 <Metric label="S1 Agents" value={summary.totalAgents ?? 0} />
@@ -471,7 +471,7 @@ export default function SecurityIntegration() {
 
       {/* Site → organization mapping (partner scope, once connected) */}
       {isPartnerView && integration && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm" data-testid="s1-mapping">
+        <div className="rounded-xl border bg-card p-6 shadow-xs" data-testid="s1-mapping">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold">Site mapping</h2>
@@ -522,7 +522,7 @@ export default function SecurityIntegration() {
                         value={site.mappedOrgId ?? ''}
                         onChange={(e) => void handleMap(site.s1SiteId, e.target.value || null)}
                         disabled={mappingSaving[site.s1SiteId]}
-                        className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                        className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                         data-testid={`s1-site-map-${site.s1SiteId}`}
                         aria-label={`Map ${site.s1SiteName || site.s1SiteId} to a Breeze organization`}
                       >

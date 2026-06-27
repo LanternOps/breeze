@@ -55,7 +55,7 @@ export default function BreezeDefaultsPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     );
@@ -88,7 +88,7 @@ export default function BreezeDefaultsPage() {
         {features.map((f) => {
           const settings = summarize(f.inlineSettings);
           return (
-            <div key={f.featureType} className="rounded-lg border bg-card p-5 shadow-sm">
+            <div key={f.featureType} className="rounded-lg border bg-card p-5 shadow-xs">
               <div className="flex items-start justify-between gap-2">
                 <h4 className="font-semibold">{f.label}</h4>
                 <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${f.applied ? 'bg-primary/10 text-primary' : 'bg-muted/50 text-muted-foreground'}`}>

@@ -310,7 +310,7 @@ export default function ScriptForm({
           skipGuardRef.current = false;
         }
       })}
-      className="space-y-8 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-8 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Availability picker — partner-scope users with >1 org. On create it
           sets the initial scope; on edit it re-scopes the script (move org→org
@@ -349,7 +349,7 @@ export default function ScriptForm({
               </label>
               <select
                 id="script-org"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('orgId')}
               >
                 <option value="">Select an organization</option>
@@ -371,7 +371,7 @@ export default function ScriptForm({
           <input
             id="script-name"
             placeholder="Clear Temp Files"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -383,7 +383,7 @@ export default function ScriptForm({
           </label>
           <select
             id="script-category"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('category')}
           >
             {categoryOptions.map(cat => (
@@ -403,7 +403,7 @@ export default function ScriptForm({
             id="script-description"
             placeholder="Describe what this script does..."
             rows={2}
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
             {...register('description')}
           />
         </div>
@@ -414,7 +414,7 @@ export default function ScriptForm({
           </label>
           <select
             id="script-language"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('language')}
           >
             {languageOptions.map(lang => (
@@ -498,7 +498,7 @@ export default function ScriptForm({
                     }}
                   />
                 ) : (
-                  <div className="flex items-center justify-center h-[600px] bg-[#1e1e1e]">
+                  <div className="flex items-center justify-center u-h-px-600 bg-[#1e1e1e]">
                     <div className="text-center text-white/60">
                       {editorLoadError ? (
                         <>
@@ -548,18 +548,18 @@ export default function ScriptForm({
                 <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Name</label>
-                    <input placeholder="paramName" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.name`)} />
+                    <input placeholder="paramName" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.name`)} />
                     {errors.parameters?.[index]?.name && <p className="text-xs text-destructive">{errors.parameters[index]?.name?.message}</p>}
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Type</label>
-                    <select className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.type`)}>
+                    <select className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.type`)}>
                       {parameterTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Default Value</label>
-                    <input placeholder="Default" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.defaultValue`)} />
+                    <input placeholder="Default" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.defaultValue`)} />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">Required</label>
@@ -571,7 +571,7 @@ export default function ScriptForm({
                   {watchParameters?.[index]?.type === 'select' && (
                     <div className="space-y-1 sm:col-span-2 md:col-span-4">
                       <label className="text-xs font-medium text-muted-foreground">Options (comma-separated)</label>
-                      <input placeholder="option1, option2, option3" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.options`)} />
+                      <input placeholder="option1, option2, option3" className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.options`)} />
                     </div>
                   )}
                 </div>
@@ -598,13 +598,13 @@ export default function ScriptForm({
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="timeout-seconds" className="text-sm font-medium">Timeout (seconds)</label>
-            <input id="timeout-seconds" type="number" min={1} max={86400} className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" {...register('timeoutSeconds')} />
+            <input id="timeout-seconds" type="number" min={1} max={86400} className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('timeoutSeconds')} />
             {errors.timeoutSeconds && <p className="text-sm text-destructive">{errors.timeoutSeconds.message}</p>}
             <p className="text-xs text-muted-foreground">Script is killed after this duration. Default 300s (5 min) is suitable for most tasks.</p>
           </div>
           <div className="space-y-2">
             <label htmlFor="run-as" className="text-sm font-medium">Run As</label>
-            <select id="run-as" className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" {...register('runAs')}>
+            <select id="run-as" className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('runAs')}>
               {runAsOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
             </select>
             {errors.runAs && <p className="text-sm text-destructive">{errors.runAs.message}</p>}
@@ -644,7 +644,7 @@ export default function ScriptForm({
                     inputMode="numeric"
                     pattern="[0-9]*"
                     placeholder="e.g. 1"
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`exitCodeSeverityMapping.${index}.exitCode`)}
                   />
                   {errors.exitCodeSeverityMapping?.[index]?.exitCode && (
@@ -656,7 +656,7 @@ export default function ScriptForm({
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-muted-foreground">Severity</label>
                   <select
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`exitCodeSeverityMapping.${index}.severity`)}
                   >
                     {severityOptions.map(opt => (

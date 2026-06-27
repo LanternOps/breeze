@@ -185,14 +185,14 @@ function NamedMultiSelect({ label, options, condition, onChange, testId }: Named
           value={q}
           onChange={e => setQ(e.target.value)}
           placeholder={`Search ${label.toLowerCase()}…`}
-          className="flex-1 bg-transparent text-xs outline-none"
+          className="flex-1 bg-transparent text-xs outline-hidden"
           data-testid={`${testId}-search`}
         />
       </div>
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-1" data-testid={`${testId}-selected`}>
           {selected.map(id => (
-            <span key={id} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px]">
+            <span key={id} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 chart-legend-xs">
               {byId.get(id) ?? id.slice(0, 8)}
               <button
                 type="button"
@@ -287,7 +287,7 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-1" data-testid="filter-software-selected">
           {selected.map(n => (
-            <span key={n} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px]">
+            <span key={n} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 chart-legend-xs">
               {n}
               <button
                 type="button"
@@ -325,7 +325,7 @@ function SoftwareMultiSelect({ field, condition, onChange, options, optionCounts
               onChange={e => { setQ(e.target.value); onSearch?.(e.target.value); }}
               placeholder="Search software…"
               data-testid="filter-software-search"
-              className="flex-1 bg-transparent text-xs outline-none"
+              className="flex-1 bg-transparent text-xs outline-hidden"
             />
           </div>
           <ul className="max-h-40 overflow-y-auto rounded border">

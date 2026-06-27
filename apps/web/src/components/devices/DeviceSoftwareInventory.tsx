@@ -309,7 +309,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading software inventory...</p>
@@ -334,7 +334,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Package className="h-4 w-4 text-muted-foreground" />
@@ -365,7 +365,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
             placeholder="Search by name, publisher, version..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20"
           />
         </div>
 
@@ -398,7 +398,7 @@ export default function DeviceSoftwareInventory({ deviceId, timezone, osType }: 
             setPublisherFilter(e.target.value);
             setCurrentPage(1);
           }}
-          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 max-w-[200px]"
+          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20 max-w-[200px]"
         >
           <option value="all">All Publishers ({publishers.length})</option>
           {publishers.map(pub => (

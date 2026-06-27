@@ -190,7 +190,7 @@ export default function AlertRuleForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Basic Information */}
       <div className="grid gap-6 md:grid-cols-2">
@@ -201,7 +201,7 @@ export default function AlertRuleForm({
           <input
             id="rule-name"
             placeholder="High CPU Alert"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -247,7 +247,7 @@ export default function AlertRuleForm({
             id="rule-description"
             placeholder="Describe what this rule monitors..."
             rows={2}
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
             {...register('description')}
           />
         </div>
@@ -287,7 +287,7 @@ export default function AlertRuleForm({
             <div className="space-y-2">
               <label className="text-sm font-medium">Target Type</label>
               <select
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('targetType')}
               >
                 {targetTypeOptions.map(opt => (
@@ -388,7 +388,7 @@ export default function AlertRuleForm({
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">Type</label>
                       <select
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`conditions.${index}.type`)}
                       >
                         {conditionTypeOptions.map(opt => (
@@ -404,7 +404,7 @@ export default function AlertRuleForm({
                         <div className="space-y-1">
                           <label className="text-xs font-medium text-muted-foreground">Metric</label>
                           <select
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.metric`)}
                           >
                             {metricOptions.map(opt => (
@@ -417,7 +417,7 @@ export default function AlertRuleForm({
                         <div className="space-y-1">
                           <label className="text-xs font-medium text-muted-foreground">Operator</label>
                           <select
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.operator`)}
                           >
                             {operatorOptions.map(opt => (
@@ -433,7 +433,7 @@ export default function AlertRuleForm({
                             type="number"
                             min={0}
                             max={100}
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.value`)}
                           />
                         </div>
@@ -449,7 +449,7 @@ export default function AlertRuleForm({
                           type="number"
                           min={1}
                           placeholder="5"
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`conditions.${index}.duration`)}
                         />
                         <p className="text-xs text-muted-foreground">
@@ -464,7 +464,7 @@ export default function AlertRuleForm({
                           <label className="text-xs font-medium text-muted-foreground">Field Name</label>
                           <input
                             placeholder="custom_field"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.field`)}
                           />
                         </div>
@@ -472,7 +472,7 @@ export default function AlertRuleForm({
                           <label className="text-xs font-medium text-muted-foreground">Condition</label>
                           <input
                             placeholder="value > 100"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.customCondition`)}
                           />
                         </div>
@@ -563,7 +563,7 @@ export default function AlertRuleForm({
               type="number"
               min={1}
               max={1440}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('cooldownMinutes')}
             />
             {errors.cooldownMinutes && (

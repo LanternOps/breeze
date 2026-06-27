@@ -92,7 +92,7 @@ export default function PeripheralActivityLog({ deviceId, limit: propLimit }: Pe
         <select
           value={filterEventType}
           onChange={(e) => { setFilterEventType(e.target.value); setOffset(0); }}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="">All Events</option>
           <option value="connected">Connected</option>
@@ -105,25 +105,25 @@ export default function PeripheralActivityLog({ deviceId, limit: propLimit }: Pe
           value={filterPeripheralType}
           onChange={(e) => { setFilterPeripheralType(e.target.value); setOffset(0); }}
           placeholder="Peripheral type"
-          className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           value={filterVendor}
           onChange={(e) => { setFilterVendor(e.target.value); setOffset(0); }}
           placeholder="Vendor"
-          className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           type="date"
           value={filterFrom}
           onChange={(e) => { setFilterFrom(e.target.value); setOffset(0); }}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           type="date"
           value={filterTo}
           onChange={(e) => { setFilterTo(e.target.value); setOffset(0); }}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <button
           type="button"
@@ -140,7 +140,7 @@ export default function PeripheralActivityLog({ deviceId, limit: propLimit }: Pe
         </div>
       )}
 
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />

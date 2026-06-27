@@ -145,7 +145,7 @@ export default function AdminAuditPage() {
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
         <div className="relative w-full lg:w-64">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input type="search" placeholder="Search devices or users..." value={search} onChange={(e) => setSearch(e.target.value)} className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+          <input type="search" placeholder="Search devices or users..." value={search} onChange={(e) => setSearch(e.target.value)} className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" />
         </div>
         <select value={issueFilter} onChange={(e) => setIssueFilter(e.target.value)} className="h-10 rounded-md border bg-background px-3 text-sm">
           <option value="">All</option>
@@ -162,7 +162,7 @@ export default function AdminAuditPage() {
         </select>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+      <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -193,7 +193,7 @@ export default function AdminAuditPage() {
                           {d.hasIssues ? (
                             <div className="flex flex-wrap gap-1">
                               {d.issueTypes.map((issue) => (
-                                <span key={issue} className={cn('inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold', issueBadge[issue] ?? '')}>
+                                <span key={issue} className={cn('inline-flex rounded-full border px-2 py-0.5 chart-legend-xs font-semibold', issueBadge[issue] ?? '')}>
                                   {issueLabel[issue] ?? issue}
                                 </span>
                               ))}
@@ -222,7 +222,7 @@ export default function AdminAuditPage() {
                                   <td className="py-1 font-medium">{a.username}</td>
                                   <td className="py-1">
                                     {a.isBuiltIn ? (
-                                      <span className="inline-flex rounded border bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium">Built-in</span>
+                                      <span className="inline-flex rounded border bg-muted/50 px-1.5 py-0.5 chart-legend-xs font-medium">Built-in</span>
                                     ) : (
                                       <span className="text-muted-foreground">Custom</span>
                                     )}
@@ -236,7 +236,7 @@ export default function AdminAuditPage() {
                                     {a.issues.length > 0 ? (
                                       <div className="flex flex-wrap gap-1">
                                         {a.issues.map((issue) => (
-                                          <span key={issue} className={cn('inline-flex rounded-full border px-1.5 py-0.5 text-[11px] font-semibold', issueBadge[issue] ?? '')}>
+                                          <span key={issue} className={cn('inline-flex rounded-full border px-1.5 py-0.5 chart-legend-xs font-semibold', issueBadge[issue] ?? '')}>
                                             {issueLabel[issue] ?? issue}
                                           </span>
                                         ))}

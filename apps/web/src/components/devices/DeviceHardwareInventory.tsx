@@ -165,7 +165,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading hardware inventory...</p>
@@ -192,7 +192,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
   return (
     <div className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Cpu className="h-4 w-4" />
             CPU
@@ -204,7 +204,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
           </p>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <MemoryStick className="h-4 w-4" />
             Memory
@@ -213,7 +213,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
           <p className="mt-1 text-sm text-muted-foreground">Total installed RAM</p>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <HardDrive className="h-4 w-4" />
             Storage
@@ -224,7 +224,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold">Disk Drives</h3>
           <div className="mt-4 overflow-hidden rounded-md border">
             <table className="min-w-full divide-y">
@@ -262,7 +262,7 @@ export default function DeviceHardwareInventory({ deviceId }: DeviceHardwareInve
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold">Network Adapters</h3>
           <div className="mt-4 space-y-3">
             {adapters.length === 0 ? (

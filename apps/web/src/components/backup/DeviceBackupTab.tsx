@@ -357,7 +357,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
       )}
 
       {/* Status Header */}
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-4">
             {statusCfg && lastJobStatus ? (
@@ -408,7 +408,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
       </div>
 
       {/* Job History */}
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         <h3 className="mb-4 font-semibold">Job History</h3>
         {recentJobs.length === 0 ? (
           <p className="text-sm text-muted-foreground">
@@ -481,7 +481,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
 
       {/* VSS Status */}
       {showVssStatus && (
-        <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center justify-between gap-3">
             <h3 className="font-semibold">VSS Status <AlphaBadge /></h3>
             <span className="text-xs text-muted-foreground">Latest backup job</span>
@@ -538,7 +538,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
 
       {/* Snapshots */}
       {snapshots.length > 0 && (
-        <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="font-semibold">Restore Points</h3>

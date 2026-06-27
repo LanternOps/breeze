@@ -233,7 +233,7 @@ export default function C2CDashboard() {
 
       {consentSuccess && (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
-          <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
           {consentSuccess}
           <button type="button" onClick={() => setConsentSuccess(undefined)} className="ml-auto text-emerald-600 hover:text-emerald-800 dark:text-emerald-400">
             &times;
@@ -243,7 +243,7 @@ export default function C2CDashboard() {
 
       {consentError && (
         <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
-          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          <AlertTriangle className="h-4 w-4 shrink-0" />
           M365 consent failed: {consentError}
           <button type="button" onClick={() => setConsentError(undefined)} className="ml-auto text-red-600 hover:text-red-800 dark:text-red-400">
             &times;

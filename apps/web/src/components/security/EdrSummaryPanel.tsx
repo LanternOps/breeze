@@ -71,7 +71,7 @@ export default function EdrSummaryPanel() {
   if (loading) {
     return (
       <div
-        className="rounded-lg border bg-card p-6 shadow-sm"
+        className="rounded-lg border bg-card p-6 shadow-xs"
         data-testid="edr-summary-panel"
       >
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -86,7 +86,7 @@ export default function EdrSummaryPanel() {
 
   return (
     <div
-      className="rounded-lg border bg-card p-6 shadow-sm"
+      className="rounded-lg border bg-card p-6 shadow-xs"
       data-testid="edr-summary-panel"
     >
       <div className="mb-4 flex items-center gap-2">

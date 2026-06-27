@@ -256,7 +256,7 @@ export default function NotificationChannelForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Basic Information */}
       <div className="grid gap-6 md:grid-cols-2">
@@ -267,7 +267,7 @@ export default function NotificationChannelForm({
           <input
             id="channel-name"
             placeholder="Production Alerts"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -354,7 +354,7 @@ export default function NotificationChannelForm({
               <div key={field.id} className="flex items-center gap-2">
                 <input
                   placeholder="email@example.com"
-                  className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register(`emailRecipients.${index}.value`)}
                 />
                 {emailFields.length > 1 && (
@@ -384,7 +384,7 @@ export default function NotificationChannelForm({
               <input
                 id="slack-webhook"
                 placeholder="https://hooks.slack.com/services/..."
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('slackWebhookUrl')}
               />
               <p className="text-xs text-muted-foreground">
@@ -398,7 +398,7 @@ export default function NotificationChannelForm({
               <input
                 id="slack-channel"
                 placeholder="#alerts"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('slackChannel')}
               />
               <p className="text-xs text-muted-foreground">
@@ -420,7 +420,7 @@ export default function NotificationChannelForm({
             <input
               id="teams-webhook"
               placeholder="https://outlook.office.com/webhook/..."
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('teamsWebhookUrl')}
             />
             <p className="text-xs text-muted-foreground">
@@ -443,7 +443,7 @@ export default function NotificationChannelForm({
                 id="pagerduty-key"
                 type="password"
                 placeholder="Enter your PagerDuty integration key"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('pagerdutyIntegrationKey')}
               />
               <p className="text-xs text-muted-foreground">
@@ -456,7 +456,7 @@ export default function NotificationChannelForm({
               </label>
               <select
                 id="pagerduty-severity"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('pagerdutySeverity')}
               >
                 <option value="critical">Critical</option>
@@ -484,7 +484,7 @@ export default function NotificationChannelForm({
                   type="password"
                   placeholder="Leave blank to inherit from partner"
                   maxLength={30}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverToken')}
                 />
                 {errors.pushoverToken?.message ? (
@@ -504,7 +504,7 @@ export default function NotificationChannelForm({
                   type="text"
                   placeholder="Leave blank to inherit from partner"
                   maxLength={30}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverUser')}
                 />
                 {errors.pushoverUser?.message ? (
@@ -526,7 +526,7 @@ export default function NotificationChannelForm({
                   type="text"
                   placeholder="iphone-bdunn"
                   maxLength={25}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverDevice')}
                 />
                 {errors.pushoverDevice?.message && (
@@ -539,7 +539,7 @@ export default function NotificationChannelForm({
                 </label>
                 <select
                   id="pushover-priority"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverPriority', { valueAsNumber: true })}
                 >
                   <option value={-2}>Lowest (no notification UI)</option>
@@ -560,7 +560,7 @@ export default function NotificationChannelForm({
                   id="pushover-sound"
                   type="text"
                   placeholder="pushover"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('pushoverSound')}
                 />
                 <p className="text-xs text-muted-foreground">
@@ -585,7 +585,7 @@ export default function NotificationChannelForm({
                 <input
                   id="webhook-url"
                   placeholder="https://api.example.com/alerts"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('webhookUrl')}
                 />
               </div>
@@ -595,7 +595,7 @@ export default function NotificationChannelForm({
                 </label>
                 <select
                   id="webhook-method"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('webhookMethod')}
                 >
                   <option value="POST">POST</option>
@@ -624,12 +624,12 @@ export default function NotificationChannelForm({
                     <div key={field.id} className="flex items-center gap-2">
                       <input
                         placeholder="Header key"
-                        className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`webhookHeaders.${index}.key`)}
                       />
                       <input
                         placeholder="Header value"
-                        className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`webhookHeaders.${index}.value`)}
                       />
                       <button
@@ -651,7 +651,7 @@ export default function NotificationChannelForm({
             <div className="space-y-2">
               <label className="text-sm font-medium">Authentication</label>
               <select
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('webhookAuthType')}
               >
                 <option value="none">No Authentication</option>
@@ -668,7 +668,7 @@ export default function NotificationChannelForm({
                   </label>
                   <input
                     id="webhook-username"
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register('webhookAuthUsername')}
                   />
                 </div>
@@ -679,7 +679,7 @@ export default function NotificationChannelForm({
                   <input
                     id="webhook-password"
                     type="password"
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register('webhookAuthPassword')}
                   />
                 </div>
@@ -694,7 +694,7 @@ export default function NotificationChannelForm({
                 <input
                   id="webhook-token"
                   type="password"
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register('webhookAuthToken')}
                 />
               </div>
@@ -722,7 +722,7 @@ export default function NotificationChannelForm({
               <div key={field.id} className="flex items-center gap-2">
                 <input
                   placeholder="+1234567890"
-                  className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register(`smsPhoneNumbers.${index}.value`)}
                 />
                 {smsFields.length > 1 && (
@@ -748,7 +748,7 @@ export default function NotificationChannelForm({
               <input
                 id="sms-from"
                 placeholder="+1234567890"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('smsFrom')}
               />
               <p className="text-xs text-muted-foreground">
@@ -763,7 +763,7 @@ export default function NotificationChannelForm({
               <input
                 id="sms-messaging-service"
                 placeholder="MGXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('smsMessagingServiceSid')}
               />
               <p className="text-xs text-muted-foreground">
@@ -794,7 +794,7 @@ export default function NotificationChannelForm({
               id="template-triggered"
               rows={3}
               placeholder="Alert: {{deviceName}} - {{metric}} is {{actualValue}} (threshold: {{operator}} {{threshold}})"
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('templateTriggered')}
             />
           </div>
@@ -806,7 +806,7 @@ export default function NotificationChannelForm({
               id="template-resolved"
               rows={3}
               placeholder="Resolved: {{deviceName}} - {{metric}} has returned to normal"
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('templateResolved')}
             />
           </div>

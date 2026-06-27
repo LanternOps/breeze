@@ -11,7 +11,7 @@ export default function SavedFiltersPage() {
         </p>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <SavedFilterList />
       </div>
     </div>

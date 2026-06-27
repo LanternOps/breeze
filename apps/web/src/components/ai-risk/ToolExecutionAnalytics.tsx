@@ -35,7 +35,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
         <h2 className="mb-4 text-lg font-semibold">Tool Execution Analytics</h2>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="h-64 rounded-lg border bg-card p-4 shadow-sm">
+            <div key={i} className="h-64 rounded-lg border bg-card p-4 shadow-xs">
               <div className="h-full animate-pulse rounded bg-muted/30" />
             </div>
           ))}
@@ -68,13 +68,13 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
       <h2 className="mb-4 text-lg font-semibold">Tool Execution Analytics</h2>
 
       {isEmpty ? (
-        <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground shadow-sm">
+        <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground shadow-xs">
           No tool executions in this time period.
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {/* Executions over time */}
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <h3 className="mb-3 text-sm font-medium text-muted-foreground">
               Executions Over Time
             </h3>
@@ -99,7 +99,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
           </div>
 
           {/* Most used tools */}
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <h3 className="mb-3 text-sm font-medium text-muted-foreground">
               Most Used Tools (Top 10)
             </h3>
@@ -124,7 +124,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
           </div>
 
           {/* Status distribution */}
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <h3 className="mb-3 text-sm font-medium text-muted-foreground">
               Status Distribution
             </h3>
@@ -159,7 +159,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
           </div>
 
           {/* Avg duration by tool */}
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <h3 className="mb-3 text-sm font-medium text-muted-foreground">
               Avg Duration by Tool (ms)
             </h3>

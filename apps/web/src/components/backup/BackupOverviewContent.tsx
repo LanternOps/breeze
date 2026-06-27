@@ -175,7 +175,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
             type="button"
             onClick={handleRunAllClick}
             disabled={runAllLoading}
-            className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium shadow-sm hover:bg-accent disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium shadow-xs hover:bg-accent disabled:opacity-50"
           >
             {runAllLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
             Run all backups
@@ -241,7 +241,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="rounded-lg border bg-card p-5 shadow-sm lg:col-span-2">
+        <div className="rounded-lg border bg-card p-5 shadow-xs lg:col-span-2">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-base font-semibold text-foreground">Recent Jobs</h3>
@@ -309,7 +309,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
           )}
         </div>
 
-        <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-base font-semibold text-foreground">Storage by Provider</h3>
@@ -357,7 +357,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-base font-semibold text-foreground">Devices Needing Backup</h3>
@@ -403,7 +403,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
           </button>
         </div>
 
-        <div className="rounded-lg border bg-card p-5 shadow-sm lg:col-span-2">
+        <div className="rounded-lg border bg-card p-5 shadow-xs lg:col-span-2">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-base font-semibold text-foreground">Attention Needed</h3>

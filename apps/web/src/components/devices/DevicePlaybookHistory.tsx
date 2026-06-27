@@ -121,7 +121,7 @@ function ExecutionRow({
   const catStyle = categoryStyles[playbook?.category ?? ''] ?? 'bg-gray-100 text-gray-600 border-gray-300';
 
   return (
-    <div className="rounded-lg border bg-card shadow-sm">
+    <div className="rounded-lg border bg-card shadow-xs">
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}

@@ -443,7 +443,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
 
   return (
     <div id="snmp-template-editor" className="space-y-6">
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
@@ -487,7 +487,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="text-lg font-semibold">Template details</h3>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
@@ -533,7 +533,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-lg font-semibold">OID list</h3>
@@ -651,7 +651,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start justify-between">
           <div>
             <h3 className="text-lg font-semibold">OID browser</h3>
@@ -674,7 +674,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               value={oidQuery}
               onChange={event => setOidQuery(event.target.value)}
               placeholder="e.g. 1.3.6.1.2.1.1.3.0 or sysUpTime"
-              className="h-10 w-full bg-transparent px-2 text-sm outline-none"
+              className="h-10 w-full bg-transparent px-2 text-sm outline-hidden"
             />
           </div>
         </div>
@@ -721,7 +721,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                     </button>
                   </div>
                 </div>
-                <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                <div className="mt-2 flex items-center gap-2 chart-legend-xs text-muted-foreground">
                   <span className="rounded-full border bg-muted px-2 py-0.5">{result.type}</span>
                   {result.source && <span className="rounded-full border bg-muted px-2 py-0.5">{result.source}</span>}
                 </div>

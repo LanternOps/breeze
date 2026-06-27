@@ -240,13 +240,13 @@ export default function SoftwareCatalog() {
             placeholder="Search software, vendor..."
             value={query}
             onChange={event => setQuery(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <select
           value={category}
           onChange={event => setCategory(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
         >
           <option value="all">All Categories</option>
           {categories.map(item => (
@@ -271,7 +271,7 @@ export default function SoftwareCatalog() {
           {filteredSoftware.map(item => (
             <div
               key={item.id}
-              className="group rounded-lg border bg-card p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
+              className="group rounded-lg border bg-card p-5 shadow-xs transition hover:-translate-y-1 hover:shadow-md"
               role="button"
               tabIndex={0}
               onClick={() => { setDetailTab('details'); setSelectedSoftware(item); }}
@@ -453,7 +453,7 @@ export default function SoftwareCatalog() {
 
       {/* Delete confirmation modal */}
       {confirmDelete && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-destructive/10">
@@ -513,7 +513,7 @@ export default function SoftwareCatalog() {
                   value={addForm.name}
                   onChange={e => setAddForm(prev => ({ ...prev, name: e.target.value }))}
                   placeholder="e.g. Google Chrome"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -523,7 +523,7 @@ export default function SoftwareCatalog() {
                   value={addForm.vendor}
                   onChange={e => setAddForm(prev => ({ ...prev, vendor: e.target.value }))}
                   placeholder="e.g. Google"
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -531,7 +531,7 @@ export default function SoftwareCatalog() {
                 <select
                   value={addForm.category}
                   onChange={e => setAddForm(prev => ({ ...prev, category: e.target.value }))}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="browser">Browser</option>
                   <option value="utility">Utility</option>
@@ -549,7 +549,7 @@ export default function SoftwareCatalog() {
                   value={addForm.description}
                   onChange={e => setAddForm(prev => ({ ...prev, description: e.target.value }))}
                   placeholder="Brief description of the software"
-                  className="mt-2 min-h-[80px] w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 u-min-h-px-80 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div className="flex items-center justify-end gap-2">
@@ -575,7 +575,7 @@ export default function SoftwareCatalog() {
 
       {showDeployWizard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
-          <div className="w-full max-w-4xl rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-4xl rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">Bulk Software Deployment</h2>
               <button

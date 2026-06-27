@@ -303,7 +303,7 @@ export default function NetworkBaselinesPanel({
 
   if (loading && baselines.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-4 text-sm text-muted-foreground">Loading network baselines...</p>
@@ -389,8 +389,8 @@ export default function NetworkBaselinesPanel({
 
   return (
     <>
-    <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Network Baselines</h2>
@@ -499,7 +499,7 @@ export default function NetworkBaselinesPanel({
         />
       </div>
 
-      <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-6 shadow-sm">
+      <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">{editingBaseline ? 'Edit Baseline' : 'Create Baseline'}</h2>
@@ -527,7 +527,7 @@ export default function NetworkBaselinesPanel({
               value={form.siteId}
               onChange={(event) => setForm((previous) => ({ ...previous, siteId: event.target.value }))}
               disabled={!!editingBaseline}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             >
               <option value="">Select site</option>
               {siteOptions.map((site) => (
@@ -546,7 +546,7 @@ export default function NetworkBaselinesPanel({
               onChange={(event) => setForm((previous) => ({ ...previous, subnet: event.target.value }))}
               placeholder="192.168.1.0/24"
               disabled={!!editingBaseline}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
             />
             {editingBaseline && (
               <p className="mt-1 text-xs text-muted-foreground">Site and subnet are immutable after creation.</p>
@@ -571,7 +571,7 @@ export default function NetworkBaselinesPanel({
               max={168}
               value={form.intervalHours}
               onChange={(event) => setForm((previous) => ({ ...previous, intervalHours: Number(event.target.value) || 1 }))}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 

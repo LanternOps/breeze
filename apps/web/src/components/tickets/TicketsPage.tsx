@@ -420,7 +420,7 @@ export default function TicketsPage() {
       // py-1 + leading-tight overrides the @tailwindcss/forms base padding
       // (0.5rem) + 1.5rem line-height that otherwise overflow the fixed h-8
       // box and clip descenders on the displayed value (e.g. "All categories").
-      'h-8 max-w-[180px] rounded-md border bg-background px-2 py-1 text-sm leading-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
+      'h-8 max-w-[180px] rounded-md border bg-background px-2 py-1 text-sm leading-tight focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
       active ? 'text-foreground' : 'text-muted-foreground'
     );
 

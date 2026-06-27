@@ -115,13 +115,13 @@ export default function DeploymentList({ timezone }: DeploymentListProps) {
         <p className="text-sm text-muted-foreground">Monitor progress and manage deployment workflows.</p>
       </div>
 
-      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 shadow-sm lg:flex-row lg:items-end">
+      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 shadow-xs lg:flex-row lg:items-end">
         <div className="flex-1">
           <label className="text-xs font-semibold uppercase text-muted-foreground">Status</label>
           <select
             value={statusFilter}
             onChange={event => setStatusFilter(event.target.value)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All statuses</option>
             <option value="pending">Pending</option>
@@ -137,7 +137,7 @@ export default function DeploymentList({ timezone }: DeploymentListProps) {
           <select
             value={typeFilter}
             onChange={event => setTypeFilter(event.target.value)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All types</option>
             <option value="manual">Manual</option>
@@ -151,7 +151,7 @@ export default function DeploymentList({ timezone }: DeploymentListProps) {
             type="date"
             value={dateFrom}
             onChange={event => setDateFrom(event.target.value)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <div className="flex-1">
@@ -160,12 +160,12 @@ export default function DeploymentList({ timezone }: DeploymentListProps) {
             type="date"
             value={dateTo}
             onChange={event => setDateTo(event.target.value)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Deployment List</h2>

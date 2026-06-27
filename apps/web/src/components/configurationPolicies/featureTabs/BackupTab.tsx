@@ -233,7 +233,7 @@ function PathList({ items, onAdd, onRemove, placeholder, label }: {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAdd())}
           placeholder={placeholder}
-          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <button
           type="button"
@@ -688,7 +688,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
             <select
               value={(targets.consistencyType as string) ?? 'application'}
               onChange={(e) => setTargets({ ...targets, consistencyType: e.target.value })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="application">Application-Consistent (VSS)</option>
               <option value="crash">Crash-Consistent</option>
@@ -705,9 +705,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                 })
               }
               placeholder="VM-Dev-01, VM-Test-02"
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
-            <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated VM names to skip.</p>
+            <p className="mt-1 chart-legend-xs text-muted-foreground">Comma-separated VM names to skip.</p>
           </div>
         </div>
       )}
@@ -725,7 +725,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
             <select
               value={(targets.backupType as string) ?? 'full'}
               onChange={(e) => setTargets({ ...targets, backupType: e.target.value })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="full">Full</option>
               <option value="differential">Differential</option>
@@ -743,9 +743,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                 })
               }
               placeholder="tempdb, model"
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
-            <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated database names to skip.</p>
+            <p className="mt-1 chart-legend-xs text-muted-foreground">Comma-separated database names to skip.</p>
           </div>
         </div>
       )}
@@ -805,7 +805,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                 <select
                   value={selectedConfigId}
                   onChange={(e) => setSelectedConfigId(e.target.value)}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="">Select a backup config...</option>
                   {configs.map((cfg) => (
@@ -901,7 +901,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                 value={newConfigName}
                 onChange={(e) => setNewConfigName(e.target.value)}
                 placeholder="e.g. Production S3 Backups"
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
 
@@ -949,7 +949,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                       value={s3Bucket}
                       onChange={(e) => setS3Bucket(e.target.value)}
                       placeholder="my-backup-bucket"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div>
@@ -958,7 +958,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                       value={s3Region}
                       onChange={(e) => setS3Region(e.target.value)}
                       placeholder="us-east-1"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>
@@ -970,7 +970,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                       onChange={(e) => setS3AccessKey(e.target.value)}
                       placeholder="AKIA..."
                       autoComplete="off"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div>
@@ -981,7 +981,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                       onChange={(e) => setS3SecretKey(e.target.value)}
                       placeholder="Secret key"
                       autoComplete="off"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>
@@ -994,9 +994,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                       value={settings.s3Prefix}
                       onChange={(e) => update('s3Prefix', e.target.value)}
                       placeholder="backups/breeze/"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
-                    <p className="mt-1 text-[11px] text-muted-foreground">Key prefix for organizing objects in the bucket.</p>
+                    <p className="mt-1 chart-legend-xs text-muted-foreground">Key prefix for organizing objects in the bucket.</p>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground">
@@ -1006,9 +1006,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                       value={s3Endpoint}
                       onChange={(e) => setS3Endpoint(e.target.value)}
                       placeholder="https://s3.us-west-002.backblazeb2.com"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
-                    <p className="mt-1 text-[11px] text-muted-foreground">For MinIO, Wasabi, Backblaze B2, etc.</p>
+                    <p className="mt-1 chart-legend-xs text-muted-foreground">For MinIO, Wasabi, Backblaze B2, etc.</p>
                   </div>
                 </div>
               </div>
@@ -1020,9 +1020,9 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                   value={localPath}
                   onChange={(e) => setLocalPath(e.target.value)}
                   placeholder="/var/backups/breeze or \\\\nas\\backups"
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 chart-legend-xs text-muted-foreground">
                   Local disk path, mounted NAS, or UNC network share. Path must be accessible by the agent.
                 </p>
               </div>
@@ -1069,7 +1069,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
                     key={e.pattern}
                     type="button"
                     onClick={() => update('excludePatterns', [...settings.excludePatterns, e.pattern])}
-                    className="rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                    className="rounded-full border px-2.5 py-1 chart-legend-xs text-muted-foreground transition hover:border-primary/40 hover:text-primary"
                   >
                     + {e.label}
                   </button>
@@ -1352,7 +1352,7 @@ export default function BackupTab({ policyId, existingLink, onLinkChanged, linke
               Provider-enforced WORM
             </option>
           </select>
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 chart-legend-xs text-muted-foreground">
             Application-level protection blocks deletion in Breeze cleanup jobs. Provider-enforced WORM requires an S3 config with verified object lock support and still re-validates at snapshot time.
           </p>
         </div>

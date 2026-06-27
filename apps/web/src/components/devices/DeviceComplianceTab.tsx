@@ -95,7 +95,7 @@ export default function DeviceComplianceTab({ deviceId, timezone }: DeviceCompli
     return (
       <div
         data-testid="device-compliance-loading"
-        className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm"
+        className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs"
       >
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
@@ -124,7 +124,7 @@ export default function DeviceComplianceTab({ deviceId, timezone }: DeviceCompli
   }
 
   return (
-    <div data-testid="device-compliance-tab" className="rounded-lg border bg-card p-6 shadow-sm">
+    <div data-testid="device-compliance-tab" className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />

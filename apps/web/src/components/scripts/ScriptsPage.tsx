@@ -426,7 +426,7 @@ export default function ScriptsPage() {
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedScript && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Script</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete <span className="font-medium">{selectedScript.name}</span>?
@@ -480,14 +480,14 @@ export default function ScriptsPage() {
                     placeholder="Search system scripts..."
                     value={libraryQuery}
                     onChange={e => setLibraryQuery(e.target.value)}
-                    className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 {libraryCategories.length > 0 && (
                   <select
                     value={libraryCategoryFilter}
                     onChange={e => setLibraryCategoryFilter(e.target.value)}
-                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="all">All Categories</option>
                     {libraryCategories.map(cat => (

@@ -145,7 +145,7 @@ function OutputSection({
             <p className="text-sm text-muted-foreground italic">No output</p>
           ) : (
             <pre className={cn(
-              'overflow-x-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap break-words',
+              'overflow-x-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap wrap-break-word',
               variant === 'error' ? 'bg-destructive/5 text-destructive' : 'bg-muted/40 text-foreground'
             )}>
               {normalized}

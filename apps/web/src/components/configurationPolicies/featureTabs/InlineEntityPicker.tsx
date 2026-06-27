@@ -97,13 +97,13 @@ export default function InlineEntityPicker({
           className={cn(
             'flex w-full items-center justify-between rounded-md border bg-background px-2',
             height, textSize,
-            'focus:outline-none focus:ring-2 focus:ring-ring'
+            'focus:outline-hidden focus:ring-2 focus:ring-ring'
           )}
         >
           <span className={cn('truncate', selected ? 'text-foreground' : 'text-muted-foreground')}>
             {getButtonLabel()}
           </span>
-          <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
         {value && (
           <button
@@ -123,7 +123,7 @@ export default function InlineEntityPicker({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search..."
-              className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="w-full bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
               autoFocus
             />
           </div>
@@ -153,7 +153,7 @@ export default function InlineEntityPicker({
                     <div className="truncate text-sm font-medium">{option.name}</div>
                     {option.extra && <div className="truncate text-xs text-muted-foreground">{option.extra}</div>}
                   </div>
-                  <span className="ml-2 flex-shrink-0 font-mono text-[10px] text-muted-foreground">
+                  <span className="ml-2 shrink-0 font-mono text-[10px] text-muted-foreground">
                     {option.id.slice(0, 8)}
                   </span>
                 </button>

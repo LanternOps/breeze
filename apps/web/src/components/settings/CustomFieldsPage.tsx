@@ -326,13 +326,13 @@ export default function CustomFieldsPage() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search fields..."
-            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <select
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as CustomFieldType | '')}
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="">All Types</option>
           {FIELD_TYPES.map((type) => (
@@ -466,7 +466,7 @@ export default function CustomFieldsPage() {
                     type="text"
                     value={formName}
                     onChange={(e) => handleNameChange(e.target.value)}
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     placeholder="e.g., Asset Tag"
                   />
                 </div>
@@ -477,7 +477,7 @@ export default function CustomFieldsPage() {
                     value={formFieldKey}
                     onChange={(e) => setFormFieldKey(e.target.value)}
                     disabled={modalMode === 'edit'}
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
                     placeholder="e.g., asset_tag"
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -529,7 +529,7 @@ export default function CustomFieldsPage() {
                             handleDropdownChoiceChange(index, 'label', e.target.value)
                           }
                           placeholder="Label"
-                          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         />
                         <input
                           type="text"
@@ -538,7 +538,7 @@ export default function CustomFieldsPage() {
                             handleDropdownChoiceChange(index, 'value', e.target.value)
                           }
                           placeholder="Value"
-                          className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 w-32 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         />
                         <button
                           type="button"
@@ -574,7 +574,7 @@ export default function CustomFieldsPage() {
                           min: e.target.value ? Number(e.target.value) : undefined
                         })
                       }
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div>
@@ -588,7 +588,7 @@ export default function CustomFieldsPage() {
                           max: e.target.value ? Number(e.target.value) : undefined
                         })
                       }
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>
@@ -607,7 +607,7 @@ export default function CustomFieldsPage() {
                           maxLength: e.target.value ? Number(e.target.value) : undefined
                         })
                       }
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div>
@@ -622,7 +622,7 @@ export default function CustomFieldsPage() {
                         })
                       }
                       placeholder="e.g., ^[A-Z]{2}-\\d{4}$"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>

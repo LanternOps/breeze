@@ -59,14 +59,14 @@ export default function PartnerRegisterForm({
   const passwordErrId = useId();
   const confirmErrId = useId();
 
-  const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+  const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 
   return (
     <form
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Company section */}
       <div>

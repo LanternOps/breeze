@@ -187,7 +187,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
         <p className="text-sm text-muted-foreground">Tune protection settings for device groups.</p>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="grid gap-4 md:grid-cols-2">
           <div>
             <label className="text-xs uppercase text-muted-foreground">Policy name</label>
@@ -195,7 +195,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
               type="text"
               value={policyName}
               onChange={event => setPolicyName(event.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div>
@@ -204,7 +204,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
               type="text"
               value={description}
               onChange={event => setDescription(event.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
         </div>
@@ -212,7 +212,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h3 className="text-base font-semibold">Real-time Protection</h3>
             <div className="mt-4 space-y-3">
               <ToggleRow
@@ -236,7 +236,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-semibold">Scheduled Scans</h3>
               <button
@@ -255,7 +255,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                     disabled={!scheduledEnabled}
                     value={scanMinute}
                     onChange={event => setScanMinute(event.target.value)}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {minuteOptions.map(option => (
                       <option key={option} value={option}>
@@ -270,7 +270,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                     disabled={!scheduledEnabled}
                     value={scanHour}
                     onChange={event => setScanHour(event.target.value)}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {hourOptions.map(option => (
                       <option key={option} value={option}>
@@ -285,7 +285,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                     disabled={!scheduledEnabled}
                     value={scanDayOfMonth}
                     onChange={event => setScanDayOfMonth(event.target.value)}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {dayOfMonthOptions.map(option => (
                       <option key={option} value={option}>
@@ -300,7 +300,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                     disabled={!scheduledEnabled}
                     value={scanDayOfWeek}
                     onChange={event => setScanDayOfWeek(event.target.value)}
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {dayOfWeekOptions.map(option => (
                       <option key={option.value} value={option.value}>
@@ -319,7 +319,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h3 className="text-base font-semibold">Exclusions</h3>
             <p className="text-sm text-muted-foreground">Skip trusted locations during scans.</p>
             <div className="mt-4 flex gap-2">
@@ -328,7 +328,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
                 value={newExclusion}
                 onChange={event => setNewExclusion(event.target.value)}
                 placeholder="Add path or process"
-                className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <button
                 type="button"
@@ -355,7 +355,7 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h3 className="text-base font-semibold">Actions</h3>
             <div className="mt-4 space-y-3">
               <ToggleRow

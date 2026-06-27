@@ -168,7 +168,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search online devices..."
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <button
@@ -184,11 +184,11 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
 
       <div className="rounded-lg border bg-card">
         {loading ? (
-          <div className="flex min-h-[220px] items-center justify-center">
+          <div className="flex u-min-h-px-220 items-center justify-center">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : error ? (
-          <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 p-8 text-center">
+          <div className="flex u-min-h-px-220 flex-col items-center justify-center gap-3 p-8 text-center">
             <p className="text-sm text-red-600">{error}</p>
             <button
               type="button"
@@ -199,7 +199,7 @@ export default function RemoteDeviceLauncherPage({ mode }: RemoteDeviceLauncherP
             </button>
           </div>
         ) : filteredDevices.length === 0 ? (
-          <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 p-8 text-center">
+          <div className="flex u-min-h-px-220 flex-col items-center justify-center gap-3 p-8 text-center">
             <Monitor className="h-8 w-8 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">
               {devices.length === 0

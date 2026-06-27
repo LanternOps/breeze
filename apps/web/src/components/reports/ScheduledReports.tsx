@@ -157,7 +157,7 @@ function RecipientManager({ recipients, onChange, label = 'Recipients' }: Recipi
               setEmail(event.target.value);
               if (error) setError(null);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
         </div>
@@ -207,7 +207,7 @@ type RunHistoryModalProps = {
 export function RunHistoryModal({ schedule, runs, loading, onClose, reportName, timezone }: RunHistoryModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-3xl rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Run History</h2>
@@ -636,7 +636,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Create Schedule</h2>
@@ -653,7 +653,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                 onChange={event =>
                   setCreateForm(prev => ({ ...prev, reportId: event.target.value }))
                 }
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 {reports.length === 0 && <option value="">No reports available</option>}
                 {reports.map(report => (
@@ -673,7 +673,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                     frequency: event.target.value as ScheduleFrequency
                   }))
                 }
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 {frequencyOptions.map(option => (
                   <option key={option.value} value={option.value}>
@@ -688,7 +688,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                 type="time"
                 value={createForm.time}
                 onChange={event => setCreateForm(prev => ({ ...prev, time: event.target.value }))}
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -719,7 +719,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
         </form>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Schedules</h2>
@@ -738,7 +738,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                   setQuery(event.target.value);
                   setCurrentPage(1);
                 }}
-                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
               />
             </div>
             <select
@@ -747,7 +747,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                 setFrequencyFilter(event.target.value as ScheduleFrequency | 'all');
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
             >
               <option value="all">All Frequencies</option>
               {frequencyOptions.map(option => (
@@ -762,7 +762,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                 setStatusFilter(event.target.value as 'all' | 'enabled' | 'paused');
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
             >
               <option value="all">All Status</option>
               <option value="enabled">Active</option>
@@ -853,7 +853,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                             disabled={togglingIds.has(schedule.id)}
                             className="peer sr-only"
                           />
-                          <div className="h-6 w-11 rounded-full bg-muted peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-ring after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:after:translate-x-full peer-disabled:opacity-60" />
+                          <div className="h-6 w-11 rounded-full bg-muted peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-ring after:absolute after:u-left-px-2 after:u-top-px-2 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:after:translate-x-full peer-disabled:opacity-60" />
                         </label>
                       </td>
                       <td className="px-4 py-3">
@@ -959,7 +959,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
 
       {editSchedule && editForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Edit Schedule</h2>
@@ -987,7 +987,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                     onChange={event =>
                       setEditForm(prev => (prev ? { ...prev, reportId: event.target.value } : prev))
                     }
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {reports.length === 0 && <option value="">No reports available</option>}
                     {reports.map(report => (
@@ -1008,7 +1008,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                           : prev
                       )
                     }
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {frequencyOptions.map(option => (
                       <option key={option.value} value={option.value}>
@@ -1025,7 +1025,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
                     onChange={event =>
                       setEditForm(prev => (prev ? { ...prev, time: event.target.value } : prev))
                     }
-                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
               </div>
@@ -1067,7 +1067,7 @@ export default function ScheduledReports({ timezone }: ScheduledReportsProps = {
 
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Schedule</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete{' '}

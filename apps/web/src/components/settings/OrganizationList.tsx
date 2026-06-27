@@ -86,7 +86,7 @@ export default function OrganizationList({
   );
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Organizations</h2>
@@ -100,12 +100,12 @@ export default function OrganizationList({
             placeholder="Search organizations"
             value={query}
             onChange={event => setQuery(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
           <select
             value={statusFilter}
             onChange={event => setStatusFilter(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>

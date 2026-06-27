@@ -95,7 +95,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Template Gallery</h2>
@@ -111,7 +111,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Template Gallery</h2>
@@ -133,7 +133,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Template Gallery</h2>
@@ -147,13 +147,13 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
               value={query}
               onChange={event => setQuery(event.target.value)}
               placeholder="Search templates"
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
             />
           </div>
           <select
             value={categoryFilter}
             onChange={event => setCategoryFilter(event.target.value)}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Categories</option>
             {categories.map(category => (
@@ -165,7 +165,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
           <select
             value={languageFilter}
             onChange={event => setLanguageFilter(event.target.value)}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Languages</option>
             <option value="powershell">PowerShell</option>
@@ -183,7 +183,7 @@ export default function ScriptTemplateGallery({ onUseTemplate }: ScriptTemplateG
           </div>
         ) : (
           filteredTemplates.map(template => (
-            <div key={template.id} className="flex flex-col rounded-lg border bg-background p-4 shadow-sm">
+            <div key={template.id} className="flex flex-col rounded-lg border bg-background p-4 shadow-xs">
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-semibold">{template.name}</h3>

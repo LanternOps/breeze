@@ -145,7 +145,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
   }, [deviceIds, state, onQueryResult]);
 
   return (
-    <div className={cn('rounded-lg border bg-card p-4 shadow-sm', className)}>
+    <div className={cn('rounded-lg border bg-card p-4 shadow-xs', className)}>
       <div className="mb-4">
         <h3 className="text-sm font-semibold">Query Builder</h3>
         <p className="text-xs text-muted-foreground">Configure metrics and aggregation for your dashboard</p>
@@ -156,7 +156,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           <select
             value={state.metricType}
             onChange={event => setState(prev => ({ ...prev, metricType: event.target.value as MetricType }))}
-            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {metricTypeOptions.map(option => (
               <option key={option.value} value={option.value}>
@@ -170,7 +170,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           <select
             value={state.metricName}
             onChange={event => setState(prev => ({ ...prev, metricName: event.target.value }))}
-            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {metricOptions.map(option => (
               <option key={option} value={option}>
@@ -184,7 +184,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           <select
             value={state.aggregation}
             onChange={event => setState(prev => ({ ...prev, aggregation: event.target.value as QueryState['aggregation'] }))}
-            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {aggregationOptions.map(option => (
               <option key={option.value} value={option.value}>
@@ -198,7 +198,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
           <select
             value={state.timeRange}
             onChange={event => setState(prev => ({ ...prev, timeRange: event.target.value as QueryState['timeRange'] }))}
-            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {timeRangeOptions.map(option => (
               <option key={option.value} value={option.value}>
@@ -216,7 +216,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
               type="date"
               value={state.startDate ?? ''}
               onChange={event => setState(prev => ({ ...prev, startDate: event.target.value }))}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </label>
           <label className="space-y-1 text-xs font-medium text-muted-foreground">
@@ -225,7 +225,7 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
               type="date"
               value={state.endDate ?? ''}
               onChange={event => setState(prev => ({ ...prev, endDate: event.target.value }))}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </label>
         </div>

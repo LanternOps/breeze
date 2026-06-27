@@ -32,7 +32,7 @@ export default function BrandHeader({ logoUrl, name, showLabel }: BrandHeaderPro
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex h-[22px] w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-primary/15">
+      <div className="flex u-h-px-22 w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-primary/15">
         {safeLogoUrl ? (
           <img src={safeLogoUrl} alt={`${label} logo`} className="h-full w-full object-contain" />
         ) : (

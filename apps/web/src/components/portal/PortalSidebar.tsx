@@ -82,7 +82,7 @@ export default function PortalSidebar({
                   : 'text-muted-foreground hover:bg-muted hover:text-foreground'
               )}
             >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
+              <item.icon className="h-5 w-5 shrink-0" />
               {!collapsed && <span>{item.name}</span>}
             </a>
           );

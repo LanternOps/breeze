@@ -378,7 +378,7 @@ export default function DeviceFilesystemTab({ deviceId, osType, onOpenFiles }: D
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading disk intelligence...</p>
@@ -389,7 +389,7 @@ export default function DeviceFilesystemTab({ deviceId, osType, onOpenFiles }: D
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <HardDrive className="h-4 w-4 text-muted-foreground" />
@@ -592,7 +592,7 @@ export default function DeviceFilesystemTab({ deviceId, osType, onOpenFiles }: D
       </div>
 
       {cleanupPreview && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-muted-foreground" />
             <h4 className="font-semibold">Latest Cleanup Preview</h4>

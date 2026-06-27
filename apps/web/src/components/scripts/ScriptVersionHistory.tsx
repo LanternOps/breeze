@@ -174,7 +174,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
 
   if (loading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-center py-12">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
@@ -187,7 +187,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
         </div>
@@ -203,7 +203,7 @@ export default function ScriptVersionHistory({ scriptId, timezone }: ScriptVersi
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Version History</h2>

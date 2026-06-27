@@ -155,7 +155,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
   const removeIp = (c: string) => { setIpRestrictions(p => p.filter(x => x !== c)); onDirty(); };
 
   return (
-    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div>
         <h2 className="text-lg font-semibold">Remote Access</h2>
         <p className="text-sm text-muted-foreground">

@@ -179,7 +179,7 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
                 value={secondApprovalToken}
                 onChange={(e) => setSecondApprovalToken(e.target.value)}
                 placeholder="Enter second approval token"
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="flex justify-end gap-2">

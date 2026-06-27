@@ -17,7 +17,7 @@ type DashboardData = {
 
 function StatCard({ label, value, icon, accent }: { label: string; value: number | string; icon: React.ReactNode; accent?: string }) {
   return (
-    <div className="rounded-lg border bg-card p-5 shadow-sm">
+    <div className="rounded-lg border bg-card p-5 shadow-xs">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{label}</p>
         <span className={accent ?? 'text-muted-foreground'}>{icon}</span>
@@ -32,7 +32,7 @@ function BarChart({ data, colorMap, title }: { data: Record<string, number>; col
   const max = Math.max(...entries.map(([, v]) => v), 1);
 
   return (
-    <div className="rounded-lg border bg-card p-5 shadow-sm">
+    <div className="rounded-lg border bg-card p-5 shadow-xs">
       <h3 className="text-sm font-semibold">{title}</h3>
       <div className="mt-4 space-y-3">
         {entries.length === 0 && <p className="text-sm text-muted-foreground">No data yet</p>}
@@ -75,7 +75,7 @@ function PieChart({ data, colorMap, title }: { data: Record<string, number>; col
     .join(', ');
 
   return (
-    <div className="rounded-lg border bg-card p-5 shadow-sm">
+    <div className="rounded-lg border bg-card p-5 shadow-xs">
       <h3 className="text-sm font-semibold">{title}</h3>
       <div className="mt-4 flex items-center gap-6">
         <div

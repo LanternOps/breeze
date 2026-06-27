@@ -302,7 +302,7 @@ export default function AutomationRunHistory({
             <select
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value)}
-              className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All Status</option>
               <option value="success">Success</option>

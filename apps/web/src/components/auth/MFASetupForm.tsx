@@ -81,7 +81,7 @@ export default function MFASetupForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="space-y-3">
         <h2 className="text-lg font-semibold">Set up multi-factor authentication</h2>
@@ -115,7 +115,7 @@ export default function MFASetupForm({
               autoFocus={index === 0}
               inputMode="numeric"
               autoComplete={index === 0 ? 'one-time-code' : 'off'}
-              className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-hidden focus:ring-2 focus:ring-ring"
               maxLength={1}
               value={digit}
               onChange={event => handleChange(index, event.target.value)}

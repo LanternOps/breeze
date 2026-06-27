@@ -326,7 +326,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
               onChange={(e) => setDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))}
               min={1}
               max={1000}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-xs text-muted-foreground">
               How many devices will use this installer.
@@ -374,7 +374,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                   type="text"
                   readOnly
                   value={generatedLink}
-                  className="flex-1 h-9 rounded-md border bg-background px-3 text-xs font-mono focus:outline-none"
+                  className="flex-1 h-9 rounded-md border bg-background px-3 text-xs font-mono focus:outline-hidden"
                   onClick={(e) => (e.target as HTMLInputElement).select()}
                 />
                 <button
@@ -501,7 +501,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                     <button
                       type="button"
                       onClick={() => handleCopyCommand(commands[selectedOS])}
-                      className="flex-shrink-0 p-1 hover:bg-muted rounded"
+                      className="shrink-0 p-1 hover:bg-muted rounded"
                     >
                       <Copy className="h-4 w-4" />
                     </button>
@@ -519,7 +519,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       {/* Token expiration notice */}
       <div className="rounded-md border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm">
         <div className="flex gap-2">
-          <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-blue-600" />
+          <Info className="h-4 w-4 mt-0.5 shrink-0 text-blue-600" />
           <p className="text-blue-700 dark:text-blue-300 text-xs">
             Installers and tokens expire in 24 hours. Need to enroll many devices?
             Generate bulk enrollment keys from <span className="font-medium">Settings &rarr; Enrollment Keys</span> after setup.
@@ -545,7 +545,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           type="button"
           onClick={handleFinish}
           disabled={finishing}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
         >
           {finishing && <Loader2 className="h-4 w-4 animate-spin" />}
           Continue to Dashboard

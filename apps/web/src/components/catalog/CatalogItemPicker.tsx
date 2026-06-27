@@ -80,7 +80,7 @@ export default function CatalogItemPicker({
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
-        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
         data-testid={`${testId}-input`}
       />
       {open && results.length > 0 && (
@@ -108,7 +108,7 @@ export default function CatalogItemPicker({
                 <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${CATALOG_TYPE_CHIP[item.itemType]}`}>
                   {CATALOG_TYPE_LABELS[item.itemType]}
                 </span>
-                {item.sku && <span className="font-mono text-[11px] text-muted-foreground">{item.sku}</span>}
+                {item.sku && <span className="font-mono chart-legend-xs text-muted-foreground">{item.sku}</span>}
                 <span className="tabular-nums text-muted-foreground">{formatMoney(item.unitPrice)}</span>
               </button>
             </li>

@@ -465,7 +465,7 @@ export default function MonitoringIntegration() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-sm">
+        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -503,7 +503,7 @@ export default function MonitoringIntegration() {
                 type="url"
                 value={settings.prometheus.endpointUrl}
                 onChange={event => updateSection('prometheus', { endpointUrl: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
@@ -512,7 +512,7 @@ export default function MonitoringIntegration() {
                 type="text"
                 value={settings.prometheus.metricsPath}
                 onChange={event => updateSection('prometheus', { metricsPath: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
@@ -521,7 +521,7 @@ export default function MonitoringIntegration() {
                 type="text"
                 value={settings.prometheus.scrapeInterval}
                 onChange={event => updateSection('prometheus', { scrapeInterval: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
@@ -530,7 +530,7 @@ export default function MonitoringIntegration() {
                 type="text"
                 value={settings.prometheus.scrapeTimeout}
                 onChange={event => updateSection('prometheus', { scrapeTimeout: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -540,7 +540,7 @@ export default function MonitoringIntegration() {
           )}
         </section>
 
-        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-sm">
+        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -578,7 +578,7 @@ export default function MonitoringIntegration() {
                 type="url"
                 value={settings.grafana.url}
                 onChange={event => updateSection('grafana', { url: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="grid gap-4 md:grid-cols-2">
@@ -588,7 +588,7 @@ export default function MonitoringIntegration() {
                   type="password"
                   value={settings.grafana.apiKey}
                   onChange={event => updateSection('grafana', { apiKey: event.target.value })}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div className="space-y-2">
@@ -597,7 +597,7 @@ export default function MonitoringIntegration() {
                   type="text"
                   value={settings.grafana.orgId}
                   onChange={event => updateSection('grafana', { orgId: event.target.value })}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             </div>
@@ -610,7 +610,7 @@ export default function MonitoringIntegration() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-sm">
+        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -648,7 +648,7 @@ export default function MonitoringIntegration() {
                 type="password"
                 value={settings.pagerDuty.integrationKey}
                 onChange={event => updateSection('pagerDuty', { integrationKey: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
@@ -657,7 +657,7 @@ export default function MonitoringIntegration() {
                 type="text"
                 value={settings.pagerDuty.serviceId}
                 onChange={event => updateSection('pagerDuty', { serviceId: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -667,7 +667,7 @@ export default function MonitoringIntegration() {
           )}
         </section>
 
-        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-sm">
+        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -705,7 +705,7 @@ export default function MonitoringIntegration() {
                 type="password"
                 value={settings.opsGenie.apiKey}
                 onChange={event => updateSection('opsGenie', { apiKey: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
@@ -714,7 +714,7 @@ export default function MonitoringIntegration() {
                 type="text"
                 value={settings.opsGenie.team}
                 onChange={event => updateSection('opsGenie', { team: event.target.value })}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -726,7 +726,7 @@ export default function MonitoringIntegration() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1.3fr_0.7fr]">
-        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-sm">
+        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -773,7 +773,7 @@ export default function MonitoringIntegration() {
                       type="text"
                       value={endpoint.name}
                       onChange={event => updateWebhook(endpoint.id, { name: event.target.value })}
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -782,7 +782,7 @@ export default function MonitoringIntegration() {
                       type="url"
                       value={endpoint.url}
                       onChange={event => updateWebhook(endpoint.id, { url: event.target.value })}
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -829,7 +829,7 @@ export default function MonitoringIntegration() {
                 value={newWebhookName}
                 onChange={event => setNewWebhookName(event.target.value)}
                 placeholder="Cloudwatch bridge"
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
@@ -839,7 +839,7 @@ export default function MonitoringIntegration() {
                 value={newWebhookUrl}
                 onChange={event => setNewWebhookUrl(event.target.value)}
                 placeholder="https://hooks.monitoring.io/breeze"
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="flex items-end">
@@ -855,7 +855,7 @@ export default function MonitoringIntegration() {
           </div>
         </section>
 
-        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-sm">
+        <section className="space-y-5 rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">

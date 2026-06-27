@@ -156,7 +156,7 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
   return (
     <div
       onClick={() => onClick?.(device)}
-      className="group relative cursor-pointer rounded-lg border bg-card p-4 shadow-sm transition hover:border-primary/50 hover:shadow-md"
+      className="group relative cursor-pointer rounded-lg border bg-card p-4 shadow-xs transition hover:border-primary/50 hover:shadow-md"
     >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
@@ -180,7 +180,7 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
               setMenuOpen(!menuOpen);
             }}
             aria-label={`Actions for ${device.hostname}`}
-            className="flex h-8 w-8 items-center justify-center rounded-md opacity-40 transition hover:bg-muted hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-8 w-8 items-center justify-center rounded-md opacity-40 transition hover:bg-muted hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
             <MoreVertical className="h-4 w-4" />
           </button>
@@ -281,7 +281,7 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
               />
             </div>
           ) : (
-            <div className="flex h-8 items-center text-[11px] text-muted-foreground">
+            <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
               {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}
             </div>
           )}
@@ -299,7 +299,7 @@ export default function DeviceCard({ device, timezone, onClick, onAction }: Devi
               />
             </div>
           ) : (
-            <div className="flex h-8 items-center text-[11px] text-muted-foreground">
+            <div className="flex h-8 items-center chart-legend-xs text-muted-foreground">
               {historyState === 'loading' ? 'Loading trend...' : historyState === 'error' ? 'Trend unavailable' : 'No trend data'}
             </div>
           )}

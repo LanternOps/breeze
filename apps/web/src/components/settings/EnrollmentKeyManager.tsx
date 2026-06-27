@@ -508,7 +508,7 @@ export default function EnrollmentKeyManager() {
       {/* Create Modal */}
       {modalMode === 'create' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Create Enrollment Key</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Generate a new key for agent enrollment.
@@ -522,7 +522,7 @@ export default function EnrollmentKeyManager() {
                   onChange={(e) => setFormName(e.target.value)}
                   placeholder="e.g., Production servers"
                   required
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
               </div>
               <div>
@@ -533,7 +533,7 @@ export default function EnrollmentKeyManager() {
                   onChange={(e) => setFormMaxUsage(e.target.value)}
                   placeholder="Unlimited"
                   min={1}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
                   Maximum number of agents that can enroll with this key.
@@ -545,7 +545,7 @@ export default function EnrollmentKeyManager() {
                   type="datetime-local"
                   value={formExpiresAt}
                   onChange={(e) => setFormExpiresAt(e.target.value)}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
               </div>
               <div className="flex justify-end gap-3 pt-2">
@@ -572,7 +572,7 @@ export default function EnrollmentKeyManager() {
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Enrollment Key</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete{' '}

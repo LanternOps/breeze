@@ -35,7 +35,7 @@ export default function SLAComplianceCard({
   const Icon = statusMeta.icon;
 
   return (
-    <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-sm">
+    <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-xs">
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm font-semibold">SLA Compliance</p>

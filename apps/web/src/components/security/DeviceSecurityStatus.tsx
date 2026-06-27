@@ -96,7 +96,7 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
 
   if (loading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading security status...
@@ -107,7 +107,7 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
 
   if (!data) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <p className="text-sm text-muted-foreground">No device security data available.</p>
       </div>
     );
@@ -128,7 +128,7 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
 
   if (!showAvActions) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         {error && (
           <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
             {error}
@@ -171,7 +171,7 @@ export default function DeviceSecurityStatus({ deviceId, showAvActions = false }
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {error}

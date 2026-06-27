@@ -275,7 +275,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
   return (
     <div
       className={cn(
-        'flex h-full min-h-0 flex-col rounded-lg border bg-card shadow-sm overflow-hidden',
+        'flex h-full min-h-0 flex-col rounded-lg border bg-card shadow-xs overflow-hidden',
         isFullscreen && 'fixed inset-4 z-50',
         className,
       )}
@@ -353,7 +353,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
         className="flex-1 min-h-0 bg-black overflow-hidden relative flex items-center justify-center"
       >
         {status === 'password_required' && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-10">
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-xs z-10">
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -380,7 +380,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
                   value={usernameInput}
                   onChange={(e) => setUsernameInput(e.target.value)}
                   placeholder="macOS username"
-                  className="mb-3 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  className="mb-3 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-amber-500 focus:outline-hidden focus:ring-1 focus:ring-amber-500"
                 />
               )}
               <input
@@ -390,7 +390,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
                 placeholder={needsUsername ? 'macOS password' : 'Password'}
-                className="mb-4 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                className="mb-4 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-amber-500 focus:outline-hidden focus:ring-1 focus:ring-amber-500"
               />
               <div className="flex justify-end gap-2">
                 <button

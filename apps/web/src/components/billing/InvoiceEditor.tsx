@@ -254,7 +254,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
         {/* Lines */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card shadow-sm">
+          <div className="rounded-lg border bg-card shadow-xs">
             <table className="w-full text-sm" data-testid="invoice-editor-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -293,7 +293,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
 
           {/* Add line */}
           {canWrite && (
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-add-line">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-add-line">
             <div className="mb-3 flex gap-2">
               {(['catalog', 'manual'] as AddMode[]).map((m) => (
                 <button
@@ -315,19 +315,19 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   type="text" placeholder="Description" value={manualDesc}
                   onChange={(e) => setManualDesc(e.target.value)}
                   data-testid="invoice-manual-desc"
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <input
                   type="number" min="0" step="0.01" placeholder="Qty" value={manualQty}
                   onChange={(e) => setManualQty(e.target.value)}
                   data-testid="invoice-manual-qty"
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <input
                   type="number" min="0" step="0.01" placeholder="Price" value={manualPrice}
                   onChange={(e) => setManualPrice(e.target.value)}
                   data-testid="invoice-manual-price"
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <label className="flex items-center gap-1 text-xs">
                   <input type="checkbox" checked={manualTaxable} onChange={(e) => setManualTaxable(e.target.checked)} data-testid="invoice-manual-taxable" />
@@ -354,7 +354,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   type="number" min="0" step="0.01" value={pickQty}
                   onChange={(e) => setPickQty(e.target.value)} aria-label="Quantity"
                   data-testid="invoice-pick-qty"
-                  className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <button
                   type="button" onClick={() => void addLine()} disabled={busy}
@@ -383,7 +383,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
 
         {/* Summary + bill-to + notes + actions */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-summary">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-summary">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Summary</h3>
             <dl className="space-y-1 text-sm">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd data-testid="invoice-subtotal">{formatMoney(invoice.subtotal, currency)}</dd></div>
@@ -392,12 +392,12 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             </dl>
           </div>
 
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-bill-to">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-bill-to">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bill to</h3>
             <p className="text-sm">{invoice.billToName ?? 'Set on the organization billing settings.'}</p>
           </div>
 
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</h3>
             <textarea
               value={notes}
@@ -409,12 +409,12 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="invoice-notes"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
               placeholder="Internal or customer notes…"
             />
           </div>
 
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
             <textarea
               value={terms}
@@ -423,7 +423,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="invoice-terms"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
               placeholder="Payment terms, warranty clauses, etc."
             />
           </div>
@@ -490,7 +490,7 @@ function LineRow({
             onChange={(e) => setQty(e.target.value)}
             onBlur={() => { if (canWrite && qty !== line.quantity) onPatch(line.id, { quantity: Number(qty) }); }}
             data-testid={`invoice-line-qty-${line.id}`}
-            className="h-8 w-20 rounded-md border bg-background px-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 w-20 rounded-md border bg-background px-2 text-right text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </td>
         <td className="px-3 py-2 text-right">
@@ -499,7 +499,7 @@ function LineRow({
             onChange={(e) => setPrice(e.target.value)}
             onBlur={() => { if (canWrite && price !== line.unitPrice) onPatch(line.id, { unitPrice: Number(price) }); }}
             data-testid={`invoice-line-price-${line.id}`}
-            className="h-8 w-24 rounded-md border bg-background px-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 w-24 rounded-md border bg-background px-2 text-right text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </td>
         <td className="px-3 py-2 text-center">

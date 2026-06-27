@@ -569,11 +569,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
         )}
       >
-        <item.icon className="h-5 w-5 flex-shrink-0" />
+        <item.icon className="h-5 w-5 shrink-0" />
         {labels && <span className="truncate flex-1">{item.name}</span>}
         {labels && showBadge && (
           <span
-            className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500/20 px-1.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
+            className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/20 px-1.5 chart-legend-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
             aria-label={`${badgeCount} pending`}
           >
             {badgeCount! > 99 ? '99+' : badgeCount}
@@ -713,7 +713,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-background/80 backdrop-blur-xs"
         onClick={closeMobileMenu}
       />
       {/* Slide-out sidebar */}
@@ -749,7 +749,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // In hover mode, wrap with a fixed-width spacer so content doesn't shift
   if (effectiveMode === 'hover') {
     return (
-      <div className="relative w-16 flex-shrink-0">
+      <div className="relative w-16 shrink-0">
         {sidebarContent}
       </div>
     );

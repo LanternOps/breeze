@@ -80,7 +80,7 @@ export function FilterAddDropdown({ onSelect, renderTrigger, align = 'left', onC
               placeholder="Search fields..."
               value={q}
               onChange={e => setQ(e.target.value)}
-              className="flex-1 bg-transparent text-sm outline-none"
+              className="flex-1 bg-transparent text-sm outline-hidden"
             />
           </div>
           <div className="max-h-72 overflow-y-auto p-2">

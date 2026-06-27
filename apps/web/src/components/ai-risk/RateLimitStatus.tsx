@@ -47,17 +47,17 @@ export function RateLimitStatus() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter rate limits..."
-            className="h-8 w-56 rounded-lg border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-8 w-56 rounded-lg border bg-card pl-8 pr-3 text-xs focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
         </div>
       </div>
 
       {groups.length === 0 ? (
-        <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-sm">
+        <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-xs">
           No rate limits match your search.
         </div>
       ) : (
-        <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+        <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
           {groups.map((group) => {
             const key = `rl-${group.category}`;
             const isCollapsed = collapsed[key] ?? false;
@@ -96,9 +96,9 @@ function RateLimitCategoryGroup({
         className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm hover:bg-muted/30 transition-colors"
       >
         {isCollapsed ? (
-          <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+          <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
         ) : (
-          <ChevronDown className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+          <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
         )}
         <span className="font-medium">{category}</span>
         <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">

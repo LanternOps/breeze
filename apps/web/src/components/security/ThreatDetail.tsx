@@ -152,7 +152,7 @@ export default function ThreatDetail({ threatId, timezone }: ThreatDetailProps) 
 
   if (loading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading threat details...
@@ -163,7 +163,7 @@ export default function ThreatDetail({ threatId, timezone }: ThreatDetailProps) 
 
   if (!threat) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <p className="text-sm text-muted-foreground">No threat selected.</p>
       </div>
     );
@@ -184,7 +184,7 @@ export default function ThreatDetail({ threatId, timezone }: ThreatDetailProps) 
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold">{threat.name}</h2>
@@ -247,7 +247,7 @@ export default function ThreatDetail({ threatId, timezone }: ThreatDetailProps) 
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Timeline</h2>
               <Clock className="h-5 w-5 text-muted-foreground" />
@@ -270,7 +270,7 @@ export default function ThreatDetail({ threatId, timezone }: ThreatDetailProps) 
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Device Info</h2>
               <ShieldCheck className="h-5 w-5 text-muted-foreground" />
@@ -291,7 +291,7 @@ export default function ThreatDetail({ threatId, timezone }: ThreatDetailProps) 
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Related Threats</h2>
             <p className="text-sm text-muted-foreground">Other detections on this device.</p>
             <div className="mt-4 space-y-3">

@@ -103,7 +103,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 items-center justify-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
@@ -113,7 +113,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
           <p>{error}</p>
           <button
@@ -130,13 +130,13 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
 
   if (compact) {
     return (
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold">Performance</h3>
           <select
             value={timeRange}
             onChange={e => setTimeRange(e.target.value as TimeRange)}
-            className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {Object.entries(timeRangeLabels).map(([value, label]) => (
               <option key={value} value={value}>{label}</option>
@@ -188,7 +188,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-lg font-semibold">Performance Metrics</h3>
@@ -238,7 +238,7 @@ export default function DeviceMetricsChart({ compact = false, deviceId }: Device
           <select
             value={timeRange}
             onChange={e => setTimeRange(e.target.value as TimeRange)}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {Object.entries(timeRangeLabels).map(([value, label]) => (
               <option key={value} value={value}>{label}</option>

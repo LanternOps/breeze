@@ -200,7 +200,7 @@ export default function BackupVerificationTab({
       )}
 
       {/* Recovery Readiness Card */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-primary" />
           <h3 className="text-lg font-semibold">Recovery Readiness</h3>
@@ -247,7 +247,7 @@ export default function BackupVerificationTab({
       </div>
 
       {/* Actions */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-lg font-semibold">Verification Actions</h3>
@@ -301,7 +301,7 @@ export default function BackupVerificationTab({
       </div>
 
       {/* Verification History */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center gap-2">
           <FileCheck className="h-4 w-4 text-primary" />
           <h3 className="font-semibold">Verification History</h3>

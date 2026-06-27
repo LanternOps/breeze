@@ -124,7 +124,7 @@ export default function BaselineDetailPage({ baselineId }: Props) {
               className={cn(
                 'flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors',
                 isActive
-                  ? 'bg-background text-foreground shadow-sm'
+                  ? 'bg-background text-foreground shadow-xs'
                   : 'text-muted-foreground hover:text-foreground'
               )}
             >

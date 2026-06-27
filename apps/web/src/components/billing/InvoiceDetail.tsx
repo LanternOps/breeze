@@ -245,7 +245,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
               Accounting view (cost, margin, hidden components)
             </label>
           </div>
-          <div className="rounded-lg border bg-card shadow-sm">
+          <div className="rounded-lg border bg-card shadow-xs">
             <table className="w-full text-sm" data-testid="invoice-detail-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -282,7 +282,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
         {/* Right rail: summary + payments + actions */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-summary">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
               <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status">
                 {statusLabel(invoice)}
@@ -309,7 +309,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
           {/* Seller From block */}
           {invoice.sellerSnapshot && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-from">
+            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-from">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</h3>
               <div className="space-y-0.5 text-sm">
                 {invoice.sellerSnapshot.name && (
@@ -333,7 +333,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
           {/* Terms & Conditions */}
           {invoice.termsAndConditions && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-terms">
+            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-terms">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
               <p className="whitespace-pre-wrap text-sm text-muted-foreground">{invoice.termsAndConditions}</p>
             </div>
@@ -372,7 +372,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           </div>
 
           {/* Payments */}
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-payments">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-payments">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Payments</h3>
             {paymentsError ? (
               <p className="text-sm text-destructive" data-testid="invoice-payments-error">
@@ -399,7 +399,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     </span>
                     {/* Stripe payments are refunded through Stripe, never hand-voided. */}
                     {p.source === 'stripe' ? (
-                      <span className="whitespace-nowrap text-[11px] text-muted-foreground">via Stripe</span>
+                      <span className="whitespace-nowrap chart-legend-xs text-muted-foreground">via Stripe</span>
                     ) : can('invoices', 'send') ? (
                       <button
                         type="button" onClick={() => void voidPayment(p.id)} disabled={busy || invoice.status === 'void'}
@@ -437,12 +437,12 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     type="number" min="0" step="0.01" placeholder="Amount" value={payAmount}
                     onChange={(e) => setPayAmount(e.target.value)}
                     data-testid="invoice-payment-amount"
-                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <select
                     value={payMethod} onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
                     data-testid="invoice-payment-method"
-                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map((m) => (
                       <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
@@ -452,12 +452,12 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     type="text" placeholder="Reference (optional)" value={payRef}
                     onChange={(e) => setPayRef(e.target.value)}
                     data-testid="invoice-payment-ref"
-                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <input
                     type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)}
                     data-testid="invoice-payment-date"
-                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <button
@@ -504,7 +504,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
             <textarea
               value={voidReason} onChange={(e) => setVoidReason(e.target.value)} rows={3}
               data-testid="invoice-void-reason"
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </label>
           <label className="flex items-center gap-2 text-sm">

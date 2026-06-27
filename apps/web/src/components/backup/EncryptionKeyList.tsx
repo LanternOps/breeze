@@ -169,7 +169,7 @@ export default function EncryptionKeyList() {
       )}
 
       {/* Create Key Section */}
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         <div className="flex items-center justify-between">
           <h3 className="flex items-center gap-2 font-semibold">
             <Lock className="h-4 w-4" /> Encryption Keys

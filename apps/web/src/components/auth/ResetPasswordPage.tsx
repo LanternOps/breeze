@@ -46,7 +46,7 @@ export default function ResetPasswordPage() {
 
   if (tokenState.phase === 'loading') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm" aria-busy="true">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs" aria-busy="true">
         <div className="space-y-2 text-center">
           <StatusIcon variant="pending" label="Loading" />
           <h2 className="text-lg font-semibold">Loading…</h2>
@@ -57,7 +57,7 @@ export default function ResetPasswordPage() {
 
   if (tokenState.phase === 'absent') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-2 text-center">
           <StatusIcon variant="error" />
           <h2 className="text-lg font-semibold">This link doesn't work</h2>
@@ -77,7 +77,7 @@ export default function ResetPasswordPage() {
 
   if (success) {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-2 text-center">
           <StatusIcon variant="success" />
           <h2 className="text-lg font-semibold">Password reset successful</h2>

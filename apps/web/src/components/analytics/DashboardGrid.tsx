@@ -203,7 +203,7 @@ export default function DashboardGrid({
             }}
           >
             {draggable && (
-              <div className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[10px] text-muted-foreground opacity-0 shadow-sm transition group-hover:opacity-100">
+              <div className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[10px] text-muted-foreground opacity-0 shadow-xs transition group-hover:opacity-100">
                 <Grip className="h-3 w-3" />
                 Drag
               </div>
