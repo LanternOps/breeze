@@ -44,9 +44,10 @@ The Huntress integration syncs agent inventory and incident reports from your Hu
 1. Set your scope selector to **All orgs**, then navigate to **Integrations**, open the **Security** tab, and select **Huntress**. Huntress is configured once for the whole partner.
 2. Provide a **name** for the integration (e.g., "Production Huntress").
 3. Enter your **Huntress API Key** and **API Secret** as shown in the Huntress portal. Paste each value into its own field — do not paste a Base64-encoded combination of the two; Breeze formats the API request automatically. Both values are encrypted at rest using AES before being stored.
-4. Optionally provide your **Huntress account ID**. (A custom API base URL can be set via the Breeze API; the default is `https://api.huntress.io/v1`.)
-5. Optionally provide a **webhook secret** for signature verification on incoming webhook payloads.
-6. Click **Save & Connect**. An initial sync is automatically scheduled.
+4. Enter your **Deployment Account Key**. This key is found on the Huntress agent-download page in your Huntress portal and is required to enable one-click Huntress deployment from Breeze's **Software → Deployment** catalog.
+5. Optionally provide your **Huntress account ID**. (A custom API base URL can be set via the Breeze API; the default is `https://api.huntress.io/v1`.)
+6. Optionally provide a **webhook secret** for signature verification on incoming webhook payloads.
+7. Click **Save & Connect**. An initial sync is automatically scheduled.
 </Steps>
 
 <Aside>
@@ -340,6 +341,33 @@ Threats can be filtered by multiple criteria:
 From the `/security/edr` fleet page or from a device's **Security** tab, you can escalate a Huntress incident or a SentinelOne threat directly into a tracked Breeze incident. Click **Promote to incident** on the item, confirm the pre-filled title and severity (mapped from the EDR severity level), and Breeze creates the incident and navigates you to it. The promotion records the source (Huntress or SentinelOne), the original title, any affected device, and the detection time as the incident's detected-at timestamp.
 
 Promotion uses the standard `POST /incidents` endpoint and follows normal incident-creation permissions.
+
+---
+
+## Deploying EDR Agents
+
+Once a Huntress or SentinelOne integration is connected, both vendors appear as built-in deployment packages under **Software → Deployment**. You can push the EDR agent to any managed device — or group of devices — with a single click, without leaving Breeze.
+
+### Huntress
+
+Huntress deployment is fully built in: no binary upload is required. Breeze uses the **Deployment Account Key** you entered during integration setup to generate and deliver the Huntress installer to the target device. Simply navigate to **Software → Deployment**, select **Huntress** from the catalog, choose your target devices, and click **Deploy**.
+
+### SentinelOne
+
+SentinelOne deployment requires a one-time setup step: upload the SentinelOne MSI to the deployment catalog before pushing it to devices.
+
+<Steps>
+1. Download the SentinelOne Windows MSI from your SentinelOne management console.
+2. Navigate to **Software → Deployment** in Breeze and open the **SentinelOne** catalog entry.
+3. Upload the MSI using the **Upload package** option.
+4. Select your target devices and click **Deploy**.
+</Steps>
+
+Once the MSI is uploaded, subsequent deployments to new devices re-use the same package — you only need to re-upload when SentinelOne releases a new installer version.
+
+### Automating EDR deployment
+
+Both Huntress and SentinelOne deployment packages can also be driven through [Automations](/features/automations/) using the **Deploy Software** action type. This lets you automatically push an EDR agent to newly enrolled devices by pairing a **Device Enrolled** event trigger with a **Deploy Software** action targeting the relevant catalog item.
 
 ---
 

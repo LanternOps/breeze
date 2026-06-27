@@ -97,7 +97,7 @@ Alert rules define what conditions to watch for and which devices to monitor.
    - **Metric** -- CPU, memory, disk, or network usage
    - **Operator** -- greater than, less than, equals, etc.
    - **Threshold value** -- the numeric value that triggers the alert
-   - **Duration** -- how long the condition must persist before firing
+   - **Duration** -- the sliding window over which samples are evaluated. The alert fires when the **average** of all samples within this window breaches the threshold (previously every individual sample had to breach). This change makes rules more tolerant of momentary spikes; if you had rules tuned for a single-sample breach, consider shortening the duration or lowering the threshold to preserve the same effective sensitivity.
 
 4. Choose the **target scope**:
    - **All Devices** -- applies to every device in the organization
@@ -192,6 +192,18 @@ For critical alerts that need a guaranteed response, create escalation policies 
 3. Attach the policy to alert rules by selecting it in the rule's **Escalation Policy** field.
 
 </Steps>
+
+---
+
+## Offline Duration for Configuration Policy Rules
+
+Alert rules that detect when a device goes offline — configured via a [Configuration Policy](/features/configuration-policies/) — include an **Offline Duration** field. This sets how long a device must be continuously unreachable before the alert fires.
+
+| Field | Description |
+|-------|-------------|
+| **Offline Duration** | Minutes the device must be offline before triggering (1–1440, maximum 24 hours) |
+
+Setting a longer offline duration reduces noise from brief network hiccups or scheduled reboots. Setting a shorter duration catches devices that drop off unexpectedly. The field defaults to a sensible value for most environments; adjust it per-policy to match your SLA expectations for different device classes.
 
 ---
 

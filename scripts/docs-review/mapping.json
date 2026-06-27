@@ -1411,6 +1411,97 @@
       "docs": [
         "deploy/environment.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/builtinDeploymentPackages.ts",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/edrInstallerResolver.ts",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/software/DeploymentWizard.tsx",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/software/SoftwareCatalog.tsx",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/software.ts",
+      "docs": [
+        "features/edr-integrations.mdx",
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/softwareDeployment.ts",
+      "docs": [
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/automationRuntime.ts",
+      "docs": [
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/policyBaselineDefaults.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/BreezeDefaultsPage.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/alertConditions/**",
+      "docs": [
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/offlineDetector.ts",
+      "docs": [
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/maintenanceWindow.ts",
+      "docs": [
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/agentUpdatePolicy.ts",
+      "docs": [
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/catalogImageStorage.ts",
+      "docs": [
+        "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quoteService.ts",
+      "docs": [
+        "features/product-catalog.mdx"
+      ]
     }
   ]
 }

@@ -10,11 +10,12 @@ Configuration Policies let you bundle device settings — patches, alerts, maint
 Policies are **hierarchical**: settings cascade from the broadest scope down to the most specific, and more specific assignments always win.
 
 ```
-Partner          (lowest priority)
-  └── Organization
-        └── Site
-              └── Device Group
-                    └── Device  (highest priority — always wins)
+Breeze Defaults  (lowest priority — read-only, always present)
+  └── Partner
+        └── Organization
+              └── Site
+                    └── Device Group
+                          └── Device  (highest priority — always wins)
 ```
 
 ### Policy ownership: organization vs. partner-wide
@@ -183,13 +184,32 @@ The underlying endpoint is:
 GET /policies/compliance/device/:deviceId
 ```
 
+## Breeze Defaults baseline
+
+Every Breeze deployment ships with a built-in set of **Breeze Defaults** that sit at the bottom of the resolution hierarchy. These defaults are read-only — you cannot edit or delete them — but every policy you create at any level overrides them.
+
+To inspect the current defaults, navigate to **Configuration → Policies → Defaults** (or go directly to **/configuration-policies/defaults**). The page lists every setting that Breeze ships with, shows its current value, and indicates whether it is **Active** (in effect for devices with no overriding policy) or **Not enforced** (the feature is present in defaults but not turned on by default).
+
+Examples of shipped defaults:
+
+| Setting | Default state |
+|---------|---------------|
+| Remote Access | Active (on) |
+| PAM / UAC capture | Not enforced (off by default) |
+
+Each row on the Defaults page includes a **Create override policy** shortcut that opens the policy editor pre-configured for that feature, so you can add a partner- or org-level override without navigating away.
+
+### Defaults in the Effective Configuration tab
+
+When a device has no policy assigned for a particular feature, the **Effective Configuration** tab on the device page attributes that value to **Breeze Defaults** and shows a **Not enforced** badge next to it, making it clear that the setting comes from the built-in layer rather than an explicit policy.
+
 ## Viewing effective configuration
 
 To see the merged settings a specific device will receive:
 
 1. Navigate to the device's detail page.
 2. Open the **Effective Configuration** tab.
-3. The page shows the resolved settings for each feature type and which policy in the inheritance chain provided each value.
+3. The page shows the resolved settings for each feature type and which policy in the inheritance chain provided each value — including **Breeze Defaults** for any feature not covered by an assigned policy.
 
 ```
 GET /configuration-policies/effective/:deviceId

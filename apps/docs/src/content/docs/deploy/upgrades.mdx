@@ -124,6 +124,34 @@ By default (`AGENT_AUTO_PROMOTE=true`), publishing or syncing a new agent releas
   Leave `AGENT_AUTO_PROMOTE` unset (or `true`) to keep the default behavior where a published release rolls out immediately. The promote action is audit-logged either way.
 </Aside>
 
+## Agent Update Scheduling
+
+In addition to the per-device auto-update toggle and the partner-level controlled rollout, Breeze supports a structured **maintenance window** for agent updates. When a maintenance window is configured, agents only accept update signals from the server during the allowed window — outside of it, update prompts are deferred until the next eligible window.
+
+### Setting a maintenance window
+
+Agent update maintenance windows are set in **Settings → Org Defaults** (and optionally in **Settings → Partner Defaults** to apply fleet-wide). The window configuration includes:
+
+| Field | Description |
+|-------|-------------|
+| **Days** | Which days of the week updates are permitted (e.g., Tuesday and Thursday) |
+| **Start time** | Window start time in UTC |
+| **End time** | Window end time in UTC |
+
+<Aside type="note">
+  All times are specified and stored in **UTC**. Communicate the UTC equivalent to your team to avoid scheduling confusion across time zones.
+</Aside>
+
+Org-level defaults override Partner-level defaults using the same hierarchical precedence that governs other policy settings — a per-org window takes priority over the partner-wide window.
+
+<Aside>
+  The maintenance window gates when the update *signal* is acted on, not when the binary is downloaded. Agents can pre-download an available update during any window but will only apply it (restart the service) during the allowed window.
+</Aside>
+
+### When no window is configured
+
+If no maintenance window is set, agents update on their normal heartbeat cadence (~60 seconds after a new version is promoted). Configure a window when you need updates to avoid business hours or to concentrate restarts into a known change window.
+
 ## Migration Failure Recovery
 
 If the API container fails to start after an upgrade due to a migration error, follow these steps:

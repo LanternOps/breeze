@@ -65,25 +65,13 @@ The practical effect: a laptop that is shut down overnight but otherwise crash-f
 
 ### Score Calculation
 
-The overall score is computed as:
+Each sub-score starts at 100 and is reduced as faults accumulate. The reduction is **rate-normalized by observed up-days**: faults are weighed against how many days the device was actually up and reporting, so a device that was offline for two weeks is not punished for events it could not have generated. Scores are also **de-saturated** so they spread across the full 0–100 range — heavily-faulting devices that previously all collapsed to the same low number now separate out, and sparse or newly-enrolled devices no longer read as artificially healthy.
 
-```
-reliabilityScore = clamp(0, 100,
-    uptimeScore * 0.30
-  + crashScore * 0.25
-  + hangScore * 0.15
-  + serviceFailureScore * 0.15
-  + hardwareErrorScore * 0.15
-)
-```
+The five sub-scores are combined using the weighted factors in the table above. The result is clamped to 0–100.
 
-Each sub-score starts at 100 and is reduced by event counts with specific penalty multipliers:
-
-- **Uptime Score**: If uptime is &ge; 100%, score is 100. If &le; 90%, score is 0. Linear interpolation between 90% and 100%. The measurement window starts at the device's enrollment time, so a recently enrolled device is measured only over the time it has actually existed in Breeze — newly enrolled devices no longer show artificially low uptime.
-- **Crash Score**: `100 - (crashCount30d + crashCount7d * 0.5) * 20`
-- **Hang Score**: `100 - hangCount30d * 10 - unresolvedHangCount30d * 20`
-- **Service Failure Score**: `100 - serviceFailureCount30d * 15 + recoveredServiceCount30d * 5`
-- **Hardware Error Score**: `100 - criticalCount30d * 30 - errorCount30d * 15 - warningCount30d * 5`
+<Aside type="note">
+  Scores shift after the v0.85.0 agent update. Once agents in your fleet are promoted to v0.85.0, existing device scores will visibly change as the improved algorithm takes effect. This is expected behavior — not device degradation. If you have alert rules or thresholds based on reliability scores, re-baseline them after your fleet has updated and settled.
+</Aside>
 
 ### Trend Direction
 
@@ -179,6 +167,8 @@ Hardware errors are further classified by severity:
     - **System crashes**: Critical-level system events containing "crash"
 
     Windows provides the richest reliability telemetry due to the structured Event Log system.
+
+    **v0.85.0 classification improvements**: Starting with the v0.85.0 agent, Windows event classification is more accurate. Routine component timeouts (such as driver or firmware response timeouts that Windows recovers from automatically) are no longer counted as application crashes. Additionally, System log entries that were previously categorized as hardware failures are now classified more precisely — generic System log noise no longer inflates the hardware error count. Fault counts will decrease for most Windows devices after updating to v0.85.0, which will raise their reliability scores.
   </TabItem>
   <TabItem label="macOS">
     The macOS collector reads from system logs. Detected signals include:

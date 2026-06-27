@@ -32,6 +32,7 @@ You manage automations from the **Automations** page in the Breeze dashboard. Fr
    - **Send Notification** -- select a notification channel.
    - **Create Alert** -- set a severity level and message.
    - **Execute Command** -- enter a raw shell command.
+   - **Deploy Software** -- select a software item from the catalog. Devices already on the latest version or on an unsupported OS are skipped automatically.
 
    Actions execute in order. Add multiple actions by clicking **Add Action** again. Each action is numbered and can be removed individually.
 
@@ -97,6 +98,7 @@ Use the status filter dropdown to narrow results to Success, Failed, Partial, or
 | `send_notification` | Sends a message to a notification channel |
 | `create_alert` | Creates a Breeze alert with configured severity and message |
 | `execute_command` | Runs a shell command on target devices |
+| `deploy_software` | Installs the latest catalog version of a software item on target devices, automatically skipping devices that are already current or on an unsupported OS |
 
 ### Run Status
 
@@ -339,6 +341,18 @@ Runs a raw shell command on each target device.
 |-------|----------|-------------|
 | `command` | Yes | The shell command to execute |
 | `shell` | No | Shell to use: `bash`, `powershell`, or `cmd`. Defaults based on device OS |
+
+### deploy_software
+
+Installs a catalog software item on each target device. Breeze checks whether the device already has the latest version installed and skips it if so. Devices running an OS not supported by the package are also skipped, and the skips are recorded in the run log.
+
+The only field you configure is which catalog item to deploy:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `catalogItemId` | Yes | UUID of the software catalog item to deploy |
+
+Deployment uses the same built-in or uploaded package that the **Software → Deployment** catalog provides. To use this action with Huntress or SentinelOne, the relevant EDR integration must first be configured (see [EDR Integrations](/features/edr-integrations/)).
 
 ---
 

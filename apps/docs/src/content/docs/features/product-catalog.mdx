@@ -48,6 +48,17 @@ When creating or editing a catalog item, type a product name or SKU into the **A
   AI auto-fill requires catalog write access. No MFA step is needed.
 </Aside>
 
+### Product Images
+
+Each catalog item can carry a product image that appears on quotes. Images are supported in **PNG**, **JPEG**, and **WebP** formats, with a maximum file size of **5 MB**.
+
+To add an image, open the item editor and use the **Product image** field:
+
+- **Upload** — select a file from your computer.
+- **Import from URL** — paste a public image URL and Breeze fetches and stores a copy.
+
+The image is displayed on quote previews and PDFs when the quote line item references this catalog item.
+
 ## Per-Customer Pricing
 
 You can override an item's price for a specific customer without changing the base price everyone else gets. The override applies automatically wherever that item is added to an invoice or contract for that organization.
@@ -85,6 +96,10 @@ Items you no longer sell can be **archived** rather than deleted, so historical 
 
 Rather than typing in hardware by hand, you can pull products straight from a connected distributor into your catalog. Connect the distributor first on the **Integrations → Distributors** tab (see [Distributor Integrations](/features/integrations/#distributor-integrations)).
 
+### Default markup
+
+Partners can set a **Default markup (%)** in **Settings → Billing**. When you import a product from a distributor, Breeze automatically calculates the sell price by applying this markup to the distributor cost — so the unit price field is pre-populated rather than blank. You can override the calculated price on any individual item before saving or at any time afterward. Per-item markup overrides always take precedence over the partner default.
+
 ### TD SYNNEX EC Express (live pricing)
 
 TD SYNNEX **EC Express** looks up real-time price and availability by SKU so the numbers you quote reflect current distributor pricing.
@@ -107,6 +122,20 @@ TD SYNNEX **EC Express** looks up real-time price and availability by SKU so the
 While editing a quote, the line-item picker includes a **Search distributor** tab (visible only when TD SYNNEX EC Express credentials are configured). Enter a TD SYNNEX SKU or manufacturer part number, see live cost, MSRP, and availability, enter your sell price, and click **Import & add**. The product is imported to your catalog and added to the quote as a line item in one step.
 
 This is distinct from the catalog-level import workflow documented above. The catalog workflow builds your standing price list; the quote-level search lets you pull a product directly into an open quote without navigating away from the quote editor.
+
+### Inline editing of quote line items
+
+Quote line items can now be edited in place directly in the quote editor — you no longer need to delete a line and re-add it to correct a detail. Click any field on an existing line item to edit it inline:
+
+| Field | Editable inline |
+|-------|----------------|
+| Description | Yes |
+| Quantity | Yes |
+| Unit price | Yes |
+| Taxable | Yes |
+| Recurrence | Yes |
+
+Changes take effect immediately on the quote and are reflected in the live totals without saving and re-opening.
 
 ## Permissions
 
