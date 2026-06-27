@@ -10,18 +10,22 @@
  *                 maintenance window (when one is set)
  *
  * In addition, a configured `maintenanceWindow` suppresses upgrades outside the
- * window for both `auto` and `staged`. A device with no maintenance window set
- * may upgrade at any time (this preserves the historical behaviour for orgs
- * that never configured the policy).
+ * window for both `auto` and `staged`. The explicit "24/7" / empty state (see
+ * `isAlwaysMaintenanceWindow` in @breeze/shared) means no restriction — upgrade
+ * at any time. This preserves the historical behaviour for orgs that never
+ * configured the policy.
  *
- * Timezone note: the org `maintenanceWindow` is a free-form string with no
- * timezone component (e.g. "Sun 02:00-04:00"), so it is evaluated against UTC
- * server time. Malformed windows fail open (no time restriction) so a typo
- * never permanently blocks updates.
+ * Timezone note: the org `maintenanceWindow` is a string with no timezone
+ * component (e.g. "Sun 02:00-04:00"), so it is evaluated against UTC server
+ * time. As of issue #1963 the API rejects malformed values at save time, so the
+ * gate only ever sees a valid window or the always state; any legacy malformed
+ * value still fails open (no restriction) rather than permanently blocking.
  *
  * This module is pure and side-effect free so it can be unit tested without a
  * database. The DB read lives in `getOrgAgentUpdatePolicy` (helpers.ts).
  */
+
+import { parseMaintenanceWindow } from '@breeze/shared';
 
 export type AgentUpdatePolicy = 'auto' | 'staged' | 'manual';
 
@@ -35,18 +39,10 @@ export interface AgentUpdateGate {
   reason: 'allowed' | 'manual-approval' | 'outside-maintenance-window';
 }
 
-const DAY_OF_WEEK: Record<string, number> = {
-  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
-};
-
-interface ParsedWindow {
-  /** UTC day-of-week the window starts on (0=Sun), or null for "any day" (daily). */
-  day: number | null;
-  /** Minutes-since-midnight the window opens. */
-  startMin: number;
-  /** Minutes-since-midnight the window closes. */
-  endMin: number;
-}
+// The window grammar/parser lives in @breeze/shared so the web editor and this
+// gate validate against the exact same shape. Re-exported here so existing
+// callers/tests in this module keep their import surface.
+export { parseMaintenanceWindow };
 
 /**
  * Coerce an arbitrary stored value into a known policy. Unknown / absent values
@@ -57,37 +53,6 @@ interface ParsedWindow {
 export function normalizeAgentUpdatePolicy(raw: unknown): AgentUpdatePolicy {
   if (raw === 'auto' || raw === 'staged' || raw === 'manual') return raw;
   return 'staged';
-}
-
-/**
- * Parse a maintenance window string of the form "Sun 02:00-04:00" (optional
- * 3-letter day prefix; "02:00-04:00" means daily). Returns null when the input
- * is empty or malformed — callers treat null as "no time restriction".
- */
-export function parseMaintenanceWindow(raw: string | null | undefined): ParsedWindow | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-
-  const m = trimmed.match(/^(?:([A-Za-z]{3})\s+)?(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/);
-  if (!m) return null;
-
-  const [, dayStr, sh, sm, eh, em] = m;
-  let day: number | null = null;
-  if (dayStr) {
-    const d = DAY_OF_WEEK[dayStr.toLowerCase()];
-    if (d === undefined) return null;
-    day = d;
-  }
-
-  const startH = Number(sh), startM = Number(sm), endH = Number(eh), endM = Number(em);
-  if (startH > 23 || endH > 23 || startM > 59 || endM > 59) return null;
-
-  const startMin = startH * 60 + startM;
-  const endMin = endH * 60 + endM;
-  if (startMin === endMin) return null; // zero-length window is meaningless
-
-  return { day, startMin, endMin };
 }
 
 /**

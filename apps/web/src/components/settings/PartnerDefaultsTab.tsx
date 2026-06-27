@@ -1,4 +1,5 @@
 import type { InheritableDefaultSettings } from '@breeze/shared';
+import { isValidMaintenanceWindow } from '@breeze/shared';
 
 type Props = {
   data: InheritableDefaultSettings;
@@ -12,6 +13,9 @@ export default function PartnerDefaultsTab({ data, onChange }: Props) {
     onChange({ ...data, ...patch });
 
   const autoEnrollment = data.autoEnrollment ?? { enabled: false, requireApproval: true, sendWelcome: true };
+
+  const maintenanceWindow = data.maintenanceWindow ?? '';
+  const maintenanceWindowInvalid = maintenanceWindow.trim() !== '' && !isValidMaintenanceWindow(maintenanceWindow);
 
   return (
     <div className="space-y-6">
@@ -34,14 +38,25 @@ export default function PartnerDefaultsTab({ data, onChange }: Props) {
           <label className="text-sm font-medium">Maintenance Window</label>
           <input
             type="text"
-            value={data.maintenanceWindow ?? ''}
+            value={maintenanceWindow}
             onChange={e => set({ maintenanceWindow: e.target.value || undefined })}
-            placeholder="e.g. Sun 02:00-06:00"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            placeholder="e.g. Sun 02:00-06:00, 02:00-04:00, or 24/7"
+            aria-invalid={maintenanceWindowInvalid}
+            className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${
+              maintenanceWindowInvalid ? 'border-destructive' : ''
+            }`}
           />
-          <p className="text-xs text-muted-foreground">
-            Time window for automatic updates and reboots.
-          </p>
+          {maintenanceWindowInvalid ? (
+            <p className="text-xs text-destructive">
+              Use a UTC window like <code>Sun 02:00-04:00</code> or <code>02:00-04:00</code>, or{' '}
+              <code>24/7</code> for always-on. Leave empty to let orgs configure it.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Time window (UTC) for automatic updates and reboots. Use <code>24/7</code> for
+              always-on, or leave empty so orgs configure it individually.
+            </p>
+          )}
         </div>
 
         <div className="space-y-2">

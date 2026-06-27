@@ -140,6 +140,20 @@ describe('getOrgAgentUpdatePolicy', () => {
     });
   });
 
+  it('normalizes the explicit "24/7" always-state to null (no restriction)', async () => {
+    dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: '24/7' } } }]);
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
+      policy: 'auto', maintenanceWindow: null,
+    });
+  });
+
+  it('normalizes "always"/"none" aliases to null', async () => {
+    dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'staged', maintenanceWindow: ' Always ' } } }]);
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
+      policy: 'staged', maintenanceWindow: null,
+    });
+  });
+
   it('normalizes a non-string window to null', async () => {
     dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'manual', maintenanceWindow: 42 } } }]);
     await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({

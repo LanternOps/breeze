@@ -59,6 +59,7 @@ import {
   normalizeAgentUpdatePolicy,
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
+import { isAlwaysMaintenanceWindow } from '@breeze/shared';
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
@@ -2009,10 +2010,11 @@ export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdat
   const settings = isObject(org?.settings) ? org.settings : {};
   const defaults = isObject(settings.defaults) ? settings.defaults : {};
   const policy = normalizeAgentUpdatePolicy(defaults.agentUpdatePolicy);
-  const maintenanceWindow =
-    typeof defaults.maintenanceWindow === 'string' && defaults.maintenanceWindow.trim()
-      ? defaults.maintenanceWindow.trim()
-      : null;
+  const rawWindow =
+    typeof defaults.maintenanceWindow === 'string' ? defaults.maintenanceWindow.trim() : '';
+  // The explicit "24/7"/empty always-state means "no restriction" → null, same
+  // as an absent window. Only a real window string is carried through to the gate.
+  const maintenanceWindow = rawWindow && !isAlwaysMaintenanceWindow(rawWindow) ? rawWindow : null;
   return { policy, maintenanceWindow };
 }
 

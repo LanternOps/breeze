@@ -20,7 +20,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow } from '@breeze/shared';
 import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
@@ -375,7 +375,13 @@ const partnerSettingsSchema = z.object({
       sendWelcome: z.boolean(),
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
-    maintenanceWindow: z.string().optional(),
+    // Reject malformed windows at save time (issue #1963) so the heartbeat gate
+    // never silently fails open on a typo. Accepts the "24/7"/empty always-state
+    // or a "[Day ]HH:MM-HH:MM" window; see isValidMaintenanceWindow.
+    maintenanceWindow: z.string().max(64).optional().refine(
+      (v) => v === undefined || isValidMaintenanceWindow(v),
+      { message: 'Maintenance window must be "24/7" or a UTC window like "Sun 02:00-04:00".' },
+    ),
   }).optional(),
   branding: z.object({
     logoUrl: z.string().max(400_000, 'Logo data exceeds maximum size (400 KB)').optional(),

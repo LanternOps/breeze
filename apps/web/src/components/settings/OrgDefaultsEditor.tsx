@@ -1,5 +1,37 @@
 import { useState } from 'react';
 import { Bell, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-react';
+import {
+  MAINTENANCE_WINDOW_ALWAYS,
+  MAINTENANCE_DAYS,
+  isAlwaysMaintenanceWindow,
+  parseMaintenanceWindow,
+  formatMaintenanceWindow,
+  minutesToHHMM,
+} from '@breeze/shared';
+
+type WindowMode = 'always' | 'window';
+
+type WindowState = { mode: WindowMode; day: string; start: string; end: string };
+
+// Derive the structured editor state from the stored maintenance-window string.
+// The "always/24/7/empty" state maps to mode 'always'; a valid window unpacks
+// into day + start + end. Legacy malformed values fall back to an editable
+// window seeded with sane defaults so the operator can correct them in place.
+function deriveWindowState(raw: string | undefined): WindowState {
+  if (isAlwaysMaintenanceWindow(raw)) {
+    return { mode: 'always', day: '', start: '02:00', end: '04:00' };
+  }
+  const parsed = parseMaintenanceWindow(raw);
+  if (parsed) {
+    return {
+      mode: 'window',
+      day: parsed.day === null ? '' : MAINTENANCE_DAYS[parsed.day],
+      start: minutesToHHMM(parsed.startMin),
+      end: minutesToHHMM(parsed.endMin),
+    };
+  }
+  return { mode: 'window', day: '', start: '02:00', end: '04:00' };
+}
 
 type DefaultsData = {
   policyDefaults?: Record<string, string>;
@@ -35,7 +67,10 @@ const defaultValues: DefaultsData = {
     sendWelcome: true
   },
   agentUpdatePolicy: 'staged',
-  maintenanceWindow: 'Sun 02:00-04:00'
+  // Default to the explicit "always" state so an unconfigured org matches the
+  // backend's permissive default (staged + no window = update anytime) instead
+  // of silently committing to a Sunday window the first time defaults are saved.
+  maintenanceWindow: MAINTENANCE_WINDOW_ALWAYS
 };
 
 const policyOptions = [
@@ -59,20 +94,36 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
   const [alertThreshold, setAlertThreshold] = useState(initialData.alertThreshold || defaultValues.alertThreshold!);
   const [autoEnrollment, setAutoEnrollment] = useState(initialData.autoEnrollment || defaultValues.autoEnrollment!);
   const [agentUpdatePolicy, setAgentUpdatePolicy] = useState(initialData.agentUpdatePolicy || defaultValues.agentUpdatePolicy!);
-  const [maintenanceWindow, setMaintenanceWindow] = useState(initialData.maintenanceWindow || defaultValues.maintenanceWindow!);
+  const initialWindow = deriveWindowState(initialData.maintenanceWindow);
+  const [windowMode, setWindowMode] = useState<WindowMode>(initialWindow.mode);
+  const [windowDay, setWindowDay] = useState(initialWindow.day);
+  const [windowStart, setWindowStart] = useState(initialWindow.start);
+  const [windowEnd, setWindowEnd] = useState(initialWindow.end);
+
+  // Canonical value to persist; null when the window inputs are invalid
+  // (e.g. start === end). 'always' always resolves to the durable sentinel.
+  const builtWindow =
+    windowMode === 'always'
+      ? MAINTENANCE_WINDOW_ALWAYS
+      : formatMaintenanceWindow(windowDay || null, windowStart, windowEnd);
+  const windowError =
+    windowMode === 'window' && !builtWindow
+      ? 'Enter a valid window — start and end times must differ.'
+      : null;
 
   const markDirty = () => {
     onDirty?.();
   };
 
   const handleSave = () => {
+    if (windowError || !builtWindow) return; // never persist an invalid window
     const data: DefaultsData = {
       policyDefaults,
       deviceGroup,
       alertThreshold,
       autoEnrollment,
       agentUpdatePolicy,
-      maintenanceWindow
+      maintenanceWindow: builtWindow
     };
     onSave?.(data);
   };
@@ -89,7 +140,9 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
         <button
           type="button"
           onClick={handleSave}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          disabled={!!windowError}
+          data-testid="save-defaults"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Save className="h-4 w-4" />
           Save defaults
@@ -242,24 +295,106 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
             <option value="staged">Staged rollout</option>
             <option value="manual">Manual approval</option>
           </select>
-          <div className="space-y-2">
-            <label className="text-xs font-medium uppercase text-muted-foreground">
+          <div className="space-y-3">
+            <span className="text-xs font-medium uppercase text-muted-foreground">
               Maintenance window
-            </label>
-            <input
-              type="text"
-              value={maintenanceWindow}
-              onChange={event => {
-                setMaintenanceWindow(event.target.value);
-                markDirty();
-              }}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              placeholder="Sun 02:00-04:00"
-            />
+            </span>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="maintenanceWindowMode"
+                  value="always"
+                  checked={windowMode === 'always'}
+                  onChange={() => {
+                    setWindowMode('always');
+                    markDirty();
+                  }}
+                  data-testid="maintenance-mode-always"
+                  className="h-4 w-4"
+                />
+                <span>Always — agents may update anytime (24/7)</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="maintenanceWindowMode"
+                  value="window"
+                  checked={windowMode === 'window'}
+                  onChange={() => {
+                    setWindowMode('window');
+                    markDirty();
+                  }}
+                  data-testid="maintenance-mode-window"
+                  className="h-4 w-4"
+                />
+                <span>Only during a maintenance window</span>
+              </label>
+            </div>
+
+            {windowMode === 'window' && (
+              <div className="space-y-2 rounded-md border bg-background/60 p-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">Day</span>
+                    <select
+                      value={windowDay}
+                      onChange={event => {
+                        setWindowDay(event.target.value);
+                        markDirty();
+                      }}
+                      data-testid="maintenance-day"
+                      className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                    >
+                      <option value="">Every day</option>
+                      {MAINTENANCE_DAYS.map(day => (
+                        <option key={day} value={day}>
+                          {day}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">Start (UTC)</span>
+                    <input
+                      type="time"
+                      value={windowStart}
+                      onChange={event => {
+                        setWindowStart(event.target.value);
+                        markDirty();
+                      }}
+                      data-testid="maintenance-start"
+                      className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                    />
+                  </label>
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">End (UTC)</span>
+                    <input
+                      type="time"
+                      value={windowEnd}
+                      onChange={event => {
+                        setWindowEnd(event.target.value);
+                        markDirty();
+                      }}
+                      data-testid="maintenance-end"
+                      className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                    />
+                  </label>
+                </div>
+                {windowError && (
+                  <p data-testid="maintenance-error" className="text-xs text-destructive">
+                    {windowError}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <p className="text-xs text-muted-foreground">
+              {windowMode === 'always'
+                ? 'Agents may install updates at any time, subject to the update policy above.'
+                : 'Agents install updates only inside this window. Times are evaluated in UTC. A window may span midnight (e.g. 22:00–02:00).'}
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Agents update during the maintenance window when possible.
-          </p>
         </div>
       </div>
     </section>
