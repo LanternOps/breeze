@@ -5,16 +5,21 @@
    fallback font (issue #1230). Only the latin + latin-ext subsets are imported
    (the UI is English; this drops the cyrillic-ext/vietnamese subsets the bare
    weight entrypoints would otherwise pull in). These @imports must stay above
-   the @tailwind directives: Vite's postcss-import resolves them at build time
-   and drops any @import that isn't first. */
-@import '@fontsource/plus-jakarta-sans/latin-400.css' layer(base);
-@import '@fontsource/plus-jakarta-sans/latin-500.css' layer(base);
-@import '@fontsource/plus-jakarta-sans/latin-600.css' layer(base);
-@import '@fontsource/plus-jakarta-sans/latin-700.css' layer(base);
-@import '@fontsource/plus-jakarta-sans/latin-ext-400.css' layer(base);
-@import '@fontsource/plus-jakarta-sans/latin-ext-500.css' layer(base);
-@import '@fontsource/plus-jakarta-sans/latin-ext-600.css' layer(base);
-@import '@fontsource/plus-jakarta-sans/latin-ext-700.css' layer(base);
+   `@import 'tailwindcss'`: Vite's postcss-import resolves them at build time
+   and drops any @import that isn't first.
+   Do NOT add `layer(base)` here: declaring the `base` layer before
+   `@import 'tailwindcss'` reorders the cascade layers so `base` sinks BELOW
+   `theme`, which lets Tailwind's default `--font-sans` win over our
+   `:root { --font-sans: "Plus Jakarta Sans" … }` override (regression of #1230,
+   the codemod adds this). Plain @import keeps the @font-face rules unlayered. */
+@import '@fontsource/plus-jakarta-sans/latin-400.css';
+@import '@fontsource/plus-jakarta-sans/latin-500.css';
+@import '@fontsource/plus-jakarta-sans/latin-600.css';
+@import '@fontsource/plus-jakarta-sans/latin-700.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-400.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-500.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-600.css';
+@import '@fontsource/plus-jakarta-sans/latin-ext-700.css';
 
 @import 'tailwindcss';
 
@@ -69,7 +74,13 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
 
-  --font-sans: var(--font-sans);
+  /* NB: --font-sans is intentionally NOT mapped here. Tailwind 4 already wires
+     its preflight `--default-font-family: var(--font-sans)`, and the runtime
+     `:root { --font-sans: "Plus Jakarta Sans", … }` (plus the
+     `:root[data-font=system]` swap) below drives it. Adding
+     `--font-sans: var(--font-sans)` here is a self-reference that resolves to
+     the guaranteed-invalid (empty) value, dropping the brand font to the
+     system fallback (regression of #1230). */
 }
 
 /* Tailwind 4 has no config `safelist`. The `u-*` utilities below are defined
