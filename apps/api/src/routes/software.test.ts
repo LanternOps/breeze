@@ -8,8 +8,20 @@ import { parseStreamingMultipart } from '../services/streamingUpload';
 import { createHash } from 'node:crypto';
 import { authMiddleware } from '../middleware/auth';
 import { inArray, eq } from 'drizzle-orm';
+import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
+import { createSoftwareDeployment } from '../services/softwareDeployment';
+
+// Hoist the createSoftwareDeployment mock factory so the reference is available
+// both inside the vi.mock factory and in the test body.
+const { createDeploymentMock } = vi.hoisted(() => ({
+  createDeploymentMock: vi.fn(),
+}));
 
 vi.mock('../services', () => ({}));
+
+vi.mock('../services/softwareDeployment', () => ({
+  createSoftwareDeployment: createDeploymentMock,
+}));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can
 // assert the actual org-scoping WHERE condition, not just that a query ran.
@@ -457,6 +469,150 @@ describe('software routes', () => {
         body: JSON.stringify({ softwareId: '11111111-1111-1111-1111-111111111111' })
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /software/deployments', () => {
+    // Shared fixture UUIDs
+    const VERSION_ID = '11111111-1111-4111-8111-111111111111';
+    const DEVICE_ID  = '22222222-2222-4222-8222-222222222222';
+    const MW_ID      = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+    const versionRow = {
+      id: VERSION_ID,
+      catalogId: 'cat-1',
+      version: '1.0.0',
+      s3Key: null,
+      downloadUrl: 'https://example.com/pkg.exe',
+    };
+    const catalogRow = {
+      id: 'cat-1',
+      orgId: 'org-123',
+      name: 'TestApp',
+      integrationProvider: null,
+    };
+
+    // Helper that resolves like the Drizzle chain regardless of chain depth.
+    const selectResult = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    it('returns 201 with the full deployment object on a successful immediate install', async () => {
+      // The route does two db.select() calls before handing off to the service.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([versionRow]))   // version lookup
+        .mockReturnValueOnce(selectResult([catalogRow]));  // catalog lookup
+
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+
+      const mockDeployment = {
+        id: 'dep-1',
+        orgId: 'org-123',
+        name: 'Test Deploy',
+        softwareVersionId: VERSION_ID,
+        deploymentType: 'install',
+        targetType: 'devices',
+        targetIds: [DEVICE_ID],
+        scheduleType: 'immediate',
+        maintenanceWindowId: null,
+        createdBy: 'user-123',
+        createdAt: new Date().toISOString(),
+        scheduledAt: null,
+        options: null,
+      };
+      createDeploymentMock.mockResolvedValueOnce({
+        deploymentId: mockDeployment.id,
+        deployment: mockDeployment,
+        status: 'pending',
+        dispatchedDeviceIds: [DEVICE_ID],
+      });
+
+      const res = await app.request('/software/deployments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Test Deploy',
+          softwareVersionId: VERSION_ID,
+          deploymentType: 'install',
+          targetType: 'devices',
+          targetIds: [DEVICE_ID],
+          scheduleType: 'immediate',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data).toEqual(mockDeployment);
+    });
+
+    it('passes maintenanceWindowId through to the service when supplied', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+
+      createDeploymentMock.mockResolvedValueOnce({
+        deploymentId: 'dep-2',
+        deployment: { id: 'dep-2' },
+        status: 'pending',
+        dispatchedDeviceIds: [],
+      });
+
+      await app.request('/software/deployments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'MW Deploy',
+          softwareVersionId: VERSION_ID,
+          deploymentType: 'install',
+          targetType: 'devices',
+          targetIds: [DEVICE_ID],
+          scheduleType: 'maintenance',
+          maintenanceWindowId: MW_ID,
+        }),
+      });
+
+      expect(createDeploymentMock).toHaveBeenCalledWith(
+        expect.objectContaining({ maintenanceWindowId: MW_ID })
+      );
+    });
+
+    it('stores non-devices targetType as given (not coerced to "devices")', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+
+      // targetType:'all' resolves to a list of all org devices
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+
+      createDeploymentMock.mockResolvedValueOnce({
+        deploymentId: 'dep-3',
+        deployment: { id: 'dep-3', targetType: 'all', targetIds: null },
+        status: 'pending',
+        dispatchedDeviceIds: [DEVICE_ID],
+      });
+
+      const res = await app.request('/software/deployments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'All-Devices Deploy',
+          softwareVersionId: VERSION_ID,
+          deploymentType: 'install',
+          targetType: 'all',
+          scheduleType: 'immediate',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      // The service must receive the original targetType, not a hardcoded 'devices'.
+      expect(createDeploymentMock).toHaveBeenCalledWith(
+        expect.objectContaining({ targetType: 'all' })
+      );
     });
   });
 
