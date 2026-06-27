@@ -80,6 +80,41 @@ describe('runPartnerSave', () => {
     expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
+  // Regression for #1976: a partner-settings save that fails server-side Zod
+  // validation must surface the specific field message — not collapse into the
+  // generic "Failed to save settings" fallback. The save flows through runAction,
+  // which (via extractApiError) recovers issues from @hono/zod-validator's default
+  // 400 body. Under zod v4 the ZodError's `issues` are non-enumerable, so they are
+  // JSON-stringified into `error.message`; this mirrors that exact wire shape.
+  it('surfaces the specific Zod validation message (not the generic fallback) on a 400', async () => {
+    const zodValidatorBody = {
+      success: false,
+      error: {
+        name: 'ZodError',
+        message: JSON.stringify([
+          {
+            code: 'custom',
+            path: ['settings', 'remoteAccessProviders', 0, 'urlTemplate'],
+            message: 'Template must include the {id} placeholder for the per-device value',
+          },
+        ]),
+      },
+    };
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(zodValidatorBody, false, 400));
+
+    await expect(runPartnerSave(PAYLOAD, { onUnauthorized: vi.fn() })).rejects.toThrow(
+      'Template must include the {id} placeholder for the per-device value'
+    );
+
+    expect(showToastMock).toHaveBeenCalledWith({
+      type: 'error',
+      message: 'Template must include the {id} placeholder for the per-device value',
+    });
+    expect(showToastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Failed to save settings' })
+    );
+  });
+
   it('calls onUnauthorized and does not show a toast on 401', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 401));
     const onUnauthorized = vi.fn();
