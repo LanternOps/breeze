@@ -127,6 +127,28 @@ describe('ToastContainer', () => {
     });
   });
 
+  it('with two containers both mounted, a single live showToast renders exactly one toast (#1301 duplicate-island symptom)', async () => {
+    // The closest runtime analog of the #1301 "×2 toast" report: two
+    // ToastContainers simultaneously mounted/registered (the Astro island
+    // duplication / view-transition overlap case), then a SINGLE live
+    // showToast call. The single module-level emitter slot means the second
+    // mount overwrote the first's registration, so only one container renders
+    // the toast — a single emit must produce exactly one DOM toast, never two.
+    // (The pre-mount-queue test above exercises the splice-drain path; this
+    // one exercises the live-emit path through addToastFn.)
+    render(<ToastContainer />);
+    render(<ToastContainer />);
+
+    act(() => {
+      showToast({ type: 'success', message: 'single-live-emit' });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('single-live-emit')).toBeInTheDocument();
+    });
+    expect(screen.getAllByTestId('toast')).toHaveLength(1);
+  });
+
   it('renders a warning toast with role=status and the correct data-toast-type', () => {
     render(<ToastContainer />);
 
