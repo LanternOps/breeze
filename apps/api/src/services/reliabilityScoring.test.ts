@@ -154,6 +154,34 @@ describe('reliabilityScoringInternals', () => {
   });
 });
 
+// Issue #1908: rate-normalization denominator = observed up-days in window.
+describe('countObservedUpDaysInWindow', () => {
+  const { countObservedUpDaysInWindow, sortDailyBuckets } = reliabilityScoringInternals;
+  const now = new Date('2026-06-26T12:00:00.000Z');
+  const day = (offsetDays: number) =>
+    new Date(now.getTime() - offsetDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  // Minimal buckets: only date + sampleCount matter for this helper.
+  const buckets = sortDailyBuckets(
+    new Map(
+      [
+        { date: day(1), sampleCount: 3 },   // in 30d window, reported
+        { date: day(5), sampleCount: 1 },   // in 30d window, reported
+        { date: day(10), sampleCount: 0 },  // in window but NO sample → excluded
+        { date: day(40), sampleCount: 9 },  // outside 30d window → excluded
+      ].map((b) => [b.date, b as any]),
+    ),
+  );
+
+  it('counts only in-window buckets that have at least one sample', () => {
+    expect(countObservedUpDaysInWindow(buckets, 30, now)).toBe(2);
+  });
+
+  it('shrinks the window correctly', () => {
+    expect(countObservedUpDaysInWindow(buckets, 3, now)).toBe(1); // only day(1)
+  });
+});
+
 // Issue #1904: reliability is POSTed many times/day, each re-reading an
 // overlapping last-50-events window, so the SAME event lands verbatim in
 // multiple history rows. mergeRowsIntoDailyBuckets must count each DISTINCT
@@ -690,6 +718,77 @@ describe('scoreHardwareErrors', () => {
   // 4 criticals: weightedCount=8 → round(100*exp(-8/3)) ≈ 7 (no longer clamps to 0 artificially)
   it('4 critical errors → low score (~7), not hard-floored at 0', () => {
     expect(scoreHardwareErrors(4, 0, 0)).toBe(7);
+  });
+});
+
+// Issue #1908 (a/b): rate-normalization by observed up-days.
+describe('fault scorers — rate-normalization (#1908)', () => {
+  const { scoreCrashes, scoreHangs, scoreServiceFailures, scoreHardwareErrors } =
+    reliabilityScoringInternals;
+
+  it('mature 30-up-day device is a no-op (matches the raw-count curve)', () => {
+    // Default arg is 30, so the existing scoreCrashes(0,1)===72 already proves
+    // this; here we assert it explicitly with the arg passed.
+    expect(scoreCrashes(0, 1, 30)).toBe(72);
+    expect(scoreHangs(1, 0, 30)).toBe(85);
+    expect(scoreServiceFailures(5, 0, 30)).toBe(37);
+    expect(scoreHardwareErrors(1, 0, 0, 30)).toBe(51);
+  });
+
+  it('same count + fewer observed up-days → strictly lower score', () => {
+    expect(scoreCrashes(0, 2, 15)).toBeLessThan(scoreCrashes(0, 2, 30));
+    expect(scoreHangs(2, 0, 15)).toBeLessThan(scoreHangs(2, 0, 30));
+    expect(scoreServiceFailures(3, 0, 15)).toBeLessThan(scoreServiceFailures(3, 0, 30));
+    expect(scoreHardwareErrors(0, 2, 0, 15)).toBeLessThan(scoreHardwareErrors(0, 2, 0, 30));
+  });
+
+  it('MIN_DAYS floor: sparse device uses denominator 14, not its real up-days', () => {
+    // 3 up-days and 7 up-days both floor to 14 → identical score.
+    expect(scoreCrashes(0, 1, 3)).toBe(scoreCrashes(0, 1, 7));
+    expect(scoreCrashes(0, 1, 7)).toBe(scoreCrashes(0, 1, 14));
+  });
+
+  it('young-device reference table for one 30d crash (k_rate=0.1, MIN_DAYS=14)', () => {
+    expect(scoreCrashes(0, 1, 30)).toBe(72); // mature
+    expect(scoreCrashes(0, 1, 14)).toBe(49);
+    expect(scoreCrashes(0, 1, 7)).toBe(49);  // floored to 14
+    expect(scoreCrashes(0, 1, 3)).toBe(49);  // floored to 14
+  });
+
+  it('monotonic in up-days: more observation → higher score at fixed count', () => {
+    const a = scoreCrashes(0, 3, 14);
+    const b = scoreCrashes(0, 3, 22);
+    const c = scoreCrashes(0, 3, 30);
+    expect(a).toBeLessThan(b);
+    expect(b).toBeLessThan(c);
+  });
+});
+
+// Issue #1908: the headline compute path must feed observed-up-days (not a
+// constant) into the fault scorers. Guard the wiring: a 30-day history that
+// reported on only 14 distinct days scores the same crash factor as
+// scoreCrashes(..., 14), strictly below the fully-observed 30-day value.
+describe('compute wiring feeds observed up-days into fault scorers (#1908)', () => {
+  const { scoreCrashes, countObservedUpDaysInWindow, sortDailyBuckets } =
+    reliabilityScoringInternals;
+  const now = new Date('2026-06-26T12:00:00.000Z');
+  const day = (o: number) =>
+    new Date(now.getTime() - o * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  it('helper output, fed to scoreCrashes, differs from the mature default', () => {
+    // 14 reporting days inside the 30d window.
+    const buckets = sortDailyBuckets(
+      new Map(
+        Array.from({ length: 14 }, (_, i) => {
+          const b = { date: day(i + 1), sampleCount: 1, crashCount: 0 } as any;
+          return [b.date, b];
+        }),
+      ),
+    );
+    const upDays = countObservedUpDaysInWindow(buckets, 30, now);
+    expect(upDays).toBe(14);
+    expect(scoreCrashes(0, 1, upDays)).toBe(49);
+    expect(scoreCrashes(0, 1, upDays)).toBeLessThan(scoreCrashes(0, 1)); // 49 < 72
   });
 });
 
