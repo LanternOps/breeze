@@ -113,6 +113,19 @@ describe('AuthPage', () => {
       expect(screen.queryByTestId('mock-register')).toBeNull();
     });
 
+    it('exposes the closed notice as a polite live region for screen readers', () => {
+      // A directly-shared /auth#signup link lands a screen-reader user on this
+      // notice; live-region semantics ensure the "registration closed" context
+      // is announced rather than silently swapped in.
+      registrationGate.enabled = false;
+      registrationGate.loaded = true;
+      window.location.hash = '#signup';
+      render(<AuthPage />);
+      const notice = screen.getByTestId('registration-disabled-notice');
+      expect(notice.getAttribute('role')).toBe('status');
+      expect(notice.getAttribute('aria-live')).toBe('polite');
+    });
+
     it('lets the user return to sign in from the closed notice', () => {
       registrationGate.enabled = false;
       registrationGate.loaded = true;

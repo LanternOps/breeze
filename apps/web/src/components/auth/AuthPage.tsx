@@ -81,7 +81,7 @@ export default function AuthPage({ next }: AuthPageProps) {
         // Hash points at #signup but registration is disabled. Show a closed
         // notice instead of the form (which would otherwise mount and redirect
         // off-page) so a directly-shared /auth#signup link isn't a dead end.
-        <div data-testid="registration-disabled-notice">
+        <div data-testid="registration-disabled-notice" role="status" aria-live="polite">
           <div className="mb-8">
             <p className="text-sm font-medium text-muted-foreground">Registration closed</p>
             <h1 className="mt-1 text-2xl font-bold tracking-tight">Sign-ups are disabled</h1>
