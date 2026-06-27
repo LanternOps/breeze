@@ -364,6 +364,17 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
     expect(totalCount(map, (b) => b.hardwareCriticalCount)).toBe(1);
   });
 
+  it('isGenuineHardwareError: only real fault types or known hardware sources pass', () => {
+    const { isGenuineHardwareError } = reliabilityScoringInternals;
+    // Empty / no-type / non-hardware-source events are dropped.
+    expect(isGenuineHardwareError({} as any)).toBe(false);
+    expect(isGenuineHardwareError({ source: '', type: '' } as any)).toBe(false);
+    expect(isGenuineHardwareError({ source: 'service control manager', type: 'unknown' } as any)).toBe(false);
+    // Genuine: a known hardware source, or a real fault subtype (incl. thermal).
+    expect(isGenuineHardwareError({ source: 'nvme', type: 'unknown' } as any)).toBe(true);
+    expect(isGenuineHardwareError({ source: 'com.apple.kernel', type: 'thermal' } as any)).toBe(true);
+  });
+
   it('tracks app_crash as a downweighted subset of crashCount', () => {
     const rows = [
       makeHistoryRow({
@@ -899,6 +910,16 @@ describe('scoreDailyBucket', () => {
     const mixed = scoreDailyBucket(emptyBucket({ crashCount: 1, serviceFailureCount: 2, hardwareCriticalCount: 1 }));
     expect(mixed).toBeLessThan(oneCrash);
   });
+
+  it('downweights app crashes vs. real device crashes (app_crash weighting)', () => {
+    // 4 per-app crashes dent the score far less than 4 BSODs. At weight 0.25 the
+    // effective load of 4 app crashes is 4×0.25 = 1.0, ≈ a single real crash.
+    const fourApp = scoreDailyBucket(emptyBucket({ crashCount: 4, appCrashCount: 4 }));
+    const fourReal = scoreDailyBucket(emptyBucket({ crashCount: 4, appCrashCount: 0 }));
+    const oneReal = scoreDailyBucket(emptyBucket({ crashCount: 1, appCrashCount: 0 }));
+    expect(fourApp).toBeGreaterThan(fourReal);
+    expect(fourApp).toBeCloseTo(oneReal);
+  });
 });
 
 describe('scoreBand', () => {
@@ -1293,6 +1314,25 @@ describe('aggregateReliabilityOffenders', () => {
 
     // critical reported first must not be downgraded by a later warning / unknown severity.
     expect(result.hardware[0]).toMatchObject({ key: 'disk0', count: 3, detail: 'critical' });
+  });
+
+  it('excludes non-genuine hardware (old-agent SCM/DCOM/IOKit junk) from the drill-down', () => {
+    const rows = [
+      makeHistoryRow({
+        hardwareErrors: [
+          { type: 'unknown', severity: 'error', source: 'service control manager', eventId: '7000', timestamp: '2026-02-20T10:00:00.000Z' },
+          { type: 'unknown', severity: 'error', source: 'com.apple.iokit.cfplugin', eventId: 'x', timestamp: '2026-02-20T10:01:00.000Z' },
+          { type: 'disk', severity: 'critical', source: 'nvme', eventId: '7', timestamp: '2026-02-20T10:02:00.000Z' },
+        ],
+      }),
+    ];
+
+    const result = aggregateReliabilityOffenders(rows);
+
+    // The two junk sources must not appear; only the genuine nvme fault does.
+    expect(result.hardware).toEqual([
+      { key: 'nvme', label: 'nvme', count: 1, lastOccurrence: '2026-02-20T10:02:00.000Z', detail: 'critical' },
+    ]);
   });
 
   it('breaks count ties by most-recent occurrence', () => {

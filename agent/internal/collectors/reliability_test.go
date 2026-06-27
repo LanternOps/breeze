@@ -691,3 +691,27 @@ func TestClassifyLinuxEventLogEntry(t *testing.T) {
 		})
 	}
 }
+
+func TestCrashReportKind(t *testing.T) {
+	cases := []struct {
+		name     string
+		bugType  string
+		procName string
+		want     string
+	}{
+		// bug_type is authoritative even when the filename/procName say otherwise.
+		{"Kernel-2026-06-27.ips", "210", "Unknown", "Kernel panic"},
+		{"JetsamEvent-2026-06-27.ips", "298", "Unknown", "JetsamEvent"},
+		{"wdavdaemon-2026-06-27.ips", "309", "wdavdaemon", "Application crash"},
+		// Fallbacks when bug_type is absent (legacy reports).
+		{"panic-full-2026.ips", "", "Unknown", "Kernel panic"},
+		{"weird.ips", "", "kernel", "Kernel panic"},
+		{"JetsamEvent-legacy.ips", "", "Unknown", "JetsamEvent"},
+		{"Chrome-2026-06-27.ips", "", "Chrome", "Application crash"},
+	}
+	for _, tc := range cases {
+		if got := crashReportKind(tc.name, tc.bugType, tc.procName); got != tc.want {
+			t.Errorf("crashReportKind(%q,%q,%q) = %q, want %q", tc.name, tc.bugType, tc.procName, got, tc.want)
+		}
+	}
+}

@@ -19,7 +19,9 @@ describe('reliabilityCrashEventSchema', () => {
   });
 
   it('should accept all crash event types', () => {
-    const types = ['bsod', 'kernel_panic', 'system_crash', 'oom_kill', 'unknown'] as const;
+    // Must include every type the agent emits — a macOS app_crash that fails here
+    // would 400 the entire reliability upload (see agent reliability_unix.go).
+    const types = ['bsod', 'kernel_panic', 'system_crash', 'oom_kill', 'app_crash', 'unknown'] as const;
     for (const type of types) {
       const result = reliabilityCrashEventSchema.safeParse({
         type,
@@ -239,7 +241,7 @@ describe('reliabilityHardwareErrorSchema', () => {
   });
 
   it('should accept all hardware error types', () => {
-    const types = ['mce', 'disk', 'memory', 'unknown'] as const;
+    const types = ['mce', 'disk', 'memory', 'thermal', 'unknown'] as const;
     for (const type of types) {
       const result = reliabilityHardwareErrorSchema.safeParse({
         type,

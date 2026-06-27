@@ -120,6 +120,11 @@ func classifyHardwareType(message, source string, numericID int) string {
 	switch {
 	case strings.Contains(src, "whea"), strings.Contains(msg, "machine check"), strings.Contains(msg, "mce"):
 		return "mce"
+	case strings.Contains(msg, "thermal"):
+		// macOS thermal-pressure / SMC thermal faults. Stamped as a real type so
+		// the API's genuine-hardware gate recognises it by type, not by hoping the
+		// substring "thermal" appears in the source.
+		return "thermal"
 	case strings.Contains(msg, "memory"), strings.Contains(msg, "edac"),
 		numericID == 13 || numericID == 50 || numericID == 51:
 		return "memory"

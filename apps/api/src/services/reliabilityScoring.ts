@@ -738,11 +738,19 @@ function hardwareErrorKey(event: HistoryRow['hardwareErrors'][number]): string {
 // Bluetooth and macOS IOKit-plugin chatter into `hardwareErrors`. The v0.85.0+
 // agent gates correctly, but historical rows AND devices still on the old binary
 // keep emitting that junk. This server-side gate mirrors the agent's hardware
-// classifier (agent/internal/collectors/reliability.go) so old/straggler data
-// can't depress the hardware factor: an event counts only when it carries a real
-// fault subtype OR comes from a known hardware/driver provider. A genuine
-// v0.85.0 hardware error always satisfies one of these, so no real signal is lost.
-const HARDWARE_FAULT_TYPES = new Set(['mce', 'memory', 'disk']);
+// classifiers (Windows reliability.go:classifyEventLogEntry, macOS/Linux
+// reliability_unix.go) so old/straggler data can't depress the hardware factor:
+// an event counts only when it carries a real fault subtype OR comes from a known
+// hardware/driver provider.
+//
+// Parity: HARDWARE_FAULT_TYPES must equal the non-"unknown" returns of the agent's
+// classifyHardwareType (mce/memory/disk/thermal), and HARDWARE_SOURCE_KEYWORDS must
+// be a superset of the agent's knownHardwareSources. A genuine v0.85.0 hardware
+// error always carries one of those fault subtypes (the agent now stamps thermal as
+// a type, not a message-only signal), so no real v0.85.0 signal is lost. (Pre-0.85
+// thermal events stamped type="unknown" survive only if their source contains
+// "thermal" — acceptable, as that junk-era data ages out of the 30-day window.)
+const HARDWARE_FAULT_TYPES = new Set(['mce', 'memory', 'disk', 'thermal']);
 const HARDWARE_SOURCE_KEYWORDS = [
   'whea', 'disk', 'ntfs', 'volmgr', 'storahci', 'stornvme', 'nvme',
   'iastor', 'msahci', 'nvlddmkm', 'amdkmdag', 'igfx', 'thermal', 'edac',

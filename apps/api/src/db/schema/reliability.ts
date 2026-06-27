@@ -25,7 +25,7 @@ export type ReliabilityServiceFailure = {
 };
 
 export type ReliabilityHardwareError = {
-  type: 'mce' | 'disk' | 'memory' | 'unknown';
+  type: 'mce' | 'disk' | 'memory' | 'thermal' | 'unknown';
   severity: 'critical' | 'error' | 'warning';
   timestamp: string;
   source: string;

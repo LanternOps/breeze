@@ -2,6 +2,29 @@ package collectors
 
 import "strings"
 
+// crashReportKind classifies a macOS DiagnosticReport for the reliability
+// pipeline. bug_type is authoritative when present (210 = kernel panic,
+// 298 = JetsamEvent); filename / process name are fallbacks for legacy reports
+// whose header is missing or unparsable. Platform-neutral so it is CI-testable.
+// Returns the message prefix used downstream: "Kernel panic" (→ full device
+// crash), "JetsamEvent" (→ dropped), or "Application crash" (→ weak app_crash).
+func crashReportKind(name, bugType, procName string) string {
+	switch strings.TrimSpace(bugType) {
+	case "210":
+		return "Kernel panic"
+	case "298":
+		return "JetsamEvent"
+	}
+	lname := strings.ToLower(name)
+	if strings.Contains(lname, "jetsam") {
+		return "JetsamEvent"
+	}
+	if strings.Contains(lname, "panic") || strings.EqualFold(procName, "kernel") {
+		return "Kernel panic"
+	}
+	return "Application crash"
+}
+
 // classifyDarwinEventLogEntry routes a single macOS event-log entry into exactly
 // one reliability factor (crash / hang / service-failure / hardware-error) or
 // none. It is platform-neutral (no build tag) so it can be unit-tested on Linux
@@ -60,9 +83,11 @@ func classifyDarwinEventLogEntry(metrics *ReliabilityMetrics, entry EventLogEntr
 	}
 
 	// Hardware: genuine hardware faults only. classifyHardwareType matches
-	// MCE / memory / disk-I/O signals; thermal is macOS-specific. Benign IOKit
-	// plugin/appstore errors return "unknown" and are dropped.
-	if classifyHardwareType(entry.Message, entry.Source, nid) != "unknown" || strings.Contains(msg, "thermal") {
+	// MCE / memory / disk-I/O / thermal signals and stamps a real Type; benign
+	// IOKit plugin/appstore errors return "unknown" and are dropped. Gating on
+	// the classified type (never entry.Category) keeps the agent and the API's
+	// genuine-hardware gate in agreement.
+	if classifyHardwareType(entry.Message, entry.Source, nid) != "unknown" {
 		appendHardwareError(metrics, entry, ts)
 	}
 }
