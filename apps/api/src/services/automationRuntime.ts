@@ -76,11 +76,17 @@ export type ExecuteCommandAction = {
   shell?: 'bash' | 'powershell' | 'cmd';
 };
 
+export type DeploySoftwareAction = {
+  type: 'deploy_software';
+  catalogId: string;
+};
+
 export type AutomationAction =
   | RunScriptAction
   | SendNotificationAction
   | CreateAlertAction
-  | ExecuteCommandAction;
+  | ExecuteCommandAction
+  | DeploySoftwareAction;
 
 export type NotificationTargets = {
   channelIds?: string[];

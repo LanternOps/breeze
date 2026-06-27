@@ -154,7 +154,7 @@ describe('createAutomationSchema', () => {
   const validAutomation = {
     name: 'Restart on failure',
     trigger: { type: 'event' as const, event: 'service.stopped' },
-    actions: [{ type: 'script', scriptId: VALID_UUID }],
+    actions: [{ type: 'run_script', scriptId: VALID_UUID }],
   };
 
   it('should accept valid automation', () => {
