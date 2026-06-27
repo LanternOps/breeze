@@ -9,6 +9,16 @@ interface ToastData {
   duration?: number;
 }
 
+// Single module-level emitter slot: only one ToastContainer is ever the
+// registered emitter at a time (see the effect below — a second mount overwrites
+// rather than adds a listener). This is why showToast cannot fan a single call
+// out to multiple toasts. The "duplicate success toasts" reported in #1301 were
+// an Astro/Vite *dev-server* render double-invoke (no <StrictMode> in the app;
+// prod ships production React), verified absent in a production build. Do NOT
+// add a time-window dedupe here to "fix" duplicates — it silently drops two
+// legitimately-distinct identical successes (e.g. two quick "Saved" toasts). The
+// rejected PR #1332 took that path; the call-count guard in runAction.test.ts
+// asserts the real single-emit invariant instead.
 let addToastFn: ((toast: Omit<ToastData, 'id'>) => void) | null = null;
 const pendingToasts: Array<Omit<ToastData, 'id'>> = [];
 
