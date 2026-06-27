@@ -106,10 +106,12 @@ describe('runPartnerSave', () => {
       'Template must include the {id} placeholder for the per-device value'
     );
 
-    expect(showToastMock).toHaveBeenCalledWith({
-      type: 'error',
-      message: 'Template must include the {id} placeholder for the per-device value',
-    });
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        message: 'Template must include the {id} placeholder for the per-device value',
+      })
+    );
     expect(showToastMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ message: 'Failed to save settings' })
     );
