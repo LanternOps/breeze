@@ -139,4 +139,48 @@ describe('reliability device-type-aware weight profile integration (#1721)', () 
     // Uptime no longer drags the workstation's weighted total down.
     expect(workstationRow!.reliabilityScore).toBeGreaterThan(serverRow!.reliabilityScore);
   });
+
+  // Issue #1908 (a/b): rate-normalization wiring, end to end. Two identical
+  // workstations (uptime weight 0, so only fault factors drive the score) carry
+  // the SAME single crash inside the 30d window. The one that reported on fewer
+  // days has a higher per-up-day crash rate, so its persisted score must be
+  // strictly lower. This exercises countObservedUpDaysInWindow → the four scorer
+  // call sites in computeAndPersistDeviceReliability — a regression that dropped
+  // the observedUpDays30 argument (reverting to the default 30) would fail here.
+  it('rate-normalizes faults by observed up-days: fewer reporting days → lower score (#1908)', async () => {
+    // One crash, 2 days ago, identical for both devices (same distinct key).
+    const crashTs = new Date(Date.now() - 2 * DAY_MS).toISOString();
+    const seedReportingDays = async (deviceId: string, days: number): Promise<void> => {
+      for (let i = 1; i <= days; i++) {
+        const collectedAt = new Date(Date.now() - i * DAY_MS);
+        await getTestDb()
+          .insert(deviceReliabilityHistory)
+          .values({
+            orgId,
+            deviceId,
+            collectedAt,
+            uptimeSeconds: 12 * 3600,
+            bootTime: new Date(collectedAt.getTime() - 12 * 3600 * 1000),
+            crashEvents: i === 2 ? [{ type: 'bsod', timestamp: crashTs }] : [],
+          });
+      }
+    };
+
+    const sparseId = await insertDevice(orgId, siteId, 'workstation'); // 14 reporting days
+    const denseId = await insertDevice(orgId, siteId, 'workstation'); // 28 reporting days
+    await seedReportingDays(sparseId, 14);
+    await seedReportingDays(denseId, 28);
+
+    await withSystemDbAccessContext(async () => {
+      await computeAndPersistDeviceReliability(sparseId);
+      await computeAndPersistDeviceReliability(denseId);
+    });
+
+    const sparse = await getPersistedReliability(sparseId);
+    const dense = await getPersistedReliability(denseId);
+    expect(sparse).not.toBeNull();
+    expect(dense).not.toBeNull();
+    // Same single crash, fewer observed up-days → higher rate → strictly lower score.
+    expect(sparse!.reliabilityScore).toBeLessThan(dense!.reliabilityScore);
+  });
 });

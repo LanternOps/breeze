@@ -748,6 +748,25 @@ describe('fault scorers — rate-normalization (#1908)', () => {
     expect(scoreCrashes(0, 1, 7)).toBe(scoreCrashes(0, 1, 14));
   });
 
+  it('zero observed up-days floors to MIN_DAYS (not a divide-by-zero / 0-score)', () => {
+    // observedUpDays30 = 0 is reachable; max(0, 14) = 14 → same as the 14 curve.
+    expect(scoreCrashes(0, 1, 0)).toBe(49);
+  });
+
+  it('REFERENCE_DAYS cap: >30 up-days (inclusive-window edge) still an exact no-op', () => {
+    // The 30d count window spans 31 inclusive day-keys, so observedUpDays30 can
+    // reach 31; the denominator is capped at 30 so it stays the bit-identical no-op.
+    expect(scoreCrashes(0, 1, 31)).toBe(scoreCrashes(0, 1, 30)); // both 72
+    expect(scoreCrashes(0, 1, 31)).toBe(72);
+  });
+
+  it('service-failure recovered-floor holds under rate-normalization', () => {
+    // recovered ≥ failures → weightedCount 0 → rate 0 → 100, even at low up-days
+    // (the Math.max(0,…) must floor BEFORE the divide, never a negative rate).
+    expect(scoreServiceFailures(0, 10, 14)).toBe(100);
+    expect(scoreServiceFailures(1, 10, 14)).toBe(100);
+  });
+
   it('young-device reference table for one 30d crash (k_rate=0.1, MIN_DAYS=14)', () => {
     expect(scoreCrashes(0, 1, 30)).toBe(72); // mature
     expect(scoreCrashes(0, 1, 14)).toBe(49);
@@ -764,33 +783,11 @@ describe('fault scorers — rate-normalization (#1908)', () => {
   });
 });
 
-// Issue #1908: the headline compute path must feed observed-up-days (not a
-// constant) into the fault scorers. Guard the wiring: a 30-day history that
-// reported on only 14 distinct days scores the same crash factor as
-// scoreCrashes(..., 14), strictly below the fully-observed 30-day value.
-describe('compute wiring feeds observed up-days into fault scorers (#1908)', () => {
-  const { scoreCrashes, countObservedUpDaysInWindow, sortDailyBuckets } =
-    reliabilityScoringInternals;
-  const now = new Date('2026-06-26T12:00:00.000Z');
-  const day = (o: number) =>
-    new Date(now.getTime() - o * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-
-  it('helper output, fed to scoreCrashes, differs from the mature default', () => {
-    // 14 reporting days inside the 30d window.
-    const buckets = sortDailyBuckets(
-      new Map(
-        Array.from({ length: 14 }, (_, i) => {
-          const b = { date: day(i + 1), sampleCount: 1, crashCount: 0 } as any;
-          return [b.date, b];
-        }),
-      ),
-    );
-    const upDays = countObservedUpDaysInWindow(buckets, 30, now);
-    expect(upDays).toBe(14);
-    expect(scoreCrashes(0, 1, upDays)).toBe(49);
-    expect(scoreCrashes(0, 1, upDays)).toBeLessThan(scoreCrashes(0, 1)); // 49 < 72
-  });
-});
+// NOTE: the end-to-end wiring — countObservedUpDaysInWindow feeding the four
+// scorer call sites inside computeAndPersistDeviceReliability — is covered by a
+// real-DB test in reliabilityWeightProfile.integration.test.ts ("rate-normalizes
+// faults by observed up-days"). A unit test here can only re-implement the
+// composition it claims to guard, so it would not catch a dropped call-site arg.
 
 // Issue #1908: scoreDailyBucket uses the same saturatingScore exponential form
 // as the headline scorers (so a day with more faults always scores lower), but

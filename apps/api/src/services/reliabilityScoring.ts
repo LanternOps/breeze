@@ -297,15 +297,33 @@ const K_HARDWARE = 3;
 // so a device observed for only part of the window — young or frequently offline
 // — is not judged on absolute counts it had less opportunity to accumulate.
 //
-// k_rate = K_x / REFERENCE_DAYS makes a device with a full 30 observed up-days
-// score IDENTICALLY to the pre-#1908(a) raw-count curve:
-//   saturatingScore(weightedCount/30, K/30) == saturatingScore(weightedCount, K)
-// so mature always-on devices are a provable no-op; only sub-30-up-day devices
-// change. MIN_DAYS floors the denominator so one event on a 2-day-old device
-// can't read as a catastrophic daily rate (see #1904's "young device looks
-// alarming" complaint). 14 is the reasoned start; final value is #1908(d).
+// k_rate = K_x / REFERENCE_DAYS makes a fully-observed device score IDENTICALLY
+// to the pre-#1908(a) raw-count curve (see saturatingRateScore for the exact
+// identity and the denominator clamp). Devices with FEWER than REFERENCE_DAYS
+// observed up-days score lower (higher per-day rate); devices at or above it are
+// a provable no-op. MIN_DAYS floors the denominator so one event on a 2-day-old
+// device can't read as a catastrophic daily rate (see #1904's "misleading on new
+// devices" complaint). 14 is the reasoned start; final value is #1908(d).
 const RELIABILITY_RATE_REFERENCE_DAYS = 30;
 const RELIABILITY_RATE_MIN_DAYS = 14;
+
+// Issue #1908: shared rate-normalization for the four fault scorers. The
+// denominator is clamped to [MIN_DAYS, REFERENCE_DAYS]:
+//   - the MIN_DAYS floor stops a sparse/young device reading one event as a
+//     catastrophic daily rate; and
+//   - the REFERENCE_DAYS cap makes a fully-observed device an EXACT no-op vs the
+//     legacy raw-count curve. The 30d count window (bucketsInWindow) is an
+//     INCLUSIVE 31-day span, so observedUpDays30 can reach 31; without the cap a
+//     device reporting every day would score slightly *more leniently* than the
+//     reference. With denom = REFERENCE_DAYS the score reduces algebraically to
+//     saturatingScore(weightedCount, kRaw): 100·e^(−(w/30)/(K/30)) = 100·e^(−w/K).
+function saturatingRateScore(weightedCount: number, kRaw: number, observedUpDays30: number): number {
+  const denom = Math.min(
+    Math.max(observedUpDays30, RELIABILITY_RATE_MIN_DAYS),
+    RELIABILITY_RATE_REFERENCE_DAYS
+  );
+  return saturatingScore(weightedCount / denom, kRaw / RELIABILITY_RATE_REFERENCE_DAYS);
+}
 
 function scoreRangeBounds(range: ReliabilityScoreRange): [number, number] {
   if (range === 'critical') return [0, 50];
@@ -433,12 +451,10 @@ function scoreCrashes(
   observedUpDays30: number = RELIABILITY_RATE_REFERENCE_DAYS
 ): number {
   // Issue #1908: weightedCount = 30d crashes + 0.5 × 7d crashes (recent events
-  // weighted more heavily). Rate-normalized by observed up-days (floored at
-  // MIN_DAYS); k_rate = K_CRASHES / REFERENCE_DAYS so a full-30-up-day device
-  // scores exactly as the raw-count curve did.
+  // weighted more heavily). Rate-normalized by observed up-days via
+  // saturatingRateScore (k_rate = K_CRASHES / REFERENCE_DAYS).
   const weightedCount = crashCount30d + crashCount7d * 0.5;
-  const rate = weightedCount / Math.max(observedUpDays30, RELIABILITY_RATE_MIN_DAYS);
-  return saturatingScore(rate, K_CRASHES / RELIABILITY_RATE_REFERENCE_DAYS);
+  return saturatingRateScore(weightedCount, K_CRASHES, observedUpDays30);
 }
 
 function scoreHangs(
@@ -450,8 +466,7 @@ function scoreHangs(
   // hangs count double (appear in both terms) — preserving "unresolved costs 2×".
   // Rate-normalized by observed up-days; k_rate = K_HANGS / REFERENCE_DAYS.
   const weightedCount = hangCount30d + unresolvedHangCount30d;
-  const rate = weightedCount / Math.max(observedUpDays30, RELIABILITY_RATE_MIN_DAYS);
-  return saturatingScore(rate, K_HANGS / RELIABILITY_RATE_REFERENCE_DAYS);
+  return saturatingRateScore(weightedCount, K_HANGS, observedUpDays30);
 }
 
 function scoreServiceFailures(
@@ -460,11 +475,10 @@ function scoreServiceFailures(
   observedUpDays30: number = RELIABILITY_RATE_REFERENCE_DAYS
 ): number {
   // Issue #1908: recovered failures get half-weight credit. Math.max(0, ...)
-  // floors the case where recoveries exceed failures. Rate-normalized by observed
-  // up-days; k_rate = K_SERVICES / REFERENCE_DAYS.
+  // floors the case where recoveries exceed failures (weightedCount 0 → rate 0 →
+  // score 100) before the divide. Rate-normalized; k_rate = K_SERVICES / REFERENCE.
   const weightedCount = Math.max(0, serviceFailureCount30d - recoveredCount30d * 0.5);
-  const rate = weightedCount / Math.max(observedUpDays30, RELIABILITY_RATE_MIN_DAYS);
-  return saturatingScore(rate, K_SERVICES / RELIABILITY_RATE_REFERENCE_DAYS);
+  return saturatingRateScore(weightedCount, K_SERVICES, observedUpDays30);
 }
 
 function scoreHardwareErrors(
@@ -476,8 +490,7 @@ function scoreHardwareErrors(
   // Issue #1908: severity weighting mirrors the old 30/15/5 ratio (≈ 2/1/0.34).
   // Rate-normalized by observed up-days; k_rate = K_HARDWARE / REFERENCE_DAYS.
   const weightedCount = criticalCount30d * 2 + errorCount30d * 1 + warningCount30d * 0.34;
-  const rate = weightedCount / Math.max(observedUpDays30, RELIABILITY_RATE_MIN_DAYS);
-  return saturatingScore(rate, K_HARDWARE / RELIABILITY_RATE_REFERENCE_DAYS);
+  return saturatingRateScore(weightedCount, K_HARDWARE, observedUpDays30);
 }
 
 function linearRegression(points: Array<{ x: number; y: number }>): { slope: number; r2: number } {
