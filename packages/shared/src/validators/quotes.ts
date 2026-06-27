@@ -76,6 +76,9 @@ export const updateQuoteSchema = z.object({
 });
 
 export const reorderBlocksSchema = z.object({ blockIds: z.array(z.string().guid()).min(1) });
+export const reorderLinesSchema = z.object({ lineIds: z.array(z.string().guid()).min(1) });
+export type ReorderLinesInput = z.infer<typeof reorderLinesSchema>;
+export type ReorderBlocksInput = z.infer<typeof reorderBlocksSchema>;
 
 export const acceptQuoteSchema = z.object({
   signerName: z.string().min(1).max(255),

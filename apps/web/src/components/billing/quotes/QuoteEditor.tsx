@@ -11,6 +11,8 @@ import {
   addCatalogLine,
   updateLine,
   removeLine,
+  reorderBlocks as reorderBlocksApi,
+  reorderLines as reorderLinesApi,
   uploadQuoteImage,
   quoteImageUrl,
 } from '../../../lib/api/quotes';
@@ -70,11 +72,38 @@ interface Props {
   onChanged: () => void;
 }
 
+// A quiet, transient "Saved" cue used consistently for every blur-to-save field
+// in the editor (terms, tax, block content, line fields). Returns the on-flag
+// and a trigger; clears its timer on unmount so a late fire can't setState a
+// gone node.
+function useSavedFlash(): [boolean, () => void] {
+  const [on, setOn] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const flash = useCallback(() => {
+    setOn(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOn(false), 1500);
+  }, []);
+  return [on, flash];
+}
+
+// Visually-hidden polite live region — announces a transient message (e.g.
+// "Saved") to screen readers without taking visual space. Pairs with the visible
+// cue so sighted and SR users get the same feedback.
+function SrSaved({ show, label = 'Saved' }: { show: boolean; label?: string }) {
+  return <span role="status" aria-live="polite" className="sr-only">{show ? label : ''}</span>;
+}
+
 export default function QuoteEditor({ detail, onChanged }: Props) {
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
+  // Focus anchor: after a confirmed block/line removal the triggering button is
+  // gone, so we move focus here instead of letting it fall to <body> (which dumps
+  // a keyboard user to the top of the page).
+  const blocksColRef = useRef<HTMLDivElement>(null);
 
   // Per-item "saving" state, keyed so one in-flight mutation never freezes the
   // rest of the editor. Keys: 'terms', 'tax', 'add-block', `block:<id>`,
@@ -116,6 +145,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   // Inline validation message for the tax field — an out-of-range/non-numeric
   // entry no longer silently reverts; we keep the bad value and explain why.
   const [taxError, setTaxError] = useState<string | null>(null);
+  // Quiet "Saved" cues for the right-rail blur-to-save fields, matching the
+  // per-line/per-block cue so the whole editor speaks one save language.
+  const [termsSaved, flashTermsSaved] = useSavedFlash();
+  const [taxSaved, flashTaxSaved] = useSavedFlash();
   const canCatalogWrite = can('catalog', 'write');
 
   // ---- add-block form ------------------------------------------------------
@@ -133,19 +166,19 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   const saveTerms = useCallback(async () => {
     if (!termsDirty) return;
-    await runScoped('terms', async () => {
+    const ok = await runScoped('terms', async () => {
       await runAction({
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
           method: 'PATCH', body: JSON.stringify({ termsAndConditions: terms }),
         }),
         errorFallback: 'Could not save terms.',
-        successMessage: 'Terms saved',
         onUnauthorized: UNAUTHORIZED,
       });
       setTermsDirty(false);
       refresh();
     }, 'Could not save terms.');
-  }, [termsDirty, terms, quote.id, refresh, runScoped]);
+    if (ok) flashTermsSaved();
+  }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved]);
 
   // Persist the tax rate as a fraction. Empty clears it (null); otherwise the
   // percent is clamped to 0–100 (fraction 0–1, matching updateQuoteSchema) and an
@@ -168,19 +201,19 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       fraction = Number((pct / 100).toFixed(5));
     }
     setTaxError(null);
-    await runScoped('tax', async () => {
+    const ok = await runScoped('tax', async () => {
       await runAction({
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
           method: 'PATCH', body: JSON.stringify({ taxRate: fraction }),
         }),
         errorFallback: 'Could not save the tax rate.',
-        successMessage: 'Tax rate saved',
         onUnauthorized: UNAUTHORIZED,
       });
       setTaxDirty(false);
       refresh();
     }, 'Could not save the tax rate.');
-  }, [taxDirty, taxPct, quote.id, refresh, runScoped]);
+    if (ok) flashTaxSaved();
+  }, [taxDirty, taxPct, quote.id, refresh, runScoped, flashTaxSaved]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -375,6 +408,13 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
       return Promise.resolve(false);
     }
+    // Guard the unit price too (parity with the inline edit path's commitPrice):
+    // a negative/NaN price shouldn't depend on the server to reject it.
+    const priceNum = Number(form.unitPrice);
+    if (!Number.isFinite(priceNum) || priceNum < 0) {
+      handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+      return Promise.resolve(false);
+    }
     return runScoped(`add-line:${blockId}`, async () => {
       await runAction({
         request: () => addManualLine(quote.id, {
@@ -382,7 +422,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           blockId,
           description: form.description.trim(),
           quantity: qtyNum,
-          unitPrice: Number(form.unitPrice),
+          unitPrice: priceNum,
           taxable: form.taxable,
           customerVisible: true,
           recurrence: form.recurrence,
@@ -403,7 +443,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               : form.recurrence === 'annual'
                 ? 'annual'
                 : null,
-            unitPrice: Number(form.unitPrice),
+            unitPrice: priceNum,
             taxable: form.taxable,
           }),
           errorFallback: 'Line added, but saving it to the catalog failed.',
@@ -459,20 +499,61 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     }, 'Could not update the block.'),
   [quote.id, refresh, runScoped]);
 
+  // Reorder a block one slot up/down: compute the full new id order from a single
+  // swap and send it; the server renumbers sortOrder 0..n-1. Scoped pending keeps
+  // the rest of the editor live. refresh() re-pulls so sortedBlocks re-sorts.
+  const moveBlock = useCallback((block: QuoteBlock, direction: 'up' | 'down') =>
+    runScoped(`reorder-block:${block.id}`, async () => {
+      const ordered = [...sortedBlocks];
+      const idx = ordered.findIndex((b) => b.id === block.id);
+      const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+      if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return;
+      [ordered[idx], ordered[swapIdx]] = [ordered[swapIdx], ordered[idx]];
+      await runAction({
+        request: () => reorderBlocksApi(quote.id, { blockIds: ordered.map((b) => b.id) }),
+        errorFallback: 'Could not reorder blocks.',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    }, 'Could not reorder blocks.'),
+  [sortedBlocks, quote.id, refresh, runScoped]);
+
+  const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') =>
+    runScoped(`reorder-line:${line.id}`, async () => {
+      const ordered = linesForBlock(blockId);
+      const idx = ordered.findIndex((l) => l.id === line.id);
+      const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+      if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return;
+      const next = [...ordered];
+      [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+      await runAction({
+        request: () => reorderLinesApi(quote.id, blockId, { lineIds: next.map((l) => l.id) }),
+        errorFallback: 'Could not reorder lines.',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    }, 'Could not reorder lines.'),
+  [linesForBlock, quote.id, refresh, runScoped]);
+
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
 
   return (
     <div className="space-y-6" data-testid="quote-editor">
+      {canWrite && (
+        <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
+          Changes save automatically as you edit.
+        </p>
+      )}
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
-        <div className="space-y-4">
+        <div className="space-y-4 focus:outline-none" ref={blocksColRef} tabIndex={-1}>
           {sortedBlocks.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-card p-8 text-center text-sm text-muted-foreground" data-testid="quote-blocks-empty">
               No content yet. Add a heading, rich text, or a pricing table below.
             </div>
           ) : (
-            sortedBlocks.map((block) => (
+            sortedBlocks.map((block, idx) => (
               <BlockCard
                 key={block.id}
                 block={block}
@@ -483,11 +564,15 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 isPending={isPending}
                 canWrite={canWrite}
                 ecActive={ecActive}
+                isFirst={idx === 0}
+                isLast={idx === sortedBlocks.length - 1}
                 onAddCatalog={addCatalog}
                 onImportAddDistributor={importAndAddDistributor}
                 onAddManual={addManual}
                 onEditLine={editLine}
                 onEditBlock={editBlock}
+                onMoveBlock={moveBlock}
+                onMoveLine={(line, dir) => moveLine(block.id, line, dir)}
                 onRemoveLine={setPendingLineRemove}
                 onRemoveBlock={setPendingRemove}
               />
@@ -590,7 +675,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         {/* Sticky on lg so the totals you're building against stay visible while
             scrolling the blocks; on narrow widths this column stacks below. */}
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-live-totals" aria-live="polite">
+          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-live-totals">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live totals</h3>
             <dl className="space-y-2 text-sm tabular-nums">
               <div className="flex items-baseline justify-between">
@@ -615,7 +700,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
             {canWrite && (
               <div className="mt-2 border-t pt-2">
                 <div className="flex items-center justify-between gap-2">
-                  <label htmlFor="quote-tax-rate" className="text-sm text-muted-foreground">Tax rate</label>
+                  <label htmlFor="quote-tax-rate" className="flex items-center gap-2 text-sm text-muted-foreground">
+                    Tax rate
+                    {taxSaved && <span className="text-xs font-medium text-success" data-testid="quote-tax-saved">Saved</span>}
+                  </label>
                   <div className="flex items-center gap-1">
                     <input
                       id="quote-tax-rate"
@@ -639,15 +727,22 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                   </div>
                 </div>
                 {taxError ? (
-                  <p className="mt-1 text-xs text-destructive" id="quote-tax-rate-error" data-testid="quote-tax-rate-error">{taxError}</p>
+                  <p className="mt-1 text-xs text-destructive" id="quote-tax-rate-error" role="alert" data-testid="quote-tax-rate-error">{taxError}</p>
                 ) : (
                   <p className="mt-1 text-xs text-muted-foreground">Applies to lines marked taxable.</p>
                 )}
+                <SrSaved show={taxSaved} />
               </div>
             )}
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
               <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
-              <span className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums" data-testid="quote-total-due-on-acceptance">
+              {/* aria-live scoped to the headline figure so SR users hear the one
+                  number that matters recompute, not all four rows on every edit. */}
+              <span
+                className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums"
+                data-testid="quote-total-due-on-acceptance"
+                aria-live="polite"
+              >
                 {formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}
               </span>
             </div>
@@ -665,18 +760,22 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           <div className="rounded-lg border bg-card p-4 shadow-sm">
             <div className="mb-2 flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
-              <UnsavedBadge show={termsDirty} />
+              <span className="flex items-center gap-2">
+                {termsSaved && <span className="text-xs font-medium text-success" data-testid="quote-terms-saved">Saved</span>}
+                <UnsavedBadge show={termsDirty} />
+              </span>
             </div>
             <textarea
               value={terms}
               onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
               onBlur={() => { if (canWrite) void saveTerms(); }}
-              disabled={!canWrite}
+              disabled={!canWrite || isPending('terms')}
               data-testid="quote-terms"
               rows={3}
               className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${termsDirty ? 'ring-1 ring-warning' : ''}`}
               placeholder="Payment terms, warranty clauses, etc."
             />
+            <SrSaved show={termsSaved} />
           </div>
         </div>
       </div>
@@ -686,8 +785,15 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         onClose={() => setPendingRemove(null)}
         onConfirm={() => {
           const block = pendingRemove;
-          setPendingRemove(null);
-          if (block) void removeBlock(block);
+          if (!block) return;
+          // Keep the dialog open and awaiting (so isLoading shows "Processing…")
+          // until the delete resolves, then close and move focus to a stable
+          // anchor — the triggering Remove button is gone with the block.
+          void (async () => {
+            await removeBlock(block);
+            setPendingRemove(null);
+            blocksColRef.current?.focus();
+          })();
         }}
         isLoading={pendingRemove ? isPending(`block:${pendingRemove.id}`) : false}
         title="Remove block"
@@ -707,8 +813,12 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         onClose={() => setPendingLineRemove(null)}
         onConfirm={() => {
           const line = pendingLineRemove;
-          setPendingLineRemove(null);
-          if (line) void deleteLine(line.id);
+          if (!line) return;
+          void (async () => {
+            await deleteLine(line.id);
+            setPendingLineRemove(null);
+            blocksColRef.current?.focus();
+          })();
         }}
         isLoading={pendingLineRemove ? isPending(`line:${pendingLineRemove.id}`) : false}
         title="Remove line"
@@ -726,7 +836,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, catalog, isPending, canWrite, ecActive, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onRemoveLine, onRemoveBlock,
+  block, quoteId, lines, currency, catalog, isPending, canWrite, ecActive, isFirst, isLast, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -736,6 +846,8 @@ function BlockCard({
   isPending: (key: string) => boolean;
   canWrite: boolean;
   ecActive: boolean;
+  isFirst: boolean;
+  isLast: boolean;
   onAddCatalog: (blockId: string, item: CatalogItem) => void;
   onImportAddDistributor: (blockId: string, product: EcProduct, sellPrice: number) => void;
   onAddManual: (
@@ -744,9 +856,12 @@ function BlockCard({
   ) => Promise<boolean>;
   onEditLine: (lineId: string, body: LineUpdate) => Promise<boolean>;
   onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
+  onMoveBlock: (block: QuoteBlock, direction: 'up' | 'down') => void;
+  onMoveLine: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemoveLine: (line: QuoteLine) => void;
   onRemoveBlock: (block: QuoteBlock) => void;
 }) {
+  const reorderBusy = isPending(`reorder-block:${block.id}`);
   // Pending state scoped to this block: editing/removing this block, or adding a
   // line to it, never disables anything in a sibling block.
   const blockBusy = isPending(`block:${block.id}`);
@@ -823,17 +938,40 @@ function BlockCard({
           {blockSaved && (
             <span className="font-medium normal-case tracking-normal text-success" data-testid={`quote-block-saved-${block.id}`}>Saved</span>
           )}
+          <SrSaved show={blockSaved} />
         </span>
         {canWrite && (
-          <button
-            type="button"
-            onClick={() => onRemoveBlock(block)}
-            disabled={blockBusy}
-            data-testid={`quote-block-remove-${block.id}`}
-            className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-          >
-            Remove
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onMoveBlock(block, 'up')}
+              disabled={reorderBusy || isFirst}
+              aria-label="Move block up"
+              data-testid={`quote-block-move-up-${block.id}`}
+              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              onClick={() => onMoveBlock(block, 'down')}
+              disabled={reorderBusy || isLast}
+              aria-label="Move block down"
+              data-testid={`quote-block-move-down-${block.id}`}
+              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              onClick={() => onRemoveBlock(block)}
+              disabled={blockBusy}
+              data-testid={`quote-block-remove-${block.id}`}
+              className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              Remove
+            </button>
+          </div>
         )}
       </div>
 
@@ -847,7 +985,7 @@ function BlockCard({
               onBlur={() => void commitHeading()}
               disabled={blockBusy}
               data-testid={`quote-block-heading-input-${block.id}`}
-              className="w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold disabled:opacity-60"
+              className={`w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold disabled:opacity-60 ${headingDraft.trim() !== heading ? 'ring-1 ring-warning' : ''}`}
             />
           ) : (
             <p className="text-lg font-semibold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
@@ -863,7 +1001,7 @@ function BlockCard({
               disabled={blockBusy}
               rows={4}
               data-testid={`quote-block-rich-input-${block.id}`}
-              className="w-full resize-y rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60"
+              className={`w-full resize-y rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60 ${richDraft !== html ? 'ring-1 ring-warning' : ''}`}
             />
           ) : (
             <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
@@ -901,14 +1039,18 @@ function BlockCard({
                     </td>
                   </tr>
                 ) : (
-                  lines.map((l) =>
+                  lines.map((l, idx) =>
                     canWrite ? (
                       <EditableLineRow
                         key={l.id}
                         line={l}
                         currency={currency}
                         busy={isPending(`line:${l.id}`)}
+                        reorderBusy={isPending(`reorder-line:${l.id}`)}
+                        isFirst={idx === 0}
+                        isLast={idx === lines.length - 1}
                         onEdit={onEditLine}
+                        onMove={onMoveLine}
                         onRemove={onRemoveLine}
                       />
                     ) : (
@@ -1060,22 +1202,33 @@ function BlockCard({
 // state to the incoming prop so server-side normalization (e.g. recomputed
 // totals, clamped quantity) wins.
 function EditableLineRow({
-  line, currency, busy, onEdit, onRemove,
+  line, currency, busy, reorderBusy, isFirst, isLast, onEdit, onMove, onRemove,
 }: {
   line: QuoteLine;
   currency: string;
   busy: boolean;
+  reorderBusy: boolean;
+  isFirst: boolean;
+  isLast: boolean;
   onEdit: (lineId: string, body: LineUpdate) => Promise<boolean>;
+  onMove: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemove: (line: QuoteLine) => void;
 }) {
   const [desc, setDesc] = useState(line.description);
   const [qty, setQty] = useState(line.quantity);
   const [price, setPrice] = useState(line.unitPrice);
+  // recurrence/taxable are committed on change (not blur); keep them in local
+  // state so the control updates instantly rather than lagging until the
+  // refresh() round-trip lands, and revert if the save fails.
+  const [rec, setRec] = useState(line.recurrence);
+  const [taxable, setTaxable] = useState(line.taxable);
 
   // Resync when the persisted line changes (after a refresh()).
   useEffect(() => { setDesc(line.description); }, [line.description]);
   useEffect(() => { setQty(line.quantity); }, [line.quantity]);
   useEffect(() => { setPrice(line.unitPrice); }, [line.unitPrice]);
+  useEffect(() => { setRec(line.recurrence); }, [line.recurrence]);
+  useEffect(() => { setTaxable(line.taxable); }, [line.taxable]);
 
   // Quiet "Saved" flash in place of the old per-field success toast.
   const [saved, setSaved] = useState(false);
@@ -1086,7 +1239,16 @@ function EditableLineRow({
     if (savedTimer.current) clearTimeout(savedTimer.current);
     savedTimer.current = setTimeout(() => setSaved(false), 1500);
   }, []);
-  const edit = useCallback(async (body: LineUpdate) => { if (await onEdit(line.id, body)) flashSaved(); }, [onEdit, line.id, flashSaved]);
+  const edit = useCallback(async (body: LineUpdate): Promise<boolean> => {
+    const ok = await onEdit(line.id, body);
+    if (ok) flashSaved();
+    return ok;
+  }, [onEdit, line.id, flashSaved]);
+  // Per-field dirty cue (mirrors the terms/tax ring) so every editable surface
+  // signals unsaved state the same way.
+  const descDirty = desc.trim() !== line.description;
+  const qtyDirty = Number(qty) !== Number(line.quantity);
+  const priceDirty = Number(price) !== Number(line.unitPrice);
 
   const commitDesc = () => {
     const next = desc.trim();
@@ -1117,7 +1279,7 @@ function EditableLineRow({
             rows={2}
             disabled={busy}
             data-testid={`quote-line-desc-${line.id}`}
-            className="min-h-[2.25rem] w-full resize-y rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+            className={`min-h-[2.25rem] w-full resize-y rounded-md border bg-background px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${descDirty ? 'ring-1 ring-warning' : ''}`}
           />
         </div>
       </td>
@@ -1130,7 +1292,7 @@ function EditableLineRow({
           onBlur={commitQty}
           disabled={busy}
           data-testid={`quote-line-qty-${line.id}`}
-          className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className={`h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${qtyDirty ? 'ring-1 ring-warning' : ''}`}
         />
       </td>
       <td className="px-2 py-2 text-right">
@@ -1142,14 +1304,18 @@ function EditableLineRow({
           onBlur={commitPrice}
           disabled={busy}
           data-testid={`quote-line-price-${line.id}`}
-          className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${priceDirty ? 'ring-1 ring-warning' : ''}`}
         />
       </td>
       <td className="px-2 py-2">
         <select
-          value={line.recurrence}
+          value={rec}
           aria-label="Billing frequency"
-          onChange={(e) => void edit({ recurrence: e.target.value as QuoteLineRecurrence })}
+          onChange={(e) => {
+            const next = e.target.value as QuoteLineRecurrence;
+            setRec(next); // optimistic — revert if the save fails
+            void edit({ recurrence: next }).then((ok) => { if (!ok) setRec(line.recurrence); });
+          }}
           disabled={busy}
           data-testid={`quote-line-recurrence-${line.id}`}
           className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
@@ -1161,9 +1327,13 @@ function EditableLineRow({
         <label className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
           <input
             type="checkbox"
-            checked={line.taxable}
+            checked={taxable}
             aria-label="Taxable"
-            onChange={(e) => void edit({ taxable: e.target.checked })}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setTaxable(next); // optimistic — revert if the save fails
+              void edit({ taxable: next }).then((ok) => { if (!ok) setTaxable(line.taxable); });
+            }}
             disabled={busy}
             data-testid={`quote-line-taxable-${line.id}`}
           />
@@ -1173,17 +1343,40 @@ function EditableLineRow({
       <td className="px-2 py-2 text-right tabular-nums">
         {formatMoney(line.lineTotal, currency)}
         {saved && <span className="ml-1 text-xs font-medium text-success" data-testid={`quote-line-saved-${line.id}`}>Saved</span>}
+        <SrSaved show={saved} />
       </td>
       <td className="px-2 py-2 text-right">
-        <button
-          type="button"
-          onClick={() => onRemove(line)}
-          disabled={busy}
-          data-testid={`quote-line-remove-${line.id}`}
-          className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-        >
-          Remove
-        </button>
+        <div className="flex items-center justify-end gap-1">
+          <button
+            type="button"
+            onClick={() => onMove(line, 'up')}
+            disabled={reorderBusy || isFirst}
+            aria-label="Move line up"
+            data-testid={`quote-line-move-up-${line.id}`}
+            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(line, 'down')}
+            disabled={reorderBusy || isLast}
+            aria-label="Move line down"
+            data-testid={`quote-line-move-down-${line.id}`}
+            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemove(line)}
+            disabled={busy}
+            data-testid={`quote-line-remove-${line.id}`}
+            className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            Remove
+          </button>
+        </div>
       </td>
     </tr>
   );
