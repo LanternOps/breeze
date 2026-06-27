@@ -64,7 +64,7 @@ export function ConfirmDialog({
               : 'bg-warning text-warning-foreground hover:bg-warning/90'
           }`}
         >
-          {isLoading ? 'Processing...' : confirmLabel}
+          {isLoading ? 'Processing…' : confirmLabel}
         </button>
       </div>
     </Dialog>

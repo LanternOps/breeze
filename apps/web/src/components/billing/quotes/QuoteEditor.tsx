@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronUp, ChevronDown } from 'lucide-react';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
@@ -32,6 +33,7 @@ import {
   formatMoney,
   formatRecurrence,
   pctFromFraction,
+  lineTaxAmount,
 } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -93,6 +95,47 @@ function useSavedFlash(): [boolean, () => void] {
 // cue so sighted and SR users get the same feedback.
 function SrSaved({ show, label = 'Saved' }: { show: boolean; label?: string }) {
   return <span role="status" aria-live="polite" className="sr-only">{show ? label : ''}</span>;
+}
+
+// Up/down reorder controls: lucide chevrons in 28px targets (clears the WCAG
+// 2.5.8 24×24 minimum) instead of raw glyphs, disabled only at the list ends.
+// When the pressed direction hits an end and self-disables, focus hops to the
+// still-enabled sibling so a keyboard user never drops to <body>.
+function MoveControls({
+  disabledUp, disabledDown, onUp, onDown, labelUp, labelDown, testIdUp, testIdDown,
+}: {
+  disabledUp: boolean;
+  disabledDown: boolean;
+  onUp: () => void;
+  onDown: () => void;
+  labelUp: string;
+  labelDown: string;
+  testIdUp: string;
+  testIdDown: string;
+}) {
+  const upRef = useRef<HTMLButtonElement>(null);
+  const downRef = useRef<HTMLButtonElement>(null);
+  const move = (dir: 'up' | 'down') => {
+    (dir === 'up' ? onUp : onDown)();
+    if (typeof requestAnimationFrame === 'undefined') return;
+    requestAnimationFrame(() => {
+      const pressed = dir === 'up' ? upRef.current : downRef.current;
+      const other = dir === 'up' ? downRef.current : upRef.current;
+      if (pressed && !pressed.disabled) pressed.focus();
+      else other?.focus();
+    });
+  };
+  const cls = 'inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30';
+  return (
+    <>
+      <button ref={upRef} type="button" onClick={() => move('up')} disabled={disabledUp} aria-label={labelUp} data-testid={testIdUp} className={cls}>
+        <ChevronUp className="h-4 w-4" aria-hidden />
+      </button>
+      <button ref={downRef} type="button" onClick={() => move('down')} disabled={disabledDown} aria-label={labelDown} data-testid={testIdDown} className={cls}>
+        <ChevronDown className="h-4 w-4" aria-hidden />
+      </button>
+    </>
+  );
 }
 
 export default function QuoteEditor({ detail, onChanged }: Props) {
@@ -162,7 +205,18 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
   useEffect(() => { setTaxPct(pctFromFraction(quote.taxRate)); setTaxDirty(false); }, [quote.taxRate]);
 
-  const refresh = useCallback(() => onChanged(), [onChanged]);
+  // Coalesce re-pulls: each mutation calls refresh(), but tab-through editing
+  // would otherwise fire one full GET /quotes/:id per field. A short trailing
+  // delay collapses a burst of edits into a single refetch — the inline cues
+  // ("Saved", optimistic field/reorder state) already give immediate feedback,
+  // so only the server-recomputed totals wait. Guards against the documented US
+  // DB connection pressure from refetch storms.
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
+  const refresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => onChanged(), 300);
+  }, [onChanged]);
 
   const saveTerms = useCallback(async () => {
     if (!termsDirty) return;
@@ -236,17 +290,36 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   useEffect(() => { void loadEcStatus(); }, [loadEcStatus]);
 
+  // Optimistic order overrides so a reorder reflects instantly instead of waiting
+  // for the round-trip + (coalesced) refetch. Each is cleared the moment fresh
+  // server data arrives (the prop array identity changes on refresh), so the
+  // server order always wins once it lands; a failed reorder reverts immediately.
+  const [blockOrder, setBlockOrder] = useState<string[] | null>(null);
+  const [lineOrder, setLineOrder] = useState<Record<string, string[]>>({});
+  useEffect(() => { setBlockOrder(null); }, [blocks]);
+  useEffect(() => { setLineOrder({}); }, [lines]);
+
+  // Apply an optimistic id ordering over a base list, but only if it's a clean
+  // permutation (same membership) — otherwise fall back to the server order.
+  const applyOrder = <T extends { id: string }>(base: T[], order: string[] | undefined): T[] => {
+    if (!order) return base;
+    const byId = new Map(base.map((x) => [x.id, x]));
+    const ordered = order.map((id) => byId.get(id)).filter((x): x is T => x !== undefined);
+    return ordered.length === base.length ? ordered : base;
+  };
+
   const sortedBlocks = useMemo(
-    () => [...blocks].sort((a, b) => a.sortOrder - b.sortOrder),
-    [blocks],
+    () => applyOrder([...blocks].sort((a, b) => a.sortOrder - b.sortOrder), blockOrder ?? undefined),
+    [blocks, blockOrder],
   );
 
   const linesForBlock = useCallback(
     (blockId: string) =>
-      lines
-        .filter((l) => l.blockId === blockId)
-        .sort((a, b) => a.sortOrder - b.sortOrder),
-    [lines],
+      applyOrder(
+        lines.filter((l) => l.blockId === blockId).sort((a, b) => a.sortOrder - b.sortOrder),
+        lineOrder[blockId],
+      ),
+    [lines, lineOrder],
   );
 
   // ---- add block -----------------------------------------------------------
@@ -502,38 +575,54 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   // Reorder a block one slot up/down: compute the full new id order from a single
   // swap and send it; the server renumbers sortOrder 0..n-1. Scoped pending keeps
   // the rest of the editor live. refresh() re-pulls so sortedBlocks re-sorts.
-  const moveBlock = useCallback((block: QuoteBlock, direction: 'up' | 'down') =>
-    runScoped(`reorder-block:${block.id}`, async () => {
-      const ordered = [...sortedBlocks];
-      const idx = ordered.findIndex((b) => b.id === block.id);
-      const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-      if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return;
-      [ordered[idx], ordered[swapIdx]] = [ordered[swapIdx], ordered[idx]];
+  // Reorder a block one slot: apply the new order optimistically so the card
+  // moves instantly (the buttons disable while the PATCH is in flight, so no
+  // double-fire), send the full id list, and revert the override on failure.
+  const moveBlock = useCallback((block: QuoteBlock, direction: 'up' | 'down') => {
+    // Drop a repeat click while this block's reorder is still in flight, so we
+    // never set an optimistic order the in-flight guard would then revert.
+    if (isPending(`reorder-block:${block.id}`)) return Promise.resolve(false);
+    const ordered = [...sortedBlocks];
+    const idx = ordered.findIndex((b) => b.id === block.id);
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return Promise.resolve(false);
+    [ordered[idx], ordered[swapIdx]] = [ordered[swapIdx], ordered[idx]];
+    const ids = ordered.map((b) => b.id);
+    const prev = blockOrder;
+    setBlockOrder(ids);
+    return runScoped(`reorder-block:${block.id}`, async () => {
       await runAction({
-        request: () => reorderBlocksApi(quote.id, { blockIds: ordered.map((b) => b.id) }),
+        request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
         errorFallback: 'Could not reorder blocks.',
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not reorder blocks.'),
-  [sortedBlocks, quote.id, refresh, runScoped]);
+    }, 'Could not reorder blocks.').then((ok) => { if (!ok) setBlockOrder(prev); return ok; });
+  }, [sortedBlocks, blockOrder, quote.id, refresh, runScoped, isPending]);
 
-  const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') =>
-    runScoped(`reorder-line:${line.id}`, async () => {
-      const ordered = linesForBlock(blockId);
-      const idx = ordered.findIndex((l) => l.id === line.id);
-      const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-      if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return;
-      const next = [...ordered];
-      [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+  const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') => {
+    if (isPending(`reorder-line:${line.id}`)) return Promise.resolve(false);
+    const ordered = linesForBlock(blockId);
+    const idx = ordered.findIndex((l) => l.id === line.id);
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return Promise.resolve(false);
+    const next = [...ordered];
+    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+    const ids = next.map((l) => l.id);
+    const prev = lineOrder[blockId];
+    setLineOrder((m) => ({ ...m, [blockId]: ids }));
+    return runScoped(`reorder-line:${line.id}`, async () => {
       await runAction({
-        request: () => reorderLinesApi(quote.id, blockId, { lineIds: next.map((l) => l.id) }),
+        request: () => reorderLinesApi(quote.id, blockId, { lineIds: ids }),
         errorFallback: 'Could not reorder lines.',
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not reorder lines.'),
-  [linesForBlock, quote.id, refresh, runScoped]);
+    }, 'Could not reorder lines.').then((ok) => {
+      if (!ok) setLineOrder((m) => ({ ...m, [blockId]: prev as string[] }));
+      return ok;
+    });
+  }, [linesForBlock, lineOrder, quote.id, refresh, runScoped, isPending]);
 
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
@@ -547,7 +636,11 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       )}
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
-        <div className="space-y-4 focus:outline-none" ref={blocksColRef} tabIndex={-1}>
+        <div
+          className="space-y-4 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          ref={blocksColRef}
+          tabIndex={-1}
+        >
           {sortedBlocks.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-card p-8 text-center text-sm text-muted-foreground" data-testid="quote-blocks-empty">
               No content yet. Add a heading, rich text, or a pricing table below.
@@ -560,6 +653,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 quoteId={quote.id}
                 lines={linesForBlock(block.id)}
                 currency={currency}
+                taxRate={quote.taxRate}
                 catalog={catalog}
                 isPending={isPending}
                 canWrite={canWrite}
@@ -677,6 +771,16 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-live-totals">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live totals</h3>
+            {/* One concise SR announcement covering every figure, so editing a
+                recurring line (which doesn't move "due on acceptance") still tells
+                a screen-reader user the totals recomputed. */}
+            <p className="sr-only" role="status" aria-live="polite" data-testid="quote-totals-sr">
+              {`Totals updated. One-time ${formatMoney(quote.oneTimeTotal, currency)}, `
+                + `monthly recurring ${formatMoney(quote.monthlyRecurringTotal, currency)}, `
+                + `annual recurring ${formatMoney(quote.annualRecurringTotal, currency)}`
+                + (Number(quote.taxTotal) > 0 ? `, tax ${formatMoney(quote.taxTotal, currency)}` : '')
+                + `, due on acceptance ${formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}.`}
+            </p>
             <dl className="space-y-2 text-sm tabular-nums">
               <div className="flex items-baseline justify-between">
                 <dt className="text-muted-foreground">One-time</dt>
@@ -736,12 +840,11 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
             )}
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
               <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
-              {/* aria-live scoped to the headline figure so SR users hear the one
-                  number that matters recompute, not all four rows on every edit. */}
+              {/* Visual figure only; the SR-only summary node above announces the
+                  full set of totals on any change. */}
               <span
                 className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums"
                 data-testid="quote-total-due-on-acceptance"
-                aria-live="polite"
               >
                 {formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}
               </span>
@@ -836,12 +939,13 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, catalog, isPending, canWrite, ecActive, isFirst, isLast, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock,
+  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, ecActive, isFirst, isLast, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock,
 }: {
   block: QuoteBlock;
   quoteId: string;
   lines: QuoteLine[];
   currency: string;
+  taxRate: string | null;
   catalog: CatalogItem[];
   isPending: (key: string) => boolean;
   canWrite: boolean;
@@ -861,7 +965,6 @@ function BlockCard({
   onRemoveLine: (line: QuoteLine) => void;
   onRemoveBlock: (block: QuoteBlock) => void;
 }) {
-  const reorderBusy = isPending(`reorder-block:${block.id}`);
   // Pending state scoped to this block: editing/removing this block, or adding a
   // line to it, never disables anything in a sibling block.
   const blockBusy = isPending(`block:${block.id}`);
@@ -942,26 +1045,16 @@ function BlockCard({
         </span>
         {canWrite && (
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => onMoveBlock(block, 'up')}
-              disabled={reorderBusy || isFirst}
-              aria-label="Move block up"
-              data-testid={`quote-block-move-up-${block.id}`}
-              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              onClick={() => onMoveBlock(block, 'down')}
-              disabled={reorderBusy || isLast}
-              aria-label="Move block down"
-              data-testid={`quote-block-move-down-${block.id}`}
-              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
-            >
-              ↓
-            </button>
+            <MoveControls
+              disabledUp={isFirst}
+              disabledDown={isLast}
+              onUp={() => onMoveBlock(block, 'up')}
+              onDown={() => onMoveBlock(block, 'down')}
+              labelUp="Move block up"
+              labelDown="Move block down"
+              testIdUp={`quote-block-move-up-${block.id}`}
+              testIdDown={`quote-block-move-down-${block.id}`}
+            />
             <button
               type="button"
               onClick={() => onRemoveBlock(block)}
@@ -1027,6 +1120,7 @@ function BlockCard({
                   <th className="px-2 py-2 text-right font-medium">Qty</th>
                   <th className="px-2 py-2 text-right font-medium">Unit</th>
                   <th className="px-2 py-2 font-medium">Recurrence</th>
+                  <th className="px-2 py-2 text-right font-medium">Tax</th>
                   <th className="px-2 py-2 text-right font-medium">Total</th>
                   <th className="px-2 py-2" />
                 </tr>
@@ -1034,7 +1128,7 @@ function BlockCard({
               <tbody>
                 {lines.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-2 py-6 text-center text-sm text-muted-foreground">
+                    <td colSpan={7} className="px-2 py-6 text-center text-sm text-muted-foreground">
                       No lines yet. Add a catalog item or a manual line below.
                     </td>
                   </tr>
@@ -1045,8 +1139,8 @@ function BlockCard({
                         key={l.id}
                         line={l}
                         currency={currency}
+                        taxRate={taxRate}
                         busy={isPending(`line:${l.id}`)}
-                        reorderBusy={isPending(`reorder-line:${l.id}`)}
                         isFirst={idx === 0}
                         isLast={idx === lines.length - 1}
                         onEdit={onEditLine}
@@ -1067,6 +1161,9 @@ function BlockCard({
                           <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                             {formatRecurrence(l.recurrence)}
                           </span>
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">
+                          {lineTaxAmount(l.lineTotal, l.taxable, taxRate) === null ? '—' : formatMoney(lineTaxAmount(l.lineTotal, l.taxable, taxRate)!, currency)}
                         </td>
                         <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
                         <td className="px-2 py-2 text-right" />
@@ -1202,12 +1299,12 @@ function BlockCard({
 // state to the incoming prop so server-side normalization (e.g. recomputed
 // totals, clamped quantity) wins.
 function EditableLineRow({
-  line, currency, busy, reorderBusy, isFirst, isLast, onEdit, onMove, onRemove,
+  line, currency, taxRate, busy, isFirst, isLast, onEdit, onMove, onRemove,
 }: {
   line: QuoteLine;
   currency: string;
+  taxRate: string | null;
   busy: boolean;
-  reorderBusy: boolean;
   isFirst: boolean;
   isLast: boolean;
   onEdit: (lineId: string, body: LineUpdate) => Promise<boolean>;
@@ -1324,7 +1421,9 @@ function EditableLineRow({
           <option value="monthly">Monthly</option>
           <option value="annual">Annual</option>
         </select>
-        <label className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+      </td>
+      <td className="px-2 py-2 text-right">
+        <label className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
           <input
             type="checkbox"
             checked={taxable}
@@ -1337,7 +1436,12 @@ function EditableLineRow({
             disabled={busy}
             data-testid={`quote-line-taxable-${line.id}`}
           />
-          Taxable
+          <span className="tabular-nums" data-testid={`quote-line-tax-${line.id}`}>
+            {(() => {
+              const tax = lineTaxAmount(line.lineTotal, taxable, taxRate);
+              return tax === null ? '—' : formatMoney(tax, currency);
+            })()}
+          </span>
         </label>
       </td>
       <td className="px-2 py-2 text-right tabular-nums">
@@ -1347,26 +1451,16 @@ function EditableLineRow({
       </td>
       <td className="px-2 py-2 text-right">
         <div className="flex items-center justify-end gap-1">
-          <button
-            type="button"
-            onClick={() => onMove(line, 'up')}
-            disabled={reorderBusy || isFirst}
-            aria-label="Move line up"
-            data-testid={`quote-line-move-up-${line.id}`}
-            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            onClick={() => onMove(line, 'down')}
-            disabled={reorderBusy || isLast}
-            aria-label="Move line down"
-            data-testid={`quote-line-move-down-${line.id}`}
-            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:opacity-30"
-          >
-            ↓
-          </button>
+          <MoveControls
+            disabledUp={isFirst}
+            disabledDown={isLast}
+            onUp={() => onMove(line, 'up')}
+            onDown={() => onMove(line, 'down')}
+            labelUp="Move line up"
+            labelDown="Move line down"
+            testIdUp={`quote-line-move-up-${line.id}`}
+            testIdDown={`quote-line-move-down-${line.id}`}
+          />
           <button
             type="button"
             onClick={() => onRemove(line)}

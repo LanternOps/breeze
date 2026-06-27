@@ -90,6 +90,24 @@ describe('QuoteEditor — inline line editing', () => {
     expect(screen.getByTestId('quote-line-desc-line-1').tagName).toBe('TEXTAREA');
   });
 
+  it('renders a per-line Tax cell: "—" when not taxable, the computed amount when taxable', async () => {
+    // Non-taxable line + no rate → dash.
+    const { unmount } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('—');
+    unmount();
+
+    // Taxable line ($50 line total) at 10% → $5.00 in the Tax cell.
+    const taxed: QuoteDetailData = {
+      ...detail,
+      quote: { ...detail.quote, taxRate: '0.1' },
+      lines: [{ ...line, taxable: true }],
+    };
+    render(<QuoteEditor detail={taxed} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('$5.00');
+  });
+
   it('editing the description and blurring PATCHes the line, then refreshes', async () => {
     const onChanged = vi.fn();
     render(<QuoteEditor detail={detail} onChanged={onChanged} />);
@@ -102,7 +120,8 @@ describe('QuoteEditor — inline line editing', () => {
     await waitFor(() => {
       expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { description: 'Premium managed support' });
     });
-    expect(onChanged).toHaveBeenCalled();
+    // refresh() is coalesced (trailing), so onChanged fires shortly after the PATCH.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
     // Routine inline edits no longer fire a success toast (that was per-field
     // spam) — they flash a quiet "Saved" cue on the row instead.
     await waitFor(() => expect(screen.getByTestId('quote-line-saved-line-1')).toBeInTheDocument());

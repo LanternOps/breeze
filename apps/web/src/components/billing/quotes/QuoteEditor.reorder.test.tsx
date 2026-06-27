@@ -99,7 +99,8 @@ describe('QuoteEditor — reorder', () => {
 
     fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1'));
     await waitFor(() => expect(reorderBlocksMock).toHaveBeenCalledWith('q-1', { blockIds: ['blk-2', 'blk-1'] }));
-    expect(onChanged).toHaveBeenCalled();
+    // refresh() is coalesced (trailing), so onChanged fires shortly after the PATCH.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
   it('moving the second block up sends the same reordered list', async () => {
