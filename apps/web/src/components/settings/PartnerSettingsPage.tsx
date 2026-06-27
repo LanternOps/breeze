@@ -35,6 +35,7 @@ import type {
   InheritableRemoteAccessSettings,
   IpAllowlistStatus
 } from '@breeze/shared';
+import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 
@@ -246,6 +247,15 @@ export default function PartnerSettingsPage() {
   }, []);
 
   const handleSave = async () => {
+    // Block a malformed maintenance window client-side (issue #1963) so the
+    // inline feedback in PartnerDefaultsTab actually prevents the round-trip,
+    // matching the org editor. The server also rejects it as defense-in-depth.
+    const mw = defaultsData.maintenanceWindow;
+    if (typeof mw === 'string' && mw.trim() !== '' && !isValidMaintenanceWindow(mw)) {
+      setError(MAINTENANCE_WINDOW_ERROR_MESSAGE);
+      return;
+    }
+
     setSaving(true);
     setError(undefined);
 
