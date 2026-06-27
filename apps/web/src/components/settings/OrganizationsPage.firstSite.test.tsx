@@ -34,7 +34,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
  * endpoint returns for the freshly created org, letting each test simulate an
  * org with or without a pre-existing (default) site.
  */
-function mockApi(sitesForNewOrg: unknown[] | 'fail') {
+function mockApi(sitesForNewOrg: unknown[] | 'fail' | 'malformed') {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
     const method = init?.method;
@@ -50,6 +50,8 @@ function mockApi(sitesForNewOrg: unknown[] | 'fail') {
     }
     if (url.startsWith('/orgs/sites?organizationId=')) {
       if (sitesForNewOrg === 'fail') return makeJsonResponse({ error: 'boom' }, false, 500);
+      // 200 OK but the body is not a parseable array of sites.
+      if (sitesForNewOrg === 'malformed') return makeJsonResponse({ data: null });
       return makeJsonResponse({ data: sitesForNewOrg });
     }
     return makeJsonResponse({ data: [] });
@@ -112,6 +114,30 @@ describe('OrganizationsPage — first-site guidance', () => {
     await waitFor(() => {
       expect(warnSpy).toHaveBeenCalledWith(
         '[OrganizationsPage] failed to fetch sites for org',
+        NEW_ORG_ID,
+        expect.anything()
+      );
+    });
+
+    expect(screen.queryByText(/Add the first site for/i)).not.toBeInTheDocument();
+    warnSpy.mockRestore();
+  });
+
+  it('does NOT show the first-site nag on a malformed 200 sites body (fail closed)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // 200 OK whose body is { data: null } — not a parseable array. This used to
+    // fall through to [] and wrongly fire the nag (#1978); it must now fail closed.
+    mockApi('malformed');
+    render(<OrganizationsPage />);
+
+    await submitNewOrg();
+
+    // The malformed-body warning is the post-decision signal: it fires inside
+    // fetchSites immediately before it resolves null and the synchronous gating
+    // branch runs, so once we see it the nag decision has been made.
+    await waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[OrganizationsPage] sites response was ok but not a parseable array for org',
         NEW_ORG_ID,
         expect.anything()
       );
