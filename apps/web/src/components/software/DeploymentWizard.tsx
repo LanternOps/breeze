@@ -38,7 +38,7 @@ type TargetNode = {
  * must check explicitly. Returns the user-facing message, or null on success.
  */
 export function extractDeployFailure(
-  result: { status?: string; message?: string } | null | undefined,
+  result: { status?: string; message?: string; [key: string]: unknown } | null | undefined,
 ): string | null {
   if (result?.status === 'failed') return result.message ?? 'Deployment failed';
   return null;
