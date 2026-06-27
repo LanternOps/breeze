@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // PatchList renders through ResponsiveTable — a desktop <table> and a mobile
@@ -57,7 +57,7 @@ describe('PatchesPage', () => {
     vi.clearAllMocks();
     orgState.currentOrgId = null;
     jwtScope.scope = 'partner';
-    window.history.replaceState({}, '', '/?tab=patches');
+    window.history.replaceState({}, '', '/#patches');
   });
 
   it('keeps failed bulk approvals pending when the API only approves some patches', async () => {
@@ -286,7 +286,7 @@ describe('PatchesPage', () => {
 
   it('Deploy on an approved patch routes to the Compliance tab with feedback (no dead click)', async () => {
     orgState.currentOrgId = 'org-1';
-    window.history.replaceState({}, '', '/?tab=patches');
+    window.history.replaceState({}, '', '/#patches');
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
@@ -331,7 +331,7 @@ describe('PatchesPage', () => {
     // should see the tab and be able to open the create form.
     jwtScope.scope = 'partner';
     orgState.currentOrgId = null;
-    window.history.replaceState({}, '', '/?tab=rings');
+    window.history.replaceState({}, '', '/#rings');
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
@@ -350,11 +350,65 @@ describe('PatchesPage', () => {
     expect(newRing).not.toHaveAttribute('title');
   });
 
+  it('persists the selected tab in the URL hash (#hash convention, not ?tab=)', async () => {
+    // Tab state must live in window.location.hash per the project convention,
+    // and the default `compliance` tab keeps the hash empty so the URL stays clean.
+    jwtScope.scope = 'partner';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#compliance');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    // Switching to Patches writes #patches to the hash (and never a ?tab= query param).
+    fireEvent.click(await screen.findByRole('button', { name: /Patches/i }));
+    await waitFor(() => expect(window.location.hash).toBe('#patches'));
+    expect(window.location.search).toBe('');
+
+    // Returning to the default Compliance tab clears the hash entirely.
+    fireEvent.click(screen.getByRole('button', { name: /Compliance/i }));
+    await waitFor(() => expect(window.location.hash).toBe(''));
+    expect(window.location.search).toBe('');
+  });
+
+  it('falls back to the Compliance tab when the URL hash is not a valid tab', async () => {
+    // A malformed / unknown hash (stale bookmark, hand-edited URL) must resolve
+    // to the default Compliance tab rather than rendering a blank/none tab.
+    jwtScope.scope = 'partner';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#bogus');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    // The Compliance tab content (PatchComplianceView fetches /patches/compliance) renders.
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/patches/compliance');
+    });
+    // The Compliance nav tab carries the active styling (it is the first match).
+    const [complianceTab] = screen.getAllByRole('button', { name: /Compliance/i });
+    expect(complianceTab).toHaveClass('border-primary');
+  });
+
   it('org scope: hides the Update Rings tab and disables New Ring with partner-level hint', async () => {
     // Org-scoped users don't manage rings — they should not see the tab at all.
     jwtScope.scope = 'organization';
     orgState.currentOrgId = 'org-1';
-    window.history.replaceState({}, '', '/?tab=compliance');
+    window.history.replaceState({}, '', '/#compliance');
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
@@ -373,13 +427,13 @@ describe('PatchesPage', () => {
     expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
   });
 
-  it('org scope: falls back to compliance when URL contains ?tab=rings (bookmark guard)', async () => {
-    // If an org user navigates to /patches?tab=rings (e.g. a stale bookmark or
+  it('org scope: falls back to compliance when URL contains #rings (bookmark guard)', async () => {
+    // If an org user navigates to /patches#rings (e.g. a stale bookmark or
     // shared link from a partner), the initializer guard must redirect to compliance
     // so rings body content (UpdateRingList / New Ring button) is never rendered.
     jwtScope.scope = 'organization';
     orgState.currentOrgId = 'org-1';
-    window.history.replaceState({}, '', '/?tab=rings');
+    window.history.replaceState({}, '', '/#rings');
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/update-rings') return makeJsonResponse({ data: [] });
@@ -399,9 +453,96 @@ describe('PatchesPage', () => {
     expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
   });
 
+  // Standard empty-data fetch mock shared by the hash-sync tests below.
+  const emptyDataFetch = async (input: unknown): Promise<Response> => {
+    const url = String(input);
+    if (url === '/update-rings') return makeJsonResponse({ data: [] });
+    if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+    if (url === '/patches/compliance') {
+      return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+    }
+    if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+    return makeJsonResponse({}, false, 404);
+  };
+
+  // The tab nav buttons are the only buttons carrying the `border-b-2` class; this
+  // disambiguates them from any same-named buttons rendered by the tab bodies
+  // (e.g. PatchComplianceView also surfaces "Compliance" text).
+  const navTab = (name: string) =>
+    screen.getAllByRole('button', { name }).find(b => b.className.includes('border-b-2'))!;
+
+  it('syncs the active tab on hashchange (browser back/forward, manual hash edits)', async () => {
+    // Mirrors DiscoveryPage: a hashchange (back/forward navigation or a manual
+    // URL edit) must re-select the active tab, not just the initial mount read.
+    jwtScope.scope = 'partner';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#compliance');
+    fetchMock.mockImplementation(emptyDataFetch);
+
+    render(<PatchesPage />);
+
+    // Starts on Compliance.
+    await waitFor(() => expect(navTab('Compliance')).toHaveClass('border-primary'));
+
+    // Forward-nav to #patches re-selects the Patches tab.
+    act(() => {
+      window.location.hash = '#patches';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await waitFor(() => expect(navTab('Patches')).toHaveClass('border-primary'));
+    expect(navTab('Compliance')).not.toHaveClass('border-primary');
+
+    // Back-nav to the default (empty hash) restores Compliance.
+    act(() => {
+      window.location.hash = '';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await waitFor(() => expect(navTab('Compliance')).toHaveClass('border-primary'));
+    expect(navTab('Patches')).not.toHaveClass('border-primary');
+  });
+
+  it('clears the stale #rings hash when an org user is downgraded to Compliance at init', async () => {
+    // An org user landing on /patches#rings (stale bookmark / shared partner link)
+    // falls back to Compliance — and the URL must not keep #rings while Compliance
+    // is shown.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#rings');
+    fetchMock.mockImplementation(emptyDataFetch);
+
+    render(<PatchesPage />);
+
+    await screen.findByRole('button', { name: /Compliance/i });
+    // Stale hash wiped from the URL.
+    await waitFor(() => expect(window.location.hash).toBe(''));
+    // Rings-only chrome/body never rendered.
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /New Ring/i })).toBeNull();
+  });
+
+  it('re-applies the org-scope guard on hashchange and clears the hash (back/forward to #rings)', async () => {
+    // Post-mount navigation to a #rings history entry the org user can't access
+    // must re-downgrade to Compliance and clear the stale hash, not just on mount.
+    jwtScope.scope = 'organization';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#compliance');
+    fetchMock.mockImplementation(emptyDataFetch);
+
+    render(<PatchesPage />);
+    await screen.findByRole('button', { name: /Compliance/i });
+
+    act(() => {
+      window.location.hash = '#rings';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+
+    await waitFor(() => expect(window.location.hash).toBe(''));
+    expect(screen.queryByRole('button', { name: /Update Rings/i })).toBeNull();
+  });
+
   it('enables New Ring when a specific org is selected and creates the ring (orgId auto-injected) with a success toast', async () => {
     orgState.currentOrgId = 'org-1';
-    window.history.replaceState({}, '', '/?tab=rings');
+    window.history.replaceState({}, '', '/#rings');
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === '/update-rings' && (!init || init.method === undefined)) {
@@ -439,7 +580,7 @@ describe('PatchesPage', () => {
 
   it('surfaces a failure toast (and keeps the dialog open) when create-ring fails', async () => {
     orgState.currentOrgId = 'org-1';
-    window.history.replaceState({}, '', '/?tab=rings');
+    window.history.replaceState({}, '', '/#rings');
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === '/update-rings' && (!init || init.method === undefined)) {

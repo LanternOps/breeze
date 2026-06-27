@@ -26,22 +26,28 @@ import { runAction, ActionError } from '@/lib/runAction';
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
 
-function getTabFromUrl(): TabKey {
+// Tab state lives in window.location.hash (`#patches`) per the project
+// convention for transient UI state (CLAUDE.md), matching DiscoveryPage and
+// DeviceDetails. The default `compliance` tab keeps the hash empty so the URL
+// stays clean.
+function getTabFromHash(): TabKey {
   if (typeof window === 'undefined') return 'compliance';
-  const params = new URLSearchParams(window.location.search);
-  const tab = params.get('tab');
-  return tab && validTabs.includes(tab as TabKey) ? (tab as TabKey) : 'compliance';
+  const hash = window.location.hash.replace(/^#/, '');
+  return validTabs.includes(hash as TabKey) ? (hash as TabKey) : 'compliance';
 }
 
-function setTabInUrl(tab: TabKey) {
+function setTabInHash(tab: TabKey) {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  if (tab === 'compliance') {
-    url.searchParams.delete('tab');
-  } else {
-    url.searchParams.set('tab', tab);
-  }
+  url.hash = tab === 'compliance' ? '' : tab;
   window.history.replaceState({}, '', url.toString());
+}
+
+// Resolve a hash-derived tab against the user's access. Rings are partner-scoped:
+// an org user landing on #rings (a stale bookmark, a hand-edited URL, or browser
+// back/forward) can't see the rings body, so fall back to compliance.
+function resolveTab(tab: TabKey, canManageRings: boolean): TabKey {
+  return tab === 'rings' && !canManageRings ? 'compliance' : tab;
 }
 
 const DEVICE_SCAN_PAGE_LIMIT = 100;
@@ -54,24 +60,39 @@ export default function PatchesPage() {
   const canManageRings = scope === 'partner' || scope === 'system';
   const RING_SCOPE_HINT = 'Update rings are managed at the partner level';
 
-  // If an org user lands with ?tab=rings (e.g. a bookmark), fall back to compliance
-  // so the rings body is never rendered without navigation access.
-  const [activeTab, setActiveTabState] = useState<TabKey>(() => {
-    const tab = getTabFromUrl();
-    return tab === 'rings' && !canManageRings ? 'compliance' : tab;
-  });
+  // Seed from the hash, applying the org-scope guard: an org user landing on
+  // #rings (e.g. a bookmark) falls back to compliance so the rings body is never
+  // rendered without navigation access.
+  const [activeTab, setActiveTabState] = useState<TabKey>(() =>
+    resolveTab(getTabFromHash(), canManageRings)
+  );
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
-    setTabInUrl(tab);
+    setTabInHash(tab);
   }, []);
 
-  // Guard against hash/search changes after mount that could re-introduce rings
-  // for an org-scoped user (e.g. back-navigation replaying the URL).
+  // Sync the active tab from the hash on mount and on every hashchange — browser
+  // back/forward and manual hash edits re-select the tab, mirroring DiscoveryPage.
+  // The org-scope guard is re-applied on each sync (resolveTab): a #rings hash an
+  // org user can't access falls back to compliance, and when that downgrade fires
+  // we route through setActiveTab so the stale #rings is cleared from the URL
+  // rather than left pointing at a tab the user isn't on. Depending on
+  // canManageRings also re-runs the guard when scope/permissions arrive after the
+  // first render (defense-in-depth).
   useEffect(() => {
-    if (activeTab === 'rings' && !canManageRings) {
-      setActiveTab('compliance');
-    }
-  }, [activeTab, canManageRings, setActiveTab]);
+    const syncFromHash = () => {
+      const raw = getTabFromHash();
+      const resolved = resolveTab(raw, canManageRings);
+      if (resolved !== raw) {
+        setActiveTab(resolved); // downgrade — also clears the stale hash
+      } else {
+        setActiveTabState(resolved);
+      }
+    };
+    syncFromHash();
+    window.addEventListener('hashchange', syncFromHash);
+    return () => window.removeEventListener('hashchange', syncFromHash);
+  }, [canManageRings, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
