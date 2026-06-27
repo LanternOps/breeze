@@ -445,7 +445,7 @@ describe('HuntressIntegration', () => {
     await waitFor(() => expect(screen.getByText('Example Org A')).toBeInTheDocument());
     expect(screen.getByText('Example Org B')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText(/Search Huntress or Breeze organizations/), { target: { value: 'mountain' } });
+    fireEvent.change(screen.getByPlaceholderText(/Search Huntress or Breeze organizations/), { target: { value: 'example org b' } });
     expect(screen.queryByText('Example Org A')).not.toBeInTheDocument();
     expect(screen.getByText('Example Org B')).toBeInTheDocument();
 

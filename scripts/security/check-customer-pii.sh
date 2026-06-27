@@ -64,7 +64,7 @@ while IFS= read -r hit; do
   echo "  $hit" >&2
   violations=$((violations + 1))
 done < <(
-  git grep -noiE "$EMAIL_RE" -- \
+  git grep -I -noiE "$EMAIL_RE" -- \
     'apps/**' 'agent/**' 'packages/**' 'docs/**' 'scripts/**' \
     ':(exclude)scripts/security/check-customer-pii.sh' \
     ':(exclude)pnpm-lock.yaml' \
