@@ -17,21 +17,34 @@ import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
 // --- Types ---
 
+// The API stores `address` and `contact` as nested JSONB objects (see the
+// `sites` table + `siteContactSchema` in apps/api/src/routes/orgs.ts). The
+// form fields below are flat, so populateForm/handleSaveDetails map between
+// the two shapes. Sending flat keys would have them silently stripped by the
+// route's Zod validation — the bug that made saves appear to reset.
+type SiteAddress = {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+};
+
+type SiteContact = {
+  name?: string;
+  email?: string;
+  phone?: string;
+};
+
 type SiteDetails = {
   id: string;
   name: string;
   orgId: string;
   timezone: string;
   status: string;
-  addressLine1?: string;
-  addressLine2?: string;
-  city?: string;
-  state?: string;
-  postalCode?: string;
-  country?: string;
-  contactName?: string;
-  contactEmail?: string;
-  contactPhone?: string;
+  address?: SiteAddress | null;
+  contact?: SiteContact | null;
   deviceCount?: number;
 };
 
@@ -152,15 +165,15 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   const populateForm = useCallback((s: SiteDetails) => {
     setFormName(s.name ?? '');
     setFormTimezone(s.timezone ?? 'UTC');
-    setFormAddressLine1(s.addressLine1 ?? '');
-    setFormAddressLine2(s.addressLine2 ?? '');
-    setFormCity(s.city ?? '');
-    setFormState(s.state ?? '');
-    setFormPostalCode(s.postalCode ?? '');
-    setFormCountry(s.country ?? '');
-    setFormContactName(s.contactName ?? '');
-    setFormContactEmail(s.contactEmail ?? '');
-    setFormContactPhone(s.contactPhone ?? '');
+    setFormAddressLine1(s.address?.line1 ?? '');
+    setFormAddressLine2(s.address?.line2 ?? '');
+    setFormCity(s.address?.city ?? '');
+    setFormState(s.address?.state ?? '');
+    setFormPostalCode(s.address?.postalCode ?? '');
+    setFormCountry(s.address?.country ?? '');
+    setFormContactName(s.contact?.name ?? '');
+    setFormContactEmail(s.contact?.email ?? '');
+    setFormContactPhone(s.contact?.phone ?? '');
   }, []);
 
   const fetchSite = useCallback(async () => {
@@ -251,15 +264,19 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
         body: JSON.stringify({
           name: formName,
           timezone: formTimezone,
-          addressLine1: formAddressLine1,
-          addressLine2: formAddressLine2 || undefined,
-          city: formCity,
-          state: formState,
-          postalCode: formPostalCode,
-          country: formCountry,
-          contactName: formContactName,
-          contactEmail: formContactEmail,
-          contactPhone: formContactPhone,
+          address: {
+            line1: formAddressLine1,
+            line2: formAddressLine2 || undefined,
+            city: formCity,
+            state: formState,
+            postalCode: formPostalCode,
+            country: formCountry,
+          },
+          contact: {
+            name: formContactName,
+            email: formContactEmail,
+            phone: formContactPhone,
+          },
         }),
       });
       if (!res.ok) {
