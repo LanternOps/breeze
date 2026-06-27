@@ -1299,6 +1299,22 @@ describe('org routes', () => {
       expect(res.status).toBe(404);
     });
 
+    // issue #1963: the org write path feeds getOrgAgentUpdatePolicy, so a
+    // malformed maintenance window must be rejected here (settings is z.any(),
+    // so the handler validates this field explicitly) before it can reach the
+    // heartbeat gate and silently fail open. Validation runs before any DB work.
+    it('rejects a malformed agent-update maintenance window with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { maintenanceWindow: '0000-2359' } } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('should allow system scope updates without partnerId context', async () => {
       setAuthContext({ scope: 'system', partnerId: null });
       vi.mocked(db.update).mockReturnValue({

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Bell, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-react';
 import {
   MAINTENANCE_WINDOW_ALWAYS,
   MAINTENANCE_DAYS,
   isAlwaysMaintenanceWindow,
+  isValidMaintenanceWindow,
   parseMaintenanceWindow,
   formatMaintenanceWindow,
   minutesToHHMM,
@@ -95,6 +96,13 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
   const [autoEnrollment, setAutoEnrollment] = useState(initialData.autoEnrollment || defaultValues.autoEnrollment!);
   const [agentUpdatePolicy, setAgentUpdatePolicy] = useState(initialData.agentUpdatePolicy || defaultValues.agentUpdatePolicy!);
   const initialWindow = deriveWindowState(initialData.maintenanceWindow);
+  // A stored value that is neither the always-state nor a parseable window was
+  // silently reset to seeded defaults by deriveWindowState. Surface that so the
+  // operator knows their previous config was invalid and being ignored.
+  const storedWindowInvalid =
+    typeof initialData.maintenanceWindow === 'string' &&
+    initialData.maintenanceWindow.trim() !== '' &&
+    !isValidMaintenanceWindow(initialData.maintenanceWindow);
   const [windowMode, setWindowMode] = useState<WindowMode>(initialWindow.mode);
   const [windowDay, setWindowDay] = useState(initialWindow.day);
   const [windowStart, setWindowStart] = useState(initialWindow.start);
@@ -114,6 +122,13 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
   const markDirty = () => {
     onDirty?.();
   };
+
+  // If the stored window was invalid, the editor is already showing a corrected
+  // value — mark the form dirty on mount so saving actually persists the fix.
+  useEffect(() => {
+    if (storedWindowInvalid) onDirty?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSave = () => {
     if (windowError || !builtWindow) return; // never persist an invalid window
@@ -299,6 +314,12 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
             <span className="text-xs font-medium uppercase text-muted-foreground">
               Maintenance window
             </span>
+            {storedWindowInvalid && (
+              <p data-testid="maintenance-stored-invalid" className="text-xs text-destructive">
+                Your saved maintenance window was invalid and is being ignored. Review the value
+                below and save to apply a valid window.
+              </p>
+            )}
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-sm">
                 <input

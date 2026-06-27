@@ -299,6 +299,12 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
+// Shared rejection message for a malformed agent-update maintenance window
+// (issue #1963), used on both the partner (/partners/me, via schema refine) and
+// org (/organizations/:id, via explicit handler check) write paths.
+const MAINTENANCE_WINDOW_ERROR_MESSAGE =
+  'Maintenance window must be "24/7" or a UTC window like "Sun 02:00-04:00".';
+
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
   // so police it as a real IANA zone on write (was previously unvalidated).
@@ -380,7 +386,7 @@ const partnerSettingsSchema = z.object({
     // or a "[Day ]HH:MM-HH:MM" window; see isValidMaintenanceWindow.
     maintenanceWindow: z.string().max(64).optional().refine(
       (v) => v === undefined || isValidMaintenanceWindow(v),
-      { message: 'Maintenance window must be "24/7" or a UTC window like "Sun 02:00-04:00".' },
+      { message: MAINTENANCE_WINDOW_ERROR_MESSAGE },
     ),
   }).optional(),
   branding: z.object({
@@ -1099,9 +1105,25 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  // Enforce partner locks on settings categories (after auth check)
   if (data.settings) {
     const settingsObj = data.settings as Record<string, unknown>;
+
+    // Reject a malformed agent-update maintenance window before any DB work
+    // (issue #1963). This is the path getOrgAgentUpdatePolicy reads, so without
+    // this check a typo'd window would silently fail the heartbeat gate open.
+    // The org `settings` blob is `z.any()`, so the window is the one field
+    // validated explicitly here rather than in updateOrganizationSchema.
+    const defaults = settingsObj.defaults;
+    if (defaults && typeof defaults === 'object') {
+      const mw = (defaults as Record<string, unknown>).maintenanceWindow;
+      // null/undefined clears the window (treated as the always state); any
+      // present value must be a valid window string.
+      if (mw !== undefined && mw !== null && (typeof mw !== 'string' || !isValidMaintenanceWindow(mw))) {
+        return c.json({ error: MAINTENANCE_WINDOW_ERROR_MESSAGE }, 400);
+      }
+    }
+
+    // Enforce partner locks on settings categories (after auth check)
     for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
       if (settingsObj[category] && typeof settingsObj[category] === 'object') {
         const fields = Object.keys(settingsObj[category] as Record<string, unknown>);

@@ -59,7 +59,7 @@ import {
   normalizeAgentUpdatePolicy,
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
-import { isAlwaysMaintenanceWindow } from '@breeze/shared';
+import { isAlwaysMaintenanceWindow, parseMaintenanceWindow } from '@breeze/shared';
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
@@ -2015,6 +2015,16 @@ export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdat
   // The explicit "24/7"/empty always-state means "no restriction" → null, same
   // as an absent window. Only a real window string is carried through to the gate.
   const maintenanceWindow = rawWindow && !isAlwaysMaintenanceWindow(rawWindow) ? rawWindow : null;
+  // New writes are validated at save time (issue #1963), but a legacy malformed
+  // value still parses to null in the gate and fails open (lifts the time
+  // restriction). Log it once here so that silently-lifted restriction is
+  // observable rather than an invisible 24/7-updates surprise.
+  if (maintenanceWindow !== null && parseMaintenanceWindow(maintenanceWindow) === null) {
+    console.warn(
+      `[agents/helpers] Ignoring malformed maintenance window for org ${orgId}; ` +
+      `agent updates are NOT time-restricted (failing open). value=${JSON.stringify(maintenanceWindow)}`,
+    );
+  }
   return { policy, maintenanceWindow };
 }
 

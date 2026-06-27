@@ -154,6 +154,20 @@ describe('getOrgAgentUpdatePolicy', () => {
     });
   });
 
+  it('keeps a legacy malformed window but logs that the time restriction is lifted', async () => {
+    // New writes are validated (issue #1963); a legacy malformed value still
+    // fails open in the gate, but getOrgAgentUpdatePolicy must log it so the
+    // silently-lifted restriction is observable rather than invisible.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: 'Sundays 2am' } } }]);
+    await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
+      policy: 'auto', maintenanceWindow: 'Sundays 2am',
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('malformed maintenance window'));
+    warn.mockRestore();
+  });
+
   it('normalizes a non-string window to null', async () => {
     dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'manual', maintenanceWindow: 42 } } }]);
     await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({

@@ -9,7 +9,8 @@
  *
  * Value space:
  *   - "always allowed" / no restriction → empty, or the explicit sentinel
- *     `"24/7"` (also tolerated: "always", "none"). Agents may update anytime.
+ *     `"24/7"` (also tolerated: "always", "none", "anytime"). Agents may update
+ *     anytime. The canonical persisted form is `MAINTENANCE_WINDOW_ALWAYS`.
  *   - a window → `"[Day ]HH:MM-HH:MM"` (optional 3-letter day prefix; no day
  *     means "daily"). Times are evaluated in **UTC** (the string carries no
  *     timezone), so the UI must say so explicitly.
@@ -24,7 +25,10 @@ export const MAINTENANCE_WINDOW_ALWAYS = '24/7';
 /** Display labels indexed by UTC day-of-week (0 = Sunday). */
 export const MAINTENANCE_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
-const DAY_OF_WEEK: Record<string, number> = {
+/** UTC day-of-week index, 0=Sun … 6=Sat (matches Date.getUTCDay / MAINTENANCE_DAYS). */
+export type MaintenanceDayIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+const DAY_OF_WEEK: Record<string, MaintenanceDayIndex> = {
   sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
 };
 
@@ -33,10 +37,10 @@ const ALWAYS_TOKENS = new Set(['24/7', 'always', 'none', 'anytime']);
 
 export interface ParsedMaintenanceWindow {
   /** UTC day-of-week the window starts on (0=Sun), or null for "any day" (daily). */
-  day: number | null;
-  /** Minutes-since-midnight the window opens. */
+  day: MaintenanceDayIndex | null;
+  /** Minutes-since-midnight the window opens (0..1439, parser-guaranteed). */
   startMin: number;
-  /** Minutes-since-midnight the window closes. */
+  /** Minutes-since-midnight the window closes (0..1439, parser-guaranteed). */
   endMin: number;
 }
 
@@ -68,7 +72,7 @@ export function parseMaintenanceWindow(
   if (!m) return null;
 
   const [, dayStr, sh, sm, eh, em] = m;
-  let day: number | null = null;
+  let day: MaintenanceDayIndex | null = null;
   if (dayStr) {
     const d = DAY_OF_WEEK[dayStr.toLowerCase()];
     if (d === undefined) return null;
