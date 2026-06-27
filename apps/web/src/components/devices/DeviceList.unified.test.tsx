@@ -159,29 +159,56 @@ describe('DeviceList — unified agent + network (#1322)', () => {
   // visibly alternates sort order"). The default ordering must instead apply one
   // unified key across the whole union so the classes interleave coherently.
   describe('unified default sort across the merged union (#1424)', () => {
-    // Hostnames of rendered rows, in DOM order. Each fixture uses a unique
-    // hostname and no displayName, so the hostname cell holds exactly one span.
+    // Primary display name of each rendered row, in DOM order. The hostname
+    // cell renders the primary name (`displayName || hostname`) in a
+    // `font-medium` span and, only when a distinct displayName is present, the
+    // raw hostname in a second muted span — so target the primary span
+    // explicitly rather than every span in the cell.
     const rowOrder = (container: HTMLElement) =>
-      Array.from(container.querySelectorAll('tbody tr td:nth-child(2) span')).map(el => el.textContent);
+      Array.from(container.querySelectorAll('tbody tr td:nth-child(2) span.font-medium')).map(
+        el => el.textContent,
+      );
 
     const mkAgent = (id: string, hostname: string): Device => ({ ...agent, id, hostname });
     const mkNetwork = (id: string, hostname: string): Device => ({ ...networkPrinter, id, hostname });
 
-    it('interleaves agent and network rows alphabetically instead of as two blocks', () => {
+    it('interleaves agent and network rows by name (numeric collation) instead of as two blocks', () => {
       // Input arrives as the DevicesPage concatenation: all agents first (in
       // their server hostname order), then all network rows (in last-seen
-      // order). Names are chosen so a coherent default sort must interleave the
-      // two classes (a-b-c-d), which a raw concatenation never would.
+      // order). Names force a coherent default sort to interleave the two
+      // classes, which a raw concatenation never would. `node-2`/`node-10` also
+      // pin the numeric collation: a lexical sort would order `node-10` first.
       const devices: Device[] = [
+        mkAgent('a1111111-0000-0000-0000-000000000010', 'node-10'),
         mkAgent('a1111111-0000-0000-0000-000000000001', 'alpha-pc'),
-        mkAgent('a1111111-0000-0000-0000-000000000003', 'charlie-pc'),
-        mkNetwork('b2222222-0000-0000-0000-000000000002', 'bravo-switch'),
-        mkNetwork('b2222222-0000-0000-0000-000000000004', 'delta-printer'),
+        mkNetwork('b2222222-0000-0000-0000-000000000002', 'node-2'),
+        mkNetwork('b2222222-0000-0000-0000-000000000003', 'bravo-switch'),
       ];
 
       const { container } = render(<DeviceList devices={devices} pageSize={50} networkDevicesEnabled />);
 
-      expect(rowOrder(container)).toEqual(['alpha-pc', 'bravo-switch', 'charlie-pc', 'delta-printer']);
+      // agent, network, network, agent — interleaved, and node-2 before node-10.
+      expect(rowOrder(container)).toEqual(['alpha-pc', 'bravo-switch', 'node-2', 'node-10']);
+    });
+
+    it('orders by displayName when present, not the raw hostname', () => {
+      // The default key is `displayName || hostname` (the same the Device column
+      // sorts on). A device whose displayName disagrees with its hostname order
+      // must sort by the displayName the cell actually shows — sorting by raw
+      // hostname would place `zzz-machine` last instead of first.
+      const labeled: Device = {
+        ...agent,
+        id: 'a3333333-0000-0000-0000-000000000001',
+        hostname: 'zzz-machine',
+        displayName: 'aaa-friendly',
+      };
+      const plain = mkAgent('a3333333-0000-0000-0000-000000000002', 'mmm-machine');
+
+      const { container } = render(
+        <DeviceList devices={[plain, labeled]} pageSize={50} networkDevicesEnabled />,
+      );
+
+      expect(rowOrder(container)).toEqual(['aaa-friendly', 'mmm-machine']);
     });
 
     it('breaks hostname ties by id so client-side pagination is deterministic', () => {
