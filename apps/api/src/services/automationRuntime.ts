@@ -23,6 +23,9 @@ import {
   sendEmailNotification,
   sendWebhookNotification,
 } from './notificationSenders';
+// softwareDeployment and softwareCurrency are imported lazily inside
+// executeDeploySoftwareActions to avoid pulling the agentWs→configurationPolicy
+// import chain into partial-mock test suites at module-load time.
 
 const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
@@ -1166,6 +1169,106 @@ async function runWithConcurrency<T>(
   await Promise.all(workers);
 }
 
+/**
+ * Batched pass for `deploy_software` actions. Called ONCE per automation run
+ * after the per-device action loop. Creates one softwareDeployments row per
+ * action, filtering out devices whose OS is unsupported or whose installed
+ * version is already current.
+ */
+export async function executeDeploySoftwareActions(args: {
+  actions: AutomationAction[];
+  devices: Array<{ id: string; osType: 'windows' | 'macos' | 'linux' }>;
+  orgId: string;
+  createdBy: string | null;
+  runId: string;
+}): Promise<{ logs: AutomationLogEntry[]; deployedDeviceIds: Set<string>; failed: boolean }> {
+  const deployActions = args.actions.filter(
+    (a): a is DeploySoftwareAction => a.type === 'deploy_software',
+  );
+  const logs: AutomationLogEntry[] = [];
+  const deployedDeviceIds = new Set<string>();
+  let failed = false;
+  if (deployActions.length === 0) return { logs, deployedDeviceIds, failed };
+
+  // Lazy imports — avoid pulling the agentWs→configurationPolicy chain into
+  // partial-mock test suites at module-load time.
+  const { createSoftwareDeployment } = await import('./softwareDeployment');
+  const { resolveLatestVersionsByCatalogId, isDeviceSoftwareCurrent } = await import('./softwareCurrency');
+
+  const latest = await resolveLatestVersionsByCatalogId(
+    [...new Set(deployActions.map((a) => a.catalogId))],
+  );
+
+  for (const [actionIndex, action] of deployActions.entries()) {
+    const info = latest.get(action.catalogId);
+    if (!info) {
+      failed = true;
+      logs.push(logEntry('deploy_software has no latest version for catalog', 'error', {
+        actionType: action.type,
+        actionIndex,
+        details: { catalogId: action.catalogId },
+      }));
+      continue;
+    }
+    const supportedOs: string[] = Array.isArray(info.version.supportedOs)
+      ? (info.version.supportedOs as string[])
+      : [];
+    const eligible: string[] = [];
+    for (const device of args.devices) {
+      if (!supportedOs.includes(device.osType)) {
+        logs.push(logEntry(`Skipped ${info.catalogName}: unsupported OS`, 'info', {
+          actionType: action.type,
+          actionIndex,
+          deviceId: device.id,
+          details: { deviceOsType: device.osType, supportedOs },
+        }));
+        continue;
+      }
+      if (await isDeviceSoftwareCurrent(device.id, action.catalogId, info.version.version)) {
+        logs.push(logEntry(`Skipped ${info.catalogName}: already current`, 'info', {
+          actionType: action.type,
+          actionIndex,
+          deviceId: device.id,
+          details: { version: info.version.version },
+        }));
+        continue;
+      }
+      eligible.push(device.id);
+    }
+    if (eligible.length === 0) continue;
+
+    const result = await createSoftwareDeployment({
+      orgId: args.orgId,
+      softwareVersionId: info.version.id,
+      deploymentType: 'install',
+      deviceIds: eligible,
+      scheduleType: 'immediate',
+      createdBy: args.createdBy,
+      name: `Automation: deploy ${info.catalogName}`,
+    });
+    if (result.status === 'failed') {
+      failed = true;
+      logs.push(logEntry(`deploy_software failed: ${result.message ?? 'unknown error'}`, 'error', {
+        actionType: action.type,
+        actionIndex,
+        details: { catalogId: action.catalogId, deploymentId: result.deploymentId },
+      }));
+      continue;
+    }
+    for (const id of result.dispatchedDeviceIds) deployedDeviceIds.add(id);
+    logs.push(logEntry(
+      `Deploying ${info.catalogName} ${info.version.version} to ${eligible.length} device(s)`,
+      'info',
+      {
+        actionType: action.type,
+        actionIndex,
+        details: { deploymentId: result.deploymentId, deviceIds: eligible },
+      },
+    ));
+  }
+  return { logs, deployedDeviceIds, failed };
+}
+
 export async function createAutomationRunRecord(options: {
   automation: AutomationRow;
   triggeredBy: string;
@@ -1333,6 +1436,8 @@ export async function executeAutomationRun(
     let deviceFailed = false;
 
     for (const [actionIndex, action] of normalized.actions.entries()) {
+      // deploy_software is handled by the batched executeDeploySoftwareActions pass below
+      if (action.type === 'deploy_software') continue;
       const result = await executeAction(action, actionIndex, {
         automation,
         runId: run.id,
@@ -1372,6 +1477,20 @@ export async function executeAutomationRun(
       devicesSucceeded += 1;
     }
   });
+
+  // Batched deploy_software pass — runs once per automation run, after the per-device loop
+  const deployOutcome = await executeDeploySoftwareActions({
+    actions: normalized.actions,
+    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType })),
+    orgId: automation.orgId,
+    createdBy: automation.createdBy ?? null,
+    runId: run.id,
+  });
+  logs.push(...deployOutcome.logs);
+  // Per-device install status is tracked asynchronously in deploymentResults; the per-device loop above already counted each device once. A deploy-dispatch failure degrades the run status below.
+  if (deployOutcome.failed) {
+    devicesFailed += 1;
+  }
 
   const status: 'completed' | 'failed' | 'partial' =
     devicesFailed === 0
@@ -1790,6 +1909,8 @@ export async function executeConfigPolicyAutomationRun(
     let deviceFailed = false;
 
     for (const [actionIndex, action] of actions.entries()) {
+      // deploy_software is handled by the batched executeDeploySoftwareActions pass below
+      if (action.type === 'deploy_software') continue;
       const result = await executeAction(action, actionIndex, {
         automation: syntheticAutomation,
         runId: run.id,
@@ -1833,6 +1954,20 @@ export async function executeConfigPolicyAutomationRun(
       devicesSucceeded += 1;
     }
   });
+
+  // Batched deploy_software pass — runs once per config-policy automation run, after the per-device loop
+  const deployOutcome = await executeDeploySoftwareActions({
+    actions,
+    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType })),
+    orgId,
+    createdBy: null,
+    runId: run.id,
+  });
+  logs.push(...deployOutcome.logs);
+  // Per-device install status is tracked asynchronously in deploymentResults; the per-device loop above already counted each device once. A deploy-dispatch failure degrades the run status below.
+  if (deployOutcome.failed) {
+    devicesFailed += 1;
+  }
 
   const status: 'completed' | 'failed' | 'partial' =
     devicesFailed === 0
