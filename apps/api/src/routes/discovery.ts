@@ -510,16 +510,22 @@ discoveryRoutes.patch(
       .where(eq(discoveryProfiles.id, profileId))
       .returning();
 
+    // 0-row write despite the prior access-checked SELECT => RLS rejection or a
+    // race. Surface it rather than returning 200 + null (a silent failure).
+    if (!updated) {
+      return c.json({ error: 'Failed to update discovery profile' }, 500);
+    }
+
     writeRouteAudit(c, {
-      orgId: updated?.orgId ?? orgResult.orgId,
+      orgId: updated.orgId,
       action: 'discovery.profile.update',
       resourceType: 'discovery_profile',
-      resourceId: updated?.id ?? profileId,
-      resourceName: updated?.name,
+      resourceId: updated.id,
+      resourceName: updated.name,
       details: { changedFields: Object.keys(updates) }
     });
 
-    return c.json(updated ? serializeDiscoveryProfile(updated) : updated);
+    return c.json(serializeDiscoveryProfile(updated));
   }
 );
 
@@ -1238,12 +1244,18 @@ discoveryRoutes.post(
       .where(eq(discoveredAssets.id, assetId))
       .returning();
 
+    // 0-row write despite the prior access-checked SELECT => RLS rejection or a
+    // race. Surface it rather than returning 200 + null (a silent failure).
+    if (!updated) {
+      return c.json({ error: 'Failed to link discovered asset' }, 500);
+    }
+
     writeRouteAudit(c, {
-      orgId: updated?.orgId ?? orgResult.orgId,
+      orgId: updated.orgId,
       action: 'discovery.asset.link',
       resourceType: 'discovered_asset',
-      resourceId: updated?.id ?? assetId,
-      resourceName: updated?.hostname ?? updated?.ipAddress ?? undefined,
+      resourceId: updated.id,
+      resourceName: updated.hostname ?? updated.ipAddress ?? undefined,
       details: { linkedDeviceId: body.deviceId }
     });
 

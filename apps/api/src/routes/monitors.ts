@@ -628,15 +628,19 @@ monitorRoutes.delete(
     const [removed] = await db.delete(networkMonitors)
       .where(eq(networkMonitors.id, monitorId)).returning();
 
-    if (removed) {
-      writeRouteAudit(c, {
-        orgId: removed.orgId,
-        action: 'monitor.delete',
-        resourceType: 'network_monitor',
-        resourceId: removed.id,
-        resourceName: removed.name
-      });
+    // 0-row delete despite the prior requireMonitorAccess check => RLS rejection
+    // or a race. Surface it rather than returning 200 + { data: null }.
+    if (!removed) {
+      return c.json({ error: 'Failed to delete monitor' }, 500);
     }
+
+    writeRouteAudit(c, {
+      orgId: removed.orgId,
+      action: 'monitor.delete',
+      resourceType: 'network_monitor',
+      resourceId: removed.id,
+      resourceName: removed.name
+    });
 
     return c.json({ data: removed });
   }
