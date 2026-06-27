@@ -75,6 +75,8 @@ target/
 # Sensitive gh-queue data: internal triage/security log + private contributor notes
 .claude/skills/gh-queue/queue.md
 .claude/skills/gh-queue/contributors.md
+# Release skill: internal deploy/promote runbook (droplet ops, DB promotion) — not for public repo
+.claude/skills/release/
 
 # Internal docs (not for public repo). Use /internal/* (not /internal) so
 # selective re-inclusion below works — once a directory itself is ignored,
