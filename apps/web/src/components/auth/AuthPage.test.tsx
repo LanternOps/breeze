@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-// Mock the heavy children — this test only exercises tab-switch behavior.
+// Mock the heavy children — this test only exercises tab-switch / gating behavior.
 vi.mock('./LoginPage', () => ({
   default: ({ next }: { next?: string }) => (
     <div data-testid="mock-login" data-next={next ?? ''} />
@@ -13,12 +13,22 @@ vi.mock('./PartnerRegisterPage', () => ({
   ),
 }));
 
+// Control the runtime registration gate. Default to enabled+loaded so the
+// existing tab-behavior tests exercise the open-registration path; individual
+// tests below override it for the disabled / not-yet-loaded cases.
+const registrationGate = vi.hoisted(() => ({ enabled: true, loaded: true }));
+vi.mock('../../stores/featuresStore', () => ({
+  useRegistrationGate: () => registrationGate,
+}));
+
 import AuthPage from './AuthPage';
 
 describe('AuthPage', () => {
   beforeEach(() => {
     // Clean any leftover hash between tests
     window.location.hash = '';
+    registrationGate.enabled = true;
+    registrationGate.loaded = true;
   });
 
   afterEach(() => {
@@ -66,5 +76,47 @@ describe('AuthPage', () => {
   it('forwards an unsafe `next` unchanged — LoginPage/PartnerRegisterPage rewrite it before navigating', () => {
     render(<AuthPage next="https://evil.example.com" />);
     expect(screen.getByTestId('mock-login').getAttribute('data-next')).toBe('https://evil.example.com');
+  });
+
+  describe('registration disabled (#1979)', () => {
+    it('hides the Create account tab when registration is disabled', () => {
+      registrationGate.enabled = false;
+      registrationGate.loaded = true;
+      render(<AuthPage />);
+      expect(screen.queryByTestId('tab-signup')).toBeNull();
+      expect(screen.queryByTestId('tab-signin')).toBeNull();
+      // Sign-in view still renders without the tablist.
+      expect(screen.getByTestId('mock-login')).toBeTruthy();
+    });
+
+    it('shows a closed notice instead of the form for a direct /auth#signup link when disabled', () => {
+      registrationGate.enabled = false;
+      registrationGate.loaded = true;
+      window.location.hash = '#signup';
+      render(<AuthPage />);
+      expect(screen.getByTestId('registration-disabled-notice')).toBeTruthy();
+      // Critically: the registration form is NOT rendered.
+      expect(screen.queryByTestId('mock-register')).toBeNull();
+    });
+
+    it('lets the user return to sign in from the closed notice', () => {
+      registrationGate.enabled = false;
+      registrationGate.loaded = true;
+      window.location.hash = '#signup';
+      render(<AuthPage />);
+      fireEvent.click(screen.getByTestId('back-to-signin'));
+      expect(window.location.hash).toBe('#signin');
+      expect(screen.getByTestId('mock-login')).toBeTruthy();
+      expect(screen.queryByTestId('registration-disabled-notice')).toBeNull();
+    });
+
+    it('does not flash the form or the notice while the gate is still loading', () => {
+      registrationGate.enabled = false;
+      registrationGate.loaded = false;
+      window.location.hash = '#signup';
+      render(<AuthPage />);
+      expect(screen.queryByTestId('mock-register')).toBeNull();
+      expect(screen.queryByTestId('registration-disabled-notice')).toBeNull();
+    });
   });
 });
