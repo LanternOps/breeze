@@ -21,19 +21,26 @@ export const thresholdHandler: ConditionHandler = {
       return { passed: false, description: `No metrics available for ${cond.metric}` };
     }
 
-    const allExceed = metrics.every(m => {
-      const value = m[metricName];
-      if (value === null || value === undefined) return false;
-      return compareValue(value, cond.operator, cond.value);
-    });
+    // Average the window rather than requiring every sample to exceed. Strict
+    // all-samples semantics let a single dip below (or one null sample) silently
+    // suppress a sustained-high condition — the CPU-fires-but-RAM/Disk-don't bug
+    // in #1854. Null/undefined samples are skipped, not counted as below-threshold.
+    const values = metrics
+      .map(m => m[metricName])
+      .filter((v): v is number => typeof v === 'number');
 
-    const latestValue = metrics[0]?.[metricName] ?? undefined;
+    if (values.length === 0) {
+      return { passed: false, description: `No metrics available for ${cond.metric}` };
+    }
+
+    const average = values.reduce((sum, v) => sum + v, 0) / values.length;
+    const passed = compareValue(average, cond.operator, cond.value);
     const operatorDisplay = getOperatorDisplay(cond.operator);
 
     return {
-      passed: allExceed,
+      passed,
       description: `${cond.metric} ${operatorDisplay} ${cond.value} for ${durationMinutes}min`,
-      actualValue: latestValue ?? undefined
+      actualValue: average
     };
   },
 
