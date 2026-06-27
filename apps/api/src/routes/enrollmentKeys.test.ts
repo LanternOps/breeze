@@ -492,6 +492,63 @@ describe("GET /s/:code", () => {
     issueSpy.mockRestore();
   });
 
+  it("passes createdByUserId: null (never \"\") for the null-creator child key", async () => {
+    // Regression: the /s/:code route spawns the child download key with
+    // createdBy: null (it has no authenticated user). serveInstaller's Windows
+    // branch previously coerced that to "" via `?? ""`, and the empty string
+    // failed the uuid cast on insert into installer_bootstrap_tokens.created_by
+    // (`invalid input syntax for type uuid: ""`) — every Windows short link 500'd.
+    // Match the real route: the child row carries createdBy: null.
+    const shortLinkRow = makeKeyRow({
+      shortCode: "nullcreator",
+      installerPlatform: "windows",
+    });
+    const childRow = makeChildKeyRow({
+      installerPlatform: "windows",
+      createdBy: null,
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-2",
+        token: "NULLCREAT0",
+        expiresAt: new Date(Date.now() + 3_600_000),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request("/s/nullcreator");
+
+    expect(res.status).toBe(200);
+    expect(issueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ createdByUserId: null }),
+    );
+    // The "" that broke the uuid insert must never be passed.
+    expect(issueSpy.mock.calls[0]?.[0]?.createdByUserId).not.toBe("");
+
+    issueSpy.mockRestore();
+  });
+
   it("returns 404 for unknown code", async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({

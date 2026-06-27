@@ -1691,7 +1691,10 @@ async function serveInstaller(
     try {
       issued = await issueBootstrapTokenForKey({
         parentEnrollmentKeyId: keyRow.id,
-        createdByUserId: keyRow.createdBy ?? "",
+        // created_by is a nullable uuid FK; a key created by an unauthenticated
+        // path has no creator. Pass null — `?? ""` made Postgres reject the
+        // insert with `invalid input syntax for type uuid: ""` (500 on /s/:code).
+        createdByUserId: keyRow.createdBy ?? null,
         maxUsage: 1,
         installerPlatform: "windows",
       });
