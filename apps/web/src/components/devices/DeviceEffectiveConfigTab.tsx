@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Bell,
+  Boxes,
   ClipboardCheck,
+  Cloud,
+  FileSearch,
   HardDrive,
   Layers,
-  Monitor,
+  LifeBuoy,
   PackageCheck,
   RefreshCw,
+  ScrollText,
   Shield,
+  ShieldCheck,
   Activity,
+  Usb,
   Wrench,
   Zap,
+  type LucideIcon,
 } from 'lucide-react';
 
 import { friendlyFetchError } from '../../lib/utils';
@@ -26,7 +33,14 @@ type FeatureType =
   | 'monitoring'
   | 'maintenance'
   | 'compliance'
-  | 'automation';
+  | 'automation'
+  | 'warranty'
+  | 'helper'
+  | 'event_log'
+  | 'software_policy'
+  | 'sensitive_data'
+  | 'peripheral_control'
+  | 'onedrive_helper';
 
 type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device' | 'default';
 
@@ -58,27 +72,45 @@ type EffectiveConfiguration = {
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const ALL_FEATURE_TYPES: FeatureType[] = [
-  'patch',
-  'alert_rule',
-  'automation',
-  'maintenance',
-  'compliance',
-  'security',
-  'backup',
-  'monitoring',
-];
-
-const FEATURE_META: Record<FeatureType, { label: string; icon: React.ReactNode }> = {
-  patch:        { label: 'Patch Management',    icon: <PackageCheck className="h-5 w-5" /> },
-  alert_rule:   { label: 'Alert Rules',         icon: <Bell className="h-5 w-5" /> },
-  automation:   { label: 'Automation',           icon: <Zap className="h-5 w-5" /> },
-  maintenance:  { label: 'Maintenance Windows', icon: <Wrench className="h-5 w-5" /> },
-  compliance:   { label: 'Compliance',           icon: <ClipboardCheck className="h-5 w-5" /> },
-  security:     { label: 'Security',             icon: <Shield className="h-5 w-5" /> },
-  backup:       { label: 'Backup',               icon: <HardDrive className="h-5 w-5" /> },
-  monitoring:   { label: 'Monitoring',           icon: <Activity className="h-5 w-5" /> },
+// Single source of truth for which config-policy feature types this tab renders.
+// It is exhaustive over FeatureType (tsc fails if a union member lacks an entry),
+// and ALL_FEATURE_TYPES below is derived from its keys, so a type can never be
+// silently dropped from the grid — the original bug, where a resolved `warranty`
+// feature rendered no card because it was absent from a hand-maintained list.
+//
+// remote_access and pam are deliberately absent from FeatureType (and so from
+// this map): they are the two baselines that actively *apply* a value to an
+// unassigned device (`applied: true` in policyBaselineDefaults.ts — remote_access
+// defaults ON, pam is present but uacInterceptionEnabled:false). For them a
+// 'default' source still means something is in effect, so the "Not enforced"
+// labeling below would mislabel them. Every type present here is a "not enforced
+// when unassigned" baseline, so that labeling is safe.
+//
+// NOTE: parity with the canonical CONFIG_FEATURE_TYPES
+// (apps/api/src/services/configFeatureTypes.ts) minus those two is maintained by
+// hand — no test enforces it. A new canonical feature type must be added here too
+// or it won't render on this tab.
+const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
+  patch:              { label: 'Patch Management',    Icon: PackageCheck },
+  alert_rule:         { label: 'Alert Rules',         Icon: Bell },
+  automation:         { label: 'Automation',          Icon: Zap },
+  maintenance:        { label: 'Maintenance Windows', Icon: Wrench },
+  compliance:         { label: 'Compliance',          Icon: ClipboardCheck },
+  security:           { label: 'Security',            Icon: Shield },
+  backup:             { label: 'Backup',              Icon: HardDrive },
+  monitoring:         { label: 'Monitoring',          Icon: Activity },
+  warranty:           { label: 'Warranty',            Icon: ShieldCheck },
+  software_policy:    { label: 'Software Policy',     Icon: Boxes },
+  sensitive_data:     { label: 'Data Discovery',      Icon: FileSearch },
+  peripheral_control: { label: 'Peripheral Control',  Icon: Usb },
+  event_log:          { label: 'Event Logs',          Icon: ScrollText },
+  helper:             { label: 'Breeze Assist',       Icon: LifeBuoy },
+  onedrive_helper:    { label: 'OneDrive Helper',     Icon: Cloud },
 };
+
+// Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
+// grid stays in lockstep with FEATURE_META and can't silently omit a type.
+const ALL_FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
 
 const LEVEL_LABELS: Record<AssignmentLevel, string> = {
   partner: 'Partner',
@@ -208,11 +240,16 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
   const { features, inheritanceChain } = data;
   // The synthetic "Breeze Defaults" layer (level 'default') is excluded from the
   // assigned-policy count AND the inheritance-chain table below — it is not a real
-  // assigned policy, has no policy page to link to, and lists feature types this
-  // tab does not render. Baseline coverage is surfaced per-card ("Not enforced —
-  // Breeze Defaults") and on the dedicated /configuration-policies/defaults page.
+  // assigned policy and has no policy page to link to. Its feature types instead
+  // collapse into the "Not enforced — using Breeze Defaults" strip, and the
+  // dedicated /configuration-policies/defaults page covers them in full.
   const assignedChain = inheritanceChain.filter((e) => e.level !== 'default');
   const configuredTypes = ALL_FEATURE_TYPES.filter((ft) => features[ft]);
+  // Split enforced (a real assigned policy wins) from baseline fall-through.
+  // Every type in ALL_FEATURE_TYPES is "not enforced when unassigned", so a
+  // 'default' source unambiguously means baseline here (see the constant's note).
+  const enforcedTypes = configuredTypes.filter((ft) => features[ft]!.sourceLevel !== 'default');
+  const baselineTypes = configuredTypes.filter((ft) => features[ft]!.sourceLevel === 'default');
 
   return (
     <div className="space-y-6">
@@ -222,8 +259,8 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
           <h3 className="text-lg font-semibold">Effective Configuration</h3>
           <p className="text-sm text-muted-foreground">
             Resolved configuration from {assignedChain.length} assigned{' '}
-            {assignedChain.length === 1 ? 'policy' : 'policies'} across{' '}
-            {configuredTypes.length} feature{configuredTypes.length !== 1 ? 's' : ''}
+            {assignedChain.length === 1 ? 'policy' : 'policies'} ·{' '}
+            {enforcedTypes.length} enforced feature{enforcedTypes.length !== 1 ? 's' : ''}
           </p>
         </div>
         <button
@@ -236,70 +273,80 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
         </button>
       </div>
 
-      {/* Configured feature cards */}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {configuredTypes.map((ft) => {
-          const feature = features[ft]!;
-          const meta = FEATURE_META[ft];
-          const settings = summarizeSettings(
-            feature.inlineSettings as Record<string, unknown> | null
-          );
-          // Safe ONLY while ALL_FEATURE_TYPES excludes remote_access/pam (the two
-          // applied baselines). For every type this tab tracks, a baseline source
-          // ('default') means "not enforced", so we label it as such instead of
-          // letting it read as actively "configured". If remote_access/pam are
-          // ever added to this tab, gate this on the feature being non-applied
-          // rather than on sourceLevel alone, or an applied default (e.g. Remote
-          // Desktop ON) would be mislabeled "Not enforced".
-          const isBaseline = feature.sourceLevel === 'default';
+      {/* Enforced feature cards — only features a real assigned policy wins. */}
+      {enforcedTypes.length > 0 && (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {enforcedTypes.map((ft) => {
+            const feature = features[ft]!;
+            const { label, Icon } = FEATURE_META[ft];
+            const settings = summarizeSettings(feature.inlineSettings);
 
-          return (
-            <div key={ft} className="rounded-lg border bg-card p-5 shadow-sm">
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  {meta.icon}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <h4 className="font-semibold">{meta.label}</h4>
-                    {isBaseline && (
-                      <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
-                        Not enforced
-                      </span>
-                    )}
+            return (
+              <div key={ft} className="rounded-lg border bg-card p-5 shadow-sm">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <Icon className="h-5 w-5" />
                   </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    From: <span className="font-medium text-foreground">{feature.sourcePolicyName}</span>
-                    {' '}
-                    <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
-                      {LEVEL_LABELS[feature.sourceLevel]}
-                    </span>
+                  <div className="min-w-0 flex-1">
+                    <h4 className="font-semibold">{label}</h4>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      From: <span className="font-medium text-foreground">{feature.sourcePolicyName}</span>
+                      {' '}
+                      <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
+                        {LEVEL_LABELS[feature.sourceLevel]}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                {/* Settings summary */}
+                {settings.length > 0 && (
+                  <div className="mt-3 rounded-md border bg-muted/30 px-3 py-2">
+                    <ul className="space-y-0.5 text-xs text-muted-foreground">
+                      {settings.map((s) => (
+                        <li key={s} className="capitalize">{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Feature policy reference */}
+                {feature.featurePolicyId && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Linked policy:{' '}
+                    <span className="font-mono text-xs">{feature.featurePolicyId.slice(0, 8)}...</span>
                   </p>
-                </div>
+                )}
               </div>
+            );
+          })}
+        </div>
+      )}
 
-              {/* Settings summary */}
-              {settings.length > 0 && (
-                <div className="mt-3 rounded-md border bg-muted/30 px-3 py-2">
-                  <ul className="space-y-0.5 text-xs text-muted-foreground">
-                    {settings.map((s) => (
-                      <li key={s} className="capitalize">{s}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Feature policy reference */}
-              {feature.featurePolicyId && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Linked policy:{' '}
-                  <span className="font-mono text-xs">{feature.featurePolicyId.slice(0, 8)}...</span>
-                </p>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {/* Not-enforced baseline features — collapsed into one compact strip so the
+          page highlights what's actually applied instead of a wall of grey cards. */}
+      {baselineTypes.length > 0 && (
+        <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="flex items-center gap-2">
+            <h4 className="text-sm font-semibold text-muted-foreground">Not enforced</h4>
+            <span className="text-xs text-muted-foreground">— using Breeze Defaults</span>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {baselineTypes.map((ft) => {
+              const { label, Icon } = FEATURE_META[ft];
+              return (
+                <span
+                  key={ft}
+                  className="inline-flex items-center gap-1.5 rounded-full border bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground"
+                >
+                  <Icon className="h-3.5 w-3.5 text-muted-foreground/70" />
+                  {label}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Inheritance chain — real assigned policies only (the synthetic
           "Breeze Defaults" node is excluded; see assignedChain above). */}
