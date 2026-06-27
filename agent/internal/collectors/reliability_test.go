@@ -154,36 +154,59 @@ func TestClassifyEventLogEntry(t *testing.T) {
 			wantCrashType: "bsod",
 		},
 
-		// ── WER via Details int (exercises Details["eventId"] path) ─────────
+		// ── System-log 1001 via Details int, NEUTRAL message → bsod ─────────
+		// Neutral message (no "bugcheck"/"bluescreen") so this exercises the
+		// `nid==1001 && System-log` branch + the Details["eventId"] int path.
 		{
-			name: "WER 1001 via Details int — Details path",
+			name: "System-log 1001 (Details int, neutral message) → bsod",
 			entry: EventLogEntry{
 				Timestamp: ts,
 				Level:     "error",
-				Category:  "application",
-				Source:    "SystemErrorReporting",
+				Category:  "system",
+				Source:    "Microsoft-Windows-WER-SystemErrorReporting",
 				EventID:   "1001:12",
-				Message:   "BugCheck report",
-				Details:   map[string]any{"eventId": 1001},
+				Message:   "Fault bucket 1234567890, type 0",
+				Details:   map[string]any{"eventId": 1001, "logName": "System"},
 			},
 			wantCrashes:   1,
 			wantCrashType: "bsod",
 		},
 
-		// ── WER 1001 via EventID string prefix (exercises fallback parse) ───
+		// ── System-log 1001 via EventID prefix (no Details eventId) → bsod ──
 		{
-			name: "WER 1001 via EventID string prefix fallback",
+			name: "System-log 1001 (EventID prefix fallback, neutral message) → bsod",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "system",
+				Source:    "Microsoft-Windows-WER-SystemErrorReporting",
+				EventID:   "1001:999",
+				Message:   "Fault bucket report",
+				Details:   map[string]any{"logName": "System"}, // no eventId → prefix parse
+			},
+			wantCrashes:   1,
+			wantCrashType: "bsod",
+		},
+
+		// ── REGRESSION: Application-log WER 1001 APPCRASH is NOT a crash ─────
+		// Ordinary per-app crashes log as "Windows Error Reporting" 1001 in the
+		// Application log. Gating the 1001 crash branch on the System log keeps
+		// these out of the (heavily-weighted) kernel-crash factor.
+		{
+			name: "Application-log WER 1001 APPCRASH is NOT a crash",
 			entry: EventLogEntry{
 				Timestamp: ts,
 				Level:     "error",
 				Category:  "application",
-				Source:    "WER-SystemErrorReporting",
-				EventID:   "1001:999",
-				Message:   "BugCheck",
-				Details:   map[string]any{}, // no Details["eventId"]
+				Source:    "Windows Error Reporting",
+				EventID:   "1001:42",
+				Message:   "Fault bucket 99, type 4 Event Name: APPCRASH Faulting application name: foo.exe",
+				Details:   map[string]any{"eventId": 1001, "logName": "Application"},
 			},
-			wantCrashes:   1,
-			wantCrashType: "bsod",
+			wantCrashes:  0,
+			wantServices: 0,
+			wantHangs:    0,
+			wantHardware: 0,
 		},
 
 		// ── Kernel-Power 41 → bsod ──────────────────────────────────────────
@@ -378,6 +401,104 @@ func TestClassifyEventLogEntry(t *testing.T) {
 			},
 			wantCrashes:   1,
 			wantCrashType: "kernel_panic",
+		},
+
+		// ── SCM 7034 → service failure, name parsed ─────────────────────────
+		{
+			name: "SCM 7034 terminated unexpectedly → service failure, name parsed",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "system",
+				Source:    "Service Control Manager",
+				EventID:   "7034:55",
+				Message:   "The Print Spooler service terminated unexpectedly. It has done this 3 time(s).",
+				Details:   map[string]any{"eventId": 7034},
+			},
+			wantServices:    1,
+			wantServiceName: "Print Spooler",
+		},
+
+		// ── SCM 7022 ("hung on start") → service failure, NOT a hang ─────────
+		{
+			name: "SCM 7022 hung on start → service failure, not a hang",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "system",
+				Source:    "Service Control Manager",
+				EventID:   "7022:56",
+				Message:   "The Foo service hung on starting.",
+				Details:   map[string]any{"eventId": 7022},
+			},
+			wantServices:    1,
+			wantHangs:       0,
+			wantServiceName: "Foo",
+		},
+
+		// ── Non-SCM source w/ service-failure message → service via fallback ─
+		{
+			name: "Non-SCM source with service-failure message → service failure",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "application",
+				Source:    "SomeAppProvider",
+				EventID:   "5000:57",
+				Message:   "The Backup service terminated unexpectedly.",
+				Details:   map[string]any{"eventId": 5000},
+			},
+			wantServices:    1,
+			wantServiceName: "Backup",
+		},
+
+		// ── Priority: SCM service event mentioning "disk" stays a service ────
+		{
+			name: "SCM 7031 whose message mentions disk → service failure, not hardware",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "system",
+				Source:    "Service Control Manager",
+				EventID:   "7031:58",
+				Message:   "The DiskBackup service terminated unexpectedly.",
+				Details:   map[string]any{"eventId": 7031},
+			},
+			wantServices:    1,
+			wantHardware:    0,
+			wantServiceName: "DiskBackup",
+		},
+
+		// ── Memory hardware type (classifyHardwareType "memory" branch) ─────
+		{
+			name: "Memory error → hardware error type memory",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "system",
+				Source:    "Microsoft-Windows-Kernel-General",
+				EventID:   "13:59",
+				Message:   "A memory error was detected by the hardware.",
+				Details:   map[string]any{"eventId": 13},
+			},
+			wantHardware: 1,
+			wantHWType:   "memory",
+		},
+
+		// ── isHardwareSource-only: known driver, generic message → hardware ─
+		{
+			name: "Known driver source (nvlddmkm) generic message → hardware error type unknown",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "application",
+				Source:    "nvlddmkm",
+				EventID:   "153:60",
+				Message:   "Display driver stopped and has recovered.",
+				Details:   map[string]any{"eventId": 153},
+			},
+			wantHardware: 1,
+			wantHWType:   "unknown",
 		},
 	}
 

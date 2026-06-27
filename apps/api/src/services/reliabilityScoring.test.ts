@@ -78,11 +78,8 @@ describe('reliabilityScoringInternals', () => {
 
   it('builds trend points only for observed days (no default-100 gaps)', () => {
     const now = new Date('2026-02-21T00:00:00.000Z');
-    // Issue #1908: the new saturating scoreDailyBucket produces gentler per-day
-    // scores, so we need multiple fault factors to produce a clearly degrading
-    // slope (single-factor crash-only 0→1→4 yields slope ≈ -0.95, below the
-    // -2 threshold). Using multi-factor faults that produce scores 100→76→42
-    // (slope ≈ -3.1) gives an unambiguous degrading signal.
+    // Issue #1908: scoreDailyBucket sums per-factor lost points (full 0–100 range),
+    // so a worsening fault load over time produces a clearly negative slope.
     const buckets = [
       makeBucket({ date: '2026-02-01', crashCount: 0, serviceFailureCount: 0, hangCount: 0 }),
       makeBucket({ date: '2026-02-10', crashCount: 2, serviceFailureCount: 2, hangCount: 1 }),
@@ -95,6 +92,33 @@ describe('reliabilityScoringInternals', () => {
     const trend = reliabilityScoringInternals.computeTrend(buckets, now);
     expect(trend.direction).toBe('degrading');
     expect(trend.confidence).toBeGreaterThan(0);
+  });
+
+  it('detects an improving trend when faults decrease over time', () => {
+    const now = new Date('2026-02-21T00:00:00.000Z');
+    const buckets = [
+      makeBucket({ date: '2026-02-01', crashCount: 5, serviceFailureCount: 5, hangCount: 3, hardwareCriticalCount: 1 }),
+      makeBucket({ date: '2026-02-10', crashCount: 2, serviceFailureCount: 2, hangCount: 1 }),
+      makeBucket({ date: '2026-02-20', crashCount: 0, serviceFailureCount: 0, hangCount: 0 }),
+    ] as any[];
+
+    const trend = reliabilityScoringInternals.computeTrend(buckets, now);
+    expect(trend.direction).toBe('improving');
+  });
+
+  it('reads a shallow single-factor change as stable (slope within ±2)', () => {
+    // One crash on the final observed day only → day scores 100, 100, 72 over a
+    // 20-day span → slope ≈ -1.4, inside the ±2 deadband → stable, not degrading.
+    // Locks the trend threshold against the gentler curve over-triggering.
+    const now = new Date('2026-02-21T00:00:00.000Z');
+    const buckets = [
+      makeBucket({ date: '2026-02-01' }),
+      makeBucket({ date: '2026-02-10' }),
+      makeBucket({ date: '2026-02-20', crashCount: 1 }),
+    ] as any[];
+
+    const trend = reliabilityScoringInternals.computeTrend(buckets, now);
+    expect(trend.direction).toBe('stable');
   });
 
   it('computes MTBF from aggregated failures and observed up-days', () => {
@@ -524,9 +548,9 @@ describe('saturatingScore', () => {
 
   it('returns 100 for zero weighted count', () => expect(saturatingScore(0, 5)).toBe(100));
   it('returns 100 for negative weighted count', () => expect(saturatingScore(-1, 5)).toBe(100));
-  it('returns 100 for non-finite input', () => {
-    expect(saturatingScore(NaN, 5)).toBe(100);
-    expect(saturatingScore(Infinity, 5)).toBe(100);
+  it('returns 0 (not 100) for non-finite input — corrupted data must not read as perfect health', () => {
+    expect(saturatingScore(NaN, 5)).toBe(0);
+    expect(saturatingScore(Infinity, 5)).toBe(0);
   });
   it('at weightedCount = k the score is approximately 37 (exp(-1) ≈ 36.8)', () => {
     // exp(-k/k) = exp(-1) ≈ 0.368, so score ≈ 37 after rounding.

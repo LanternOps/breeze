@@ -268,11 +268,18 @@ function round2(value: number): number {
 // weightedCount = k the score is ~37 (exp(-1) ≈ 0.368), which is the tuning
 // reference point for each k constant below.
 function saturatingScore(weightedCount: number, k: number): number {
-  if (!Number.isFinite(weightedCount) || weightedCount <= 0) return 100;
-  return clampScore(100 * Math.exp(-Math.max(0, weightedCount) / k));
+  // A non-finite weightedCount (NaN/Infinity) means upstream count arithmetic
+  // produced garbage. Return 0, never 100 — corrupted telemetry must not read as
+  // perfect health (a "100" hides the data fault; nobody investigates a perfect
+  // score). Counts are coerced finite & non-negative upstream, so this is a
+  // defensive floor, not an expected path. `weightedCount <= 0` is the real
+  // "clean device" case and returns 100.
+  if (!Number.isFinite(weightedCount)) return 0;
+  if (weightedCount <= 0) return 100;
+  return clampScore(100 * Math.exp(-weightedCount / k));
 }
 
-// k=3: one crash (w=1) → ~72, three crashes (w=3) → ~37, five → ~19, ten → ~3.
+// k=3: one crash (w=1) → ~72, three crashes (w=3) → ~37, five → ~19, ten → ~4.
 // Crashes are severe so k is small — the curve falls quickly.
 const K_CRASHES = 3;
 
@@ -424,9 +431,10 @@ function scoreHangs(hangCount30d: number, unresolvedHangCount30d: number): numbe
 
 function scoreServiceFailures(serviceFailureCount30d: number, recoveredCount30d: number): number {
   // Issue #1908: recovered failures get half-weight credit, preserving the
-  // "recovery is good" intent without ever pushing the score above 100 (recovery
-  // credit is bounded by the failure count, and Math.max(0,...) stops it going
-  // negative). K_SERVICES=5 so one net failure → ~82, five → ~37.
+  // "recovery is good" intent. The score never exceeds 100 because saturatingScore
+  // returns <=100 for any weightedCount >= 0 (and exactly 100 when it is <= 0); the
+  // Math.max(0, ...) floor handles recovered exceeding failures. K_SERVICES=5 so one
+  // net failure → ~82, five → ~37.
   const weightedCount = Math.max(0, serviceFailureCount30d - recoveredCount30d * 0.5);
   return saturatingScore(weightedCount, K_SERVICES);
 }
@@ -770,34 +778,31 @@ function sumBucketsInWindow(
 }
 
 function scoreDailyBucket(bucket: DailyAggregateBucket): number {
-  // Issue #1908: kept in lockstep with the headline factor scorers by applying
-  // the SAME saturatingScore + k constants to each day's counts, then averaging
-  // the four per-factor scores to produce a single 0–100 day quality score.
-  // Uptime is intentionally absent: it is not a per-day-bucket quantity.
-  //
-  // Using the same helpers as the headline scorers means "bad day" tracks the
-  // same exponential decay rather than the old linear-clamp-at-0, so a day with
-  // more faults always scores strictly lower than one with fewer.
-  const crashScore = saturatingScore(
-    bucket.crashCount + 0, // crashCount7d is unavailable per-day; use 30d count only
-    K_CRASHES
-  );
-  const hangScore = saturatingScore(
-    bucket.hangCount + bucket.unresolvedHangCount,
-    K_HANGS
-  );
-  const serviceScore = saturatingScore(
-    Math.max(0, bucket.serviceFailureCount - bucket.recoveredServiceCount * 0.5),
-    K_SERVICES
-  );
-  const hwScore = saturatingScore(
-    bucket.hardwareCriticalCount * 2 + bucket.hardwareErrorSeverityCount * 1 + bucket.hardwareWarningCount * 0.34,
-    K_HARDWARE
-  );
-  // Average the four fault-factor scores: each is 0–100, and the result is 0–100.
-  // A fully-clean day yields (100+100+100+100)/4 = 100. Any fault drives the
-  // average down, smoothly, with no hard floor.
-  return clampScore((crashScore + hangScore + serviceScore + hwScore) / 4);
+  // Issue #1908: per-day score used ONLY for the trend slope (computeTrend). Each
+  // factor uses the SAME saturatingScore + k constants as the headline scorers, so
+  // "bad day" tracks the same exponential decay (not the old linear-clamp-at-0).
+  // The four per-factor scores are combined by SUMMING their lost points
+  // (100 - score) and subtracting from 100 — NOT averaging. Averaging divides a
+  // single-factor spike by four and, with the exponential floor, squeezes every
+  // day into a narrow ~78–100 band; that flattens the regression slope and weakens
+  // computeTrend's `degrading` detection (slope < -2). Summing lost points keeps
+  // the full 0–100 range and preserves "more faults ⇒ strictly lower day score"
+  // across factors. Uptime is intentionally absent: not a per-day-bucket quantity.
+  const lost = (score: number): number => 100 - score;
+  const lostPoints =
+    lost(saturatingScore(bucket.crashCount, K_CRASHES))
+    + lost(saturatingScore(bucket.hangCount + bucket.unresolvedHangCount, K_HANGS))
+    + lost(saturatingScore(
+      Math.max(0, bucket.serviceFailureCount - bucket.recoveredServiceCount * 0.5),
+      K_SERVICES,
+    ))
+    + lost(saturatingScore(
+      bucket.hardwareCriticalCount * 2 + bucket.hardwareErrorSeverityCount * 1 + bucket.hardwareWarningCount * 0.34,
+      K_HARDWARE,
+    ));
+  // Clean day → 100 - 0 = 100. Faults across multiple factors accumulate and the
+  // result clamps at 0. Adding any fault strictly lowers the day score.
+  return clampScore(100 - lostPoints);
 }
 
 function buildDailyTrendPoints(

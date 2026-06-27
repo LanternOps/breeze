@@ -202,15 +202,19 @@ var scmFailureEventIDs = map[int]bool{
 	7034: true, // service terminated unexpectedly (no recovery configured)
 }
 
-// isWERSource returns true when srcLower (already lowercased) indicates the
-// Windows Error Reporting provider. Real provider names seen in the wild:
-//
-//	"windows error reporting", "wer", "wer-systemarchive",
-//	"wer-systemerrorreporting", "systemerrorreporting"
-func isWERSource(srcLower string) bool {
-	return strings.Contains(srcLower, "wer") ||
-		strings.Contains(srcLower, "systemerrorreporting") ||
-		strings.Contains(srcLower, "windows error reporting")
+// eventLogName returns the Windows log a collected event came from
+// (Details["logName"], set by every Windows collector — "System", "Application",
+// "Security"). Empty when unknown. Used to keep the EventID-1001 crash branch
+// scoped to the System log: a System-log 1001 is a BugCheck/BSOD report, whereas
+// an Application-log 1001 ("Windows Error Reporting") is a routine per-app
+// APPCRASH/APPHANG and must NOT inflate the kernel-crash factor.
+func eventLogName(entry EventLogEntry) string {
+	if v, ok := entry.Details["logName"]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // classifyEventLogEntry routes a single event log entry into exactly one
@@ -227,7 +231,8 @@ func classifyEventLogEntry(metrics *ReliabilityMetrics, entry EventLogEntry) {
 
 	// ── 1. Crash ─────────────────────────────────────────────────────────────
 	switch {
-	case strings.Contains(msg, "bugcheck"), strings.Contains(msg, "blue screen"):
+	case strings.Contains(msg, "bugcheck"), strings.Contains(msg, "blue screen"),
+		strings.Contains(msg, "bluescreen"): // WER BSOD reports say "Event Name: BlueScreen" (no space)
 		appendCrash(metrics, "bsod", ts, map[string]any{
 			"source":  entry.Source,
 			"eventId": entry.EventID,
@@ -250,8 +255,11 @@ func classifyEventLogEntry(metrics *ReliabilityMetrics, entry EventLogEntry) {
 		})
 		return
 
-	case nid == 1001 && isWERSource(src):
-		// Real BugCheck report from Windows Error Reporting — NOT DCOM 10010
+	case nid == 1001 && strings.EqualFold(eventLogName(entry), "System"):
+		// System-log 1001 is a BugCheck/BSOD report. Gating on the System log (not
+		// just a "WER-ish" source name) excludes Application-log "Windows Error
+		// Reporting" 1001 APPCRASH/APPHANG, which would otherwise inflate crashes.
+		// (DCOM 10010 never reaches here: matched by EQUALITY on 1001, not substring.)
 		appendCrash(metrics, "bsod", ts, map[string]any{
 			"source":  entry.Source,
 			"eventId": entry.EventID,
@@ -300,15 +308,8 @@ func classifyEventLogEntry(metrics *ReliabilityMetrics, entry EventLogEntry) {
 
 	// ── 4. Hardware error ─────────────────────────────────────────────────────
 	// Gate on genuine hardware signals only — NOT on entry.Category.
-	hwType := classifyHardwareType(entry.Message, entry.Source, nid)
-	if hwType != "unknown" || isHardwareSource(src) {
-		metrics.HardwareErrors = append(metrics.HardwareErrors, HardwareError{
-			Type:      hwType,
-			Severity:  severityFromLevel(entry.Level),
-			Timestamp: ts,
-			Source:    entry.Source,
-			EventID:   entry.EventID,
-		})
+	if classifyHardwareType(entry.Message, entry.Source, nid) != "unknown" || isHardwareSource(src) {
+		appendHardwareError(metrics, entry, ts)
 		return
 	}
 }
