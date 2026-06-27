@@ -1,5 +1,5 @@
-/* Self-hosted Plus Jakarta Sans — the family in tailwind.config.mjs, weights
-   400/500/600/700. Bundled by Vite and served from our own origin, so the CSS
+/* Self-hosted Plus Jakarta Sans, weights 400/500/600/700 — the family wired
+   through the runtime `:root { --font-sans }` below. Bundled by Vite and served from our own origin, so the CSS
    passes style-src-elem 'self' and the .woff2 files pass font-src 'self' — the
    Google Fonts CDN failed both directives, leaving every page on the system
    fallback font (issue #1230). Only the latin + latin-ext subsets are imported
@@ -66,7 +66,8 @@
   --color-warning: hsl(var(--warning));
   --color-warning-foreground: hsl(var(--warning-foreground));
 
-  /* web-only vs portal: info color pair + the configured sans family */
+  /* web-only vs portal: the info color pair (portal has no --color-info).
+     The sans family is intentionally NOT mapped here — see the NB below. */
   --color-info: hsl(var(--info));
   --color-info-foreground: hsl(var(--info-foreground));
 
