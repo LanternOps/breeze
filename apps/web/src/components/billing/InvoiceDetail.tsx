@@ -462,6 +462,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                 </div>
                 <button
                   type="button" onClick={() => void recordPayment()} disabled={busy || !payAmount}
+                  title={!payAmount ? 'Enter a payment amount to record it' : undefined}
                   data-testid="invoice-payment-submit"
                   className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >

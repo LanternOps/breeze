@@ -80,9 +80,12 @@ describe('InvoiceDetail', () => {
     render(<InvoiceDetail detail={issued} onChanged={onChanged} />);
     await waitFor(() => expect(screen.getByTestId('invoice-payment-form')).toBeInTheDocument());
 
-    // Submit disabled until an amount is entered.
+    // Submit disabled until an amount is entered, with a tooltip explaining why (#1975).
     expect(screen.getByTestId('invoice-payment-submit')).toBeDisabled();
+    expect(screen.getByTestId('invoice-payment-submit')).toHaveAttribute('title', 'Enter a payment amount to record it');
     fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '50' } });
+    // Tooltip clears once an amount is present.
+    expect(screen.getByTestId('invoice-payment-submit')).not.toHaveAttribute('title');
     fireEvent.change(screen.getByTestId('invoice-payment-method'), { target: { value: 'check' } });
     fireEvent.click(screen.getByTestId('invoice-payment-submit'));
 
