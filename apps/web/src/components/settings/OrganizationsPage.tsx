@@ -111,18 +111,24 @@ export default function OrganizationsPage() {
     }
   }, [fetchOrganizations]);
 
-  const fetchSites = useCallback(async (orgId: string): Promise<Site[]> => {
+  // Returns the fetched site list, or null when the fetch failed. The null
+  // signal lets callers distinguish "confirmed zero sites" from "couldn't
+  // tell" — important for the first-site nudge, which must not fire on a guess
+  // (a transient failure on an org that DOES have sites would otherwise
+  // re-introduce the misleading nag of #1978).
+  const fetchSites = useCallback(async (orgId: string): Promise<Site[] | null> => {
     setSitesLoading(true);
     try {
       const response = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-      if (!response.ok) throw new Error('Failed to fetch sites');
+      if (!response.ok) throw new Error(`Failed to fetch sites (status ${response.status})`);
       const data = await response.json();
       const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       setSites(siteList);
       return siteList;
-    } catch {
+    } catch (err) {
       setSites([]);
-      return [];
+      console.warn('[OrganizationsPage] failed to fetch sites for org', orgId, err);
+      return null;
     } finally {
       setSitesLoading(false);
     }
@@ -270,10 +276,12 @@ export default function OrganizationsPage() {
       handleCloseModal();
 
       // Select the new org. Only nudge the user into the "add the first site"
-      // flow when the org genuinely has no sites — a default site may already
-      // exist (e.g. the partner's bootstrap org ships with one), in which case
-      // the first-site nag would be misleading. fetchSites also primes the
-      // sites list for the just-selected org.
+      // flow when we positively confirm the org has zero sites — a default site
+      // may already exist (e.g. the partner's bootstrap org ships with one), in
+      // which case the first-site nag would be misleading. We need the count
+      // synchronously to make this decision, so call fetchSites directly rather
+      // than rely on the selectedOrg effect's fire-and-forget refresh. On a
+      // fetch failure (null) we skip the nag rather than guess.
       if (createdOrg?.id) {
         const newOrg: Organization = {
           id: createdOrg.id,
@@ -286,7 +294,7 @@ export default function OrganizationsPage() {
         window.location.hash = createdOrg.id;
 
         const existingSites = await fetchSites(createdOrg.id);
-        if (existingSites.length === 0) {
+        if (existingSites?.length === 0) {
           setSelectedSite(null);
           setGuidingFirstSite(true);
           setSiteModalMode('add');

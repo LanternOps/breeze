@@ -34,7 +34,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
  * endpoint returns for the freshly created org, letting each test simulate an
  * org with or without a pre-existing (default) site.
  */
-function mockApi(sitesForNewOrg: unknown[]) {
+function mockApi(sitesForNewOrg: unknown[] | 'fail') {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
     const method = init?.method;
@@ -49,6 +49,7 @@ function mockApi(sitesForNewOrg: unknown[]) {
       return makeJsonResponse({ settings: {} });
     }
     if (url.startsWith('/orgs/sites?organizationId=')) {
+      if (sitesForNewOrg === 'fail') return makeJsonResponse({ error: 'boom' }, false, 500);
       return makeJsonResponse({ data: sitesForNewOrg });
     }
     return makeJsonResponse({ data: [] });
@@ -87,16 +88,36 @@ describe('OrganizationsPage — first-site guidance', () => {
 
     await submitNewOrg();
 
-    // The org-create POST resolved and sites were fetched; give the guidance
-    // branch a chance to (not) fire.
+    // Wait for a post-decision signal: the fetched site rendering in the detail
+    // panel proves fetchSites resolved AND its setState flushed, so the gating
+    // branch has already run. Asserting on the bare fetch call would race the
+    // (broken) nag's setState and could pass even with the regression present.
+    // (SiteList renders the name in both desktop and mobile layouts.)
+    expect((await screen.findAllByText('Main Office')).length).toBeGreaterThan(0);
+
+    expect(screen.queryByText(/Add the first site for/i)).not.toBeInTheDocument();
+  });
+
+  it('does NOT show the first-site nag when the sites fetch fails (fail closed)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockApi('fail');
+    render(<OrganizationsPage />);
+
+    await submitNewOrg();
+
+    // The sites fetch failed → fetchSites returns null and logs a warning. The
+    // warn firing is the post-decision signal: it happens inside the catch,
+    // immediately before fetchSites resolves null and the synchronous gating
+    // branch runs. A guess-and-nag failure mode would re-introduce #1978.
     await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([input]) =>
-          String(input).startsWith(`/orgs/sites?organizationId=${NEW_ORG_ID}`)
-        )
-      ).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[OrganizationsPage] failed to fetch sites for org',
+        NEW_ORG_ID,
+        expect.anything()
+      );
     });
 
     expect(screen.queryByText(/Add the first site for/i)).not.toBeInTheDocument();
+    warnSpy.mockRestore();
   });
 });
