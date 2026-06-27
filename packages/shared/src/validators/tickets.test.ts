@@ -107,7 +107,7 @@ describe('ticket validators', () => {
     });
 
     it('createTicketSchema accepts a free-text requester (name + email)', () => {
-      const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' });
+      const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submitterName: 'Jane', submitterEmail: 'jane@example.com' });
       expect(r.success).toBe(true);
     });
 
@@ -118,7 +118,7 @@ describe('ticket validators', () => {
 
     it('updateTicketSchema accepts requester changes incl null to clear the portal link', () => {
       expect(updateTicketSchema.safeParse({ submittedBy: PORTAL_USER }).success).toBe(true);
-      expect(updateTicketSchema.safeParse({ submittedBy: null, submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }).success).toBe(true);
+      expect(updateTicketSchema.safeParse({ submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@example.com' }).success).toBe(true);
       expect(updateTicketSchema.safeParse({ submitterName: null, submitterEmail: null }).success).toBe(true);
     });
 

@@ -436,23 +436,23 @@ describe('HuntressIntegration', () => {
     mockPartnerLoad({
       integration: existingIntegration,
       mappings: [
-        { ...discoveredHuntressOrg, huntressOrgId: 'h1', huntressOrgName: 'Williams & Associates', mappedOrgId: breezeOrg.id, mappedOrgName: breezeOrg.name },
-        { ...discoveredHuntressOrg, huntressOrgId: 'h2', huntressOrgName: 'Mountain Capital', mappedOrgId: null, mappedOrgName: null },
+        { ...discoveredHuntressOrg, huntressOrgId: 'h1', huntressOrgName: 'Example Org A', mappedOrgId: breezeOrg.id, mappedOrgName: breezeOrg.name },
+        { ...discoveredHuntressOrg, huntressOrgId: 'h2', huntressOrgName: 'Example Org B', mappedOrgId: null, mappedOrgName: null },
       ],
     });
 
     render(<HuntressIntegration />);
-    await waitFor(() => expect(screen.getByText('Williams & Associates')).toBeInTheDocument());
-    expect(screen.getByText('Mountain Capital')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Example Org A')).toBeInTheDocument());
+    expect(screen.getByText('Example Org B')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/Search Huntress or Breeze organizations/), { target: { value: 'mountain' } });
-    expect(screen.queryByText('Williams & Associates')).not.toBeInTheDocument();
-    expect(screen.getByText('Mountain Capital')).toBeInTheDocument();
+    expect(screen.queryByText('Example Org A')).not.toBeInTheDocument();
+    expect(screen.getByText('Example Org B')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/Search Huntress or Breeze organizations/), { target: { value: '' } });
     fireEvent.click(screen.getByLabelText('Unmapped only'));
-    expect(screen.queryByText('Williams & Associates')).not.toBeInTheDocument();
-    expect(screen.getByText('Mountain Capital')).toBeInTheDocument();
+    expect(screen.queryByText('Example Org A')).not.toBeInTheDocument();
+    expect(screen.getByText('Example Org B')).toBeInTheDocument();
   });
 
   it('offers an explicit Unmap button that maps the org to null', async () => {
@@ -460,7 +460,7 @@ describe('HuntressIntegration', () => {
     mockPartnerLoad({
       integration: existingIntegration,
       mappings: [
-        { ...discoveredHuntressOrg, huntressOrgId: 'h1', huntressOrgName: 'Williams & Associates', mappedOrgId: breezeOrg.id, mappedOrgName: breezeOrg.name },
+        { ...discoveredHuntressOrg, huntressOrgId: 'h1', huntressOrgName: 'Example Org A', mappedOrgId: breezeOrg.id, mappedOrgName: breezeOrg.name },
       ],
     });
 

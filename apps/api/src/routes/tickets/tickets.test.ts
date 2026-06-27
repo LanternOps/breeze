@@ -455,12 +455,12 @@ describe('GET /tickets/requesters', () => {
 
   it('returns the org requesters for an accessible org', async () => {
     serviceMocks.listRequestersForOrg.mockResolvedValue([
-      { id: 'pu-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }
+      { id: 'pu-1', name: 'Jane Doe', email: 'jane@example.com' }
     ]);
     const res = await makeApp().request(`/tickets/requesters?orgId=${ORG_ID}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual([{ id: 'pu-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+    expect(body.data).toEqual([{ id: 'pu-1', name: 'Jane Doe', email: 'jane@example.com' }]);
     expect(serviceMocks.listRequestersForOrg).toHaveBeenCalledWith(ORG_ID);
   });
 

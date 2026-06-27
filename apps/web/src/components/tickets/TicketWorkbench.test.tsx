@@ -1602,20 +1602,20 @@ describe('TicketWorkbench requester editing + device link', () => {
   it('edits the requester to a picked portal user (PATCHes submittedBy + backfilled name/email)', async () => {
     mockApiWithRequesters(
       makeTicket({ submittedBy: null, submitterName: 'Pat', submitterEmail: null }),
-      [{ id: 'pu-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]
+      [{ id: 'pu-1', name: 'Jane Doe', email: 'jane@example.com' }]
     );
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-workbench');
     fireEvent.click(screen.getByTestId('ticket-workbench-requester-edit'));
-    await screen.findByRole('option', { name: 'Gail Goodman (gail@lgpc.com)' });
+    await screen.findByRole('option', { name: 'Jane Doe (jane@example.com)' });
     fireEvent.change(screen.getByTestId('ticket-workbench-requester-select'), { target: { value: 'pu-1' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-requester-save'));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1', expect.objectContaining({
         method: 'PATCH',
-        body: JSON.stringify({ submittedBy: 'pu-1', submitterName: 'Gail Goodman', submitterEmail: 'gail@lgpc.com' })
+        body: JSON.stringify({ submittedBy: 'pu-1', submitterName: 'Jane Doe', submitterEmail: 'jane@example.com' })
       }));
     });
   });

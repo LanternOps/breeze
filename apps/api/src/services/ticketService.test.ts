@@ -241,7 +241,7 @@ describe('createTicket', () => {
     // selects in order: org, portal user
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-6', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
     await createTicket({ orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-1' }, actor);
@@ -249,26 +249,26 @@ describe('createTicket', () => {
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({
       submittedBy: 'pu-1',
-      submitterName: 'Gail Goodman',
-      submitterEmail: 'gail@lgpc.com'
+      submitterName: 'Jane Doe',
+      submitterEmail: 'jane@example.com'
     });
   });
 
   it('manual ticket with explicit submitterName/email overrides the portal-user backfill', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-7', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
     await createTicket(
-      { orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-1', submitterName: 'Gail (front desk)', submitterEmail: 'frontdesk@lgpc.com' },
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-1', submitterName: 'Front Desk User', submitterEmail: 'frontdesk@example.com' },
       actor
     );
 
     expect(valuesMock.mock.calls[0]![0]).toMatchObject({
       submittedBy: 'pu-1',
-      submitterName: 'Gail (front desk)',
-      submitterEmail: 'frontdesk@lgpc.com'
+      submitterName: 'Front Desk User',
+      submitterEmail: 'frontdesk@example.com'
     });
   });
 
@@ -277,7 +277,7 @@ describe('createTicket', () => {
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-8', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
     await createTicket(
-      { orgId: 'o-1', subject: 'Crash', source: 'manual', submitterName: 'Walk-in User', submitterEmail: 'walkin@lgpc.com' },
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', submitterName: 'Walk-in User', submitterEmail: 'walkin@example.com' },
       actor
     );
 
@@ -286,7 +286,7 @@ describe('createTicket', () => {
     expect(valuesMock.mock.calls[0]![0]).toMatchObject({
       submittedBy: null,
       submitterName: 'Walk-in User',
-      submitterEmail: 'walkin@lgpc.com'
+      submitterEmail: 'walkin@example.com'
     });
   });
 
@@ -1064,7 +1064,7 @@ describe('updateTicketFields', () => {
     // selects in order: ticket, portal user
     dbMocks.selectResult
       .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null }])
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com' }]);
     dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
@@ -1073,8 +1073,8 @@ describe('updateTicketFields', () => {
     const updatePayload = setMock.mock.calls[0]![0];
     expect(updatePayload).toMatchObject({
       submittedBy: 'pu-1',
-      submitterName: 'Gail Goodman',
-      submitterEmail: 'gail@lgpc.com'
+      submitterName: 'Jane Doe',
+      submitterEmail: 'jane@example.com'
     });
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated requester' }));
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.updated' }));
@@ -1083,20 +1083,20 @@ describe('updateTicketFields', () => {
   it('editing the requester to a portal user with explicit name/email overrides the backfill', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null }])
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Gail Goodman', email: 'gail@lgpc.com' }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com' }]);
     dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
     await updateTicketFields(
       't-1',
-      { submittedBy: 'pu-1', submitterName: 'Gail (front desk)', submitterEmail: 'frontdesk@lgpc.com' },
+      { submittedBy: 'pu-1', submitterName: 'Front Desk User', submitterEmail: 'frontdesk@example.com' },
       actor
     );
 
     expect(setMock.mock.calls[0]![0]).toMatchObject({
       submittedBy: 'pu-1',
-      submitterName: 'Gail (front desk)',
-      submitterEmail: 'frontdesk@lgpc.com'
+      submitterName: 'Front Desk User',
+      submitterEmail: 'frontdesk@example.com'
     });
   });
 
@@ -1115,7 +1115,7 @@ describe('updateTicketFields', () => {
   });
 
   it('editing the requester to free text clears the portal link', async () => {
-    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1', submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }]);
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1', submitterName: 'Jane', submitterEmail: 'jane@example.com' }]);
     dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
@@ -1144,8 +1144,8 @@ describe('updateTicketFields', () => {
   });
 
   it('no-op when the requester is unchanged', async () => {
-    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }]);
-    await updateTicketFields('t-1', { submittedBy: null, submitterName: 'Gail', submitterEmail: 'gail@lgpc.com' }, actor);
+    dbMocks.selectResult.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@example.com' }]);
+    await updateTicketFields('t-1', { submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@example.com' }, actor);
     expect(setMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
   });
