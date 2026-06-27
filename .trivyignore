@@ -13,3 +13,29 @@
 # we don't use it for SSRF protection or trust-boundary decisions.
 # Re-evaluate when node-ip publishes a fix.
 CVE-2024-29415
+
+# ──────────────────────────────────────────────────────────────────────────
+# pnpm install-time CVEs (pnpm 10.33.4)
+# ──────────────────────────────────────────────────────────────────────────
+# Trivy flags pnpm via the `packageManager` / `engines.pnpm` field in
+# package.json (copied into the built images). Every one of these advisories is
+# an INSTALL-TIME issue in pnpm itself — malicious patch files, lockfile/alias
+# path traversal, manifest-spoof lifecycle execution, configDependencies. The
+# running API / web / portal containers never execute `pnpm install` (entrypoint
+# is `node`), so pnpm is inert build-tooling in the image, not a live exploit
+# path. Risk in the deployed artifact is effectively nil despite the HIGH rating.
+#
+# Proper remediation is a pnpm 10 -> 11.8.0 major upgrade (CVE-2026-55697 has no
+# 10.x fix; the rest need 10.34.4). That is a repo-wide migration (lockfile +
+# all Dockerfiles + workflow pins) requiring its own tested PR — tracked
+# separately. Revisit / remove this block once that upgrade lands.
+#
+# Added 2026-06-27; re-review after the pnpm 11 upgrade.
+CVE-2026-50015
+CVE-2026-50016
+CVE-2026-55487
+CVE-2026-55697
+CVE-2026-55698
+GHSA-72r4-9c5j-mj57
+GHSA-fr4h-3cph-29xv
+GHSA-qrv3-253h-g69c
