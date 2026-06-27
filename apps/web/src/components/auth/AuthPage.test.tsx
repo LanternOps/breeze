@@ -44,11 +44,25 @@ describe('AuthPage', () => {
   });
 
   it('switches to signup when the Create account tab is clicked and updates the hash', () => {
-    render(<AuthPage />);
+    render(<AuthPage next="/oauth/consent?uid=abc" />);
     fireEvent.click(screen.getByTestId('tab-signup'));
     expect(window.location.hash).toBe('#signup');
-    expect(screen.getByTestId('mock-register')).toBeTruthy();
+    const register = screen.getByTestId('mock-register');
+    expect(register).toBeTruthy();
+    // `next` is forwarded to the registration form, not only the login form.
+    expect(register.getAttribute('data-next')).toBe('/oauth/consent?uid=abc');
     expect(screen.queryByTestId('mock-login')).toBeNull();
+  });
+
+  it('still renders the sign-in view while the gate is loading (default route, no hash)', () => {
+    // Every normal visitor lands here before /config resolves; the sign-in view
+    // must render immediately rather than leaving the page blank. The tablist
+    // stays hidden until registration is confirmed open.
+    registrationGate.enabled = false;
+    registrationGate.loaded = false;
+    render(<AuthPage />);
+    expect(screen.getByTestId('mock-login')).toBeTruthy();
+    expect(screen.queryByTestId('tab-signup')).toBeNull();
   });
 
   it('honors #signup hash present at mount', () => {
