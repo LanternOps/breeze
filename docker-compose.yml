@@ -119,6 +119,12 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
+      # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
+      # stays dark (env.ts defaults to ''), so this must be threaded through compose
+      # for self-host/droplet deploys to enable it. Same compose-interpolation gap
+      # class as IS_HOSTED / RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS.
+      CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
       APP_VERSION: ${BREEZE_VERSION:-dev}
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: ${BINARY_SOURCE:-github}

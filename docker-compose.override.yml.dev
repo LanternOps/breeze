@@ -48,6 +48,11 @@ services:
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER}
       MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Breeze AI for Office (Excel add-in) — Entra app-registration client ID that
+      # gates the /client-ai surface. Set in .env to unblock local Tier-A testing;
+      # empty = surface stays dark. (Merges with the base mapping; declared here for
+      # discoverability since dev is where this is exercised.)
+      CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-Lax}
       PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-Lax}
