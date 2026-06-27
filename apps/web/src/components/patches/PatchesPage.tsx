@@ -26,21 +26,20 @@ import { runAction, ActionError } from '@/lib/runAction';
 type TabKey = 'rings' | 'patches' | 'compliance';
 const validTabs: TabKey[] = ['rings', 'patches', 'compliance'];
 
-function getTabFromUrl(): TabKey {
+// Tab state lives in window.location.hash (`#patches`) per the project
+// convention for transient UI state (CLAUDE.md), matching DiscoveryPage and
+// DeviceDetails. The default `compliance` tab keeps the hash empty so the URL
+// stays clean.
+function getTabFromHash(): TabKey {
   if (typeof window === 'undefined') return 'compliance';
-  const params = new URLSearchParams(window.location.search);
-  const tab = params.get('tab');
-  return tab && validTabs.includes(tab as TabKey) ? (tab as TabKey) : 'compliance';
+  const hash = window.location.hash.replace(/^#/, '');
+  return validTabs.includes(hash as TabKey) ? (hash as TabKey) : 'compliance';
 }
 
-function setTabInUrl(tab: TabKey) {
+function setTabInHash(tab: TabKey) {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  if (tab === 'compliance') {
-    url.searchParams.delete('tab');
-  } else {
-    url.searchParams.set('tab', tab);
-  }
+  url.hash = tab === 'compliance' ? '' : tab;
   window.history.replaceState({}, '', url.toString());
 }
 
@@ -54,18 +53,18 @@ export default function PatchesPage() {
   const canManageRings = scope === 'partner' || scope === 'system';
   const RING_SCOPE_HINT = 'Update rings are managed at the partner level';
 
-  // If an org user lands with ?tab=rings (e.g. a bookmark), fall back to compliance
+  // If an org user lands with #rings (e.g. a bookmark), fall back to compliance
   // so the rings body is never rendered without navigation access.
   const [activeTab, setActiveTabState] = useState<TabKey>(() => {
-    const tab = getTabFromUrl();
+    const tab = getTabFromHash();
     return tab === 'rings' && !canManageRings ? 'compliance' : tab;
   });
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
-    setTabInUrl(tab);
+    setTabInHash(tab);
   }, []);
 
-  // Guard against hash/search changes after mount that could re-introduce rings
+  // Guard against hash changes after mount that could re-introduce rings
   // for an org-scoped user (e.g. back-navigation replaying the URL).
   useEffect(() => {
     if (activeTab === 'rings' && !canManageRings) {
