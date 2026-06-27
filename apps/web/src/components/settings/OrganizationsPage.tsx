@@ -111,7 +111,7 @@ export default function OrganizationsPage() {
     }
   }, [fetchOrganizations]);
 
-  const fetchSites = useCallback(async (orgId: string) => {
+  const fetchSites = useCallback(async (orgId: string): Promise<Site[]> => {
     setSitesLoading(true);
     try {
       const response = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
@@ -119,8 +119,10 @@ export default function OrganizationsPage() {
       const data = await response.json();
       const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       setSites(siteList);
+      return siteList;
     } catch {
       setSites([]);
+      return [];
     } finally {
       setSitesLoading(false);
     }
@@ -267,7 +269,11 @@ export default function OrganizationsPage() {
       await refreshOrgs();
       handleCloseModal();
 
-      // Guide the user straight into adding their first site for the new org.
+      // Select the new org. Only nudge the user into the "add the first site"
+      // flow when the org genuinely has no sites — a default site may already
+      // exist (e.g. the partner's bootstrap org ships with one), in which case
+      // the first-site nag would be misleading. fetchSites also primes the
+      // sites list for the just-selected org.
       if (createdOrg?.id) {
         const newOrg: Organization = {
           id: createdOrg.id,
@@ -278,9 +284,13 @@ export default function OrganizationsPage() {
         };
         setSelectedOrg(newOrg);
         window.location.hash = createdOrg.id;
-        setSelectedSite(null);
-        setGuidingFirstSite(true);
-        setSiteModalMode('add');
+
+        const existingSites = await fetchSites(createdOrg.id);
+        if (existingSites.length === 0) {
+          setSelectedSite(null);
+          setGuidingFirstSite(true);
+          setSiteModalMode('add');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
