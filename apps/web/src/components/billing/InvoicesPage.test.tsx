@@ -69,7 +69,7 @@ describe('InvoicesPage', () => {
     // Overdue badge label + restrained overdue cue (red dot indicator + due tone),
     // replacing the old full-row red tint.
     expect(screen.getByTestId('invoices-status-inv-1')).toHaveTextContent('Overdue');
-    expect(row.querySelector('.bg-red-500')).not.toBeNull();
+    expect(row.querySelector('.bg-destructive')).not.toBeNull();
   });
 
   it('writes filter selections to the URL hash', async () => {

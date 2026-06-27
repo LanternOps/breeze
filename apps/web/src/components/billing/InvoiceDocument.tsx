@@ -20,7 +20,7 @@ function LineRow({ line, currency }: { line: InvoiceLine; currency: string }) {
   return (
     <tr className="border-b align-top last:border-0">
       <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
-        {child ? '↳ ' : ''}{line.description}
+        {child ? <span aria-hidden="true">↳ </span> : ''}{line.description}
       </td>
       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{line.quantity}</td>
       <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{formatMoney(line.unitPrice, currency)}</td>
@@ -62,9 +62,6 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
       data-testid="invoice-document"
       className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-sm"
     >
-      {/* Accent top rule (mirrors QuoteDocument) */}
-      <div className="h-1.5 w-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
-
       <div className="space-y-10 px-4 py-7 sm:px-12 sm:py-10">
         {/* ── Header ─────────────────────────────────────────────── */}
         <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
@@ -78,6 +75,8 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
                 Invoice
               </p>
             )}
+            {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
+            <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
             {seller && (
               <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
                 {sellerLines(seller.address).map((line, i) => <p key={i}>{line}</p>)}
@@ -89,14 +88,13 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
           </div>
 
           <div className="space-y-2 sm:text-right">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em]" style={{ color: 'var(--doc-accent)' }}>
-              Invoice
-            </p>
-            <p className="text-2xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-number">
+            <p className="text-[1.75rem] font-semibold leading-none tracking-tight text-foreground" data-testid="invoice-document-number">
               {invoice.invoiceNumber ?? 'Draft'}
             </p>
+            <p className="text-sm font-medium text-muted-foreground">Invoice</p>
             <span
               className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`}
+              aria-label={`Status: ${statusLabel(invoice)}`}
             >
               {statusLabel(invoice)}
             </span>

@@ -102,6 +102,12 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
     );
   }
 
+  // The Editor only applies to drafts, so it's hidden once an invoice is issued —
+  // no dead-end tab that just shows a "can't edit" message. A stale #editor hash
+  // on a non-draft falls back to Detail.
+  const visibleTabs = isDraft ? TABS : TABS.filter((t) => t.value !== 'editor');
+  const activeTab: Tab = visibleTabs.some((t) => t.value === tab) ? tab : 'detail';
+
   return (
     <div className="space-y-4" data-testid="invoice-workspace">
       <div className="flex items-center justify-between">
@@ -115,16 +121,16 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b" role="tablist" data-testid="invoice-workspace-tabs">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.value}
             type="button"
             role="tab"
-            aria-selected={tab === t.value}
+            aria-selected={activeTab === t.value}
             onClick={() => selectTab(t.value)}
             data-testid={`invoice-tab-${t.value}`}
             className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition ${
-              tab === t.value
+              activeTab === t.value
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
@@ -134,19 +140,11 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
         ))}
       </div>
 
-      {tab === 'editor' && (
-        isDraft ? (
-          <InvoiceEditor detail={detail} onChanged={() => void reload()} />
-        ) : (
-          <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground" data-testid="invoice-editor-locked">
-            This invoice is no longer a draft and can no longer be edited. Switch to the Detail tab to review it.
-          </div>
-        )
-      )}
+      {activeTab === 'editor' && isDraft && <InvoiceEditor detail={detail} onChanged={() => void reload()} />}
 
-      {tab === 'preview' && <InvoiceDocumentPreview detail={detail} />}
+      {activeTab === 'preview' && <InvoiceDocumentPreview detail={detail} />}
 
-      {tab === 'detail' && <InvoiceDetail detail={detail} onChanged={() => void reload()} />}
+      {activeTab === 'detail' && <InvoiceDetail detail={detail} onChanged={() => void reload()} />}
     </div>
   );
 }

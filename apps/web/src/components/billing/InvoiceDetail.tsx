@@ -43,6 +43,8 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
   const [payRef, setPayRef] = useState('');
   const [payDate, setPayDate] = useState(() => new Date().toISOString().slice(0, 10));
 
+  // Payment confirm dialog
+  const [payConfirmOpen, setPayConfirmOpen] = useState(false);
   // Void dialog
   const [voidOpen, setVoidOpen] = useState(false);
   // Delete dialog
@@ -265,7 +267,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     className={`border-t ${l.parentLineId ? 'bg-muted/20 text-xs text-muted-foreground' : ''}`}
                   >
                     <td className={`px-3 py-2 ${l.parentLineId ? 'pl-8' : ''}`}>
-                      {l.parentLineId ? '↳ ' : ''}{l.description}
+                      {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{l.description}
                       {accountingView && !l.customerVisible ? ' (hidden)' : ''}
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>
@@ -284,22 +286,24 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
-              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status">
+              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status" aria-label={`Status: ${statusLabel(invoice)}`}>
                 {statusLabel(invoice)}
               </span>
               <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
             </div>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd>{formatMoney(invoice.subtotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Tax</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
-              <div className="flex justify-between font-semibold"><dt>Total</dt><dd>{formatMoney(invoice.total, currency)}</dd></div>
+              {Number(invoice.taxTotal) > 0 && (
+                <div className="flex justify-between"><dt className="text-muted-foreground">Tax</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
+              )}
+              <div className="flex min-w-0 justify-between gap-2 font-semibold"><dt>Total</dt><dd className="break-words">{formatMoney(invoice.total, currency)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Paid</dt><dd>{formatMoney(invoice.amountPaid, currency)}</dd></div>
             </dl>
             {/* Balance-due focal number */}
-            <div className="mt-3 flex items-end justify-between border-t pt-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Balance due</span>
+            <div className="mt-3 flex min-w-0 items-end justify-between gap-2 border-t pt-3">
+              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Balance due</span>
               <span
-                className={`text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
+                className={`break-words text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
                 data-testid="invoice-detail-balance"
               >
                 {formatMoney(invoice.balance, currency)}
@@ -466,7 +470,7 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                   />
                 </div>
                 <button
-                  type="button" onClick={() => void recordPayment()} disabled={busy || !payAmount}
+                  type="button" onClick={() => setPayConfirmOpen(true)} disabled={busy || !payAmount}
                   title={!payAmount ? 'Enter a payment amount to record it' : undefined}
                   aria-describedby={!payAmount ? 'invoice-payment-submit-hint' : undefined}
                   data-testid="invoice-payment-submit"
@@ -482,6 +486,19 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Record payment confirm dialog */}
+      <ConfirmDialog
+        open={payConfirmOpen}
+        onClose={() => setPayConfirmOpen(false)}
+        onConfirm={() => { setPayConfirmOpen(false); void recordPayment(); }}
+        isLoading={busy}
+        variant="warning"
+        title="Record payment"
+        message={`Record a ${formatMoney(Number(payAmount), currency)} payment (${PAYMENT_METHOD_LABELS[payMethod]}) dated ${payDate}?`}
+        confirmLabel="Record payment"
+        confirmTestId="invoice-payment-confirm"
+      />
 
       {/* Delete draft dialog */}
       <ConfirmDialog

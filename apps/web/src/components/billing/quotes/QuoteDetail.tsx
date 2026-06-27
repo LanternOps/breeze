@@ -6,6 +6,7 @@ import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { deleteQuote, quotePdfUrl, sendQuote } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import { RecurringBillingNote } from '../billingUi';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -148,8 +149,18 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
         {/* ── rendered blocks + lines ───────────────────────────────────── */}
         <div className="space-y-4">
           {sortedBlocks.length === 0 && looseLines.length === 0 ? (
-            <div className="rounded-lg border border-dashed bg-card p-8 text-center text-sm text-muted-foreground" data-testid="quote-detail-empty">
-              This quote has no content.
+            <div className="rounded-lg border border-dashed bg-card p-8 text-center" data-testid="quote-detail-empty">
+              <p className="text-sm text-muted-foreground">This quote has no content yet.</p>
+              {quote.status === 'draft' && can('quotes', 'write') && (
+                <button
+                  type="button"
+                  onClick={() => { if (typeof window !== 'undefined') window.location.hash = '#editor'; }}
+                  data-testid="quote-detail-empty-edit"
+                  className="mt-3 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                >
+                  Add content in the Editor
+                </button>
+              )}
             </div>
           ) : (
             sortedBlocks.map((block) => (
@@ -174,6 +185,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
               <span
                 className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[quote.status]}`}
                 data-testid="quote-detail-status"
+                aria-label={`Status: ${statusLabel(quote)}`}
               >
                 {statusLabel(quote)}
               </span>
@@ -201,9 +213,9 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
                 <div className="flex justify-between"><dt className="text-muted-foreground">Tax</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
               )}
             </dl>
-            <div className="mt-3 flex items-end justify-between border-t pt-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
-              <span className="text-2xl font-semibold tabular-nums" data-testid="quote-detail-due-on-acceptance">{formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}</span>
+            <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
+              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
+              <span className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums" data-testid="quote-detail-due-on-acceptance">{formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}</span>
             </div>
             {hasRecurring && (
               <>
@@ -211,9 +223,7 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
                   <span className="text-muted-foreground">First-period total (incl. recurring)</span>
                   <span className="font-medium" data-testid="quote-detail-first-period">{formatMoney(quote.total, currency)}</span>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Accepting this quote invoices only the one-time charges now. Recurring lines (monthly + annual) bill on their own schedule via the contract. The first-period total combines the one-time charges with the first period of each recurring cadence.
-                </p>
+                <RecurringBillingNote className="mt-2" />
               </>
             )}
           </div>

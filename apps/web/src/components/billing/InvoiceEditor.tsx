@@ -4,6 +4,8 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { UnsavedBadge } from './billingUi';
 import {
   type InvoiceDetail,
   type InvoiceLine,
@@ -32,6 +34,9 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   // an unambiguous in-flight label. Without it the disabled-but-still-"Issue"
   // button + still-"Draft" header during the POST reads as "done but stuck" (#1418).
   const [issuing, setIssuing] = useState(false);
+  // Issue-and-send emails the customer and can't be undone, so it goes through a
+  // confirm step (plain Issue stays direct — it's reversible via Void).
+  const [issueSendOpen, setIssueSendOpen] = useState(false);
   const [notes, setNotes] = useState(invoice.notes ?? '');
   const [notesDirty, setNotesDirty] = useState(false);
   const [terms, setTerms] = useState(invoice.termsAndConditions ?? '');
@@ -235,6 +240,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       refresh();
       setIssuing(false);
       setBusy(false);
+      setIssueSendOpen(false);
     }
   }, [busy, invoice.id, refresh]);
 
@@ -244,7 +250,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
     <div className="space-y-6" data-testid="invoice-editor">
       {unapprovedCount > 0 && (
         <div
-          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400"
+          className="rounded-md border border-warning/40 bg-warning/15 px-4 py-3 text-sm text-[hsl(36_92%_28%)] dark:text-warning"
           data-testid="invoice-unapproved-warning"
         >
           {unapprovedCount} line{unapprovedCount === 1 ? '' : 's'} reference unapproved time. Review before issuing.
@@ -398,7 +404,10 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-sm">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</h3>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</h3>
+              <UnsavedBadge show={notesDirty} />
+            </div>
             <textarea
               value={notes}
               onChange={(e) => { setNotes(e.target.value); setNotesDirty(true); }}
@@ -409,13 +418,16 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="invoice-notes"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${notesDirty ? 'ring-1 ring-warning' : ''}`}
               placeholder="Internal or customer notes…"
             />
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-sm">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <UnsavedBadge show={termsDirty} />
+            </div>
             <textarea
               value={terms}
               onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
@@ -423,7 +435,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="invoice-terms"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${termsDirty ? 'ring-1 ring-warning' : ''}`}
               placeholder="Payment terms, warranty clauses, etc."
             />
           </div>
@@ -443,7 +455,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             {can('invoices', 'send') && (
               <button
                 type="button"
-                onClick={() => void issue(true)}
+                onClick={() => setIssueSendOpen(true)}
                 disabled={busy || !hasVisibleLines}
                 data-testid="invoice-issue-send"
                 className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
@@ -459,6 +471,18 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={issueSendOpen}
+        onClose={() => setIssueSendOpen(false)}
+        onConfirm={() => void issue(true)}
+        isLoading={issuing}
+        variant="warning"
+        title="Issue and send this invoice?"
+        message={`This issues the invoice and emails it to ${invoice.billToName ?? 'the customer'} for ${formatMoney(invoice.total, currency)}. This can't be undone.`}
+        confirmLabel="Issue & Send"
+        confirmTestId="invoice-issue-send-confirm"
+      />
     </div>
   );
 }
@@ -531,7 +555,7 @@ function LineRow({
       </tr>
       {children.map((ch) => (
         <tr key={ch.id} className="border-t bg-muted/20 text-xs text-muted-foreground" data-testid={`invoice-line-child-${ch.id}`}>
-          <td className="px-3 py-1.5 pl-8">↳ {ch.description}{!ch.customerVisible ? ' (hidden)' : ''}</td>
+          <td className="px-3 py-1.5 pl-8"><span aria-hidden="true">↳ </span>{ch.description}{!ch.customerVisible ? ' (hidden)' : ''}</td>
           <td className="px-3 py-1.5 text-right">{ch.quantity}</td>
           <td className="px-3 py-1.5 text-right">{formatMoney(ch.unitPrice, currency)}</td>
           <td colSpan={4} />

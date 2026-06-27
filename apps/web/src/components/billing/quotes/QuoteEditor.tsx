@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
@@ -21,6 +21,7 @@ import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
 import DistributorLookup from './DistributorLookup';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import { UnsavedBadge, RecurringBillingNote } from '../billingUi';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -575,9 +576,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 </div>
               )}
             </dl>
-            <div className="mt-3 flex items-end justify-between border-t pt-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
-              <span className="text-2xl font-semibold tabular-nums" data-testid="quote-total-due-on-acceptance">
+            <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
+              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
+              <span className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums" data-testid="quote-total-due-on-acceptance">
                 {formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}
               </span>
             </div>
@@ -587,15 +588,16 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                   <span className="text-muted-foreground">First-period total (incl. recurring)</span>
                   <span className="font-medium" data-testid="quote-total-first-period">{formatMoney(quote.total, currency)}</span>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground" data-testid="quote-totals-recurring-hint">
-                  Accepting this quote invoices only the one-time charges now. Recurring lines (monthly + annual) bill on their own schedule via the contract. The first-period total combines the one-time charges with the first period of each recurring cadence.
-                </p>
+                <RecurringBillingNote className="mt-2" testId="quote-totals-recurring-hint" />
               </>
             )}
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-sm">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <UnsavedBadge show={termsDirty} />
+            </div>
             <textarea
               value={terms}
               onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
@@ -603,7 +605,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="quote-terms"
               rows={3}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${termsDirty ? 'ring-1 ring-warning' : ''}`}
               placeholder="Payment terms, warranty clauses, etc."
             />
           </div>
@@ -676,8 +678,20 @@ function BlockCard({
   // changes (e.g. after a refresh) so server normalization wins.
   const [headingDraft, setHeadingDraft] = useState(heading);
   const [richDraft, setRichDraft] = useState(html);
-  useEffect(() => { setHeadingDraft(heading); }, [heading]);
-  useEffect(() => { setRichDraft(html); }, [html]);
+  // Resync drafts from the server only when the user hasn't diverged from what we
+  // last showed. A quiet reload (fired by an unrelated inline edit elsewhere) must
+  // not clobber heading/rich text this user is mid-edit in: if the local draft no
+  // longer matches the prop we last synced, the user has typed — keep their text.
+  const lastHeading = useRef(heading);
+  const lastHtml = useRef(html);
+  useEffect(() => {
+    setHeadingDraft((cur) => (cur === lastHeading.current ? heading : cur));
+    lastHeading.current = heading;
+  }, [heading]);
+  useEffect(() => {
+    setRichDraft((cur) => (cur === lastHtml.current ? html : cur));
+    lastHtml.current = html;
+  }, [html]);
 
   const commitHeading = () => {
     const text = headingDraft.trim();
@@ -1016,7 +1030,7 @@ function EditableLineRow({
           <option value="monthly">Monthly</option>
           <option value="annual">Annual</option>
         </select>
-        <label className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+        <label className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
           <input
             type="checkbox"
             checked={line.taxable}

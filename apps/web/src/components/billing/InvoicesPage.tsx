@@ -302,7 +302,7 @@ export function InvoicesPage() {
       ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
       : `Sort by ${label}`;
     return (
-      <th className="px-3 py-3 text-right font-medium">
+      <th className="px-3 py-3 text-right font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
         <button
           type="button"
           onClick={() => toggleSort(sortKey)}
@@ -366,11 +366,11 @@ export function InvoicesPage() {
             <button
               type="button"
               onClick={() => applyFilter({ status: 'overdue' })}
-              className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-left transition hover:bg-red-500/10"
+              className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-left transition hover:bg-destructive/10"
               data-testid="invoices-overdue-card"
             >
-              <div className="text-xs text-red-700 dark:text-red-400">Overdue</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums text-red-700 dark:text-red-400">{summary.overdue}</div>
+              <div className="text-xs text-destructive">Overdue</div>
+              <div className="mt-0.5 text-lg font-semibold tabular-nums text-destructive">{summary.overdue}</div>
               <div className="text-xs text-muted-foreground">needs follow-up</div>
             </button>
           )}
@@ -521,7 +521,7 @@ export function InvoicesPage() {
                         </td>
                         <td className="px-3 py-3 font-medium">
                           <span className="flex items-center gap-2">
-                            <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-red-500' : 'bg-transparent'}`} aria-hidden="true" />
+                            <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-destructive' : 'bg-transparent'}`} aria-hidden="true" />
                             {inv.invoiceNumber ?? (
                               <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                                 Draft
@@ -531,7 +531,7 @@ export function InvoicesPage() {
                         </td>
                         <td className="px-3 py-3">{orgName(inv.orgId)}</td>
                         <td className="px-3 py-3 text-muted-foreground">{formatDate(inv.issueDate)}</td>
-                        <td className={`px-3 py-3 ${overdue ? 'font-medium text-red-700 dark:text-red-400' : 'text-muted-foreground'}`}>
+                        <td className={`px-3 py-3 ${overdue ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
                           {formatDate(inv.dueDate)}
                         </td>
                         <td className="px-3 py-3 text-right tabular-nums">{formatMoney(inv.total, inv.currencyCode)}</td>
@@ -542,6 +542,7 @@ export function InvoicesPage() {
                           <span
                             className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
                             data-testid={`invoices-status-${inv.id}`}
+                            aria-label={`Status: ${statusLabel(inv)}`}
                           >
                             {statusLabel(inv)}
                           </span>
@@ -741,7 +742,7 @@ function SortHeaderLeft({
     ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
     : `Sort by ${label}`;
   return (
-    <th className="px-3 py-3 font-medium">
+    <th className="px-3 py-3 font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
       <button
         type="button"
         onClick={() => onSort(sortKey)}
