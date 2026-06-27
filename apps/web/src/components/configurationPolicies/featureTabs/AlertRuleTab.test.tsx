@@ -174,6 +174,31 @@ describe('AlertRuleTab (issue #1857)', () => {
     expect(condition[0]).toMatchObject({ type: 'offline', durationMinutes: 20 });
   });
 
+  it('clamps an offline duration above the 24h re-eval horizon to 1440 (issue #1982)', async () => {
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    addFirstRule();
+
+    const typeSelect = controlForLabel('Type') as HTMLSelectElement;
+    fireEvent.change(typeSelect, { target: { value: 'offline' } });
+
+    const durationInput = controlForLabel('Offline Duration (min)') as HTMLInputElement;
+    fireEvent.change(durationInput, { target: { value: '10080' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const condition = lastSavedItems()[0]!.conditions as Array<Record<string, unknown>>;
+    expect(condition[0]).toMatchObject({ type: 'offline', durationMinutes: 1440 });
+  });
+
   it('offers "Device Offline" (not the legacy "Status") in the condition type dropdown', () => {
     render(
       <AlertRuleTab

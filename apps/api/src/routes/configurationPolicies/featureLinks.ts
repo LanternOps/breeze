@@ -6,6 +6,7 @@ import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/s
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { findOfflineDurationViolation } from '../../services/alertConditions/offlineDuration';
 import {
   getConfigPolicy,
   addFeatureLink,
@@ -144,6 +145,13 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    // Reject offline alert rules whose duration exceeds the re-eval horizon —
+    // such a rule could never fire (issue #1982).
+    if (data.featureType === 'alert_rule' && data.inlineSettings) {
+      const violation = findOfflineDurationViolation(data.inlineSettings);
+      if (violation) return c.json({ error: violation }, 400);
+    }
+
     try {
       const link = await addFeatureLink(
         id,
@@ -251,6 +259,12 @@ featureLinkRoutes.patch(
           );
         }
         data.inlineSettings = parsed.data;
+      }
+      // Reject offline alert rules whose duration exceeds the re-eval horizon —
+      // such a rule could never fire (issue #1982).
+      if (existingLink.featureType === 'alert_rule') {
+        const violation = findOfflineDurationViolation(data.inlineSettings);
+        if (violation) return c.json({ error: violation }, 400);
       }
     }
 

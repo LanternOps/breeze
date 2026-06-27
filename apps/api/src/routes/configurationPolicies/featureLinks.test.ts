@@ -316,4 +316,65 @@ describe('featureLinks routes', () => {
       expect(addFeatureLinkMock).toHaveBeenCalled();
     });
   });
+
+  // ============================================================
+  // alert_rule offline-duration cap vs the re-eval horizon (issue #1982)
+  // ============================================================
+
+  describe('alert_rule offline-duration validation (issue #1982)', () => {
+    beforeEach(() => {
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'alert_rule' });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'alert_rule' });
+    });
+
+    it('POST rejects an offline rule whose duration exceeds the horizon → 400', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'alert_rule',
+          inlineSettings: { items: [{ name: 'Weekly offline', conditions: { type: 'offline', durationMinutes: 10080 } }] },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(String(body.error)).toContain('1440');
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST accepts an offline rule within the horizon → 201', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'alert_rule',
+          inlineSettings: { items: [{ name: 'Offline 1h', conditions: { type: 'offline', durationMinutes: 60 } }] },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('PATCH rejects updating an alert_rule link to an oversized offline duration → 400', async () => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }],
+      });
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inlineSettings: { items: [{ name: 'Too long', conditions: { type: 'offline', durationMinutes: 4320 } }] },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+  });
 });

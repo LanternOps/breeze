@@ -13,6 +13,7 @@ import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { createAlert, evaluateDeviceAlertsFromPolicy } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
+import { resolveReevalHorizonMinutes } from '../services/alertConditions/offlineDuration';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -34,9 +35,18 @@ const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 5;
 
 // Re-evaluation sweep (issue #1982): how far back a device may have last been
 // seen and still be re-evaluated for longer-duration offline rules. Bounds the
-// per-run cost — a device offline longer than this has already had every
-// offline rule up to this horizon fire (dedup prevents re-firing). Default 24h.
-const DEFAULT_REEVAL_HORIZON_MINUTES = 1440;
+// per-run cost: a device offline longer than the horizon is dropped from the
+// sweep, so an offline rule whose duration exceeds the horizon would never fire.
+// Config-time validation caps offline-rule durations at this same horizon (see
+// services/alertConditions/offlineDuration.ts), so an unsatisfiable rule can't
+// be saved. The horizon (default 24h) is resolved from the shared helper so the
+// cap and the sweep always agree.
+
+// Extra slack added to the selection window so a rule whose duration equals the
+// horizon still fires before the device ages out of the sweep (the firing
+// instant is at lastSeenAt + duration; without slack the device would leave the
+// candidate set at that same instant).
+const REEVAL_HORIZON_GRACE_MINUTES = 5;
 
 // How often the re-evaluation sweep runs. A longer-duration rule fires within
 // roughly this interval of its configured duration. Default 60s.
@@ -296,9 +306,12 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
  * so the caller can still run the legacy standalone-rule path before surfacing
  * the failure. The `42P01` "tables not migrated yet" case is treated as a
  * benign warn-once-and-skip (matching alertWorker); any other error is a fatal
- * error the caller MUST re-throw so the BullMQ job fails and retries — silently
- * swallowing it would re-open the exact "offline alerts never fire" symptom of
- * issue #1857 with no retry and no failed-job signal.
+ * error the caller MUST re-throw so the BullMQ job is marked failed (logged +
+ * sent to Sentry via attachWorkerObservability). These jobs aren't configured
+ * with `attempts`, so the failed job is not retried in place — recovery comes
+ * from the next periodic detection/re-eval sweep re-queuing the still-offline
+ * device. Silently swallowing the error would instead re-open the exact
+ * "offline alerts never fire" symptom of issue #1857 with no failed-job signal.
  *
  * @returns `created` (true if ≥1 config-policy alert was created) and, on an
  *   unexpected error, `fatalError` for the caller to re-throw.
@@ -478,9 +491,10 @@ function hasOfflineCondition(conditions: unknown): boolean {
  * dedups + cools down, so repeated re-evaluation never double-fires.
  *
  * Skips the (cheap) work if the device reconnected since the sweep queued it.
- * Re-throws unexpected errors so BullMQ fails + retries the job; the benign
- * "tables not migrated yet" (42P01) case is swallowed inside
- * triggerConfigPolicyOfflineAlerts.
+ * Re-throws unexpected errors so the BullMQ job is marked failed (logged + sent
+ * to Sentry); these jobs have no `attempts`, so recovery is the next periodic
+ * sweep re-queuing the device, not an in-place retry. The benign "tables not
+ * migrated yet" (42P01) case is swallowed inside triggerConfigPolicyOfflineAlerts.
  */
 export async function processReevaluateOffline(data: ReevaluateOfflineJobData): Promise<{
   deviceId: string;
@@ -528,11 +542,10 @@ export async function processReevaluateOfflineSweep(): Promise<{
     return { queued: 0, durationMs: Date.now() - startTime };
   }
 
-  const horizonMinutes = Math.max(
-    1,
-    Number(process.env.OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES ?? String(DEFAULT_REEVAL_HORIZON_MINUTES))
-  );
-  const horizonTime = new Date(Date.now() - horizonMinutes * 60 * 1000);
+  // Select devices last seen within the horizon (+ a small grace so a rule whose
+  // duration equals the horizon still fires before the device ages out).
+  const selectionMinutes = resolveReevalHorizonMinutes() + REEVAL_HORIZON_GRACE_MINUTES;
+  const horizonTime = new Date(Date.now() - selectionMinutes * 60 * 1000);
 
   // Env tunables — same shape as the detect sweep. cap=0 means unlimited per run.
   const cap = Number(process.env.OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN ?? '5000');
@@ -592,7 +605,7 @@ export async function processReevaluateOfflineSweep(): Promise<{
 /**
  * Schedule repeatable offline detection jobs
  */
-async function scheduleOfflineJobs(): Promise<void> {
+export async function scheduleOfflineJobs(): Promise<void> {
   const queue = getOfflineQueue();
 
   // Remove any existing repeatable jobs first

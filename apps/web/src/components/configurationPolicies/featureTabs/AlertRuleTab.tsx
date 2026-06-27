@@ -72,6 +72,13 @@ const conditionTypeOptions = [
   { value: 'custom', label: 'Custom' },
 ];
 
+// Offline rules are re-evaluated by a background sweep bounded to a 24h horizon,
+// so a rule with a longer duration would never fire — the device ages out of the
+// sweep first. The API rejects durations above this cap (issue #1982); mirror it
+// here so the field can't be set out of range. Matches the default
+// OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES on the API.
+const OFFLINE_DURATION_MAX_MINUTES = 1440;
+
 // Migrate a single condition from the legacy `{type:'status', duration}` shape
 // to the canonical `{type:'offline', durationMinutes}` shape the evaluator reads.
 // Legacy persisted shape, before the `status`→`offline` / `duration`→`durationMinutes` rename.
@@ -399,10 +406,19 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                                   <input
                                     type="number"
                                     min={1}
+                                    max={OFFLINE_DURATION_MAX_MINUTES}
                                     value={condition.durationMinutes ?? 5}
-                                    onChange={(e) => updateCondition(index, ci, { durationMinutes: Number(e.target.value) })}
+                                    onChange={(e) => updateCondition(index, ci, {
+                                      durationMinutes: Math.min(
+                                        OFFLINE_DURATION_MAX_MINUTES,
+                                        Math.max(1, Number(e.target.value)),
+                                      ),
+                                    })}
                                     className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                   />
+                                  <p className="mt-1 text-[11px] text-muted-foreground">
+                                    Max {OFFLINE_DURATION_MAX_MINUTES} min (24h re-evaluation horizon)
+                                  </p>
                                 </div>
                               )}
 

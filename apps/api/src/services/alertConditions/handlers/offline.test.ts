@@ -59,6 +59,18 @@ describe('offlineHandler', () => {
     expect(result.description).toBe('Device offline for 60min');
   });
 
+  it('does NOT fire at the exact duration boundary (strict less-than, no off-by-one)', async () => {
+    // lastSeenAt is exactly `durationMinutes` (15) old. "Offline FOR 15 min"
+    // means strictly older than 15 min, so the boundary instant must not fire.
+    getDeviceMock.mockResolvedValue(
+      makeDevice({ status: 'offline', lastSeenAt: new Date('2026-06-24T11:45:00.000Z') })
+    );
+
+    const result = await offlineHandler.evaluate({ type: 'offline', durationMinutes: 15 }, DEVICE_ID);
+
+    expect(result.passed).toBe(false);
+  });
+
   it('does NOT pass when lastSeenAt is null (no heartbeat baseline to measure duration)', async () => {
     // A device that never reported a heartbeat has no offline-duration baseline,
     // so we can't assert it's been offline for N minutes — don't fire.
@@ -180,6 +192,20 @@ describe('offlineHandler', () => {
     it('rejects a non-numeric legacy duration', () => {
       const errors = offlineHandler.validate({ type: 'status', duration: 'soon' }, 'cond');
       expect(errors).toContain('cond.duration: Must be a number');
+    });
+
+    it('rejects a duration beyond the re-eval horizon (issue #1982)', () => {
+      const errors = offlineHandler.validate({ type: 'offline', durationMinutes: 10080 }, 'cond');
+      expect(errors).toContain('cond.durationMinutes: Must be at most 1440 (the offline re-evaluation horizon)');
+    });
+
+    it('accepts a duration exactly at the horizon', () => {
+      expect(offlineHandler.validate({ type: 'offline', durationMinutes: 1440 }, 'cond')).toEqual([]);
+    });
+
+    it('rejects an oversized legacy duration too', () => {
+      const errors = offlineHandler.validate({ type: 'status', duration: 5000 }, 'cond');
+      expect(errors).toContain('cond.durationMinutes: Must be at most 1440 (the offline re-evaluation horizon)');
     });
   });
 });

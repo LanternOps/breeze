@@ -9,9 +9,11 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 // fixed to honor its own duration. This sweep re-evaluates still-offline
 // devices so those longer-duration rules fire when their duration elapses.
 
-const { evaluateFromPolicyMock, addBulkMock, deviceRowsState, fleetState, warnSpy } = vi.hoisted(() => ({
+const { evaluateFromPolicyMock, addBulkMock, addMock, getRepeatableJobsMock, deviceRowsState, fleetState, warnSpy } = vi.hoisted(() => ({
   evaluateFromPolicyMock: vi.fn(),
   addBulkMock: vi.fn(async () => undefined),
+  addMock: vi.fn(async () => undefined),
+  getRepeatableJobsMock: vi.fn(async () => [] as { key: string }[]),
   deviceRowsState: { rows: [] as Record<string, unknown>[] },
   fleetState: { fleet: [] as { id: string; orgId: string }[], chunkCalls: 0 },
   warnSpy: vi.fn(),
@@ -62,9 +64,9 @@ vi.mock('../db', () => ({
 vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = addBulkMock;
-    add = vi.fn();
+    add = addMock;
     getJob = vi.fn();
-    getRepeatableJobs = vi.fn(async () => []);
+    getRepeatableJobs = getRepeatableJobsMock;
     removeRepeatableByKey = vi.fn();
     close = vi.fn();
   },
@@ -92,7 +94,7 @@ vi.mock('../services/alertConditions', () => ({ interpolateTemplate: vi.fn() }))
 
 vi.mock('../services/bullmqUtils', () => ({ isReusableState: vi.fn(() => false) }));
 
-import { processReevaluateOffline, processReevaluateOfflineSweep } from './offlineDetector';
+import { processReevaluateOffline, processReevaluateOfflineSweep, scheduleOfflineJobs } from './offlineDetector';
 
 const buildFleet = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: `device-${String(i).padStart(6, '0')}`, orgId: 'org-1' }));
@@ -100,6 +102,8 @@ const buildFleet = (n: number) =>
 beforeEach(() => {
   evaluateFromPolicyMock.mockReset();
   addBulkMock.mockClear();
+  addMock.mockClear();
+  getRepeatableJobsMock.mockClear();
   warnSpy.mockClear();
   deviceRowsState.rows = [];
   fleetState.fleet = [];
@@ -110,6 +114,7 @@ beforeEach(() => {
   delete process.env.OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN;
   delete process.env.OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE;
   delete process.env.OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES;
+  delete process.env.OFFLINE_DETECTOR_REEVAL_INTERVAL_MS;
 });
 
 afterEach(() => {
@@ -228,5 +233,38 @@ describe('processReevaluateOfflineSweep — fan-out (issue #1982)', () => {
 
     expect(result.queued).toBe(0);
     expect(addBulkMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduleOfflineJobs — sweep wiring (issue #1982)', () => {
+  const sweepAdds = () =>
+    addMock.mock.calls.filter((c) => (c as unknown[])[0] === 'reevaluate-offline-sweep');
+
+  it('schedules the repeatable reevaluate-offline-sweep at the default 60s interval', async () => {
+    await scheduleOfflineJobs();
+
+    const calls = sweepAdds();
+    expect(calls).toHaveLength(1);
+    const opts = (calls[0] as unknown[])[2] as { repeat: { every: number } };
+    expect(opts.repeat.every).toBe(60_000);
+  });
+
+  it('does NOT schedule the sweep when re-evaluation is disabled via env', async () => {
+    process.env.OFFLINE_DETECTOR_REEVAL_ENABLED = 'false';
+
+    await scheduleOfflineJobs();
+
+    expect(sweepAdds()).toHaveLength(0);
+    // detect-offline is still scheduled — only the re-eval sweep is gated off.
+    expect(addMock.mock.calls.some((c) => (c as unknown[])[0] === 'detect-offline')).toBe(true);
+  });
+
+  it('honors the 5s floor on OFFLINE_DETECTOR_REEVAL_INTERVAL_MS', async () => {
+    process.env.OFFLINE_DETECTOR_REEVAL_INTERVAL_MS = '1000';
+
+    await scheduleOfflineJobs();
+
+    const opts = (sweepAdds()[0] as unknown[])[2] as { repeat: { every: number } };
+    expect(opts.repeat.every).toBe(5_000);
   });
 });

@@ -1,6 +1,7 @@
 import type { ConditionHandler } from '../registry';
 import type { ConditionResult } from '../types';
 import { getDevice } from '../utils';
+import { resolveReevalHorizonMinutes } from '../offlineDuration';
 
 /**
  * Read the offline duration (in minutes) from a condition, tolerating both the
@@ -57,6 +58,16 @@ export const offlineHandler: ConditionHandler = {
     // Legacy `status`-alias rows use `duration` instead of `durationMinutes`.
     if (c.duration !== undefined && typeof c.duration !== 'number') {
       errors.push(`${path}.duration: Must be a number`);
+    }
+
+    // Cap the duration at the re-eval horizon — a longer rule would never fire
+    // because the device ages out of the re-evaluation sweep first (issue #1982).
+    const max = resolveReevalHorizonMinutes();
+    const configured = typeof c.durationMinutes === 'number' ? c.durationMinutes
+      : typeof c.duration === 'number' ? c.duration
+      : undefined;
+    if (typeof configured === 'number' && configured > max) {
+      errors.push(`${path}.durationMinutes: Must be at most ${max} (the offline re-evaluation horizon)`);
     }
 
     return errors;
