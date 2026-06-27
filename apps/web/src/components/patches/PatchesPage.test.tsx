@@ -378,6 +378,32 @@ describe('PatchesPage', () => {
     expect(window.location.search).toBe('');
   });
 
+  it('falls back to the Compliance tab when the URL hash is not a valid tab', async () => {
+    // A malformed / unknown hash (stale bookmark, hand-edited URL) must resolve
+    // to the default Compliance tab rather than rendering a blank/none tab.
+    jwtScope.scope = 'partner';
+    orgState.currentOrgId = 'org-1';
+    window.history.replaceState({}, '', '/#bogus');
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return makeJsonResponse({ data: [] });
+      if (url === '/patches?limit=200') return makeJsonResponse({ data: [] });
+      if (url === '/patches/compliance') return makeJsonResponse({ data: { totalDevices: 0, compliantDevices: 0, devicesNeedingPatches: [] } });
+      if (url === '/devices?limit=200') return makeJsonResponse({ devices: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+
+    // The Compliance tab content (PatchComplianceView fetches /patches/compliance) renders.
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/patches/compliance');
+    });
+    // The Compliance nav tab carries the active styling (it is the first match).
+    const [complianceTab] = screen.getAllByRole('button', { name: /Compliance/i });
+    expect(complianceTab).toHaveClass('border-primary');
+  });
+
   it('org scope: hides the Update Rings tab and disables New Ring with partner-level hint', async () => {
     // Org-scoped users don't manage rings — they should not see the tab at all.
     jwtScope.scope = 'organization';

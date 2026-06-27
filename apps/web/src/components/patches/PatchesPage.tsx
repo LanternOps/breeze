@@ -64,8 +64,11 @@ export default function PatchesPage() {
     setTabInHash(tab);
   }, []);
 
-  // Guard against hash changes after mount that could re-introduce rings
-  // for an org-scoped user (e.g. back-navigation replaying the URL).
+  // Defense-in-depth: if activeTab ever resolves to rings while the user can't
+  // manage rings (e.g. scope/permissions become known after the initial render),
+  // downgrade to compliance so the rings body is never shown without access. The
+  // hash is read only on mount (no hashchange listener), so this re-check is for
+  // permission state arriving late, not for post-mount URL edits.
   useEffect(() => {
     if (activeTab === 'rings' && !canManageRings) {
       setActiveTab('compliance');
