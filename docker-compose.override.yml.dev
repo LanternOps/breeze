@@ -94,7 +94,6 @@ services:
       - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
       - ./apps/web/astro.config.mjs:/app/apps/web/astro.config.mjs:ro
       - ./apps/web/tailwind.config.mjs:/app/apps/web/tailwind.config.mjs:ro
-      - ./apps/web/postcss.config.mjs:/app/apps/web/postcss.config.mjs:ro
       - ./packages/shared/package.json:/app/packages/shared/package.json:ro
       - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       # Exclude node_modules (use container's)
