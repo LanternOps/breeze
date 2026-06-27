@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, type DragEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import type { Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
@@ -62,6 +62,10 @@ export default function OrganizationsPage() {
   // Partner's configured timezone, used to pre-select the timezone for new sites
   // instead of falling back to UTC. Undefined until loaded / if unavailable.
   const [partnerTimezone, setPartnerTimezone] = useState<string>();
+  // When org creation has already fetched sites synchronously for a freshly
+  // created org, record its id here so the selectedOrg effect skips the
+  // redundant duplicate GET it would otherwise fire (#1978 follow-up).
+  const skipSiteFetchForOrgId = useRef<string | null>(null);
 
   const filteredOrgs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -111,16 +115,35 @@ export default function OrganizationsPage() {
     }
   }, [fetchOrganizations]);
 
-  const fetchSites = useCallback(async (orgId: string) => {
+  // Returns the fetched site list, or null when we couldn't determine the real
+  // count. The null signal lets callers distinguish "confirmed zero sites" from
+  // "couldn't tell" — important for the first-site nudge, which must not fire on
+  // a guess (a transient failure, or an org that DOES have sites, would
+  // otherwise re-introduce the misleading nag of #1978). We fail closed (null)
+  // on BOTH a failed request AND a malformed HTTP-200 body (e.g. {}, {data:null},
+  // or any non-array payload): a 200 whose body isn't a parseable array of sites
+  // tells us nothing about the count, so it must not be read as "zero sites".
+  // Only a genuine empty array returns [] (legitimately zero → show the nag).
+  const fetchSites = useCallback(async (orgId: string): Promise<Site[] | null> => {
     setSitesLoading(true);
     try {
       const response = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-      if (!response.ok) throw new Error('Failed to fetch sites');
+      if (!response.ok) throw new Error(`Failed to fetch sites (status ${response.status})`);
       const data = await response.json();
-      const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : null;
+      if (siteList === null) {
+        // 200 OK but the body isn't a parseable array of sites — fail closed so
+        // callers suppress the nag rather than treat this as confirmed zero.
+        setSites([]);
+        console.warn('[OrganizationsPage] sites response was ok but not a parseable array for org', orgId, data);
+        return null;
+      }
       setSites(siteList);
-    } catch {
+      return siteList;
+    } catch (err) {
       setSites([]);
+      console.warn('[OrganizationsPage] failed to fetch sites for org', orgId, err);
+      return null;
     } finally {
       setSitesLoading(false);
     }
@@ -160,6 +183,12 @@ export default function OrganizationsPage() {
 
   useEffect(() => {
     if (selectedOrg) {
+      // Skip the fetch if org creation already fetched sites for this org
+      // synchronously — avoids a redundant concurrent GET per create.
+      if (skipSiteFetchForOrgId.current === selectedOrg.id) {
+        skipSiteFetchForOrgId.current = null;
+        return;
+      }
       fetchSites(selectedOrg.id);
     } else {
       setSites([]);
@@ -267,7 +296,13 @@ export default function OrganizationsPage() {
       await refreshOrgs();
       handleCloseModal();
 
-      // Guide the user straight into adding their first site for the new org.
+      // Select the new org. Only nudge the user into the "add the first site"
+      // flow when we positively confirm the org has zero sites — a default site
+      // may already exist (e.g. the partner's bootstrap org ships with one), in
+      // which case the first-site nag would be misleading. We need the count
+      // synchronously to make this decision, so call fetchSites directly rather
+      // than rely on the selectedOrg effect's fire-and-forget refresh. On a
+      // fetch failure (null) we skip the nag rather than guess.
       if (createdOrg?.id) {
         const newOrg: Organization = {
           id: createdOrg.id,
@@ -276,11 +311,18 @@ export default function OrganizationsPage() {
           deviceCount: 0,
           createdAt: new Date().toISOString()
         };
+        // We fetch sites synchronously just below, so tell the selectedOrg
+        // effect to skip the duplicate GET it would otherwise fire for this org.
+        skipSiteFetchForOrgId.current = createdOrg.id;
         setSelectedOrg(newOrg);
         window.location.hash = createdOrg.id;
-        setSelectedSite(null);
-        setGuidingFirstSite(true);
-        setSiteModalMode('add');
+
+        const existingSites = await fetchSites(createdOrg.id);
+        if (existingSites?.length === 0) {
+          setSelectedSite(null);
+          setGuidingFirstSite(true);
+          setSiteModalMode('add');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
