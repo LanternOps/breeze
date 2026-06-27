@@ -17,12 +17,13 @@
  *
  * Timezone note: the org `maintenanceWindow` is a string with no timezone
  * component (e.g. "Sun 02:00-04:00"), so it is evaluated against UTC server
- * time. As of issue #1963 both write paths reject malformed values at save time
- * — the org route (PATCH /organizations/:id) and the partner route
- * (PATCH /partners/me) — so new writes only ever produce a valid window or the
- * always state. Any legacy malformed value still fails open (no restriction)
- * rather than permanently blocking, and is logged once when ignored (see
- * getOrgAgentUpdatePolicy) so the lifted restriction is observable.
+ * time. This gate reads ORG settings only (getOrgAgentUpdatePolicy), so the
+ * gate-relevant write path is PATCH /organizations/:id — validated at save time
+ * as of issue #1963. (The partner route PATCH /partners/me validates the same
+ * field too, but only for UX parity; partner settings never reach this gate.)
+ * Any legacy malformed value still fails open (no restriction) rather than
+ * permanently blocking, and is logged the first time it is ignored per org (per
+ * process; see getOrgAgentUpdatePolicy) so the lifted restriction is observable.
  *
  * This module is pure and side-effect free so it can be unit tested without a
  * database. The DB read lives in `getOrgAgentUpdatePolicy` (helpers.ts).

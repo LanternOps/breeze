@@ -1995,6 +1995,16 @@ export function generateApiKey(): string {
 // mTLS
 // ============================================
 
+// Per-process dedup for the malformed-maintenance-window warning. The read
+// below runs on the heartbeat hot path; without this, a single misconfigured
+// org would emit one warn per device per heartbeat. Cleared by tests.
+const warnedMalformedWindowOrgs = new Set<string>();
+
+/** Test-only: reset the malformed-window warn dedup so cases stay isolated. */
+export function __resetMalformedWindowWarnCache(): void {
+  warnedMalformedWindowOrgs.clear();
+}
+
 /**
  * Read the org-level agent update policy from `organizations.settings.defaults`
  * (Org > General). Returns a normalized policy plus the raw maintenance-window
@@ -2017,9 +2027,16 @@ export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdat
   const maintenanceWindow = rawWindow && !isAlwaysMaintenanceWindow(rawWindow) ? rawWindow : null;
   // New writes are validated at save time (issue #1963), but a legacy malformed
   // value still parses to null in the gate and fails open (lifts the time
-  // restriction). Log it once here so that silently-lifted restriction is
-  // observable rather than an invisible 24/7-updates surprise.
-  if (maintenanceWindow !== null && parseMaintenanceWindow(maintenanceWindow) === null) {
+  // restriction). Surface that so the silently-lifted restriction is observable
+  // rather than an invisible 24/7-updates surprise. This runs on the heartbeat
+  // hot path (once per device per heartbeat), so dedupe per org for the process
+  // lifetime — otherwise one misconfigured org spams the log every heartbeat.
+  if (
+    maintenanceWindow !== null &&
+    parseMaintenanceWindow(maintenanceWindow) === null &&
+    !warnedMalformedWindowOrgs.has(orgId)
+  ) {
+    warnedMalformedWindowOrgs.add(orgId);
     console.warn(
       `[agents/helpers] Ignoring malformed maintenance window for org ${orgId}; ` +
       `agent updates are NOT time-restricted (failing open). value=${JSON.stringify(maintenanceWindow)}`,

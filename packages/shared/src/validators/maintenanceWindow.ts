@@ -22,6 +22,10 @@
 /** Canonical sentinel persisted for the "update anytime" / no-window state. */
 export const MAINTENANCE_WINDOW_ALWAYS = '24/7';
 
+/** Single source of the rejection message shared by every save path + the UI. */
+export const MAINTENANCE_WINDOW_ERROR_MESSAGE =
+  'Maintenance window must be "24/7" or a UTC window like "Sun 02:00-04:00".';
+
 /** Display labels indexed by UTC day-of-week (0 = Sunday). */
 export const MAINTENANCE_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 

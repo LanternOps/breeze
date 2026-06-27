@@ -20,7 +20,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@breeze/shared';
 import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
@@ -299,11 +299,6 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
-// Shared rejection message for a malformed agent-update maintenance window
-// (issue #1963), used on both the partner (/partners/me, via schema refine) and
-// org (/organizations/:id, via explicit handler check) write paths.
-const MAINTENANCE_WINDOW_ERROR_MESSAGE =
-  'Maintenance window must be "24/7" or a UTC window like "Sun 02:00-04:00".';
 
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
@@ -381,9 +376,12 @@ const partnerSettingsSchema = z.object({
       sendWelcome: z.boolean(),
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
-    // Reject malformed windows at save time (issue #1963) so the heartbeat gate
-    // never silently fails open on a typo. Accepts the "24/7"/empty always-state
-    // or a "[Day ]HH:MM-HH:MM" window; see isValidMaintenanceWindow.
+    // Reject malformed windows on the partner (/partners/me) write path at save
+    // time (issue #1963), for consistency with the org route. NOTE: the agent
+    // heartbeat gate reads ORG settings (see updateOrgHandler /
+    // getOrgAgentUpdatePolicy), so this partner-level check is UX parity — the
+    // org-route check is what actually protects the gate. Accepts the
+    // "24/7"/empty always-state or a "[Day ]HH:MM-HH:MM" window.
     maintenanceWindow: z.string().max(64).optional().refine(
       (v) => v === undefined || isValidMaintenanceWindow(v),
       { message: MAINTENANCE_WINDOW_ERROR_MESSAGE },

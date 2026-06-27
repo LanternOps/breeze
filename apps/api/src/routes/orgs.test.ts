@@ -1315,6 +1315,34 @@ describe('org routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    // Guards the accept branch of the same guard: a valid window must NOT be
+    // rejected (catches a future inversion of the condition). db.select is
+    // overridden so assertNotLocked('defaults', ...) resolves with no locks.
+    it('accepts a valid agent-update maintenance window (200)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ partnerId: 'partner-123', settings: {} }])
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { maintenanceWindow: 'Sun 02:00-04:00' } } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
     it('should allow system scope updates without partnerId context', async () => {
       setAuthContext({ scope: 'system', partnerId: null });
       vi.mocked(db.update).mockReturnValue({

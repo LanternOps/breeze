@@ -77,20 +77,28 @@ describe('OrgDefaultsEditor — maintenance window', () => {
     expect(screen.getByTestId('maintenance-mode-always')).toBeChecked();
   });
 
-  it('warns when the stored window is invalid and marks the form dirty so the fix persists', () => {
+  it('resets an invalid stored window to the always-state, warns, and marks dirty so the fix persists', async () => {
+    const user = userEvent.setup();
     const onDirty = vi.fn();
+    const onSave = vi.fn();
     render(
       <OrgDefaultsEditor
         organizationName={ORG}
         defaults={{ maintenanceWindow: '0000-2359' }}
         onDirty={onDirty}
+        onSave={onSave}
       />,
     );
-    // The malformed value was reset to an editable window; the operator is told.
+    // The malformed value failed open at runtime (update anytime), so the editor
+    // resets it to the always-state — a careless Save preserves that, not a
+    // surprise restrictive window. The operator is told it was ignored.
     expect(screen.getByTestId('maintenance-stored-invalid')).toBeInTheDocument();
-    expect(screen.getByTestId('maintenance-mode-window')).toBeChecked();
-    // Marked dirty on mount so saving actually overwrites the invalid stored value.
+    expect(screen.getByTestId('maintenance-mode-always')).toBeChecked();
+    // Marked dirty on mount so saving overwrites the invalid stored value.
     expect(onDirty).toHaveBeenCalled();
+    // Saving persists the durable always sentinel, replacing the bad value.
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0].maintenanceWindow).toBe('24/7');
   });
 
   it('does not show the invalid-stored notice for a clean window', () => {

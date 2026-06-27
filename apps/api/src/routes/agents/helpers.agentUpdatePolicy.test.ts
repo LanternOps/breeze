@@ -110,13 +110,14 @@ vi.mock('./policyProbeSafety', () => ({ isAllowedPolicyConfigProbe: vi.fn(() => 
 // ---------------------------------------------------------------------------
 // Import under test — AFTER all mocks are installed.
 // ---------------------------------------------------------------------------
-import { getOrgAgentUpdatePolicy } from './helpers';
+import { getOrgAgentUpdatePolicy, __resetMalformedWindowWarnCache } from './helpers';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000001';
 
 describe('getOrgAgentUpdatePolicy', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetMalformedWindowWarnCache();
   });
 
   it('reads a fully configured policy + maintenance window', async () => {
@@ -154,15 +155,18 @@ describe('getOrgAgentUpdatePolicy', () => {
     });
   });
 
-  it('keeps a legacy malformed window but logs that the time restriction is lifted', async () => {
+  it('keeps a legacy malformed window but logs once per org that the restriction is lifted', async () => {
     // New writes are validated (issue #1963); a legacy malformed value still
     // fails open in the gate, but getOrgAgentUpdatePolicy must log it so the
-    // silently-lifted restriction is observable rather than invisible.
+    // silently-lifted restriction is observable. The read runs on the heartbeat
+    // hot path, so the warn is deduped per org — two reads, one warn.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: 'Sundays 2am' } } }]);
     await expect(getOrgAgentUpdatePolicy(ORG_ID)).resolves.toEqual({
       policy: 'auto', maintenanceWindow: 'Sundays 2am',
     });
+    dbMock._setResult([{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: 'Sundays 2am' } } }]);
+    await getOrgAgentUpdatePolicy(ORG_ID); // second heartbeat read for the same org
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('malformed maintenance window'));
     warn.mockRestore();

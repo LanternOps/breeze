@@ -3,7 +3,6 @@ import { Bell, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-re
 import {
   MAINTENANCE_WINDOW_ALWAYS,
   MAINTENANCE_DAYS,
-  isAlwaysMaintenanceWindow,
   isValidMaintenanceWindow,
   parseMaintenanceWindow,
   formatMaintenanceWindow,
@@ -16,12 +15,11 @@ type WindowState = { mode: WindowMode; day: string; start: string; end: string }
 
 // Derive the structured editor state from the stored maintenance-window string.
 // The "always/24/7/empty" state maps to mode 'always'; a valid window unpacks
-// into day + start + end. Legacy malformed values fall back to an editable
-// window seeded with sane defaults so the operator can correct them in place.
+// into day + start + end. A legacy malformed value falls back to the always
+// state — that matches its actual runtime behavior (the gate fails open on an
+// unparseable window), so a careless Save preserves "update anytime" rather than
+// silently flipping the org into a restrictive 02:00-04:00 window it never had.
 function deriveWindowState(raw: string | undefined): WindowState {
-  if (isAlwaysMaintenanceWindow(raw)) {
-    return { mode: 'always', day: '', start: '02:00', end: '04:00' };
-  }
   const parsed = parseMaintenanceWindow(raw);
   if (parsed) {
     return {
@@ -31,7 +29,9 @@ function deriveWindowState(raw: string | undefined): WindowState {
       end: minutesToHHMM(parsed.endMin),
     };
   }
-  return { mode: 'window', day: '', start: '02:00', end: '04:00' };
+  // Always-state and malformed both land here as 'always' (seeded window times
+  // are only used if the operator switches to the window mode).
+  return { mode: 'always', day: '', start: '02:00', end: '04:00' };
 }
 
 type DefaultsData = {
@@ -316,8 +316,8 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
             </span>
             {storedWindowInvalid && (
               <p data-testid="maintenance-stored-invalid" className="text-xs text-destructive">
-                Your saved maintenance window was invalid and is being ignored. Review the value
-                below and save to apply a valid window.
+                Your saved maintenance window was invalid and is being ignored, so agents may
+                currently update at any time. Choose a valid setting below and save to fix it.
               </p>
             )}
             <div className="space-y-2">

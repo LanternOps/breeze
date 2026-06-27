@@ -35,7 +35,7 @@ import type {
   InheritableRemoteAccessSettings,
   IpAllowlistStatus
 } from '@breeze/shared';
-import { isValidMaintenanceWindow } from '@breeze/shared';
+import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 
@@ -252,7 +252,7 @@ export default function PartnerSettingsPage() {
     // matching the org editor. The server also rejects it as defense-in-depth.
     const mw = defaultsData.maintenanceWindow;
     if (typeof mw === 'string' && mw.trim() !== '' && !isValidMaintenanceWindow(mw)) {
-      setError('Maintenance window must be "24/7" or a UTC window like "Sun 02:00-04:00".');
+      setError(MAINTENANCE_WINDOW_ERROR_MESSAGE);
       return;
     }
 
