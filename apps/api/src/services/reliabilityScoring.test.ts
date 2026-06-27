@@ -792,8 +792,10 @@ describe('compute wiring feeds observed up-days into fault scorers (#1908)', () 
   });
 });
 
-// Issue #1908: scoreDailyBucket is kept in lockstep with the headline scorers —
-// both now use saturatingScore, so a day with more faults always scores lower.
+// Issue #1908: scoreDailyBucket uses the same saturatingScore exponential form
+// as the headline scorers (so a day with more faults always scores lower), but
+// on the RAW K_* constants — it is intentionally NOT rate-normalized by up-days
+// (a per-day bucket is already a one-day quantity).
 describe('scoreDailyBucket', () => {
   const { scoreDailyBucket } = reliabilityScoringInternals;
 

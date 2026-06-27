@@ -824,9 +824,11 @@ function countObservedUpDaysInWindow(
 }
 
 function scoreDailyBucket(bucket: DailyAggregateBucket): number {
-  // Issue #1908: per-day score used ONLY for the trend slope (computeTrend). Each
-  // factor uses the SAME saturatingScore + k constants as the headline scorers, so
-  // "bad day" tracks the same exponential decay (not the old linear-clamp-at-0).
+  // Issue #1908: per-day score used ONLY for the trend slope (computeTrend). Uses
+  // the RAW K_* constants (NOT the rate-normalized k_rate = K/30 the headline
+  // scorers use): a per-day bucket is already a one-day quantity, so dividing by
+  // observed up-days would be meaningless here. The functional form is the same
+  // saturatingScore exponential decay (not the old linear-clamp-at-0).
   // The four per-factor scores are combined by SUMMING their lost points
   // (100 - score) and subtracting from 100 — NOT averaging. Averaging divides a
   // single-factor spike by four and, with the exponential floor, squeezes every
