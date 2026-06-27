@@ -107,6 +107,7 @@ export const s1OrgMappings = pgTable('s1_org_mappings', {
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   s1SiteId: varchar('s1_site_id', { length: 128 }).notNull(),
   s1SiteName: varchar('s1_site_name', { length: 200 }),
+  registrationToken: text('registration_token'),
   orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
   agentsCount: integer('agents_count').notNull().default(0),
   metadata: jsonb('metadata'),

@@ -23,6 +23,9 @@ export const huntressIntegrations = pgTable('huntress_integrations', {
   name: varchar('name', { length: 200 }).notNull(),
   apiKeyEncrypted: text('api_key_encrypted').notNull(),
   accountId: varchar('account_id', { length: 120 }),
+  // The Huntress deployment Account Key (embedded in the installer download URL and
+  // passed as /ACCT_KEY). Distinct from the API account_id; encrypted at rest.
+  accountKeyEncrypted: text('account_key_encrypted'),
   apiBaseUrl: varchar('api_base_url', { length: 300 }).notNull().default('https://api.huntress.io/v1'),
   webhookSecretEncrypted: text('webhook_secret_encrypted'),
   isActive: boolean('is_active').notNull().default(true),

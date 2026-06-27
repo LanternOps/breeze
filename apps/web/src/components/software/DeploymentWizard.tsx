@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle, ChevronRight, Loader2, Search, Server, CalendarClock, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import ProgressBar from '../shared/ProgressBar';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
@@ -28,6 +30,19 @@ type TargetNode = {
   type: 'org' | 'site' | 'group' | 'device';
   children?: TargetNode[];
 };
+
+/**
+ * A deploy POST returns HTTP 200 even when the server fails the deployment up front
+ * (built-in EDR packages: target org unmapped / integration disconnected). runAction's
+ * isApiFailure does NOT treat a `{ status: 'failed' }` body as a failure, so callers
+ * must check explicitly. Returns the user-facing message, or null on success.
+ */
+export function extractDeployFailure(
+  result: { status?: string; message?: string; [key: string]: unknown } | null | undefined,
+): string | null {
+  if (result?.status === 'failed') return result.message ?? 'Deployment failed';
+  return null;
+}
 
 const steps: { id: WizardStep; label: string; icon: typeof CheckCircle }[] = [
   { id: 'software', label: 'Select Software', icon: CheckCircle },
@@ -395,21 +410,35 @@ export default function DeploymentWizard() {
               scheduledAt: scheduleType === 'scheduled' ? new Date(scheduledAt).toISOString() : undefined,
             };
 
-      const response = await fetchWithAuth('/software/deployments', {
-        method: 'POST',
-        body: JSON.stringify(payload),
+      const result = await runAction<{ id?: string; status?: string; message?: string }>({
+        request: () => fetchWithAuth('/software/deployments', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        }),
+        errorFallback: 'Deployment failed',
+        parseSuccess: (data) => {
+          const d = (data as { data?: unknown })?.data ?? data;
+          return (d ?? {}) as { id?: string; status?: string; message?: string };
+        },
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? 'Deployment failed');
+      // Built-in EDR deploys return HTTP 200 with status 'failed' when the target
+      // org is unmapped or the integration is disconnected — surface that.
+      const failureMessage = extractDeployFailure(result);
+      if (failureMessage) {
+        setError(failureMessage);
+        showToast({ message: failureMessage, type: 'error' });
+        return;
       }
 
-      const result = await response.json();
-      setDeploymentId(result.data?.id ?? result.id ?? 'deployment-created');
+      setDeploymentId(result?.id ?? 'deployment-created');
       setDeploymentComplete(true);
+      showToast({ message: 'Deployment started', type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Deployment failed');
+      if (err instanceof ActionError && err.status === 401) return;
+      const msg = err instanceof Error ? err.message : 'Deployment failed';
+      setError(msg);
+      if (!(err instanceof ActionError)) showToast({ message: msg, type: 'error' });
     } finally {
       setDeploying(false);
     }

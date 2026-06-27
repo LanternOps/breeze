@@ -220,6 +220,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // one axis per row. Functional cross-partner forge proof:
   // configurationPoliciesPartnerRls.integration.test.ts.
   'configuration_policies',
+  // software_catalog: a package is org-scoped (org_id set, partner_id NULL — the
+  // baseline shape for custom packages) OR partner-wide (partner_id set, org_id
+  // NULL — built-in EDR integration packages). Converted from org-only to
+  // dual-axis in 2026-06-26-a-software-catalog-partner-axis. The org_id column
+  // means org-tenant auto-discovery already asserts the breeze_has_org_access
+  // branch; this entry asserts the breeze_has_partner_access (built-in) branch.
+  // A CHECK constraint (software_catalog_one_owner_chk) enforces exactly one axis.
+  'software_catalog',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

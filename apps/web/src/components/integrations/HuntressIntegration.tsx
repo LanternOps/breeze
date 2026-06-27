@@ -38,6 +38,7 @@ type Integration = {
   // advances on success) or on having witnessed the best-effort 'running' write.
   updatedAt: string | null;
   hasWebhookSecret: boolean;
+  hasAccountKey?: boolean;
 };
 
 // After triggering a sync we poll the integration row to a terminal state
@@ -180,6 +181,8 @@ export default function HuntressIntegration() {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [accountId, setAccountId] = useState('');
+  const [accountKey, setAccountKey] = useState('');
+  const [showAccountKey, setShowAccountKey] = useState(false);
   const [webhookSecret, setWebhookSecret] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [showApiSecret, setShowApiSecret] = useState(false);
@@ -354,6 +357,7 @@ export default function HuntressIntegration() {
       const body: Record<string, unknown> = { name, isActive: true };
       if (hasCompleteCredential) body.apiKey = `${apiKey.trim()}:${apiSecret.trim()}`;
       if (accountId.trim()) body.accountId = accountId;
+      if (accountKey.trim()) body.accountKey = accountKey.trim();
       if (webhookSecret.trim()) body.webhookSecret = webhookSecret;
 
       const res = await fetchWithAuth('/huntress/integration', { method: 'POST', body: JSON.stringify(body) });
@@ -571,6 +575,19 @@ export default function HuntressIntegration() {
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>
+            <SecretInput
+              label="Deployment Account Key"
+              hint={
+                integration?.hasAccountKey
+                  ? 'saved — leave blank to keep existing'
+                  : 'required to deploy the Huntress agent from the Software Library'
+              }
+              value={accountKey}
+              onChange={setAccountKey}
+              visible={showAccountKey}
+              onToggle={() => setShowAccountKey((value) => !value)}
+              placeholder={integration?.hasAccountKey ? '************' : 'Account Key from the Huntress agent download page'}
+            />
             <SecretInput
               label="API Key"
               value={apiKey}

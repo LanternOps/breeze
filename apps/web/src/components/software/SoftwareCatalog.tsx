@@ -14,6 +14,8 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import DeploymentWizard from './DeploymentWizard';
 import SoftwareVersionManager from './SoftwareVersionManager';
 
+type IntegrationProvider = 'huntress' | 'sentinelone';
+
 type SoftwareItem = {
   id: string;
   name: string;
@@ -21,7 +23,28 @@ type SoftwareItem = {
   category: string;
   description: string;
   createdAt: string;
+  /** Set for built-in integration packages (e.g. Huntress, SentinelOne). */
+  integrationProvider?: IntegrationProvider;
+  partnerId?: string;
+  /** Number of uploaded versions; built-in S1 needs >=1 before it can deploy. */
+  versionCount?: number;
 };
+
+/** Human label for a built-in package's integration provider, or null if not built-in. */
+const providerLabel = (provider?: IntegrationProvider): string | null => {
+  switch (provider) {
+    case 'huntress': return 'Huntress';
+    case 'sentinelone': return 'SentinelOne';
+    default: return null;
+  }
+};
+
+/**
+ * A built-in package whose installer binary must be uploaded before it can deploy
+ * (SentinelOne ships no derivable download URL — the partner uploads the MSI once).
+ */
+const needsInstallerUpload = (item: SoftwareItem): boolean =>
+  item.integrationProvider === 'sentinelone' && (item.versionCount ?? 0) === 0;
 
 const categoryStyles: Record<string, string> = {
   browser: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
@@ -71,6 +94,11 @@ export default function SoftwareCatalog() {
           category: String(item.category ?? 'utility'),
           description: String(item.description ?? ''),
           createdAt: String(item.createdAt ?? ''),
+          integrationProvider: item.integrationProvider === 'huntress' || item.integrationProvider === 'sentinelone'
+            ? item.integrationProvider
+            : undefined,
+          partnerId: item.partnerId ? String(item.partnerId) : undefined,
+          versionCount: item.versionCount != null ? Number(item.versionCount) : undefined,
         })));
       }
     } catch (err) {
@@ -264,30 +292,50 @@ export default function SoftwareCatalog() {
                     <p className="text-xs text-muted-foreground">{item.vendor || 'Unknown vendor'}</p>
                   </div>
                 </div>
-                {item.category && (
-                  <span
-                    className={cn(
-                      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                      categoryStyles[item.category] ?? 'bg-muted text-muted-foreground'
-                    )}
-                  >
-                    {item.category.charAt(0).toUpperCase() + item.category.slice(1)}
-                  </span>
-                )}
+                <div className="flex flex-col items-end gap-1.5">
+                  {providerLabel(item.integrationProvider) && (
+                    <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                      Built-in · {providerLabel(item.integrationProvider)}
+                    </span>
+                  )}
+                  {item.category && (
+                    <span
+                      className={cn(
+                        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
+                        categoryStyles[item.category] ?? 'bg-muted text-muted-foreground'
+                      )}
+                    >
+                      {item.category.charAt(0).toUpperCase() + item.category.slice(1)}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {item.description && (
                 <p className="mt-3 text-xs text-muted-foreground line-clamp-2">{item.description}</p>
               )}
 
-              <div className="mt-4 flex items-center justify-end">
+              <div className="mt-4 flex items-center justify-between gap-2">
+                {needsInstallerUpload(item) ? (
+                  <p className="text-xs text-muted-foreground">Upload installer to enable deploy</p>
+                ) : (
+                  <span />
+                )}
                 <button
                   type="button"
+                  disabled={needsInstallerUpload(item)}
+                  title={
+                    needsInstallerUpload(item)
+                      ? 'Upload the SentinelOne installer (Versions tab) to enable deploy'
+                      : item.integrationProvider
+                        ? 'Deploys to mapped organizations only'
+                        : undefined
+                  }
                   onClick={event => {
                     event.stopPropagation();
                     setShowDeployWizard(true);
                   }}
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                  className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Deploy
                 </button>
@@ -365,16 +413,23 @@ export default function SoftwareCatalog() {
                   </div>
                 )}
                 <div className="mt-5 flex items-center justify-between">
+                  {selectedSoftware.integrationProvider ? (
+                    <p className="text-xs text-muted-foreground">
+                      Built-in package managed by the {providerLabel(selectedSoftware.integrationProvider)} integration.
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(selectedSoftware)}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-destructive/40 bg-background px-4 text-sm font-medium text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => setConfirmDelete(selectedSoftware)}
-                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-destructive/40 bg-background px-4 text-sm font-medium text-destructive hover:bg-destructive/10"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </button>
-                  <button
-                    type="button"
+                    title={selectedSoftware.integrationProvider ? 'Deploys to mapped organizations only' : undefined}
                     onClick={() => {
                       setSelectedSoftware(null);
                       setShowDeployWizard(true);

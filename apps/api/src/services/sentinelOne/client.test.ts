@@ -263,6 +263,37 @@ describe('SentinelOneClient agent normalization', () => {
   });
 });
 
+describe('SentinelOneClient site listing', () => {
+  it('listSites returns site id, name, and registrationToken', async () => {
+    safeFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          sites: [{ id: 's1', name: 'Acme', registrationToken: 'eyJ...' }]
+        }
+      })
+    });
+
+    const client = new SentinelOneClient({
+      managementUrl: 'https://example.sentinelone.net',
+      apiToken: 'token'
+    });
+    const sites = await client.listSites();
+
+    expect(sites).toEqual([
+      { siteId: 's1', siteName: 'Acme', registrationToken: 'eyJ...' }
+    ]);
+    expect(safeFetchMock).toHaveBeenCalledWith(
+      'https://example.sentinelone.net/web/api/v2.1/sites?limit=100',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ Authorization: 'ApiToken token' }),
+        timeoutMs: expect.any(Number),
+      })
+    );
+  });
+});
+
 describe('SentinelOneClient activity status mapping', () => {
   it('maps SentinelOne activity status to internal statuses', async () => {
     const makeClient = () => new SentinelOneClient({
