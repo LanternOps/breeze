@@ -467,11 +467,10 @@ export default function DevicesPage() {
   }, [advancedFilter, filtersV2]);
 
   const handleSelectDevice = (device: Device) => {
-    // Network-discovered devices have no agent device-detail page yet
-    // (per-type overview pages are deferred to a #1322 follow-up). Route to
-    // the existing Discovery asset view, deep-linked to this asset.
+    // Network-discovered assets get a native, read-only detail/overview page in
+    // the Devices section (#1424 slice 2) instead of bouncing out to Discovery.
     if ((device.deviceClass ?? 'agent') === 'network') {
-      void navigateTo(`/discovery?asset=${device.id}#assets`);
+      void navigateTo(`/devices/network/${device.id}`);
       return;
     }
     void navigateTo(`/devices/${device.id}`);
