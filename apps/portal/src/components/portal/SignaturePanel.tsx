@@ -41,7 +41,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
   };
 
   return (
-    <div className="rounded-xl border bg-card p-5 shadow-sm sm:p-6" data-testid={`${testIdPrefix}-sign`}>
+    <div className="rounded-xl border bg-card p-5 shadow-xs sm:p-6" data-testid={`${testIdPrefix}-sign`}>
       <h3 className="text-sm font-semibold text-foreground">Accept &amp; sign</h3>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
         Type your full legal name to sign and accept this proposal.
@@ -58,13 +58,13 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
           disabled={busy}
           autoComplete="name"
           placeholder="Your full name"
-          className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+          className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden transition focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
         />
       </div>
 
       {/* Signature line — the typed name rendered as a signature, with the date. */}
       <div className="mt-4 rounded-lg border bg-muted/20 px-4 pb-3 pt-6">
-        <div className="flex min-h-[3rem] items-end border-b border-foreground/30 pb-1.5">
+        <div className="flex min-h-12 items-end border-b border-foreground/30 pb-1.5">
           <span
             data-testid={`${testIdPrefix}-signature-preview`}
             style={{ fontFamily: SIGNATURE_FONT }}

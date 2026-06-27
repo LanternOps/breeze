@@ -107,7 +107,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
           href={withBase("/login")}
           className={cn(
             'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-            'hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2'
+            'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2'
           )}
         >
           Sign in
@@ -144,8 +144,8 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
           autoComplete="new-password"
           {...register('password')}
           className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-sm',
-            'focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary',
+            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
+            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
             errors.password && 'border-destructive'
           )}
         />
@@ -169,8 +169,8 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
           autoComplete="new-password"
           {...register('confirmPassword')}
           className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-sm',
-            'focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary',
+            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
+            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
             errors.confirmPassword && 'border-destructive'
           )}
         />
@@ -196,7 +196,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         disabled={isLoading}
         className={cn(
           'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-          'hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2',
+          'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
           'disabled:cursor-not-allowed disabled:opacity-50'
         )}
       >

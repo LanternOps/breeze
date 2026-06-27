@@ -212,7 +212,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
 
         <div className="overflow-hidden rounded-lg border bg-card">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[28rem] text-sm">
+            <table className="w-full min-w-md text-sm">
               <thead>
                 <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>

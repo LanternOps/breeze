@@ -27,7 +27,7 @@ export function DocumentPaper({
     <div
       data-testid={testId}
       style={accentVars(primaryColor)}
-      className="overflow-hidden rounded-xl border bg-card shadow-sm"
+      className="overflow-hidden rounded-xl border bg-card shadow-xs"
     >
       <div className="h-1.5 w-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
       <div className="space-y-10 px-4 py-7 sm:px-10 sm:py-9">{children}</div>
