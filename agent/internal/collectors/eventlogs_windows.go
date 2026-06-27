@@ -129,7 +129,7 @@ func (c *EventLogCollector) collectSystemErrors(since time.Time) ([]EventLogEntr
 		results = append(results, EventLogEntry{
 			Timestamp: truncateCollectorString(e.TimeCreated),
 			Level:     mapWinLevel(e.Level),
-			Category:  "hardware",
+			Category:  "system",
 			Source:    truncateCollectorString(e.ProviderName),
 			EventID:   truncateCollectorString(fmt.Sprintf("%d:%d", e.Id, e.RecordId)),
 			Message:   truncateString(e.Message, 500),

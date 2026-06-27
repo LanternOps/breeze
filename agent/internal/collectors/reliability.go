@@ -2,6 +2,8 @@ package collectors
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -109,21 +111,205 @@ func severityFromLevel(level string) string {
 	}
 }
 
-func classifyHardwareType(message, source, eventID string) string {
+// classifyHardwareType returns a hardware error category string.
+// numericID is the parsed integer event ID (pass numericEventID(entry) before calling).
+// Returns "unknown" when the event does not match a known hardware signal.
+func classifyHardwareType(message, source string, numericID int) string {
 	msg := strings.ToLower(message)
 	src := strings.ToLower(source)
-	eid := strings.ToLower(eventID)
 	switch {
 	case strings.Contains(src, "whea"), strings.Contains(msg, "machine check"), strings.Contains(msg, "mce"):
 		return "mce"
 	case strings.Contains(msg, "memory"), strings.Contains(msg, "edac"),
-		eid == "13" || eid == "50" || eid == "51":
+		numericID == 13 || numericID == 50 || numericID == 51:
 		return "memory"
 	case strings.Contains(msg, "disk"), strings.Contains(msg, "i/o"), strings.Contains(msg, "blk_update_request"),
-		eid == "7" || eid == "11" || eid == "15":
+		numericID == 7 || numericID == 11 || numericID == 15:
 		return "disk"
 	default:
 		return "unknown"
+	}
+}
+
+// numericEventID extracts the numeric event ID from an EventLogEntry.
+// It first checks Details["eventId"] (set as an int by all Windows collectors),
+// then falls back to parsing the integer prefix of EventID ("id:recordId").
+func numericEventID(entry EventLogEntry) int {
+	if v, ok := entry.Details["eventId"]; ok {
+		switch n := v.(type) {
+		case int:
+			return n
+		case int64:
+			return int(n)
+		case float64:
+			return int(n)
+		}
+	}
+	// Fall back: parse integer prefix before the first ':'
+	raw := entry.EventID
+	if idx := strings.IndexByte(raw, ':'); idx >= 0 {
+		raw = raw[:idx]
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(raw))
+	return n
+}
+
+// reServiceName extracts the failing service name from SCM messages like
+// "The <ServiceName> service terminated unexpectedly".
+var reServiceName = regexp.MustCompile(`(?i)the (.+?) service\b`)
+
+// parseServiceName extracts the service name from an SCM message.
+// Falls back to fallback (typically entry.Source) if no match.
+func parseServiceName(message, fallback string) string {
+	if m := reServiceName.FindStringSubmatch(message); len(m) >= 2 {
+		name := strings.TrimSpace(m[1])
+		if name != "" {
+			return name
+		}
+	}
+	return fallback
+}
+
+// knownHardwareSources lists provider name substrings that always indicate a
+// genuine hardware/driver event, even when classifyHardwareType returns "unknown".
+var knownHardwareSources = []string{
+	"whea", "disk", "ntfs", "volmgr", "storahci", "stornvme",
+	"nvme", "iastor", "msahci", "nvlddmkm", "amdkmdag", "igfx",
+}
+
+// isHardwareSource returns true when the source (lowercased) matches a known
+// hardware/driver provider name.
+func isHardwareSource(srcLower string) bool {
+	for _, kw := range knownHardwareSources {
+		if strings.Contains(srcLower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// scmFailureEventIDs is the set of Service Control Manager event IDs that
+// represent genuine service failures (start failure, crash, exit, etc.).
+// 7036 (state-change), 7040 (start-type change), 7045 (service installed) are
+// routine and are intentionally excluded.
+var scmFailureEventIDs = map[int]bool{
+	7000: true, // service failed to start
+	7022: true, // service hung on start
+	7023: true, // service terminated with error
+	7024: true, // service terminated with service-specific error
+	7026: true, // boot/system start driver failed to load
+	7031: true, // service terminated unexpectedly
+	7034: true, // service terminated unexpectedly (no recovery configured)
+}
+
+// isWERSource returns true when srcLower (already lowercased) indicates the
+// Windows Error Reporting provider. Real provider names seen in the wild:
+//
+//	"windows error reporting", "wer", "wer-systemarchive",
+//	"wer-systemerrorreporting", "systemerrorreporting"
+func isWERSource(srcLower string) bool {
+	return strings.Contains(srcLower, "wer") ||
+		strings.Contains(srcLower, "systemerrorreporting") ||
+		strings.Contains(srcLower, "windows error reporting")
+}
+
+// classifyEventLogEntry routes a single event log entry into exactly one
+// reliability factor (crash / service-failure / hang / hardware-error) or none.
+// Priority order: crash → service → hang → hardware.
+// Each event goes to AT MOST ONE factor; no double-counting.
+//
+// Platform-neutral (no build tag) so it is unit-testable on Linux CI.
+func classifyEventLogEntry(metrics *ReliabilityMetrics, entry EventLogEntry) {
+	ts := normalizeEventTimestamp(entry.Timestamp)
+	msg := strings.ToLower(entry.Message)
+	src := strings.ToLower(entry.Source)
+	nid := numericEventID(entry)
+
+	// ── 1. Crash ─────────────────────────────────────────────────────────────
+	switch {
+	case strings.Contains(msg, "bugcheck"), strings.Contains(msg, "blue screen"):
+		appendCrash(metrics, "bsod", ts, map[string]any{
+			"source":  entry.Source,
+			"eventId": entry.EventID,
+			"level":   entry.Level,
+		})
+		return
+
+	case strings.Contains(msg, "kernel panic"):
+		appendCrash(metrics, "kernel_panic", ts, map[string]any{
+			"source":  entry.Source,
+			"eventId": entry.EventID,
+		})
+		return
+
+	case nid == 41: // Kernel-Power: unexpected power loss / bugcheck
+		appendCrash(metrics, "bsod", ts, map[string]any{
+			"source":  entry.Source,
+			"eventId": entry.EventID,
+			"level":   entry.Level,
+		})
+		return
+
+	case nid == 1001 && isWERSource(src):
+		// Real BugCheck report from Windows Error Reporting — NOT DCOM 10010
+		appendCrash(metrics, "bsod", ts, map[string]any{
+			"source":  entry.Source,
+			"eventId": entry.EventID,
+			"level":   entry.Level,
+		})
+		return
+
+	case nid == 6008: // Unexpected shutdown (previous boot)
+		appendCrash(metrics, "bsod", ts, map[string]any{
+			"source":  entry.Source,
+			"eventId": entry.EventID,
+			"level":   entry.Level,
+		})
+		return
+
+	case strings.Contains(msg, "unexpected shutdown"):
+		appendCrash(metrics, "bsod", ts, map[string]any{
+			"source":  entry.Source,
+			"eventId": entry.EventID,
+			"level":   entry.Level,
+		})
+		return
+	}
+
+	// ── 2. Service failure ────────────────────────────────────────────────────
+	isScm := strings.Contains(src, "service control manager")
+	if isScm && scmFailureEventIDs[nid] {
+		svcName := parseServiceName(entry.Message, entry.Source)
+		appendServiceFailure(metrics, svcName, ts, entry.EventID)
+		return
+	}
+	// Secondary: message-based fallback (non-SCM sources that talk about service failures)
+	if !isScm && strings.Contains(msg, "service") &&
+		(strings.Contains(msg, "terminated") || strings.Contains(msg, "failed to start")) {
+		svcName := parseServiceName(entry.Message, entry.Source)
+		appendServiceFailure(metrics, svcName, ts, entry.EventID)
+		return
+	}
+
+	// ── 3. Hang ───────────────────────────────────────────────────────────────
+	if strings.Contains(msg, "hang") || strings.Contains(msg, "not responding") ||
+		strings.Contains(src, "application hang") || nid == 1002 {
+		appendHang(metrics, entry.Source, ts)
+		return
+	}
+
+	// ── 4. Hardware error ─────────────────────────────────────────────────────
+	// Gate on genuine hardware signals only — NOT on entry.Category.
+	hwType := classifyHardwareType(entry.Message, entry.Source, nid)
+	if hwType != "unknown" || isHardwareSource(src) {
+		metrics.HardwareErrors = append(metrics.HardwareErrors, HardwareError{
+			Type:      hwType,
+			Severity:  severityFromLevel(entry.Level),
+			Timestamp: ts,
+			Source:    entry.Source,
+			EventID:   entry.EventID,
+		})
+		return
 	}
 }
 
@@ -161,7 +347,7 @@ func appendServiceFailure(metrics *ReliabilityMetrics, serviceName string, ts ti
 
 func appendHardwareError(metrics *ReliabilityMetrics, entry EventLogEntry, ts time.Time) {
 	metrics.HardwareErrors = append(metrics.HardwareErrors, HardwareError{
-		Type:      classifyHardwareType(entry.Message, entry.Source, entry.EventID),
+		Type:      classifyHardwareType(entry.Message, entry.Source, numericEventID(entry)),
 		Severity:  severityFromLevel(entry.Level),
 		Timestamp: ts,
 		Source:    entry.Source,

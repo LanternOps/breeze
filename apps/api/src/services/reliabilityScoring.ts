@@ -258,6 +258,33 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+// Issue #1908: saturating per-factor curve. Linear `100 - count*N` clamped at 0
+// floored any factor past ~5 events, so 14 and 1466 scored identically and the
+// number stopped discriminating. Exponential decay keeps 0→100, stays strictly
+// monotonic, and gives distinct scores across the low range that matters most.
+//
+// factorScore(weightedCount, k) = clampScore(100 * Math.exp(-weightedCount / k))
+// Properties: 0 events → 100; strictly decreasing (no plateau); smooth; at
+// weightedCount = k the score is ~37 (exp(-1) ≈ 0.368), which is the tuning
+// reference point for each k constant below.
+function saturatingScore(weightedCount: number, k: number): number {
+  if (!Number.isFinite(weightedCount) || weightedCount <= 0) return 100;
+  return clampScore(100 * Math.exp(-Math.max(0, weightedCount) / k));
+}
+
+// k=3: one crash (w=1) → ~72, three crashes (w=3) → ~37, five → ~19, ten → ~3.
+// Crashes are severe so k is small — the curve falls quickly.
+const K_CRASHES = 3;
+
+// k=6: one hang (w=1) → ~85, six hangs (w=6) → ~37, twelve → ~14.
+const K_HANGS = 6;
+
+// k=5: one net failure (w=1) → ~82, five → ~37, ten → ~14.
+const K_SERVICES = 5;
+
+// k=3: one critical (w=2) → ~51, two criticals (w=4) → ~26, one error (w=1) → ~72.
+const K_HARDWARE = 3;
+
 function scoreRangeBounds(range: ReliabilityScoreRange): [number, number] {
   if (range === 'critical') return [0, 50];
   if (range === 'poor') return [51, 70];
@@ -379,25 +406,36 @@ function scoreUptime(uptimePercent: number): number {
 }
 
 function scoreCrashes(crashCount7d: number, crashCount30d: number): number {
-  const weightedCrashes = crashCount30d + crashCount7d * 0.5;
-  return clampScore(100 - weightedCrashes * 20);
+  // Issue #1908: weightedCount = 30d crashes + 0.5 × 7d crashes (recent events
+  // weighted more heavily, matching the original intent). K_CRASHES=3 so a single
+  // crash dents ~28 points and the curve reaches ~37 at 3 weighted events.
+  const weightedCount = crashCount30d + crashCount7d * 0.5;
+  return saturatingScore(weightedCount, K_CRASHES);
 }
 
 function scoreHangs(hangCount30d: number, unresolvedHangCount30d: number): number {
-  // Every hang costs 10; unresolved hangs cost an extra 10 on top (20 total).
-  // `unresolvedHangCount30d` is a subset of `hangCount30d`, so the extra penalty
-  // is +10, NOT +20 — the old *20 here double-counted unresolved hangs against
-  // the base *10 (30 each) and disagreed with `scoreDailyBucket`'s per-day
-  // weighting (10 each). This aligns the two.
-  return clampScore(100 - hangCount30d * 10 - unresolvedHangCount30d * 10);
+  // Issue #1908: unresolvedHangCount is a subset of hangCount, so unresolved
+  // hangs count double in the weighted sum (they appear in both terms), which
+  // matches the original intent that unresolved hangs cost 2× a resolved hang.
+  // K_HANGS=6 so one hang → ~85, six hangs → ~37.
+  const weightedCount = hangCount30d + unresolvedHangCount30d;
+  return saturatingScore(weightedCount, K_HANGS);
 }
 
 function scoreServiceFailures(serviceFailureCount30d: number, recoveredCount30d: number): number {
-  return clampScore(100 - serviceFailureCount30d * 15 + recoveredCount30d * 5);
+  // Issue #1908: recovered failures get half-weight credit, preserving the
+  // "recovery is good" intent without ever pushing the score above 100 (recovery
+  // credit is bounded by the failure count, and Math.max(0,...) stops it going
+  // negative). K_SERVICES=5 so one net failure → ~82, five → ~37.
+  const weightedCount = Math.max(0, serviceFailureCount30d - recoveredCount30d * 0.5);
+  return saturatingScore(weightedCount, K_SERVICES);
 }
 
 function scoreHardwareErrors(criticalCount30d: number, errorCount30d: number, warningCount30d: number): number {
-  return clampScore(100 - criticalCount30d * 30 - errorCount30d * 15 - warningCount30d * 5);
+  // Issue #1908: severity weighting mirrors the old 30/15/5 ratio (≈ 2/1/0.34).
+  // K_HARDWARE=3 so one critical (w=2) → ~51, two criticals (w=4) → ~26.
+  const weightedCount = criticalCount30d * 2 + errorCount30d * 1 + warningCount30d * 0.34;
+  return saturatingScore(weightedCount, K_HARDWARE);
 }
 
 function linearRegression(points: Array<{ x: number; y: number }>): { slope: number; r2: number } {
@@ -732,23 +770,34 @@ function sumBucketsInWindow(
 }
 
 function scoreDailyBucket(bucket: DailyAggregateBucket): number {
-  // Per-day score used only to compute the trend slope. Penalty weights are kept
-  // in lockstep with the headline factor scorers (scoreCrashes/scoreHangs/
-  // scoreServiceFailures/scoreHardwareErrors) so the trend reflects the same
-  // notion of "bad day" as the score itself. Service-failure/recovery were 12/+4
-  // here vs 15/+5 in scoreServiceFailures — aligned to 15/+5. Uptime is
-  // intentionally absent: it is not a per-day-bucket quantity.
-  return clampScore(
-    100
-    - bucket.crashCount * 20
-    - bucket.hangCount * 10
-    - bucket.unresolvedHangCount * 10
-    - bucket.serviceFailureCount * 15
-    + bucket.recoveredServiceCount * 5
-    - bucket.hardwareCriticalCount * 30
-    - bucket.hardwareErrorSeverityCount * 15
-    - bucket.hardwareWarningCount * 5
+  // Issue #1908: kept in lockstep with the headline factor scorers by applying
+  // the SAME saturatingScore + k constants to each day's counts, then averaging
+  // the four per-factor scores to produce a single 0–100 day quality score.
+  // Uptime is intentionally absent: it is not a per-day-bucket quantity.
+  //
+  // Using the same helpers as the headline scorers means "bad day" tracks the
+  // same exponential decay rather than the old linear-clamp-at-0, so a day with
+  // more faults always scores strictly lower than one with fewer.
+  const crashScore = saturatingScore(
+    bucket.crashCount + 0, // crashCount7d is unavailable per-day; use 30d count only
+    K_CRASHES
   );
+  const hangScore = saturatingScore(
+    bucket.hangCount + bucket.unresolvedHangCount,
+    K_HANGS
+  );
+  const serviceScore = saturatingScore(
+    Math.max(0, bucket.serviceFailureCount - bucket.recoveredServiceCount * 0.5),
+    K_SERVICES
+  );
+  const hwScore = saturatingScore(
+    bucket.hardwareCriticalCount * 2 + bucket.hardwareErrorSeverityCount * 1 + bucket.hardwareWarningCount * 0.34,
+    K_HARDWARE
+  );
+  // Average the four fault-factor scores: each is 0–100, and the result is 0–100.
+  // A fully-clean day yields (100+100+100+100)/4 = 100. Any fault drives the
+  // average down, smoothly, with no hard floor.
+  return clampScore((crashScore + hangScore + serviceScore + hwScore) / 4);
 }
 
 function buildDailyTrendPoints(
@@ -1835,4 +1884,10 @@ export const reliabilityScoringInternals = {
   isWorkstationRole,
   INFRA_FACTOR_WEIGHTS,
   WORKSTATION_FACTOR_WEIGHTS,
+  // Exposed for testing (#1908 saturating curve)
+  saturatingScore,
+  K_CRASHES,
+  K_HANGS,
+  K_SERVICES,
+  K_HARDWARE,
 };
