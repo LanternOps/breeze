@@ -417,6 +417,9 @@ jobs:
       - name: Run relay/edge hardening guard
         run: bash scripts/security/check-relay-edge-hardening.sh
 
+      - name: Run customer-PII guard
+        run: bash scripts/security/check-customer-pii.sh
+
   build-api:
     name: Build API
     runs-on: ubuntu-latest

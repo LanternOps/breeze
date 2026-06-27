@@ -347,9 +347,9 @@ describe('GET /approvals/:id customer tenant (M365)', () => {
     requestingSessionId: null,
     actionLabel: 'Reset M365 password',
     actionToolName: 'm365_reset_password',
-    actionArguments: { userPrincipalName: 'jane@pinnacle.dental' },
+    actionArguments: { userPrincipalName: 'jane@example-dental.test' },
     riskTier: 'high',
-    riskSummary: 'Reset M365 password for jane@pinnacle.dental on Pinnacle Dental.',
+    riskSummary: 'Reset M365 password for jane@example-dental.test on Example Dental.',
     status: 'pending',
     expiresAt: new Date(Date.now() + 60_000),
     decidedAt: null,
@@ -369,14 +369,14 @@ describe('GET /approvals/:id customer tenant (M365)', () => {
       } as any)
       .mockReturnValueOnce(
         mockTenantJoinResolves([
-          { executionId: 'exec-m365', customerDisplayName: 'Pinnacle Dental' },
+          { executionId: 'exec-m365', customerDisplayName: 'Example Dental' },
         ]) as any,
       );
 
     const res = await buildApp().request('/approvals/a1');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.approval.customerTenant).toBe('Pinnacle Dental');
+    expect(body.approval.customerTenant).toBe('Example Dental');
   });
 
   it('serializes customerTenant: null for a non-m365 approval (no tenant lookup)', async () => {

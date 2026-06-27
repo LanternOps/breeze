@@ -5,10 +5,10 @@ import { TOOL_TIERS } from './aiAgentSdkTools';
 describe('buildM365RiskSummary', () => {
   it('includes customer, user, and reason for reset_password', () => {
     const s = buildM365RiskSummary('m365_reset_password',
-      { userIdentifier: 'jane@pinnacle.dental', reason: 'forgot password' },
-      { customerDisplayName: 'Pinnacle Dental' } as any);
-    expect(s).toContain('Pinnacle Dental');
-    expect(s).toContain('jane@pinnacle.dental');
+      { userIdentifier: 'jane@example-dental.test', reason: 'forgot password' },
+      { customerDisplayName: 'Example Dental' } as any);
+    expect(s).toContain('Example Dental');
+    expect(s).toContain('jane@example-dental.test');
     expect(s).toContain('forgot password');
   });
   it('includes customer and user for disable_user', () => {
@@ -21,10 +21,10 @@ describe('buildM365RiskSummary', () => {
   });
   it('handles the mcp__breeze__ prefixed tool name', () => {
     const s = buildM365RiskSummary('mcp__breeze__m365_reset_password',
-      { userIdentifier: 'jane@pinnacle.dental', reason: 'forgot password' },
-      { customerDisplayName: 'Pinnacle Dental' } as any);
-    expect(s).toContain('Pinnacle Dental');
-    expect(s).toContain('jane@pinnacle.dental');
+      { userIdentifier: 'jane@example-dental.test', reason: 'forgot password' },
+      { customerDisplayName: 'Example Dental' } as any);
+    expect(s).toContain('Example Dental');
+    expect(s).toContain('jane@example-dental.test');
   });
   it('returns null for a non-m365 tool', () => {
     expect(buildM365RiskSummary('execute_command', {}, null)).toBeNull();

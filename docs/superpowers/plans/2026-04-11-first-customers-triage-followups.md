@@ -44,8 +44,8 @@ what's in flight, and what still needs attention.
   from registration flow testing) hard-deleted via a single transaction. 160 rows
   removed total (10 partners + 10 orgs + 10 sites + 10 users + 10 partner_users +
   10 roles + 10 role_permissions + 60 audit_baselines). Kept: `default-partner`
-  (seed), `olivetech` (personal), `vix-it` (real abandoned prospect), `biglobe`
-  (paying customer).
+  (seed), `olivetech` (personal), `prospect-a` (real abandoned prospect),
+  `customer-b` (paying customer).
 
 - **`/billing/success` post-checkout page** in `breeze-billing` (PR #1, squash
   `5f2ccab`). Replaced the inline tri-state banner on `/billing/` with a

@@ -467,8 +467,8 @@ function mockFetchOnce(status: number, body: unknown, opts: { throwNetwork?: boo
 
 const baseArgs = () => ({
   connection: {
-    id: 'conn-1', orgId: 'org-1', customerLabel: 'pinnacle',
-    customerDisplayName: 'Pinnacle', delegantOrgId: 'dorg-1',
+    id: 'conn-1', orgId: 'org-1', customerLabel: 'example-dental',
+    customerDisplayName: 'Example Dental', delegantOrgId: 'dorg-1',
     delegantConnectionId: 'dconn-1', m365TenantId: 'tid-1',
     status: 'active', lastVerifiedAt: null, createdAt: new Date(), updatedAt: new Date(),
   } as any,
@@ -704,10 +704,10 @@ Append:
 it('does not log tool parameters', async () => {
   const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
   const args = baseArgs();
-  args.parameters = { userId: 'jane.doe@pinnacle.dental' };
+  args.parameters = { userId: 'jane.doe@example-dental.test' };
   await invokeDelegantTool(args, { env, fetchImpl: mockFetchOnce(200, { isError: false, data: {} }) });
   const logged = spy.mock.calls.map((c) => String(c[0])).join('\n');
-  expect(logged).not.toContain('jane.doe@pinnacle.dental');
+  expect(logged).not.toContain('jane.doe@example-dental.test');
   spy.mockRestore();
 });
 ```
@@ -909,7 +909,7 @@ describe('m365_lookup_user', () => {
     (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
     (loadConnection as any).mockResolvedValue({
       id: 'c1', orgId: 'org-A', status: 'active', delegantOrgId: 'dorg-1',
-      delegantConnectionId: 'dconn-1', customerLabel: 'pinnacle', customerDisplayName: 'Pinnacle',
+      delegantConnectionId: 'dconn-1', customerLabel: 'example-dental', customerDisplayName: 'Example Dental',
     });
     (invokeDelegantTool as any).mockResolvedValue({ kind: 'ok', data: { id: 'u1', displayName: 'Jane', assignedLicenses: [] } });
     const out = await getHandler('m365_lookup_user')({ userIdentifier: 'u1' }, auth);
@@ -1214,10 +1214,10 @@ import { buildM365RiskSummary } from './aiAgentSdk';
 describe('buildM365RiskSummary', () => {
   it('includes customer, user, and reason for reset_password', () => {
     const s = buildM365RiskSummary('m365_reset_password',
-      { userIdentifier: 'jane@pinnacle.dental', reason: 'forgot password' },
-      { customerDisplayName: 'Pinnacle Dental' } as any);
-    expect(s).toContain('Pinnacle Dental');
-    expect(s).toContain('jane@pinnacle.dental');
+      { userIdentifier: 'jane@example-dental.test', reason: 'forgot password' },
+      { customerDisplayName: 'Example Dental' } as any);
+    expect(s).toContain('Example Dental');
+    expect(s).toContain('jane@example-dental.test');
     expect(s).toContain('forgot password');
   });
   it('returns null for a non-m365 tool', () => {

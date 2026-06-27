@@ -72,8 +72,8 @@ function mockFetchOnce(status: number, body: unknown, opts: { throwNetwork?: boo
 
 const baseArgs = () => ({
   connection: {
-    id: 'conn-1', orgId: 'org-1', customerLabel: 'pinnacle',
-    customerDisplayName: 'Pinnacle', delegantOrgId: 'dorg-1',
+    id: 'conn-1', orgId: 'org-1', customerLabel: 'example-dental',
+    customerDisplayName: 'Example Dental', delegantOrgId: 'dorg-1',
     delegantConnectionId: 'dconn-1', m365TenantId: 'tid-1',
     status: 'active', lastVerifiedAt: null, createdAt: new Date(), updatedAt: new Date(),
   } as any,
@@ -167,10 +167,10 @@ describe('invokeDelegantTool response mapping', () => {
   it('does not log tool parameters', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const args = baseArgs();
-    args.parameters = { userId: 'jane.doe@pinnacle.dental' };
+    args.parameters = { userId: 'jane.doe@example-dental.test' };
     await invokeDelegantTool(args, { env, fetchImpl: mockFetchOnce(200, { isError: false, data: {} }) });
     const logged = spy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logged).not.toContain('jane.doe@pinnacle.dental');
+    expect(logged).not.toContain('jane.doe@example-dental.test');
     spy.mockRestore();
   });
 });

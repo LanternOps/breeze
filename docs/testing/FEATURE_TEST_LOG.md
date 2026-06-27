@@ -168,12 +168,12 @@ Re-confirmed NOT exercisable locally even with a supplied test key. Two distinct
 ## Breeze AI for Office (PR #1314) — Tier B in-Excel SSO + session loop — 2026-06-13
 
 **Branch:** `feat/ai-for-office` @ `4d1a3ab6` (worktree `breeze-ai4office`)
-**Host:** Excel for Mac (desktop), real Entra app reg in tenant OliveTech LLC (`dba1c0e6-…`), account `todd@olivetech.co`
+**Host:** Excel for Mac (desktop), real Entra app reg in tenant Example Tenant LLC (`<tenant-id>`), account `todd@example.com`
 **Result:** **Auth + read/chat loop PASS; workbook WRITE path FAILs (open).**
 
 ### What works (verified live via API logs)
 - **Silent Office SSO** (`OfficeRuntime.auth.getAccessToken`) → real Entra v2 token, no popup.
-- **`POST /auth/exchange` → 200** — full JWKS sig + audience(=client-id) + issuer-per-tid verification, tenant-mapping lookup, `portal_user` auto-provisioned (`todd@olivetech.co`), Redis session minted.
+- **`POST /auth/exchange` → 200** — full JWKS sig + audience(=client-id) + issuer-per-tid verification, tenant-mapping lookup, `portal_user` auto-provisioned (`todd@example.com`), Redis session minted.
 - **Session loop:** `POST /sessions 201` → `messages 202` → `GET /events 200` (SSE) → `tool-results 200` (read-tool round-trip). Multi-tool turns ran clean.
 - **SSE streams through the Vite proxy** (the mixed-content fix, below) without buffering issues.
 
@@ -191,9 +191,9 @@ Re-confirmed NOT exercisable locally even with a supplied test key. Two distinct
 5. **macOS dev-cert CA not trusted by the System keychain** — `office-addin-dev-certs install` reported "already trusted" but `security verify-cert` → `CSSMERR_TP_NOT_TRUSTED`; Excel showed "isn't signed by a valid security certificate". Needed a manual `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.office-addin-dev-certs/ca.crt`. Worth a README note for Mac.
 
 ### Local setup left in place (uncommitted) for resuming
-- Stack re-pointed to `breeze-ai4office` (project `breeze`); placeholder→real `CLIENT_AI_ENTRA_CLIENT_ID=4ad559f9-…` in API `.env` + `docker-compose.override.clientai.yml`.
-- Add-in `.env`: `VITE_API_BASE_URL=https://localhost:3000/api/v1`, `VITE_CLIENT_AI_ENTRA_CLIENT_ID=4ad559f9-…`; `vite.config.ts` has a local `server.proxy` for `/api/v1`.
-- Org "Default Organization" (`b50945ac-…`) mapped to tenant `dba1c0e6-…`, policy enabled.
+- Stack re-pointed to `breeze-ai4office` (project `breeze`); placeholder→real `CLIENT_AI_ENTRA_CLIENT_ID=<client-id>` in API `.env` + `docker-compose.override.clientai.yml`.
+- Add-in `.env`: `VITE_API_BASE_URL=https://localhost:3000/api/v1`, `VITE_CLIENT_AI_ENTRA_CLIENT_ID=<client-id>`; `vite.config.ts` has a local `server.proxy` for `/api/v1`.
+- Org "Default Organization" (`b50945ac-…`) mapped to tenant `<tenant-id>`, policy enabled.
 - **TEMP debug line** in `apps/api/src/routes/clientAi/auth.ts` (`[client-ai][TIER-B-DEBUG]`) — remove before any commit.
 - Pane server: `cd apps/excel-addin && PATH=…/v22.20.0/bin:$PATH pnpm dev`.
 

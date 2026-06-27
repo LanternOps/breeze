@@ -22,7 +22,7 @@ import {
 const auth = { orgId: 'org-A', user: { id: 'tech-1', email: 't@x.com' } } as any;
 const activeConn = {
   id: 'c1', orgId: 'org-A', status: 'active', delegantOrgId: 'dorg-1',
-  delegantConnectionId: 'dconn-1', customerLabel: 'pinnacle', customerDisplayName: 'Pinnacle',
+  delegantConnectionId: 'dconn-1', customerLabel: 'example-dental', customerDisplayName: 'Example Dental',
 };
 
 beforeEach(() => { vi.clearAllMocks(); });
