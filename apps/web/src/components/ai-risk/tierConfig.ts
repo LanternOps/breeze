@@ -207,6 +207,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_monitors (create/update/delete)', description: 'Create, update, or delete monitors', category: 'Monitoring & Analytics' },
       // Integrations
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
+      { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },
       // Configuration Policies
       { name: 'manage_configuration_policy (create/update/delete)', description: 'Create, update, or delete config policies', category: 'Configuration Policies' },
       // Fleet Operations
@@ -291,6 +292,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Integrations
   { toolName: 'test_webhook', limit: 5, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Integrations' },
   { toolName: 'trigger_agent_upgrade', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Integrations' },
+  { toolName: 'trigger_agent_restart', limit: 5, windowSeconds: 600, tier: 3, permission: 'devices.execute', category: 'Integrations' },
   { toolName: 'manage_notification_channels', limit: 10, windowSeconds: 300, tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
   { toolName: 'manage_saved_filters', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Other' },
   // Fleet Operations
@@ -411,6 +413,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Agent management
   query_agent_versions: 'devices.read',
   trigger_agent_upgrade: 'devices.execute',
+  trigger_agent_restart: 'devices.execute',
   // Remote sessions
   list_remote_sessions: 'devices.read',
   create_remote_session: 'devices.execute',

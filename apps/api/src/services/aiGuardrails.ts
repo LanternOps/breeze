@@ -359,6 +359,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Agent version & remote session tools
   query_agent_versions: { resource: 'devices', action: 'read' },
   trigger_agent_upgrade: { resource: 'devices', action: 'execute' },
+  trigger_agent_restart: { resource: 'devices', action: 'execute' },
   list_remote_sessions: { resource: 'devices', action: 'read' },
   create_remote_session: { resource: 'devices', action: 'execute' },
   // Compliance policy tools
@@ -508,6 +509,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   test_webhook: { limit: 5, windowSeconds: 300 },
   // Agent version & remote session tools
   trigger_agent_upgrade: { limit: 5, windowSeconds: 600 },
+  trigger_agent_restart: { limit: 5, windowSeconds: 600 },
   create_remote_session: { limit: 10, windowSeconds: 300 },
   // Notification channel & saved filter tools
   manage_notification_channels: { limit: 10, windowSeconds: 300 },

@@ -604,6 +604,7 @@ describe('command queue service', () => {
         agentId: 'agent-wd',
         orgId: 'org-1',
         hostname: 'host-wd',
+        watchdogLastSeen: new Date(),
       };
       const queued = { id: 'cmd-wd', type: 'update_agent' };
       const completed = {
@@ -662,6 +663,87 @@ describe('command queue service', () => {
       // Polling still returns the completed result (set by the watchdog's
       // command_result path, same as agent commands).
       expect(result.status).toBe('completed');
+    });
+
+    // A watchdog-targeted command must be ACCEPTED for an offline device as
+    // long as the watchdog itself is still reporting — that "agent silent,
+    // watchdog OK" state is precisely what watchdog restarts/upgrades recover.
+    // device.status reflects the (down) main agent, so gating on it would
+    // reject the entire population this path exists for.
+    it('accepts a watchdog command for an OFFLINE device with a fresh watchdog', async () => {
+      const device = {
+        id: 'dev-silent',
+        status: 'offline',
+        agentId: 'agent-silent',
+        orgId: 'org-1',
+        hostname: 'host-silent',
+        watchdogLastSeen: new Date(), // watchdog still reporting
+      };
+      let pollCall = 0;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(() => {
+              pollCall += 1;
+              if (pollCall === 1) return Promise.resolve([device]);
+              return Promise.resolve([{ id: 'cmd-s', status: 'completed', result: { status: 'completed' } }]);
+            }),
+          }),
+        }),
+      }) as any);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-s', type: 'restart_agent' }]),
+        execute: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const result = await executeCommand(
+        'dev-silent',
+        'restart_agent',
+        {},
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      // Not rejected by the offline guard — the row is written.
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ targetRole: 'watchdog', type: 'restart_agent' }),
+      );
+      expect(result.status).toBe('completed');
+    });
+
+    // Inverse guard: if the watchdog itself has gone stale (box down, or agent
+    // healthy so the watchdog never failed over and isn't polling), fail fast
+    // instead of queueing a command nothing will ever claim.
+    it('rejects a watchdog command when watchdogLastSeen is stale', async () => {
+      const device = {
+        id: 'dev-dead',
+        status: 'offline',
+        agentId: 'agent-dead',
+        orgId: 'org-1',
+        hostname: 'host-dead',
+        watchdogLastSeen: new Date(Date.now() - 60 * 60 * 1000), // 1h stale
+      };
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([device]),
+          }),
+        }),
+      }) as any);
+      const insertValues = vi.fn();
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const result = await executeCommand(
+        'dev-dead',
+        'restart_agent',
+        {},
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/watchdog is not reporting/i);
+      // No row written — fail-fast before insert.
+      expect(insertValues).not.toHaveBeenCalled();
     });
 
     // Regression guard: default options (no targetRole) must still insert

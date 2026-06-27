@@ -17,6 +17,13 @@ import { recordCommandDispatch } from './anomalyMetrics';
 export const DEVICE_UNREACHABLE_ERROR =
   'Device is not currently reachable over the live connection. Please try again in a moment.';
 
+// How fresh `watchdogLastSeen` must be for a watchdog-targeted command to be
+// dispatched. The watchdog only heartbeats while supervising/failing over a
+// silent agent, so a stale value means either the agent is healthy (no
+// watchdog to receive the command) or the whole box is down — in both cases
+// the command can't be delivered, so fail fast instead of queueing forever.
+export const WATCHDOG_STALE_MS = 10 * 60 * 1000;
+
 // Number of times we attempt sendCommandToAgent before releasing the claim
 // and short-circuiting with DEVICE_UNREACHABLE_ERROR. With a 500 ms gap this
 // gives a transient WS hiccup ~1s of grace before the user sees a failure.
@@ -649,6 +656,7 @@ export async function executeCommand(
       agentId: devices.agentId,
       orgId: devices.orgId,
       hostname: devices.hostname,
+      watchdogLastSeen: devices.watchdogLastSeen,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -658,7 +666,27 @@ export async function executeCommand(
     return { status: 'failed', error: 'Device not found' };
   }
 
-  if (device.status !== 'online') {
+  if (targetRole === 'watchdog') {
+    // `device.status` reflects the MAIN agent's liveness (only the main-agent
+    // heartbeat branch writes status/lastSeenAt; the watchdog branch does
+    // not — see routes/agents/heartbeat.ts). A wedged/silent agent is exactly
+    // when a watchdog restart is needed, so gating watchdog commands on
+    // `status === 'online'` would reject the entire population this path
+    // exists for. Gate on the WATCHDOG's own liveness instead. Nothing ever
+    // sets watchdogStatus='offline', so freshness of watchdogLastSeen is the
+    // only reliable signal — and the watchdog only heartbeats while in
+    // FAILOVER (when it actually polls for these commands), so a fresh
+    // watchdogLastSeen also means the command will be claimed.
+    const watchdogAgeMs = device.watchdogLastSeen
+      ? Date.now() - device.watchdogLastSeen.getTime()
+      : Infinity;
+    if (watchdogAgeMs > WATCHDOG_STALE_MS) {
+      return {
+        status: 'failed',
+        error: 'Watchdog is not reporting; cannot dispatch watchdog command',
+      };
+    }
+  } else if (device.status !== 'online') {
     return { status: 'failed', error: `Device is ${device.status}, cannot execute command` };
   }
 

@@ -4,6 +4,7 @@
  * Tools for managing agent versions and upgrades.
  * - query_agent_versions (Tier 1): List available agent versions and check upgrades
  * - trigger_agent_upgrade (Tier 3): Queue an agent upgrade for devices
+ * - trigger_agent_restart (Tier 3): Ask the watchdog to restart a wedged/silent agent
  */
 
 import { db } from '../db';
@@ -227,18 +228,24 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         try {
           // Agent upgrades are executed by the breeze-watchdog process, not
           // the agent. The watchdog handles type `update_agent` and reads
-          // `payload.version` — see agent/cmd/breeze-watchdog/main.go:605.
-          // It has no WS connection and polls via heartbeat, so we must tag
-          // the command with target_role='watchdog' or it will be dispatched
-          // to the agent WS and never picked up.
-          await executeCommand(deviceId, 'update_agent', {
+          // `payload.version` — see agent/cmd/breeze-watchdog/main.go
+          // (handleFailoverCommand). It has no WS connection and polls via
+          // heartbeat, so we must tag the command with target_role='watchdog'
+          // or it will be dispatched to the agent WS and never picked up.
+          // executeCommand RETURNS status:'failed' on dispatch failure rather
+          // than throwing, so inspect the result instead of assuming success.
+          const result = await executeCommand(deviceId, 'update_agent', {
             version: targetVersion,
           }, {
             userId: auth.user.id,
             timeoutMs: 60000,
             targetRole: 'watchdog',
           });
-          queued++;
+          if (result.status === 'failed') {
+            errors[deviceId] = result.error ?? 'Failed to queue upgrade';
+          } else {
+            queued++;
+          }
         } catch (err) {
           errors[deviceId] = err instanceof Error ? err.message : 'Failed to queue upgrade';
         }
@@ -247,6 +254,100 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
       return JSON.stringify({
         queued,
         targetVersion,
+        ...(Object.keys(errors).length > 0 ? { errors } : {}),
+      });
+    },
+  });
+
+  // ============================================
+  // trigger_agent_restart - Tier 3 (requires approval)
+  // ============================================
+
+  registerTool({
+    tier: 3 as AiToolTier,
+    deviceArgs: ['deviceIds'],
+    definition: {
+      name: 'trigger_agent_restart',
+      description:
+        'Ask the breeze-watchdog to restart the main agent on a device — recovers a wedged or silent agent (the "Agent silent · watchdog OK" state). Targets the watchdog, not the agent, so it works even when the agent itself is unresponsive. The watchdog acts on this when it is supervising/failing over the agent; a healthy agent is left untouched.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Device UUIDs whose agent should be restarted (max 50)',
+          },
+        },
+        required: ['deviceIds'],
+      },
+    },
+    handler: async (input, auth) => {
+      const deviceIds = (input.deviceIds as string[]).slice(0, 50);
+      if (deviceIds.length === 0) {
+        return JSON.stringify({ error: 'deviceIds array is required and must not be empty' });
+      }
+
+      // Verify access to the first device (org + site axes).
+      const firstAccess = await verifyDeviceAccess(deviceIds[0]!, auth);
+      if ('error' in firstAccess) return JSON.stringify({ error: firstAccess.error });
+
+      // Verify all deviceIds belong to the caller's org before dispatching.
+      const orgCond = auth.orgCondition(devices.orgId);
+      const accessConditions: SQL[] = [inArray(devices.id, deviceIds)];
+      if (orgCond) accessConditions.push(orgCond);
+
+      const accessibleDevices = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(...accessConditions));
+
+      const accessibleIds = new Set(accessibleDevices.map(d => d.id));
+      const deniedIds = deviceIds.filter(id => !accessibleIds.has(id));
+      if (deniedIds.length > 0) {
+        return JSON.stringify({ error: `Access denied for devices: ${deniedIds.join(', ')}` });
+      }
+
+      // Dispatch restart commands to the WATCHDOG, not the agent. The agent
+      // may be wedged with no live WS; the watchdog has no WS and polls via
+      // heartbeat, so the command must be tagged target_role='watchdog' or it
+      // would be dispatched to the (dead) agent WS and never picked up. The
+      // watchdog handles type `restart_agent` — see
+      // agent/cmd/breeze-watchdog/main.go (handleFailoverCommand). We do NOT
+      // require the device to be online: a silent agent is exactly the case
+      // this tool exists to recover.
+      const { executeCommand } = await getCommandQueue();
+      let queued = 0;
+      const errors: Record<string, string> = {};
+
+      for (const deviceId of deviceIds) {
+        try {
+          // executeCommand signals dispatch failure by RETURNING
+          // status:'failed' (device not found, watchdog not reporting, etc.) —
+          // it does not throw for those. Counting an awaited call as success
+          // would silently report a queued restart that never happened, which
+          // is especially likely here since this tool targets silent devices.
+          // A 'timeout' means the row was written and the watchdog will claim
+          // it on its next failover poll — that counts as queued.
+          const result = await executeCommand(deviceId, 'restart_agent', {}, {
+            userId: auth.user.id,
+            timeoutMs: 60000,
+            targetRole: 'watchdog',
+          });
+          if (result.status === 'failed') {
+            errors[deviceId] = result.error ?? 'Failed to queue restart';
+          } else {
+            queued++;
+          }
+        } catch (err) {
+          errors[deviceId] = err instanceof Error ? err.message : 'Failed to queue restart';
+        }
+      }
+
+      return JSON.stringify({
+        requested: deviceIds.length,
+        queued,
+        action: 'restart_agent',
         ...(Object.keys(errors).length > 0 ? { errors } : {}),
       });
     },
