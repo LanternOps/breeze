@@ -34,13 +34,39 @@ describe('offlineHandler', () => {
     expect(offlineHandler.aliases).toContain('status');
   });
 
-  it('passes when device.status is "offline"', async () => {
-    getDeviceMock.mockResolvedValue(makeDevice({ status: 'offline' }));
+  it('does NOT fire a long-duration rule just because the global detector set status=offline (issue #1982)', async () => {
+    // The global ~5-min offline detector flips device.status to 'offline', but
+    // lastSeenAt is only ~5 min stale. A rule configured for 60 min must NOT
+    // fire yet — it has to honor its own duration, not the global threshold.
+    getDeviceMock.mockResolvedValue(
+      makeDevice({ status: 'offline', lastSeenAt: new Date('2026-06-24T11:55:00.000Z') })
+    );
 
-    const result = await offlineHandler.evaluate({ type: 'offline', durationMinutes: 15 }, DEVICE_ID);
+    const result = await offlineHandler.evaluate({ type: 'offline', durationMinutes: 60 }, DEVICE_ID);
+
+    expect(result.passed).toBe(false);
+  });
+
+  it('fires once lastSeenAt exceeds the per-rule duration, regardless of the status flag (issue #1982)', async () => {
+    // 70 min stale vs a 60-min rule → offline. Driven purely by lastSeenAt.
+    getDeviceMock.mockResolvedValue(
+      makeDevice({ status: 'offline', lastSeenAt: new Date('2026-06-24T10:50:00.000Z') })
+    );
+
+    const result = await offlineHandler.evaluate({ type: 'offline', durationMinutes: 60 }, DEVICE_ID);
 
     expect(result.passed).toBe(true);
-    expect(result.description).toBe('Device offline for 15min');
+    expect(result.description).toBe('Device offline for 60min');
+  });
+
+  it('does NOT pass when lastSeenAt is null (no heartbeat baseline to measure duration)', async () => {
+    // A device that never reported a heartbeat has no offline-duration baseline,
+    // so we can't assert it's been offline for N minutes — don't fire.
+    getDeviceMock.mockResolvedValue(makeDevice({ status: 'offline', lastSeenAt: null }));
+
+    const result = await offlineHandler.evaluate({ type: 'offline', durationMinutes: 5 }, DEVICE_ID);
+
+    expect(result.passed).toBe(false);
   });
 
   it('passes when lastSeenAt is older than the canonical durationMinutes threshold', async () => {
