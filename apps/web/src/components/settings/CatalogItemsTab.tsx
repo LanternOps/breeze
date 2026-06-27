@@ -334,14 +334,21 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                   return (
                     <FragmentRow key={it.id}>
                       <tr
-                        className="cursor-pointer border-t transition hover:bg-muted/40"
+                        className="group cursor-pointer border-t transition hover:bg-muted/40"
                         data-testid={`catalog-item-row-${it.id}`}
                         onClick={(e) => {
-                          // Open the details drawer when the row body is clicked, but
-                          // let the inline controls (bundle toggle, row-actions menu,
-                          // the name button) handle their own clicks.
+                          // Don't hijack a text selection — techs copy SKUs, and a click
+                          // that ends a drag-select must not also open the row.
+                          if (window.getSelection()?.toString()) return;
+                          // Let the inline controls (bundle toggle, row-actions menu, the
+                          // name button) handle their own clicks.
                           if ((e.target as HTMLElement).closest('button,a,input,select,[role="menu"]')) return;
-                          openEdit(it);
+                          // A bundle already has a richer inline detail (components +
+                          // economics) behind the chevron — toggle that instead of the
+                          // editor so the row has one predictable "details" action.
+                          // Editing a bundle stays on the kebab menu.
+                          if (it.isBundle) toggleExpand(it);
+                          else openEdit(it);
                         }}
                       >
                         <td className="px-3 py-3 font-medium">
@@ -364,7 +371,8 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                             )}
                             <button
                               type="button"
-                              onClick={() => openEdit(it)}
+                              onClick={() => (it.isBundle ? toggleExpand(it) : openEdit(it))}
+                              aria-expanded={it.isBundle ? isOpen : undefined}
                               className="rounded text-left hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                               data-testid={`catalog-item-name-${it.id}`}
                             >
@@ -389,15 +397,28 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                           {formatMargin(margin)}
                         </td>
                         <td className="px-3 py-3 text-right">
-                          <RowActions
-                            item={it}
-                            view={view}
-                            busy={archivingId === it.id}
-                            disabled={archivingId !== null}
-                            onEdit={() => openEdit(it)}
-                            onArchive={() => setPendingArchive(it)}
-                            onRestore={() => void restore(it.id)}
-                          />
+                          <div className="flex items-center justify-end gap-1.5">
+                            {/* Hover-only disclosure cue: signals the row opens the
+                                details drawer. Bundles use their leading chevron instead. */}
+                            {!it.isBundle && (
+                              <svg
+                                aria-hidden="true"
+                                className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-60"
+                                viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                              >
+                                <path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                            <RowActions
+                              item={it}
+                              view={view}
+                              busy={archivingId === it.id}
+                              disabled={archivingId !== null}
+                              onEdit={() => openEdit(it)}
+                              onArchive={() => setPendingArchive(it)}
+                              onRestore={() => void restore(it.id)}
+                            />
+                          </div>
                         </td>
                       </tr>
                       {isOpen && (

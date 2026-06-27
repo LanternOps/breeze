@@ -62,6 +62,10 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   const { can } = usePermissions();
   const canWrite = can('catalog', 'write');
+  // A user who can't write opens this drawer to *read* an item (e.g. a manager
+  // browsing the catalog, or the row-click "see details" path). Render the fields
+  // as a clean read-only view instead of an editable-looking form with no Save.
+  const readOnly = !canWrite;
   // Per-org overrides are a partner surface (an MSP pricing a customer). Detect
   // partner scope from the JWT claims — useOrgStore().partners is only populated
   // from a system-scope-only endpoint, so a real partner-scope user gets an empty
@@ -430,7 +434,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   if (!open || typeof document === 'undefined') return null;
 
-  const fieldCls = 'w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+  const fieldCls = 'w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring read-only:cursor-default read-only:bg-muted/40 read-only:focus:ring-0';
 
   return createPortal(
     <div
@@ -453,7 +457,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
         {/* Header */}
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 id={titleId} className="text-base font-semibold">
-            {editId ? 'Edit item' : 'New item'}
+            {editId ? (readOnly ? 'Item details' : 'Edit item') : 'New item'}
           </h2>
           <button
             type="button"
@@ -486,9 +490,10 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                   key={t}
                   type="button"
                   onClick={() => setItemType(t)}
+                  disabled={readOnly}
                   aria-pressed={itemType === t}
-                  className={`rounded px-2 py-1.5 text-sm font-medium transition ${
-                    itemType === t ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                  className={`rounded px-2 py-1.5 text-sm font-medium transition disabled:cursor-default ${
+                    itemType === t ? 'bg-card text-foreground shadow-sm' : `text-muted-foreground ${readOnly ? '' : 'hover:text-foreground'}`
                   }`}
                   data-testid={`catalog-form-type-${t}`}
                 >
@@ -504,6 +509,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               id="catalog-form-name-input"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              readOnly={readOnly}
               className={fieldCls}
               placeholder="e.g. Managed Workstation"
               data-testid="catalog-form-name"
@@ -516,6 +522,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               id="catalog-form-sku-input"
               value={sku}
               onChange={(e) => setSku(e.target.value)}
+              readOnly={readOnly}
               className={`${fieldCls} font-mono`}
               placeholder="SKU-001"
               data-testid="catalog-form-sku"
@@ -530,6 +537,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                 value={unitPrice}
                 onChange={(e) => setUnitPrice(e.target.value)}
                 inputMode="decimal"
+                readOnly={readOnly}
                 className={`${fieldCls} text-right tabular-nums`}
                 placeholder="0.00"
                 data-testid="catalog-form-price"
@@ -542,6 +550,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                 value={costBasis}
                 onChange={(e) => setCostBasis(e.target.value)}
                 inputMode="decimal"
+                readOnly={readOnly}
                 className={`${fieldCls} text-right tabular-nums`}
                 placeholder="0.00"
                 data-testid="catalog-form-cost"
@@ -620,6 +629,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               type="checkbox"
               checked={isBundle}
               onChange={(e) => setIsBundle(e.target.checked)}
+              disabled={readOnly}
               className="h-4 w-4"
               data-testid="catalog-form-bundle"
             />
@@ -670,7 +680,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                           <select
                             value={c.componentItemId}
                             onChange={(e) => patchComponent(idx, { componentItemId: e.target.value })}
-                            className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            disabled={readOnly}
+                            className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-default disabled:bg-muted/40"
                             data-testid={`catalog-bundle-item-${idx}`}
                           >
                             <option value="">Select item…</option>
@@ -686,7 +697,8 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                             onChange={(e) => patchComponent(idx, { quantity: e.target.value })}
                             inputMode="decimal"
                             aria-label="Quantity"
-                            className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
+                            readOnly={readOnly}
+                            className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring read-only:cursor-default read-only:bg-muted/40"
                             data-testid={`catalog-bundle-qty-${idx}`}
                           />
                           {canWrite && (
@@ -708,6 +720,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                             type="checkbox"
                             checked={c.showOnInvoice}
                             onChange={(e) => patchComponent(idx, { showOnInvoice: e.target.checked })}
+                            disabled={readOnly}
                             data-testid={`catalog-bundle-showoninvoice-${idx}`}
                           />
                           Show this line on the invoice
@@ -806,7 +819,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
             className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
             data-testid="catalog-form-cancel"
           >
-            Cancel
+            {readOnly ? 'Close' : 'Cancel'}
           </button>
           {canWrite && (
             <button

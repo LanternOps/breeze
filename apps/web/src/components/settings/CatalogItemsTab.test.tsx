@@ -146,6 +146,35 @@ describe('CatalogItemsTab', () => {
     expect(screen.queryByTestId('catalog-item-editor')).not.toBeInTheDocument();
   });
 
+  it('clicking a bundle row expands its inline detail instead of opening the editor', async () => {
+    render(<CatalogItemsTab />);
+    await screen.findByText('Starter Bundle');
+
+    // Bundles own a richer inline detail (components + economics); the row-click
+    // surfaces that rather than the edit drawer, so the row has one predictable
+    // "details" action. Editing a bundle stays on the kebab menu.
+    fireEvent.click(screen.getByTestId('catalog-item-row-b1'));
+
+    await screen.findByTestId('catalog-bundle-detail-b1');
+    expect(screen.queryByTestId('catalog-item-editor')).not.toBeInTheDocument();
+  });
+
+  it('does not open a row when the click ends a text selection (SKU copy)', async () => {
+    const getSelectionSpy = vi
+      .spyOn(window, 'getSelection')
+      .mockReturnValue({ toString: () => 'WID-1' } as unknown as Selection);
+    try {
+      render(<CatalogItemsTab />);
+      await screen.findByText('Widget Service');
+
+      fireEvent.click(screen.getByTestId('catalog-item-row-w1'));
+
+      expect(screen.queryByTestId('catalog-item-editor')).not.toBeInTheDocument();
+    } finally {
+      getSelectionSpy.mockRestore();
+    }
+  });
+
   it('creates a bundle and PUTs components including showOnInvoice', async () => {
     render(<CatalogItemsTab />);
     await screen.findByText('Widget Service');

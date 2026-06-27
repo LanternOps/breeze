@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CatalogItemsTab from './CatalogItemsTab';
@@ -68,6 +68,23 @@ describe('CatalogItemsTab — permission gating', () => {
     expect(screen.queryByTestId('catalog-add-item')).not.toBeInTheDocument();
     // RowActions has nothing actionable → it renders no kebab trigger at all.
     expect(screen.queryByTestId('catalog-actions-l1')).not.toBeInTheDocument();
+  });
+
+  it('read-only row-click opens the item as a read-only "details" view', async () => {
+    state.permissions = [{ resource: 'catalog', action: 'read' }];
+    render(<CatalogItemsTab />);
+    await screen.findByText('Laptop');
+
+    // No write grant → the row-click "see details" path must not present an
+    // editable-looking form with no Save. Header reads "Item details", fields
+    // are read-only, and there's no Save button.
+    fireEvent.click(screen.getByTestId('catalog-item-row-l1'));
+    const drawer = await screen.findByTestId('catalog-item-editor');
+
+    expect(within(drawer).getByText('Item details')).toBeInTheDocument();
+    expect(within(drawer).queryByText('Edit item')).not.toBeInTheDocument();
+    expect(within(drawer).getByTestId('catalog-form-name')).toHaveAttribute('readonly');
+    expect(within(drawer).queryByTestId('catalog-form-save')).not.toBeInTheDocument();
   });
 
   it('write-without-delete shows Add item and Edit but NOT Archive', async () => {

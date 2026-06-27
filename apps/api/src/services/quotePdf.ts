@@ -41,6 +41,17 @@ function recurrenceSuffix(recurrence: string | null | undefined): string {
   return '';
 }
 
+/** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
+ *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
+ *  as '—'). The summary Tax stays quote.tax_total (authoritative), so the summed
+ *  column can differ by a rounding cent on many-line quotes. */
+function lineTax(lineTotal: string | number | null | undefined, taxable: boolean, rate: number): number | null {
+  if (!taxable || !(rate > 0)) return null;
+  const cents = Math.round(Number(lineTotal ?? 0) * 100);
+  if (!Number.isFinite(cents)) return null;
+  return Math.round(cents * rate) / 100;
+}
+
 function hexToColor(value: string | null | undefined, fallback: string): string {
   if (!value) return fallback;
   const v = value.startsWith('#') ? value : `#${value}`;
@@ -117,6 +128,7 @@ interface QuoteLine {
   unitPrice: string | number;
   lineTotal?: string | number | null;
   recurrence?: string | null;
+  taxable?: boolean | null;
 }
 
 /** Loads a catalog item's product image bytes (or null). Injected so renderQuotePdf
@@ -130,21 +142,39 @@ type LoadCatalogImage = (catalogItemId: string) => Promise<{ data: Buffer } | nu
 
 interface Cols {
   left: number; right: number; contentWidth: number;
-  colQtyX: number; colDescW: number; colUnitX: number; colNumW: number; colAmtX: number;
+  colQtyX: number; colDescX: number; colDescW: number; colUnitX: number; colTaxX: number; colNumW: number; colAmtX: number;
+  showTax: boolean;
 }
 
-function columnsFor(doc: PDFKit.PDFDocument): Cols {
+// When showTax is set the table carries a fifth column (qty | description | unit
+// | tax | total) and the money columns narrow to fit; otherwise the original
+// four-column layout (qty | description | unit | total) is preserved so existing
+// tax-free quotes render byte-identically. The summary uses the same colAmtX so
+// its amounts stay aligned under TOTAL.
+function columnsFor(doc: PDFKit.PDFDocument, showTax = false): Cols {
   const left = doc.page.margins.left;
   const right = doc.page.width - doc.page.margins.right;
   const contentWidth = right - left;
+  const colDescX = left + contentWidth * 0.12;
+  if (showTax) {
+    return {
+      left, right, contentWidth, showTax,
+      colQtyX: left,
+      colDescX,
+      colDescW: contentWidth * 0.36,
+      colUnitX: left + contentWidth * 0.50,
+      colTaxX: left + contentWidth * 0.67,
+      colAmtX: left + contentWidth * 0.84,
+      colNumW: contentWidth * 0.15,
+    };
+  }
   return {
-    left,
-    right,
-    contentWidth,
-    // qty | description | unit | total
+    left, right, contentWidth, showTax,
     colQtyX: left,
+    colDescX,
     colDescW: contentWidth * 0.46,
     colUnitX: left + contentWidth * 0.60,
+    colTaxX: left + contentWidth * 0.70, // unused when !showTax
     colAmtX: left + contentWidth * 0.80,
     colNumW: contentWidth * 0.18,
   };
@@ -171,8 +201,10 @@ async function renderLineTable(
   currency: string,
   startY: number,
   loadCatalogImage: LoadCatalogImage,
+  taxRate = 0,
+  showTax = false,
 ): Promise<number> {
-  const c = columnsFor(doc);
+  const c = columnsFor(doc, showTax);
   let y = ensureSpace(doc, startY, 60);
 
   // Pre-load product images (DB I/O) for catalog-sourced lines. A failed load
@@ -191,7 +223,7 @@ async function renderLineTable(
   // Reserve a thumbnail gutter only when at least one line has an image, so the
   // description column stays aligned across rows.
   const gutter = imageByLine.size > 0 ? THUMB + 8 : 0;
-  const descW = c.contentWidth * 0.46 - gutter;
+  const descW = c.colDescW - gutter;
 
   // Header row with a light fill bar.
   doc.save();
@@ -199,13 +231,14 @@ async function renderLineTable(
   doc.restore();
   doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
   doc.text('QTY', c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
-  doc.text('DESCRIPTION', c.colQtyX + c.contentWidth * 0.12, y, { width: c.contentWidth * 0.46, align: 'left' });
+  doc.text('DESCRIPTION', c.colDescX, y, { width: c.colDescW, align: 'left' });
   doc.text('UNIT', c.colUnitX, y, { width: c.colNumW, align: 'right' });
+  if (showTax) doc.text('TAX', c.colTaxX, y, { width: c.colNumW, align: 'right' });
   doc.text('TOTAL', c.colAmtX, y, { width: c.colNumW, align: 'right' });
   y += 18;
   y += 6;
 
-  const descX = c.colQtyX + c.contentWidth * 0.12;
+  const descX = c.colDescX;
   for (const l of lines) {
     y = ensureSpace(doc, y, Math.max(30, gutter));
     doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
@@ -217,6 +250,11 @@ async function renderLineTable(
     }
     doc.text(l.description, descX + gutter, y, { width: descW });
     doc.text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
+    if (showTax) {
+      const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
+      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), c.colTaxX, y, { width: c.colNumW, align: 'right' });
+      doc.fillColor('#1f2937');
+    }
     const suffix = recurrenceSuffix(l.recurrence);
     doc.text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
     y += Math.max(descHeight, img ? THUMB : 12) + 6;
@@ -235,8 +273,8 @@ async function renderLineTable(
 // amount.
 // ---------------------------------------------------------------------------
 
-function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, currency: string, primary: string, startY: number): number {
-  const c = columnsFor(doc);
+function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, currency: string, primary: string, startY: number, showTax = false): number {
+  const c = columnsFor(doc, showTax);
   let y = ensureSpace(doc, startY + 6, 90);
 
   // Wider label column than the line table's so the emphasised "Due on
@@ -295,6 +333,9 @@ export async function renderQuotePdf(
   const currency = quote.currencyCode ?? branding.currencyCode ?? 'USD';
   const primary = hexToColor(branding.primaryColor, '#2563eb');
   const partnerName = branding.partnerName ?? 'Proposal';
+  // Per-line Tax column only when this quote carries tax (mirrors the summary).
+  const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
+  const showTax = Number(quote.taxTotal ?? 0) > 0;
 
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
   const chunks: Buffer[] = [];
@@ -407,17 +448,17 @@ export async function renderQuotePdf(
           doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
           y = doc.y + 6;
         }
-        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage);
+        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, taxRate, showTax);
       }
     }
   }
 
   // ---- Trailing default table for lines with no block ----------------------
   const orphanLines = lines.filter((l) => !l.blockId);
-  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, y, loadCatalogImage);
+  if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, y, loadCatalogImage, taxRate, showTax);
 
   // ---- Recurring summary footer -------------------------------------------
-  y = renderRecurringSummary(doc, quote, currency, primary, y);
+  y = renderRecurringSummary(doc, quote, currency, primary, y, showTax);
 
   // ---- Terms & Conditions --------------------------------------------------
   if (quote.termsAndConditions) {

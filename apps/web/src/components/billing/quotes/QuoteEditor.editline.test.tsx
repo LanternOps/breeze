@@ -103,7 +103,10 @@ describe('QuoteEditor — inline line editing', () => {
       expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { description: 'Premium managed support' });
     });
     expect(onChanged).toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Line updated' }));
+    // Routine inline edits no longer fire a success toast (that was per-field
+    // spam) — they flash a quiet "Saved" cue on the row instead.
+    await waitFor(() => expect(screen.getByTestId('quote-line-saved-line-1')).toBeInTheDocument());
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Line updated' }));
   });
 
   it('changing quantity sends a numeric quantity', async () => {

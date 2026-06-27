@@ -390,6 +390,7 @@ export interface QuoteLine {
   quantity: string;
   unitPrice: string;
   lineTotal: string;
+  taxable?: boolean;
   recurrence: string;
   customerVisible: boolean;
   sortOrder: number;
@@ -399,6 +400,7 @@ export interface QuoteHeader extends QuoteSummary {
   introNotes?: string | null;
   terms?: string | null;
   subtotal?: string;
+  taxRate?: string | null;
   taxTotal?: string;
   oneTimeTotal?: string;
   monthlyRecurringTotal?: string;

@@ -76,7 +76,36 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
 
-  const [busy, setBusy] = useState(false);
+  // Per-item "saving" state, keyed so one in-flight mutation never freezes the
+  // rest of the editor. Keys: 'terms', 'tax', 'add-block', `block:<id>`,
+  // `add-line:<blockId>`, `line:<id>`. `pending` drives disabled styling;
+  // `inFlight` is the synchronous double-submit guard (state updates are async).
+  const inFlight = useRef<Set<string>>(new Set());
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  const isPending = useCallback((key: string) => pending.has(key), [pending]);
+
+  // Run a scoped mutation: mark the key pending, run, surface failures via the
+  // standard handleActionError path, and always clear the key. Returns whether
+  // the mutation succeeded so callers can flash a quiet "Saved" cue.
+  const runScoped = useCallback(
+    async (key: string, fn: () => Promise<void>, errMsg: string): Promise<boolean> => {
+      if (inFlight.current.has(key)) return false;
+      inFlight.current.add(key);
+      setPending((s) => { const n = new Set(s); n.add(key); return n; });
+      try {
+        await fn();
+        return true;
+      } catch (err) {
+        handleActionError(err, errMsg);
+        return false;
+      } finally {
+        inFlight.current.delete(key);
+        setPending((s) => { const n = new Set(s); n.delete(key); return n; });
+      }
+    },
+    [],
+  );
+
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [ecActive, setEcActive] = useState(false);
   const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
@@ -84,6 +113,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   // Tax rate is stored as a fraction ('0.07'); the input edits it as a percent ('7').
   const [taxPct, setTaxPct] = useState(pctFromFraction(quote.taxRate));
   const [taxDirty, setTaxDirty] = useState(false);
+  // Inline validation message for the tax field — an out-of-range/non-numeric
+  // entry no longer silently reverts; we keep the bad value and explain why.
+  const [taxError, setTaxError] = useState<string | null>(null);
   const canCatalogWrite = can('catalog', 'write');
 
   // ---- add-block form ------------------------------------------------------
@@ -100,9 +132,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const refresh = useCallback(() => onChanged(), [onChanged]);
 
   const saveTerms = useCallback(async () => {
-    if (busy || !termsDirty) return;
-    setBusy(true);
-    try {
+    if (!termsDirty) return;
+    await runScoped('terms', async () => {
       await runAction({
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
           method: 'PATCH', body: JSON.stringify({ termsAndConditions: terms }),
@@ -113,19 +144,15 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       });
       setTermsDirty(false);
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not save terms.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, termsDirty, terms, quote.id, refresh]);
+    }, 'Could not save terms.');
+  }, [termsDirty, terms, quote.id, refresh, runScoped]);
 
   // Persist the tax rate as a fraction. Empty clears it (null); otherwise the
   // percent is clamped to 0–100 (fraction 0–1, matching updateQuoteSchema) and an
   // out-of-range/non-numeric entry resets to the persisted value rather than
   // saving garbage. The server recomputes taxTotal/total, so refresh() re-pulls.
   const saveTaxRate = useCallback(async () => {
-    if (busy || !taxDirty) return;
+    if (!taxDirty) return;
     const trimmed = taxPct.trim();
     let fraction: number | null;
     if (trimmed === '') {
@@ -133,14 +160,15 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     } else {
       const pct = Number(trimmed);
       if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-        setTaxPct(pctFromFraction(quote.taxRate));
-        setTaxDirty(false);
+        // Keep the user's entry (don't snap it away) and explain the constraint
+        // inline instead of swallowing it.
+        setTaxError('Enter a rate from 0 to 100.');
         return;
       }
       fraction = Number((pct / 100).toFixed(5));
     }
-    setBusy(true);
-    try {
+    setTaxError(null);
+    await runScoped('tax', async () => {
       await runAction({
         request: () => fetchWithAuth(`/quotes/${quote.id}`, {
           method: 'PATCH', body: JSON.stringify({ taxRate: fraction }),
@@ -151,12 +179,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       });
       setTaxDirty(false);
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not save the tax rate.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, taxDirty, taxPct, quote.id, quote.taxRate, refresh]);
+    }, 'Could not save the tax rate.');
+  }, [taxDirty, taxPct, quote.id, refresh, runScoped]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -194,8 +218,6 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   // ---- add block -----------------------------------------------------------
   const submitBlock = useCallback(async () => {
-    if (busy) return;
-
     // Image blocks have no block-update endpoint, so the file must exist before
     // the block: upload it (POST /:id/images → { data: { imageId } }), then add
     // an image block with that imageId already in its content. Both steps go
@@ -203,8 +225,13 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     if (addType === 'image') {
       const file = imageFile;
       if (!file) return;
-      setBusy(true);
-      try {
+      // Honor the "up to 5 MB" promise client-side so the user gets an immediate,
+      // specific message instead of a generic server-side upload failure.
+      if (file.size > 5 * 1024 * 1024) {
+        handleActionError(new Error('image too large'), 'Image must be 5 MB or smaller.');
+        return;
+      }
+      await runScoped('add-block', async () => {
         const uploaded = await runAction<{ imageId: string }>({
           request: () => uploadQuoteImage(quote.id, file),
           errorFallback: 'Could not upload the image.',
@@ -226,11 +253,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         });
         setImageFile(null); setImageCaption('');
         refresh();
-      } catch (err) {
-        handleActionError(err, 'Could not add the image block.');
-      } finally {
-        setBusy(false);
-      }
+      }, 'Could not add the image block.');
       return;
     }
 
@@ -247,8 +270,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         content: tableLabel.trim() ? { label: tableLabel.trim() } : {},
       };
     }
-    setBusy(true);
-    try {
+    await runScoped('add-block', async () => {
       await runAction({
         request: () => addBlock(quote.id, body),
         errorFallback: 'Could not add the block.',
@@ -257,24 +279,21 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       });
       setHeadingText(''); setRichText(''); setTableLabel('');
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not add the block.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, addType, headingText, richText, tableLabel, imageFile, imageCaption, quote.id, refresh]);
+    }, 'Could not add the block.');
+  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, quote.id, refresh, runScoped]);
 
   // Removing a line_items block cascades to every line under it (server-side), so
   // the card's Remove button opens a confirm step instead of deleting outright.
   const [pendingRemove, setPendingRemove] = useState<QuoteBlock | null>(null);
+  // Line removal is equally irreversible, so it gets the same confirm step the
+  // block remove has (rather than deleting on a single click).
+  const [pendingLineRemove, setPendingLineRemove] = useState<QuoteLine | null>(null);
 
   // Real block delete: removes the block and (server-side) any lines attached to
   // it. Works for every block type — heading, rich_text, and line_items — so the
   // "Remove" button is no longer a silent no-op for heading/rich_text blocks.
-  const removeBlock = useCallback(async (block: QuoteBlock) => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  const removeBlock = useCallback((block: QuoteBlock) =>
+    runScoped(`block:${block.id}`, async () => {
       await runAction({
         request: () => deleteBlock(quote.id, block.id),
         errorFallback: 'Could not remove the block.',
@@ -282,12 +301,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not remove the block.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, quote.id, refresh]);
+    }, 'Could not remove the block.'),
+  [quote.id, refresh, runScoped]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
   const doAddCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
@@ -300,13 +315,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     refresh();
   }, [quote.id, refresh]);
 
-  const addCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
-    if (busy) return;
-    setBusy(true);
-    try { await doAddCatalog(blockId, item); }
-    catch (err) { handleActionError(err, 'Could not add the catalog item.'); }
-    finally { setBusy(false); }
-  }, [busy, doAddCatalog]);
+  const addCatalog = useCallback((blockId: string, item: CatalogItem) =>
+    runScoped(`add-line:${blockId}`, () => doAddCatalog(blockId, item), 'Could not add the catalog item.'),
+  [doAddCatalog, runScoped]);
 
   const resolveCatalogBySku = useCallback(async (sku: string): Promise<CatalogItem | null> => {
     const fromState = catalog.find((i) => i.sku === sku);
@@ -321,10 +332,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     return (body?.data ?? []).find((i) => i.sku === sku) ?? null;
   }, [catalog]);
 
-  const importAndAddDistributor = useCallback(async (blockId: string, product: EcProduct, sellPrice: number) => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  const importAndAddDistributor = useCallback((blockId: string, product: EcProduct, sellPrice: number) =>
+    runScoped(`add-line:${blockId}`, async () => {
       // Check the catalog first: if this SKU is already imported, add the existing
       // item directly. This avoids the duplicate-SKU error toast (runAction toasts
       // the failure before throwing) firing on the common "already in catalog" path,
@@ -351,26 +360,28 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       }
       await doAddCatalog(blockId, item);
       void loadCatalog(); // surface a newly-imported item in the catalog picker too
-    } catch (err) {
-      handleActionError(err, 'Could not add the distributor item.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, doAddCatalog, resolveCatalogBySku, loadCatalog]);
+    }, 'Could not add the distributor item.'),
+  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped]);
 
-  const addManual = useCallback(async (
+  const addManual = useCallback((
     blockId: string,
     form: { description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
   ) => {
-    if (busy || !form.description.trim()) return;
-    setBusy(true);
-    try {
+    if (!form.description.trim()) return Promise.resolve(false);
+    // Guard qty 0 / non-numeric here too — the inline edit path already does, and
+    // a silent $0-quantity line is a real footgun on the add path.
+    const qtyNum = Number(form.quantity);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+      return Promise.resolve(false);
+    }
+    return runScoped(`add-line:${blockId}`, async () => {
       await runAction({
         request: () => addManualLine(quote.id, {
           sourceType: 'manual',
           blockId,
           description: form.description.trim(),
-          quantity: Number(form.quantity),
+          quantity: qtyNum,
           unitPrice: Number(form.unitPrice),
           taxable: form.taxable,
           customerVisible: true,
@@ -402,17 +413,11 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         void loadCatalog();
       }
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not add the line.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, quote.id, refresh, loadCatalog]);
+    }, 'Could not add the line.');
+  }, [quote.id, refresh, loadCatalog, runScoped]);
 
-  const deleteLine = useCallback(async (lineId: string) => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  const deleteLine = useCallback((lineId: string) =>
+    runScoped(`line:${lineId}`, async () => {
       await runAction({
         request: () => removeLine(quote.id, lineId),
         errorFallback: 'Could not remove the line.',
@@ -420,54 +425,39 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not remove the line.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, quote.id, refresh]);
+    }, 'Could not remove the line.'),
+  [quote.id, refresh, runScoped]);
 
   // Inline edit of an existing line. `body` carries only the changed fields
-  // (matches updateQuoteLineSchema). Routed through runAction so success/failure
-  // is surfaced, then refresh() re-pulls the quote so totals recompute.
-  const editLine = useCallback(async (lineId: string, body: LineUpdate) => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  // (matches updateQuoteLineSchema). Routed through runAction so failures are
+  // surfaced, then refresh() re-pulls the quote so totals recompute. Returns
+  // whether it succeeded so the row can flash a quiet "Saved" cue — routine
+  // inline edits no longer fire a success toast (that was per-field spam).
+  const editLine = useCallback((lineId: string, body: LineUpdate) =>
+    runScoped(`line:${lineId}`, async () => {
       await runAction({
         request: () => updateLine(quote.id, lineId, body),
         errorFallback: 'Could not update the line.',
-        successMessage: 'Line updated',
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not update the line.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, quote.id, refresh]);
+    }, 'Could not update the line.'),
+  [quote.id, refresh, runScoped]);
 
   // Inline edit of a block's content (heading text/level, rich-text html). The
   // block type is restated so the server validates the content shape; it is
-  // immutable and never changes here.
-  const editBlock = useCallback(async (block: QuoteBlock, content: Record<string, unknown>) => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  // immutable and never changes here. Like editLine, success is quiet (the row
+  // flashes "Saved"); only failures toast.
+  const editBlock = useCallback((block: QuoteBlock, content: Record<string, unknown>) =>
+    runScoped(`block:${block.id}`, async () => {
       await runAction({
         request: () => updateBlock(quote.id, block.id, { blockType: block.blockType, content } as QuoteBlockInput),
         errorFallback: 'Could not update the block.',
-        successMessage: 'Block updated',
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not update the block.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, quote.id, refresh]);
+    }, 'Could not update the block.'),
+  [quote.id, refresh, runScoped]);
 
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
@@ -490,7 +480,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 lines={linesForBlock(block.id)}
                 currency={currency}
                 catalog={catalog}
-                busy={busy}
+                isPending={isPending}
                 canWrite={canWrite}
                 ecActive={ecActive}
                 onAddCatalog={addCatalog}
@@ -498,7 +488,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 onAddManual={addManual}
                 onEditLine={editLine}
                 onEditBlock={editBlock}
-                onRemoveLine={deleteLine}
+                onRemoveLine={setPendingLineRemove}
                 onRemoveBlock={setPendingRemove}
               />
             ))
@@ -513,6 +503,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 <button
                   key={o.value}
                   type="button"
+                  aria-pressed={addType === o.value}
                   onClick={() => setAddType(o.value)}
                   data-testid={`quote-add-block-type-${o.value}`}
                   className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
@@ -580,7 +571,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 type="button"
                 onClick={() => void submitBlock()}
                 disabled={
-                  busy ||
+                  isPending('add-block') ||
                   (addType === 'heading' && !headingText.trim()) ||
                   (addType === 'rich_text' && !richText.trim()) ||
                   (addType === 'image' && !imageFile)
@@ -596,8 +587,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         </div>
 
         {/* ── live totals + terms ────────────────────────────────────── */}
-        <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-live-totals">
+        {/* Sticky on lg so the totals you're building against stay visible while
+            scrolling the blocks; on narrow widths this column stacks below. */}
+        <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
+          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="quote-live-totals" aria-live="polite">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live totals</h3>
             <dl className="space-y-2 text-sm tabular-nums">
               <div className="flex items-baseline justify-between">
@@ -631,17 +624,25 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                       max="100"
                       step="0.001"
                       value={taxPct}
-                      onChange={(e) => { setTaxPct(e.target.value); setTaxDirty(true); }}
+                      onChange={(e) => { setTaxPct(e.target.value); setTaxDirty(true); if (taxError) setTaxError(null); }}
                       onBlur={() => void saveTaxRate()}
-                      disabled={busy}
+                      disabled={isPending('tax')}
                       placeholder="0"
+                      aria-invalid={taxError !== null}
+                      aria-describedby={taxError ? 'quote-tax-rate-error' : undefined}
                       data-testid="quote-tax-rate"
-                      className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${taxDirty ? 'ring-1 ring-warning' : ''}`}
+                      className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 ${
+                        taxError ? 'border-destructive ring-1 ring-destructive' : taxDirty ? 'ring-1 ring-warning' : ''
+                      }`}
                     />
                     <span className="text-sm text-muted-foreground">%</span>
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">Applies to lines marked taxable.</p>
+                {taxError ? (
+                  <p className="mt-1 text-xs text-destructive" id="quote-tax-rate-error" data-testid="quote-tax-rate-error">{taxError}</p>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">Applies to lines marked taxable.</p>
+                )}
               </div>
             )}
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
@@ -688,7 +689,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           setPendingRemove(null);
           if (block) void removeBlock(block);
         }}
-        isLoading={busy}
+        isLoading={pendingRemove ? isPending(`block:${pendingRemove.id}`) : false}
         title="Remove block"
         message={
           pendingRemove?.blockType === 'line_items' && linesForBlock(pendingRemove.id).length > 0
@@ -700,20 +701,39 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         confirmLabel="Remove block"
         confirmTestId="quote-block-remove-confirm"
       />
+
+      <ConfirmDialog
+        open={pendingLineRemove !== null}
+        onClose={() => setPendingLineRemove(null)}
+        onConfirm={() => {
+          const line = pendingLineRemove;
+          setPendingLineRemove(null);
+          if (line) void deleteLine(line.id);
+        }}
+        isLoading={pendingLineRemove ? isPending(`line:${pendingLineRemove.id}`) : false}
+        title="Remove line"
+        message={
+          pendingLineRemove
+            ? `This removes "${pendingLineRemove.description || 'this line'}" from the quote. This can’t be undone.`
+            : ''
+        }
+        confirmLabel="Remove line"
+        confirmTestId="quote-line-remove-confirm"
+      />
     </div>
   );
 }
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, catalog, busy, canWrite, ecActive, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onRemoveLine, onRemoveBlock,
+  block, quoteId, lines, currency, catalog, isPending, canWrite, ecActive, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onRemoveLine, onRemoveBlock,
 }: {
   block: QuoteBlock;
   quoteId: string;
   lines: QuoteLine[];
   currency: string;
   catalog: CatalogItem[];
-  busy: boolean;
+  isPending: (key: string) => boolean;
   canWrite: boolean;
   ecActive: boolean;
   onAddCatalog: (blockId: string, item: CatalogItem) => void;
@@ -721,12 +741,17 @@ function BlockCard({
   onAddManual: (
     blockId: string,
     form: { description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
-  ) => void;
-  onEditLine: (lineId: string, body: LineUpdate) => void;
-  onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => void;
-  onRemoveLine: (lineId: string) => void;
+  ) => Promise<boolean>;
+  onEditLine: (lineId: string, body: LineUpdate) => Promise<boolean>;
+  onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
+  onRemoveLine: (line: QuoteLine) => void;
   onRemoveBlock: (block: QuoteBlock) => void;
 }) {
+  // Pending state scoped to this block: editing/removing this block, or adding a
+  // line to it, never disables anything in a sibling block.
+  const blockBusy = isPending(`block:${block.id}`);
+  const addLineBusy = isPending(`add-line:${block.id}`);
+
   const [mode, setMode] = useState<'catalog' | 'manual' | 'distributor'>('catalog');
   const [desc, setDesc] = useState('');
   const [qty, setQty] = useState('1');
@@ -761,33 +786,49 @@ function BlockCard({
     lastHtml.current = html;
   }, [html]);
 
-  const commitHeading = () => {
+  // Quiet "Saved" flash for inline content edits (replaces the old per-edit
+  // success toast). Cleared on unmount so a late timer can't setState a gone row.
+  const [blockSaved, setBlockSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
+  const flashSaved = useCallback(() => {
+    setBlockSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setBlockSaved(false), 1500);
+  }, []);
+
+  const commitHeading = async () => {
     const text = headingDraft.trim();
     if (!text || text === heading) { setHeadingDraft(heading); return; }
-    onEditBlock(block, { text, level: (block.content?.level as number | undefined) ?? 2 });
+    if (await onEditBlock(block, { text, level: (block.content?.level as number | undefined) ?? 2 })) flashSaved();
   };
-  const commitRich = () => {
+  const commitRich = async () => {
     if (richDraft === html) return;
-    onEditBlock(block, { html: richDraft });
+    if (await onEditBlock(block, { html: richDraft })) flashSaved();
   };
 
-  const submitManual = () => {
-    onAddManual(block.id, { description: desc, quantity: qty, unitPrice: price, taxable, recurrence, saveToCatalog });
-    setDesc(''); setQty('1'); setPrice('0.00'); setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false);
+  const submitManual = async () => {
+    const ok = await onAddManual(block.id, { description: desc, quantity: qty, unitPrice: price, taxable, recurrence, saveToCatalog });
+    // Only clear the form on success, so a rejected add (e.g. qty 0) keeps the
+    // user's input to correct rather than wiping it.
+    if (ok) { setDesc(''); setQty('1'); setPrice('0.00'); setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); }
   };
 
   return (
     <div className="rounded-lg border bg-card shadow-sm" data-testid={`quote-block-${block.id}`}>
       <div className="flex items-center justify-between border-b px-4 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {BLOCK_TYPE_LABELS[block.blockType] ?? block.blockType}
           {isTable && tableLabel ? ` · ${tableLabel}` : ''}
+          {blockSaved && (
+            <span className="font-medium normal-case tracking-normal text-success" data-testid={`quote-block-saved-${block.id}`}>Saved</span>
+          )}
         </span>
         {canWrite && (
           <button
             type="button"
             onClick={() => onRemoveBlock(block)}
-            disabled={busy}
+            disabled={blockBusy}
             data-testid={`quote-block-remove-${block.id}`}
             className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
           >
@@ -801,11 +842,12 @@ function BlockCard({
           canWrite ? (
             <input
               value={headingDraft}
+              aria-label="Heading text"
               onChange={(e) => setHeadingDraft(e.target.value)}
-              onBlur={commitHeading}
-              disabled={busy}
+              onBlur={() => void commitHeading()}
+              disabled={blockBusy}
               data-testid={`quote-block-heading-input-${block.id}`}
-              className="w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold"
+              className="w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold disabled:opacity-60"
             />
           ) : (
             <p className="text-lg font-semibold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
@@ -815,12 +857,13 @@ function BlockCard({
           canWrite ? (
             <textarea
               value={richDraft}
+              aria-label="Rich text content"
               onChange={(e) => setRichDraft(e.target.value)}
-              onBlur={commitRich}
-              disabled={busy}
+              onBlur={() => void commitRich()}
+              disabled={blockBusy}
               rows={4}
               data-testid={`quote-block-rich-input-${block.id}`}
-              className="w-full resize-y rounded-md border bg-background px-2 py-1 text-sm"
+              className="w-full resize-y rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60"
             />
           ) : (
             <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
@@ -864,7 +907,7 @@ function BlockCard({
                         key={l.id}
                         line={l}
                         currency={currency}
-                        busy={busy}
+                        busy={isPending(`line:${l.id}`)}
                         onEdit={onEditLine}
                         onRemove={onRemoveLine}
                       />
@@ -879,7 +922,7 @@ function BlockCard({
                         <td className="px-2 py-2 text-right tabular-nums">{l.quantity}</td>
                         <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
                         <td className="px-2 py-2">
-                          <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                             {formatRecurrence(l.recurrence)}
                           </span>
                         </td>
@@ -900,6 +943,7 @@ function BlockCard({
                   <button
                     key={m}
                     type="button"
+                    aria-pressed={mode === m}
                     onClick={() => setMode(m)}
                     data-testid={`quote-line-mode-${block.id}-${m}`}
                     className={`rounded-md border px-3 py-1 text-xs font-medium ${
@@ -914,7 +958,7 @@ function BlockCard({
               {mode === 'distributor' ? (
                 <DistributorLookup
                   blockId={block.id}
-                  busy={busy}
+                  busy={addLineBusy}
                   onImportAdd={(product, sellPrice) => onImportAddDistributor(block.id, product, sellPrice)}
                 />
               ) : mode === 'catalog' ? (
@@ -930,7 +974,7 @@ function BlockCard({
                     onSelect={(it) => onAddCatalog(block.id, it)}
                     testId={`quote-catalog-picker-${block.id}`}
                     placeholder="Search catalog by name or SKU"
-                    disabled={busy}
+                    disabled={addLineBusy}
                   />
                 )
               ) : (
@@ -988,8 +1032,8 @@ function BlockCard({
                     </div>
                     <button
                       type="button"
-                      onClick={submitManual}
-                      disabled={busy || !desc.trim()}
+                      onClick={() => void submitManual()}
+                      disabled={addLineBusy || !desc.trim()}
                       data-testid={`quote-manual-add-${block.id}`}
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
@@ -1021,8 +1065,8 @@ function EditableLineRow({
   line: QuoteLine;
   currency: string;
   busy: boolean;
-  onEdit: (lineId: string, body: LineUpdate) => void;
-  onRemove: (lineId: string) => void;
+  onEdit: (lineId: string, body: LineUpdate) => Promise<boolean>;
+  onRemove: (line: QuoteLine) => void;
 }) {
   const [desc, setDesc] = useState(line.description);
   const [qty, setQty] = useState(line.quantity);
@@ -1033,20 +1077,31 @@ function EditableLineRow({
   useEffect(() => { setQty(line.quantity); }, [line.quantity]);
   useEffect(() => { setPrice(line.unitPrice); }, [line.unitPrice]);
 
+  // Quiet "Saved" flash in place of the old per-field success toast.
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
+  const flashSaved = useCallback(() => {
+    setSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1500);
+  }, []);
+  const edit = useCallback(async (body: LineUpdate) => { if (await onEdit(line.id, body)) flashSaved(); }, [onEdit, line.id, flashSaved]);
+
   const commitDesc = () => {
     const next = desc.trim();
     if (!next || next === line.description) { setDesc(line.description); return; }
-    onEdit(line.id, { description: next });
+    void edit({ description: next });
   };
   const commitQty = () => {
     const n = Number(qty);
     if (!Number.isFinite(n) || n <= 0 || n === Number(line.quantity)) { setQty(line.quantity); return; }
-    onEdit(line.id, { quantity: n });
+    void edit({ quantity: n });
   };
   const commitPrice = () => {
     const n = Number(price);
     if (!Number.isFinite(n) || n < 0 || n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; }
-    onEdit(line.id, { unitPrice: n });
+    void edit({ unitPrice: n });
   };
 
   return (
@@ -1056,6 +1111,7 @@ function EditableLineRow({
           {line.catalogItemId && <CatalogLineThumb catalogItemId={line.catalogItemId} />}
           <textarea
             value={desc}
+            aria-label="Line description"
             onChange={(e) => setDesc(e.target.value)}
             onBlur={commitDesc}
             rows={2}
@@ -1069,6 +1125,7 @@ function EditableLineRow({
         <input
           type="number" min="0" step="0.01"
           value={qty}
+          aria-label="Quantity"
           onChange={(e) => setQty(e.target.value)}
           onBlur={commitQty}
           disabled={busy}
@@ -1080,6 +1137,7 @@ function EditableLineRow({
         <input
           type="number" min="0" step="0.01"
           value={price}
+          aria-label="Unit price"
           onChange={(e) => setPrice(e.target.value)}
           onBlur={commitPrice}
           disabled={busy}
@@ -1090,7 +1148,8 @@ function EditableLineRow({
       <td className="px-2 py-2">
         <select
           value={line.recurrence}
-          onChange={(e) => onEdit(line.id, { recurrence: e.target.value as QuoteLineRecurrence })}
+          aria-label="Billing frequency"
+          onChange={(e) => void edit({ recurrence: e.target.value as QuoteLineRecurrence })}
           disabled={busy}
           data-testid={`quote-line-recurrence-${line.id}`}
           className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
@@ -1103,18 +1162,22 @@ function EditableLineRow({
           <input
             type="checkbox"
             checked={line.taxable}
-            onChange={(e) => onEdit(line.id, { taxable: e.target.checked })}
+            aria-label="Taxable"
+            onChange={(e) => void edit({ taxable: e.target.checked })}
             disabled={busy}
             data-testid={`quote-line-taxable-${line.id}`}
           />
           Taxable
         </label>
       </td>
-      <td className="px-2 py-2 text-right tabular-nums">{formatMoney(line.lineTotal, currency)}</td>
+      <td className="px-2 py-2 text-right tabular-nums">
+        {formatMoney(line.lineTotal, currency)}
+        {saved && <span className="ml-1 text-xs font-medium text-success" data-testid={`quote-line-saved-${line.id}`}>Saved</span>}
+      </td>
       <td className="px-2 py-2 text-right">
         <button
           type="button"
-          onClick={() => onRemove(line.id)}
+          onClick={() => onRemove(line)}
           disabled={busy}
           data-testid={`quote-line-remove-${line.id}`}
           className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
