@@ -57,7 +57,7 @@ vi.mock('./notificationSenders', () => ({
   sendWebhookNotification: vi.fn().mockResolvedValue({ success: false }),
 }));
 
-import { executeDeploySoftwareActions } from './automationRuntime';
+import { executeDeploySoftwareActions, normalizeAutomationActions } from './automationRuntime';
 
 const WIN = { id: 'd-win', osType: 'windows' as const };
 const MAC = { id: 'd-mac', osType: 'macos' as const };
@@ -69,6 +69,30 @@ beforeEach(() => {
     version: { id: 'ver-1', catalogId: 'cat-1', version: '126.0.0', supportedOs: ['windows'] },
     catalogName: 'Chrome',
   }]]));
+});
+
+describe('normalizeAutomationActions — deploy_software', () => {
+  it('normalizes a deploy_software action with camelCase catalogId', () => {
+    const result = normalizeAutomationActions([{ type: 'deploy_software', catalogId: 'cat-abc' }]);
+    expect(result).toEqual([{ type: 'deploy_software', catalogId: 'cat-abc' }]);
+  });
+
+  it('normalizes a deploy_software action with snake_case catalog_id', () => {
+    const result = normalizeAutomationActions([{ type: 'deploy_software', catalog_id: 'cat-xyz' }]);
+    expect(result).toEqual([{ type: 'deploy_software', catalogId: 'cat-xyz' }]);
+  });
+
+  it('throws AutomationValidationError when catalogId is missing', () => {
+    expect(() => normalizeAutomationActions([{ type: 'deploy_software' }])).toThrow(
+      'actions[0] deploy_software requires catalogId',
+    );
+  });
+
+  it('throws AutomationValidationError for unknown action type', () => {
+    expect(() => normalizeAutomationActions([{ type: 'unknown_action' }])).toThrow(
+      'unsupported action type: unknown_action',
+    );
+  });
 });
 
 describe('executeDeploySoftwareActions', () => {
@@ -90,6 +114,38 @@ describe('executeDeploySoftwareActions', () => {
     });
     expect(createDeploymentMock).not.toHaveBeenCalled();
     expect(res.logs.some(l => /unsupported OS/i.test(l.message))).toBe(true);
+  });
+
+  it('deploys to all devices when supportedOs is null/empty (no OS restriction)', async () => {
+    latestMapMock.mockResolvedValueOnce(new Map([['cat-1', {
+      version: { id: 'ver-1', catalogId: 'cat-1', version: '1.0.0', supportedOs: null },
+      catalogName: 'SomeCrossplatformTool',
+    }]]));
+    const res = await executeDeploySoftwareActions({
+      actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+      devices: [WIN, MAC], orgId: 'org-1', createdBy: null, runId: 'run-1',
+    });
+    expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+    expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual(
+      expect.arrayContaining(['d-win', 'd-mac']),
+    );
+    expect(res.failed).toBe(false);
+  });
+
+  it('deploys to all devices when supportedOs is an empty array', async () => {
+    latestMapMock.mockResolvedValueOnce(new Map([['cat-1', {
+      version: { id: 'ver-1', catalogId: 'cat-1', version: '1.0.0', supportedOs: [] },
+      catalogName: 'CrossplatformTool',
+    }]]));
+    const res = await executeDeploySoftwareActions({
+      actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+      devices: [WIN, MAC], orgId: 'org-1', createdBy: null, runId: 'run-1',
+    });
+    expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+    expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual(
+      expect.arrayContaining(['d-win', 'd-mac']),
+    );
+    expect(res.failed).toBe(false);
   });
 
   it('skips a device that is already current', async () => {

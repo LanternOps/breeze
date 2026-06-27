@@ -1078,6 +1078,10 @@ softwareRoutes.post(
           : payload.options ?? undefined,
     });
 
+    if (result.status === 'failed') {
+      return c.json({ data: { id: result.deploymentId, status: result.status, message: result.message } }, 200);
+    }
+
     writeRouteAudit(c, {
       orgId,
       action: 'software.deployment.create',
@@ -1091,9 +1095,6 @@ softwareRoutes.post(
       },
     });
 
-    if (result.status === 'failed') {
-      return c.json({ data: { id: result.deploymentId, status: result.status, message: result.message } }, 200);
-    }
     return c.json({ data: result.deployment }, 201);
   }
 );

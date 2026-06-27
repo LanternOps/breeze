@@ -325,6 +325,15 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
       continue;
     }
 
+    if (type === 'deploy_software') {
+      const catalogId = asString(action.catalogId) ?? asString(action.catalog_id);
+      if (!catalogId) {
+        throw new AutomationValidationError(`actions[${index}] deploy_software requires catalogId`);
+      }
+      normalized.push({ type: 'deploy_software', catalogId });
+      continue;
+    }
+
     throw new AutomationValidationError(`unsupported action type: ${type}`);
   }
 
@@ -1215,7 +1224,7 @@ export async function executeDeploySoftwareActions(args: {
       : [];
     const eligible: string[] = [];
     for (const device of args.devices) {
-      if (!supportedOs.includes(device.osType)) {
+      if (supportedOs.length > 0 && !supportedOs.includes(device.osType)) {
         logs.push(logEntry(`Skipped ${info.catalogName}: unsupported OS`, 'info', {
           actionType: action.type,
           actionIndex,
@@ -1224,7 +1233,7 @@ export async function executeDeploySoftwareActions(args: {
         }));
         continue;
       }
-      if (await isDeviceSoftwareCurrent(device.id, action.catalogId, info.version.version)) {
+      if (await isDeviceSoftwareCurrent(device.id, action.catalogId, info.catalogName, info.version.version)) {
         logs.push(logEntry(`Skipped ${info.catalogName}: already current`, 'info', {
           actionType: action.type,
           actionIndex,

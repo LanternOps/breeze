@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { softwareCatalog, softwareInventory, softwareVersions } from '../db/schema';
 
@@ -64,12 +64,21 @@ export async function resolveLatestVersionsByCatalogId(
 export async function isDeviceSoftwareCurrent(
   deviceId: string,
   catalogId: string,
+  catalogName: string,
   latestVersion: string,
 ): Promise<boolean> {
   const rows = await db
     .select({ version: softwareInventory.version })
     .from(softwareInventory)
-    .where(and(eq(softwareInventory.deviceId, deviceId), eq(softwareInventory.catalogId, catalogId)));
+    .where(
+      and(
+        eq(softwareInventory.deviceId, deviceId),
+        or(
+          eq(softwareInventory.catalogId, catalogId),
+          sql`lower(${softwareInventory.name}) = lower(${catalogName})`,
+        ),
+      ),
+    );
 
   for (const row of rows) {
     if (!row.version) {

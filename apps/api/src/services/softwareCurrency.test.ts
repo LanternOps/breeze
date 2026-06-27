@@ -93,24 +93,32 @@ describe('isDeviceSoftwareCurrent', () => {
   it('is true when an installed version is >= latest', async () => {
     dbMocks.selectResults.push([{ version: '126.0.1' }]);
 
-    expect(await isDeviceSoftwareCurrent('dev-1', 'cat-1', '126.0.0')).toBe(true);
+    expect(await isDeviceSoftwareCurrent('dev-1', 'cat-1', 'Chrome', '126.0.0')).toBe(true);
   });
 
   it('is false when installed is older than latest', async () => {
     dbMocks.selectResults.push([{ version: '126.0.1' }]);
 
-    expect(await isDeviceSoftwareCurrent('dev-1', 'cat-1', '127.0.0')).toBe(false);
+    expect(await isDeviceSoftwareCurrent('dev-1', 'cat-1', 'Chrome', '127.0.0')).toBe(false);
   });
 
   it('is false when no inventory row exists (deploy is the safe default)', async () => {
     dbMocks.selectResults.push([]);
 
-    expect(await isDeviceSoftwareCurrent('dev-2', 'cat-1', '1.0.0')).toBe(false);
+    expect(await isDeviceSoftwareCurrent('dev-2', 'cat-1', 'Chrome', '1.0.0')).toBe(false);
   });
 
   it('is false when the installed version is unparseable', async () => {
     dbMocks.selectResults.push([{ version: 'latest' }]);
 
-    expect(await isDeviceSoftwareCurrent('dev-3', 'cat-1', '1.0.0')).toBe(false);
+    expect(await isDeviceSoftwareCurrent('dev-3', 'cat-1', 'Chrome', '1.0.0')).toBe(false);
+  });
+
+  it('is true when a name-matched row (no catalogId) has version >= latest', async () => {
+    // Simulates an inventory row written without catalogId (the common case before
+    // backfill), matched by catalog name instead.
+    dbMocks.selectResults.push([{ version: '126.0.0' }]);
+
+    expect(await isDeviceSoftwareCurrent('dev-4', 'cat-1', 'Chrome', '126.0.0')).toBe(true);
   });
 });
