@@ -209,13 +209,22 @@ func (c *EventLogCollector) collectCrashReports(since time.Time) ([]EventLogEntr
 				continue
 			}
 
+			// Label real kernel panics distinctly so the reliability classifier
+			// counts them as system crashes, while per-app crash reports and
+			// JetsamEvent (memory-pressure) reports stay "Application crash: …"
+			// and are deliberately NOT counted toward the crash factor.
+			kind := "Application crash"
+			if strings.Contains(strings.ToLower(name), "panic") || strings.EqualFold(crashData.processName, "kernel") {
+				kind = "Kernel panic"
+			}
+
 			results = append(results, EventLogEntry{
 				Timestamp: info.ModTime().UTC().Format(time.RFC3339),
 				Level:     "error",
 				Category:  "application",
 				Source:    crashData.processName,
 				EventID:   fmt.Sprintf("crash:%s", name),
-				Message:   fmt.Sprintf("Application crash: %s (%s)", crashData.processName, crashData.exceptionType),
+				Message:   fmt.Sprintf("%s: %s (%s)", kind, crashData.processName, crashData.exceptionType),
 				Details: map[string]any{
 					"file":          name,
 					"processName":   crashData.processName,

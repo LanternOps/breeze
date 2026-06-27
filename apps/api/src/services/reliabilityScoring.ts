@@ -101,6 +101,7 @@ type DailyAggregateBucket = {
   sampleCount: number;
   uptimeSecondsMax: number;
   crashCount: number;
+  appCrashCount: number;
   hangCount: number;
   unresolvedHangCount: number;
   serviceFailureCount: number;
@@ -445,6 +446,17 @@ function scoreUptime(uptimePercent: number): number {
   return clampScore(((uptimePercent - 90) / 10) * 100);
 }
 
+// macOS per-app crash reports (Chrome, Outlook, security agents) are genuine but
+// far weaker reliability signals than a BSOD / kernel panic, so they count toward
+// the crash SCORE at reduced weight. Raw crash counts (headline tiles) are
+// unchanged — only the score is downweighted. appCrashCount is a subset of
+// crashCount; agents emit crash type "app_crash" (kernel panics / BSOD stay full).
+const RELIABILITY_APP_CRASH_WEIGHT = 0.25;
+
+function effectiveCrashLoad(crashCount: number, appCrashCount: number): number {
+  return Math.max(0, crashCount - appCrashCount * (1 - RELIABILITY_APP_CRASH_WEIGHT));
+}
+
 function scoreCrashes(
   crashCount7d: number,
   crashCount30d: number,
@@ -567,6 +579,7 @@ function createEmptyBucket(date: string): DailyAggregateBucket {
     sampleCount: 0,
     uptimeSecondsMax: 0,
     crashCount: 0,
+    appCrashCount: 0,
     hangCount: 0,
     unresolvedHangCount: 0,
     serviceFailureCount: 0,
@@ -599,6 +612,7 @@ function normalizeBucketRecord(raw: unknown, dateOverride?: string): DailyAggreg
     sampleCount: coerceCount(obj.sampleCount),
     uptimeSecondsMax: coerceCount(obj.uptimeSecondsMax),
     crashCount: coerceCount(obj.crashCount),
+    appCrashCount: coerceCount(obj.appCrashCount),
     hangCount: coerceCount(obj.hangCount),
     unresolvedHangCount: coerceCount(obj.unresolvedHangCount),
     serviceFailureCount: coerceCount(obj.serviceFailureCount),
@@ -656,6 +670,7 @@ function serializeDailyBuckets(dailyBuckets: DailyAggregateBucket[]): DailyAggre
     sampleCount: bucket.sampleCount,
     uptimeSecondsMax: bucket.uptimeSecondsMax,
     crashCount: bucket.crashCount,
+    appCrashCount: bucket.appCrashCount,
     hangCount: bucket.hangCount,
     unresolvedHangCount: bucket.unresolvedHangCount,
     serviceFailureCount: bucket.serviceFailureCount,
@@ -718,6 +733,27 @@ function hardwareErrorKey(event: HistoryRow['hardwareErrors'][number]): string {
   return eventKeyOrJson('hardware', [event.source, event.eventId, event.timestamp, event.type], event);
 }
 
+// Issue #1967 follow-up: agents at v0.84.0 and earlier hard-tagged the entire
+// System log Category="hardware", sweeping Service Control Manager, DCOM,
+// Bluetooth and macOS IOKit-plugin chatter into `hardwareErrors`. The v0.85.0+
+// agent gates correctly, but historical rows AND devices still on the old binary
+// keep emitting that junk. This server-side gate mirrors the agent's hardware
+// classifier (agent/internal/collectors/reliability.go) so old/straggler data
+// can't depress the hardware factor: an event counts only when it carries a real
+// fault subtype OR comes from a known hardware/driver provider. A genuine
+// v0.85.0 hardware error always satisfies one of these, so no real signal is lost.
+const HARDWARE_FAULT_TYPES = new Set(['mce', 'memory', 'disk']);
+const HARDWARE_SOURCE_KEYWORDS = [
+  'whea', 'disk', 'ntfs', 'volmgr', 'storahci', 'stornvme', 'nvme',
+  'iastor', 'msahci', 'nvlddmkm', 'amdkmdag', 'igfx', 'thermal', 'edac',
+];
+
+function isGenuineHardwareError(event: HistoryRow['hardwareErrors'][number]): boolean {
+  if (HARDWARE_FAULT_TYPES.has((event.type ?? '').toLowerCase())) return true;
+  const source = (event.source ?? '').toLowerCase();
+  return HARDWARE_SOURCE_KEYWORDS.some((keyword) => source.includes(keyword));
+}
+
 // The day bucket an event belongs to is the day of the EVENT's own timestamp,
 // not the row's collectedAt. An event near midnight can be re-reported in rows
 // on either side of a day boundary; anchoring on the event timestamp keeps the
@@ -763,6 +799,9 @@ function mergeRowsIntoDailyBuckets(
       if (!isNewEvent(crashEventKey(event))) continue;
       const bucket = upsertBucket(map, eventDayKey(event.timestamp, row.collectedAt));
       bucket.crashCount += 1;
+      // app_crash is a subset of crashCount, tracked separately so the score can
+      // downweight per-app crashes while the headline tile still shows them all.
+      if (event.type === 'app_crash') bucket.appCrashCount += 1;
       bucket.lastCrashAt = maxTimestamp([bucket.lastCrashAt, event.timestamp ?? fallbackTimestamp]);
     }
 
@@ -783,6 +822,7 @@ function mergeRowsIntoDailyBuckets(
     }
 
     for (const event of row.hardwareErrors) {
+      if (!isGenuineHardwareError(event)) continue;
       if (!isNewEvent(hardwareErrorKey(event))) continue;
       const bucket = upsertBucket(map, eventDayKey(event.timestamp, row.collectedAt));
       bucket.hardwareErrorCount += 1;
@@ -851,7 +891,7 @@ function scoreDailyBucket(bucket: DailyAggregateBucket): number {
   // across factors. Uptime is intentionally absent: not a per-day-bucket quantity.
   const lost = (score: number): number => 100 - score;
   const lostPoints =
-    lost(saturatingScore(bucket.crashCount, K_CRASHES))
+    lost(saturatingScore(effectiveCrashLoad(bucket.crashCount, bucket.appCrashCount), K_CRASHES))
     + lost(saturatingScore(bucket.hangCount + bucket.unresolvedHangCount, K_HANGS))
     + lost(saturatingScore(
       Math.max(0, bucket.serviceFailureCount - bucket.recoveredServiceCount * 0.5),
@@ -1201,6 +1241,8 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   const crashCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.crashCount);
   const crashCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.crashCount);
   const crashCount90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.crashCount);
+  const appCrashCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.appCrashCount);
+  const appCrashCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.appCrashCount);
 
   const hangCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.hangCount);
   const hangCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hangCount);
@@ -1217,7 +1259,11 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   const warningHardwareCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hardwareWarningCount);
 
   const uptimeScore = scoreUptime(uptime90d);
-  const crashScore = scoreCrashes(crashCount7d, crashCount30d, observedUpDays30);
+  const crashScore = scoreCrashes(
+    effectiveCrashLoad(crashCount7d, appCrashCount7d),
+    effectiveCrashLoad(crashCount30d, appCrashCount30d),
+    observedUpDays30
+  );
   const hangScore = scoreHangs(hangCount30d, unresolvedHangCount30d, observedUpDays30);
   const serviceFailureScore = scoreServiceFailures(
     serviceFailureCount30d,
@@ -1812,6 +1858,7 @@ function aggregateReliabilityOffenders(
     }
 
     for (const event of row.hardwareErrors) {
+      if (!isGenuineHardwareError(event)) continue;
       if (!inWindow(event.timestamp, row.collectedAt)) continue;
       if (!isNewEvent(hardwareErrorKey(event))) continue;
       const entry = upsertOffender(hardware, event.source?.trim() || 'Unknown component');
@@ -1965,4 +2012,7 @@ export const reliabilityScoringInternals = {
   countObservedUpDaysInWindow,
   RELIABILITY_RATE_REFERENCE_DAYS,
   RELIABILITY_RATE_MIN_DAYS,
+  isGenuineHardwareError,
+  effectiveCrashLoad,
+  RELIABILITY_APP_CRASH_WEIGHT,
 };

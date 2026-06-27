@@ -15,6 +15,7 @@ function makeBucket(overrides: Record<string, unknown>) {
     sampleCount: 1,
     uptimeSecondsMax: 3600,
     crashCount: 0,
+    appCrashCount: 0,
     hangCount: 0,
     unresolvedHangCount: 0,
     serviceFailureCount: 0,
@@ -56,7 +57,7 @@ describe('reliabilityScoringInternals', () => {
         uptimeSeconds: 1200,
         crashEvents: [{ timestamp: '2026-02-20T12:01:00.000Z' }],
         serviceFailures: [{ timestamp: '2026-02-20T12:05:00.000Z', recovered: true }],
-        hardwareErrors: [{ timestamp: '2026-02-20T12:10:00.000Z', severity: 'critical' }],
+        hardwareErrors: [{ timestamp: '2026-02-20T12:10:00.000Z', severity: 'critical', type: 'disk', source: 'disk' }],
       }),
     ] as any[];
 
@@ -322,13 +323,14 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
   });
 
   it('keeps two distinct events with all-empty structured keys separate via JSON fallback', () => {
-    // No type/source/eventId/serviceName/timestamp — only distinguishable by a
-    // non-keyed field. JSON fallback must keep them as two events.
+    // No type/timestamp — only distinguishable by a non-keyed field. JSON
+    // fallback must keep them as two events. Uses crashEvents because the
+    // hardware factor now drops events with no genuine fault source/type.
     const rows = [
       makeHistoryRow({
-        hardwareErrors: [
-          { severity: 'error', source: '', details: { a: 1 } },
-          { severity: 'error', source: '', details: { a: 2 } },
+        crashEvents: [
+          { type: '', details: { a: 1 } },
+          { type: '', details: { a: 2 } },
         ],
       }),
     ] as any[];
@@ -336,7 +338,57 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
     const map = new Map<string, any>();
     mergeRowsIntoDailyBuckets(map, rows as any);
 
-    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(2);
+    expect(totalCount(map, (b) => b.crashCount)).toBe(2);
+  });
+
+  it('drops hardware events that are not genuine hardware faults (old-agent junk)', () => {
+    // v0.84.0 and earlier mis-tagged SCM / DCOM / IOKit-plugin events as
+    // hardware. They carry no fault type and a non-hardware source, so the
+    // server-side gate must exclude them while keeping real faults.
+    const rows = [
+      makeHistoryRow({
+        hardwareErrors: [
+          { type: 'unknown', severity: 'error', source: 'service control manager', eventId: '7000', timestamp: '2026-02-20T10:00:00.000Z' },
+          { type: 'unknown', severity: 'error', source: 'microsoft-windows-distributedcom', eventId: '10010', timestamp: '2026-02-20T10:01:00.000Z' },
+          { type: 'unknown', severity: 'error', source: 'com.apple.iokit.cfplugin', eventId: 'x', timestamp: '2026-02-20T10:02:00.000Z' },
+          { type: 'disk', severity: 'critical', source: 'nvme', eventId: '7', timestamp: '2026-02-20T10:03:00.000Z' },
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    // Only the genuine nvme/disk fault survives.
+    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(1);
+    expect(totalCount(map, (b) => b.hardwareCriticalCount)).toBe(1);
+  });
+
+  it('tracks app_crash as a downweighted subset of crashCount', () => {
+    const rows = [
+      makeHistoryRow({
+        crashEvents: [
+          { type: 'app_crash', timestamp: '2026-02-20T10:00:00.000Z' },
+          { type: 'app_crash', timestamp: '2026-02-20T11:00:00.000Z' },
+          { type: 'bsod', timestamp: '2026-02-20T12:00:00.000Z' },
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    // All three show in the raw crash count (headline tile); two are app crashes.
+    expect(totalCount(map, (b) => b.crashCount)).toBe(3);
+    expect(totalCount(map, (b) => b.appCrashCount)).toBe(2);
+
+    // The effective crash load downweights the two app crashes to 0.25 each:
+    // 3 - 2*(1-0.25) = 1.5, strictly less than the raw 3.
+    const { effectiveCrashLoad, RELIABILITY_APP_CRASH_WEIGHT } = reliabilityScoringInternals;
+    expect(effectiveCrashLoad(3, 2)).toBeCloseTo(3 - 2 * (1 - RELIABILITY_APP_CRASH_WEIGHT));
+    expect(effectiveCrashLoad(3, 2)).toBeLessThan(3);
+    // A real device crash (BSOD) is never downweighted.
+    expect(effectiveCrashLoad(1, 0)).toBe(1);
   });
 
   it('matches a count(DISTINCT ...) over a window with heavy overlap (inflation guard)', () => {

@@ -3,7 +3,9 @@ import { devices } from './devices';
 import { organizations } from './orgs';
 
 export type ReliabilityCrashEvent = {
-  type: 'bsod' | 'kernel_panic' | 'system_crash' | 'oom_kill' | 'unknown';
+  // app_crash = a per-app crash report (macOS), counted toward the crash factor
+  // at reduced weight vs. a whole-device crash (bsod / kernel_panic).
+  type: 'bsod' | 'kernel_panic' | 'system_crash' | 'oom_kill' | 'app_crash' | 'unknown';
   timestamp: string;
   details?: Record<string, unknown>;
 };
