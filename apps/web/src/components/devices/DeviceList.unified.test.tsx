@@ -151,4 +151,69 @@ describe('DeviceList — unified agent + network (#1322)', () => {
       expect(within(roleCell).queryByLabelText(/workstation|server|printer/i)).toBeNull();
     });
   });
+
+  // #1424 (deferred item 1): with no column actively selected, the agent arm
+  // arrives hostname-sorted and the network arm last-seen-sorted, and
+  // DevicesPage concatenates them as `[...agents, ...network]`. The raw
+  // concatenation renders as two differently-ordered blocks ("the merged list
+  // visibly alternates sort order"). The default ordering must instead apply one
+  // unified key across the whole union so the classes interleave coherently.
+  describe('unified default sort across the merged union (#1424)', () => {
+    // Hostnames of rendered rows, in DOM order. Each fixture uses a unique
+    // hostname and no displayName, so the hostname cell holds exactly one span.
+    const rowOrder = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('tbody tr td:nth-child(2) span')).map(el => el.textContent);
+
+    const mkAgent = (id: string, hostname: string): Device => ({ ...agent, id, hostname });
+    const mkNetwork = (id: string, hostname: string): Device => ({ ...networkPrinter, id, hostname });
+
+    it('interleaves agent and network rows alphabetically instead of as two blocks', () => {
+      // Input arrives as the DevicesPage concatenation: all agents first (in
+      // their server hostname order), then all network rows (in last-seen
+      // order). Names are chosen so a coherent default sort must interleave the
+      // two classes (a-b-c-d), which a raw concatenation never would.
+      const devices: Device[] = [
+        mkAgent('a1111111-0000-0000-0000-000000000001', 'alpha-pc'),
+        mkAgent('a1111111-0000-0000-0000-000000000003', 'charlie-pc'),
+        mkNetwork('b2222222-0000-0000-0000-000000000002', 'bravo-switch'),
+        mkNetwork('b2222222-0000-0000-0000-000000000004', 'delta-printer'),
+      ];
+
+      const { container } = render(<DeviceList devices={devices} pageSize={50} networkDevicesEnabled />);
+
+      expect(rowOrder(container)).toEqual(['alpha-pc', 'bravo-switch', 'charlie-pc', 'delta-printer']);
+    });
+
+    it('breaks hostname ties by id so client-side pagination is deterministic', () => {
+      // Two rows share a hostname; without a stable tiebreaker their relative
+      // order would depend on input/merge order and a row could hop pages
+      // between renders. The id tiebreaker pins the order.
+      const devices: Device[] = [
+        mkNetwork('b0000000-0000-0000-0000-0000000000ff', 'shared-host'),
+        mkAgent('a0000000-0000-0000-0000-000000000001', 'shared-host'),
+      ];
+
+      const { container } = render(<DeviceList devices={devices} pageSize={50} networkDevicesEnabled />);
+
+      // Both render the same hostname text; assert order via the row id by
+      // reading the select checkbox aria-label is overkill — instead re-render
+      // with the input reversed and confirm the DOM order is unchanged.
+      const firstPass = Array.from(container.querySelectorAll('tbody tr')).map(tr =>
+        tr.querySelector('[data-testid$="-class-badge"]')?.getAttribute('data-testid'),
+      );
+      const { container: container2 } = render(
+        <DeviceList devices={[...devices].reverse()} pageSize={50} networkDevicesEnabled />,
+      );
+      const secondPass = Array.from(container2.querySelectorAll('tbody tr')).map(tr =>
+        tr.querySelector('[data-testid$="-class-badge"]')?.getAttribute('data-testid'),
+      );
+
+      // a000... sorts before b000..., regardless of input order.
+      expect(firstPass).toEqual([
+        'device-a0000000-0000-0000-0000-000000000001-class-badge',
+        'device-b0000000-0000-0000-0000-0000000000ff-class-badge',
+      ]);
+      expect(secondPass).toEqual(firstPass);
+    });
+  });
 });

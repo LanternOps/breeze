@@ -485,7 +485,25 @@ export default function DeviceList({
   );
 
   const sortedDevices = useMemo(() => {
-    if (!sortField) return filteredDevices;
+    // Default ordering for the merged list (#1424, deferred item 1). With no
+    // column actively selected, agent rows arrive hostname-sorted from the
+    // cursor API while network rows arrive last-seen-sorted from the offset
+    // API, and DevicesPage concatenates them as `[...agents, ...network]`. The
+    // raw concatenation therefore renders as two differently-ordered blocks —
+    // the "merged list visibly alternates sort order" defect. Apply one unified
+    // key across the whole union: the same `displayName || hostname` the Device
+    // column sorts on, with `id` as a stable tiebreaker so client-side
+    // pagination is deterministic (a row can't hop pages between renders).
+    if (!sortField) {
+      const byName = sortValue.hostname;
+      return [...filteredDevices].sort((a, b) => {
+        const cmp = String(byName(a)).localeCompare(String(byName(b)), undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        });
+        return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
+      });
+    }
     const value = sortValue[sortField];
     const dir = sortDirection === 'desc' ? -1 : 1;
 
