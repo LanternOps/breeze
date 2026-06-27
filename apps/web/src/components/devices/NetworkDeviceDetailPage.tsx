@@ -122,7 +122,14 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       }
 
       const body = await response.json();
-      const raw: ApiDiscoveryAsset & AssetDetailExtras = body.data ?? body.asset ?? body;
+      const raw: (ApiDiscoveryAsset & AssetDetailExtras) | undefined =
+        body?.data ?? body?.asset ?? body;
+      // A 200 with an empty/wrong-shaped body would otherwise sail through
+      // `mapAsset` (which never returns null) and render a blank "—" shell with
+      // an `asset=undefined` deep-link. Treat a missing id as a load failure.
+      if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') {
+        throw new Error('Network device response was malformed');
+      }
       setAsset(mapAsset(raw));
       setExtras({
         model: raw.model ?? null,
@@ -188,6 +195,12 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const snmpData = asset.snmpData ?? {};
   const tags = asset.tags ?? [];
   const discoveryMethods = asset.discoveryMethods ?? [];
+  // `mapAsset` normalizes `type` to a valid key, but `approvalStatus` is passed
+  // through raw — guard both lookups so an out-of-enum value from the API can't
+  // throw during render (which, with no error boundary, would blank the page).
+  const typeMeta = typeConfig[asset.type] ?? { label: asset.type, color: typeConfig.unknown.color };
+  const approvalMeta = approvalStatusConfig[asset.approvalStatus] ??
+    { label: asset.approvalStatus, color: approvalStatusConfig.dismissed.color };
 
   return (
     <div className="space-y-6" data-testid="network-device-detail">
@@ -207,14 +220,14 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               <h1 className="text-lg font-semibold" data-testid="network-device-name">{displayName}</h1>
               <span
                 data-testid="network-asset-type"
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeConfig[asset.type].color}`}
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeMeta.color}`}
               >
-                {typeConfig[asset.type].label}
+                {typeMeta.label}
               </span>
               <span
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalStatusConfig[asset.approvalStatus].color}`}
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalMeta.color}`}
               >
-                {approvalStatusConfig[asset.approvalStatus].label}
+                {approvalMeta.label}
               </span>
               <span
                 data-testid="network-device-status"
@@ -278,7 +291,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 <Field label="MAC Address" value={<span className="font-mono">{asset.mac}</span>} />
                 <Field label="Manufacturer" value={asset.manufacturer} />
                 <Field label="Model" value={extras.model || '—'} />
-                <Field label="Asset Type" value={typeConfig[asset.type].label} />
+                <Field label="Asset Type" value={typeMeta.label} />
                 {extras.netbiosName && <Field label="NetBIOS Name" value={extras.netbiosName} />}
               </dl>
               {tags.length > 0 && (

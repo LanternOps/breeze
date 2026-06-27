@@ -90,6 +90,50 @@ describe('NetworkDeviceDetailPage', () => {
     expect(snmp.textContent).toContain('Cisco IOS');
   });
 
+  it('renders the offline state and a dash ping when the asset is down', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, isOnline: false, responseTimeMs: null } }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    expect(screen.getByTestId('network-device-status').textContent).toContain('Offline');
+    expect(screen.getByTestId('network-detail-ping').textContent).toBe('—');
+  });
+
+  it('shows empty-state guidance for an asset with no SNMP data and no open ports', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, snmpData: {}, openPorts: [] } }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    expect(screen.getByTestId('network-detail-snmp').textContent).toContain('No SNMP data was collected');
+    expect(screen.getByTestId('network-detail-ports').textContent).toContain('No open ports detected');
+  });
+
+  it('falls back to hostname for the display name when no label is set', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, label: null } }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    expect(screen.getByTestId('network-device-name').textContent).toContain('core-switch-01');
+  });
+
+  it('treats a 200 with a malformed/empty body as a load failure (no blank shell)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: {} }));
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+
+    await screen.findByTestId('network-device-detail-error');
+    expect(screen.queryByTestId('network-device-detail')).toBeNull();
+  });
+
   it('does NOT render agent-only sections (scripts, terminal, remote desktop, processes)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
 
