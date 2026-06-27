@@ -184,7 +184,9 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
             <dl className="space-y-1 text-sm">
               <div className="flex justify-between"><dt className="text-muted-foreground">Customer</dt><dd className="text-right" data-testid="quote-detail-customer">{orgName}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Issued</dt><dd>{formatDate(quote.issueDate)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Created</dt><dd>{formatDate(quote.createdAt)}</dd></div>
+              {(!quote.issueDate || formatDate(quote.issueDate) !== formatDate(quote.createdAt)) && (
+                <div className="flex justify-between"><dt className="text-muted-foreground">Created</dt><dd>{formatDate(quote.createdAt)}</dd></div>
+              )}
             </dl>
           </div>
 

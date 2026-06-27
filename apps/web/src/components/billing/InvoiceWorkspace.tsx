@@ -33,23 +33,32 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
 
-  const load = useCallback(async () => {
+  // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
+  // so the editor stays mounted — a full-page spinner would remount the form and
+  // discard the user's in-progress local state and cursor position. Only the
+  // initial load shows the spinner / replaces the view on error.
+  const fetchDetail = useCallback(async (quiet = false) => {
     if (!invoiceId) { setError('Missing invoice id'); setLoading(false); return; }
     try {
-      setLoading(true);
+      if (!quiet) setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/invoices/${invoiceId}`);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { setError('Invoice not found.'); return; }
+      if (res.status === 404) { if (!quiet) setError('Invoice not found.'); return; }
       if (!res.ok) throw new Error('Failed to load invoice');
       const body = (await res.json()) as { data: InvoiceDetailData };
       setDetail(body.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load invoice');
+      // A failed quiet reload leaves the editor intact; the inline action's own
+      // runAction toast already surfaced the failure.
+      if (!quiet) setError(err instanceof Error ? err.message : 'Failed to load invoice');
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [invoiceId]);
+
+  const load = useCallback(() => fetchDetail(false), [fetchDetail]);
+  const reload = useCallback(() => fetchDetail(true), [fetchDetail]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -127,7 +136,7 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
 
       {tab === 'editor' && (
         isDraft ? (
-          <InvoiceEditor detail={detail} onChanged={() => void load()} />
+          <InvoiceEditor detail={detail} onChanged={() => void reload()} />
         ) : (
           <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground" data-testid="invoice-editor-locked">
             This invoice is no longer a draft and can no longer be edited. Switch to the Detail tab to review it.
@@ -137,7 +146,7 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
 
       {tab === 'preview' && <InvoiceDocumentPreview detail={detail} />}
 
-      {tab === 'detail' && <InvoiceDetail detail={detail} onChanged={() => void load()} />}
+      {tab === 'detail' && <InvoiceDetail detail={detail} onChanged={() => void reload()} />}
     </div>
   );
 }

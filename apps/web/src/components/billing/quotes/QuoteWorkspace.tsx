@@ -33,23 +33,32 @@ export default function QuoteWorkspace({ id }: Props) {
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
 
-  const load = useCallback(async () => {
+  // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
+  // so the editor stays mounted — a full-page spinner would remount the form and
+  // discard the user's in-progress local state and cursor position. Only the
+  // initial load shows the spinner / replaces the view on error.
+  const fetchDetail = useCallback(async (quiet = false) => {
     if (!id) { setError('Missing quote id'); setLoading(false); return; }
     try {
-      setLoading(true);
+      if (!quiet) setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/quotes/${id}`);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { setError('Quote not found.'); return; }
+      if (res.status === 404) { if (!quiet) setError('Quote not found.'); return; }
       if (!res.ok) throw new Error('Failed to load quote');
       const body = (await res.json()) as { data: QuoteDetailData };
       setDetail(body.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load quote');
+      // A failed quiet reload leaves the editor intact; the inline action's own
+      // runAction toast already surfaced the failure.
+      if (!quiet) setError(err instanceof Error ? err.message : 'Failed to load quote');
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [id]);
+
+  const load = useCallback(() => fetchDetail(false), [fetchDetail]);
+  const reload = useCallback(() => fetchDetail(true), [fetchDetail]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -127,7 +136,7 @@ export default function QuoteWorkspace({ id }: Props) {
 
       {tab === 'editor' && (
         isDraft ? (
-          <QuoteEditor detail={detail} onChanged={() => void load()} />
+          <QuoteEditor detail={detail} onChanged={() => void reload()} />
         ) : (
           <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground" data-testid="quote-editor-locked">
             This quote is no longer a draft and can no longer be edited. Switch to the Detail tab to review it.
@@ -137,7 +146,7 @@ export default function QuoteWorkspace({ id }: Props) {
 
       {tab === 'preview' && <QuoteDocumentPreview detail={detail} />}
 
-      {tab === 'detail' && <QuoteDetail detail={detail} onChanged={() => void load()} />}
+      {tab === 'detail' && <QuoteDetail detail={detail} onChanged={() => void reload()} />}
     </div>
   );
 }

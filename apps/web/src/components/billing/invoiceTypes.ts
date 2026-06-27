@@ -109,14 +109,37 @@ export const STATUS_LABELS: Record<InvoiceStatus, string> = {
   void: 'Void',
 };
 
-// Tailwind badge classes per status (mirrors the device/org status-pill style).
+/**
+ * Status-pill color roles, built from the app's semantic tokens (success /
+ * warning / info / destructive) rather than raw Tailwind palette hues. Shared by
+ * both the invoice and quote status pills (imported by quoteTypes) so the
+ * vocabulary can't drift between the two sibling surfaces.
+ *
+ * Five roles, not a per-status rainbow: meaning drives the hue (neutral = not
+ * sent, info = awaiting the customer, success = won/paid, warning = lapsing,
+ * danger = lost/overdue). The text label carries the finer distinction (Sent vs
+ * Viewed, Accepted vs Converted), so colour stays scannable.
+ *
+ * `info`/`success` base tokens are dark enough (L≈37-38%) to read on their own
+ * 10% tint; `warning`/`danger` base tokens (amber L50% / red L56%) fail WCAG as
+ * text on a light tint, so light mode uses a darker shade of the SAME token hue
+ * and dark mode (where the bg is dark) uses the token directly.
+ */
+export const STATUS_PILL = {
+  neutral: 'border-border bg-muted text-muted-foreground',
+  info: 'border-info/30 bg-info/10 text-info',
+  success: 'border-success/30 bg-success/10 text-success',
+  warning: 'border-warning/40 bg-warning/15 text-[hsl(36_92%_28%)] dark:text-warning',
+  danger: 'border-destructive/40 bg-destructive/10 text-[hsl(4_74%_42%)] dark:text-destructive',
+} as const;
+
 export const STATUS_COLORS: Record<InvoiceStatus, string> = {
-  draft: 'border-border bg-muted text-muted-foreground',
-  sent: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  partially_paid: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  overdue: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
-  paid: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  void: 'border-border bg-muted text-muted-foreground line-through',
+  draft: STATUS_PILL.neutral,
+  sent: STATUS_PILL.info,
+  partially_paid: STATUS_PILL.warning,
+  overdue: STATUS_PILL.danger,
+  paid: STATUS_PILL.success,
+  void: `${STATUS_PILL.neutral} line-through`,
 };
 
 /** Display label for an invoice's status. The 'sent' lifecycle status means

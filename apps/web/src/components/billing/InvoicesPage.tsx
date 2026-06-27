@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
@@ -295,19 +296,34 @@ export function InvoicesPage() {
     return { outstanding, overdue, openCount: open.length, ccy };
   }, [invoices]);
 
-  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => (
-    <th className="px-3 py-3 text-right font-medium">
-      <button
-        type="button"
-        onClick={() => toggleSort(sortKey)}
-        className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
-        data-testid={`invoices-sort-${sortKey}`}
-      >
-        {label}
-        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
-      </button>
-    </th>
-  );
+  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => {
+    const active = sort?.key === sortKey;
+    const ariaLabel = active
+      ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
+      : `Sort by ${label}`;
+    return (
+      <th className="px-3 py-3 text-right font-medium">
+        <button
+          type="button"
+          onClick={() => toggleSort(sortKey)}
+          className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
+          data-testid={`invoices-sort-${sortKey}`}
+          aria-label={ariaLabel}
+        >
+          {label}
+          {active ? (
+            sort!.dir === 'asc' ? (
+              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            )
+          ) : (
+            <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+      </th>
+    );
+  };
 
   if (forbidden) {
     return (
@@ -720,6 +736,10 @@ export function InvoicesPage() {
 function SortHeaderLeft({
   label, sortKey, sort, onSort,
 }: { label: string; sortKey: SortKey; sort: Sort | null; onSort: (k: SortKey) => void }) {
+  const active = sort?.key === sortKey;
+  const ariaLabel = active
+    ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
+    : `Sort by ${label}`;
   return (
     <th className="px-3 py-3 font-medium">
       <button
@@ -727,9 +747,18 @@ function SortHeaderLeft({
         onClick={() => onSort(sortKey)}
         className="inline-flex items-center gap-1 hover:text-foreground"
         data-testid={`invoices-sort-${sortKey}`}
+        aria-label={ariaLabel}
       >
         {label}
-        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+        {active ? (
+          sort!.dir === 'asc' ? (
+            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+          )
+        ) : (
+          <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+        )}
       </button>
     </th>
   );

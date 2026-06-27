@@ -403,10 +403,11 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     ) : can('invoices', 'send') ? (
                       <button
                         type="button" onClick={() => void voidPayment(p.id)} disabled={busy || invoice.status === 'void'}
+                        aria-label={`Reverse payment of ${formatMoney(p.amount, currency)}`}
                         data-testid={`invoice-payment-void-${p.id}`}
                         className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                       >
-                        Void
+                        Reverse
                       </button>
                     ) : null}
                   </li>
@@ -436,11 +437,13 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                   <input
                     type="number" min="0" step="0.01" placeholder="Amount" value={payAmount}
                     onChange={(e) => setPayAmount(e.target.value)}
+                    aria-label="Amount"
                     data-testid="invoice-payment-amount"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                   <select
                     value={payMethod} onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
+                    aria-label="Payment method"
                     data-testid="invoice-payment-method"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   >
@@ -451,11 +454,13 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                   <input
                     type="text" placeholder="Reference (optional)" value={payRef}
                     onChange={(e) => setPayRef(e.target.value)}
+                    aria-label="Reference"
                     data-testid="invoice-payment-ref"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                   <input
                     type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)}
+                    aria-label="Payment date"
                     data-testid="invoice-payment-date"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   />

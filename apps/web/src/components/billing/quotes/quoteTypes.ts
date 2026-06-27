@@ -5,6 +5,7 @@
 import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
+import { STATUS_PILL } from '../invoiceTypes';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
@@ -118,14 +119,20 @@ export const STATUS_LABELS: Record<QuoteStatus, string> = {
 };
 
 // Tailwind badge classes per status (mirrors the invoice/contract status-pill style).
+// Five semantic roles shared with the invoice pills (see STATUS_PILL): the
+// colour reads the lifecycle (neutral → info while it's with the customer →
+// success when won → warning when lapsing → danger when lost), and the label
+// carries the finer distinction. sent/viewed share info; accepted/converted
+// share success — collapsing the old blue/indigo/violet/emerald rainbow that
+// was hard to tell apart at pill scale.
 export const STATUS_COLORS: Record<QuoteStatus, string> = {
-  draft: 'border-border bg-muted text-muted-foreground',
-  sent: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  viewed: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400',
-  accepted: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  declined: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
-  expired: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  converted: 'border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-400',
+  draft: STATUS_PILL.neutral,
+  sent: STATUS_PILL.info,
+  viewed: STATUS_PILL.info,
+  accepted: STATUS_PILL.success,
+  declined: STATUS_PILL.danger,
+  expired: STATUS_PILL.warning,
+  converted: STATUS_PILL.success,
 };
 
 /** Display label for a quote's status. The 'sent' lifecycle status only reads as

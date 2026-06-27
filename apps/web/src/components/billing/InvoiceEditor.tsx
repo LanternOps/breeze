@@ -262,7 +262,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   <th className="px-3 py-2 text-right font-medium">Qty</th>
                   <th className="px-3 py-2 text-right font-medium">Price</th>
                   <th className="px-3 py-2 text-center font-medium">Tax</th>
-                  <th className="px-3 py-2 text-center font-medium">Visible</th>
+                  <th className="px-3 py-2 text-center font-medium" title="Whether this line appears on the customer's invoice">Customer-visible</th>
                   <th className="px-3 py-2 text-right font-medium">Total</th>
                   <th className="px-3 py-2" />
                 </tr>
