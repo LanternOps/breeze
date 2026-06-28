@@ -17,7 +17,9 @@ import {
   type ContractEstimate,
 } from '../../lib/api/contracts';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
+import CatalogDistributorDrawer from '../settings/CatalogDistributorDrawer';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
+import { ecExpressStatus } from '../../lib/api/distributors';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 
@@ -93,6 +95,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [lineTaxable, setLineTaxable] = useState(false);
   const [lineSiteId, setLineSiteId] = useState('');
   const [lineCatalogId, setLineCatalogId] = useState('');
+  // TD SYNNEX EC Express import, offered only when the integration is connected
+  // (best-effort status check; stays hidden on any failure).
+  const [ecActive, setEcActive] = useState(false);
+  const [distributorOpen, setDistributorOpen] = useState(false);
 
   const lines: ContractLine[] = detail?.lines ?? [];
 
@@ -140,6 +146,30 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
   useEffect(() => { if (isCreate) void loadOrgs(); }, [isCreate, loadOrgs]);
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
+
+  // Gate the distributor-import entry on a connected EC Express integration.
+  useEffect(() => {
+    if (!can('contracts', 'write')) return;
+    void (async () => {
+      try {
+        const res = await ecExpressStatus();
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
+        setEcActive(Boolean(body?.data?.configured && body?.data?.enabled));
+      } catch { /* leave hidden */ }
+    })();
+  }, [can]);
+
+  // Importing a distributor item to the catalog then pre-fills a one-time manual
+  // line linked to the freshly-created catalog item.
+  const onDistributorImported = useCallback((item: CatalogItem) => {
+    setLineType('manual');
+    setLineDesc(item.name);
+    setLinePrice(item.unitPrice);
+    setLineCatalogId(item.id);
+    setLineTaxable(item.taxable);
+    void loadCatalog();
+  }, [loadCatalog]);
   useEffect(() => { void loadSites(orgId); }, [orgId, loadSites]);
   useEffect(() => { if (!isCreate) void loadEstimate(); }, [isCreate, loadEstimate]);
 
@@ -523,6 +553,19 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
               {/* Add line */}
               <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-add-line">
+                {ecActive && can('contracts', 'write') && (
+                  <div className="mb-3 flex items-center justify-between gap-2 border-b pb-3">
+                    <span className="text-xs text-muted-foreground">Pulling in hardware? Import it from your distributor and it pre-fills a line.</span>
+                    <button
+                      type="button"
+                      onClick={() => setDistributorOpen(true)}
+                      className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
+                      data-testid="contract-import-distributor"
+                    >
+                      Import from TD SYNNEX
+                    </button>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                     Line type
@@ -703,6 +746,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           </div>
         </div>
       </div>
+
+      <CatalogDistributorDrawer
+        open={distributorOpen}
+        onClose={() => setDistributorOpen(false)}
+        onImported={onDistributorImported}
+      />
     </div>
   );
 }

@@ -13,8 +13,9 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** Called after a successful import so the host reloads the catalog list. */
-  onImported: () => void;
+  /** Called after a successful import with the new catalog item, so the host can
+   *  reload its list and/or pre-fill a line from the imported item. */
+  onImported: (item: CatalogItem) => void;
 }
 
 /**
@@ -59,7 +60,7 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
         });
         showToast({ message: `Imported "${saved.name}" to the catalog`, type: 'success' });
-        onImported();
+        onImported(saved);
         onClose();
       } catch (err) {
         handleActionError(err, 'Could not import the distributor item.');
