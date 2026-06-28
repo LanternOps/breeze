@@ -63,7 +63,8 @@ describe('AssetDetailModal — link to managed device', () => {
       <AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} onLinked={onLinked} />
     );
 
-    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'dev-1' } });
+    // combobox[0] is the Asset Type select; combobox[1] is the managed-device link select.
+    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'dev-1' } });
     fireEvent.click(screen.getByRole('button', { name: 'Link asset' }));
 
     await waitFor(() => {
@@ -97,7 +98,8 @@ describe('AssetDetailModal — link to managed device', () => {
   it('surfaces an error and shows no success message when the link request fails', async () => {
     render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
 
-    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'dev-2' } });
+    // combobox[0] is the Asset Type select; combobox[1] is the managed-device link select.
+    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'dev-2' } });
     // Override only the link call to fail; mount fetch already resolved.
     fetchMock.mockResolvedValueOnce(makeResponse({}, false));
     fireEvent.click(screen.getByRole('button', { name: 'Link asset' }));
@@ -297,6 +299,87 @@ describe('AssetDetailModal — proxy scheme + self-signed certificate (#1916)', 
     render(<AssetDetailModal open asset={assetWithHttpsPort} devices={onlineDevices} onClose={() => {}} />);
     const schemeSelect = screen.getByTestId('proxy-scheme-select') as HTMLSelectElement;
     expect(schemeSelect.value).toBe('https');
+  });
+});
+
+describe('AssetDetailModal — editable device type (#1424)', () => {
+  const workstationAsset: AssetDetail = {
+    ...asset,
+    type: 'workstation',
+    typeSource: 'auto',
+  };
+
+  const patchCallsFor = (id: string) =>
+    fetchMock.mock.calls.filter(
+      c => c[0] === `/discovery/assets/${id}` && (c[1] as RequestInit)?.method === 'PATCH'
+    );
+
+  it('saving with a changed type includes assetType in the PATCH body', async () => {
+    const onUpdated = vi.fn();
+    render(
+      <AssetDetailModal open asset={workstationAsset} devices={devices} onClose={() => {}} onUpdated={onUpdated} />
+    );
+
+    fireEvent.change(screen.getByTestId('asset-modal-type-select'), { target: { value: 'switch' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(patchCallsFor('asset-1').length).toBeGreaterThan(0);
+    });
+    const body = JSON.parse((patchCallsFor('asset-1')[0]![1] as RequestInit).body as string);
+    expect(body.assetType).toBe('switch');
+    expect(onUpdated).toHaveBeenCalledWith('asset-1');
+  });
+
+  it('saving WITHOUT changing the type omits assetType from the PATCH body', async () => {
+    render(<AssetDetailModal open asset={workstationAsset} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(patchCallsFor('asset-1').length).toBeGreaterThan(0);
+    });
+    const body = JSON.parse((patchCallsFor('asset-1')[0]![1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty('assetType');
+  });
+
+  it('reset-to-auto control appears only when typeSource is manual', () => {
+    const manualAsset: AssetDetail = {
+      ...asset,
+      type: 'switch',
+      typeSource: 'manual',
+      detectedType: 'workstation',
+    };
+    const { rerender } = render(
+      <AssetDetailModal open asset={manualAsset} devices={devices} onClose={() => {}} />
+    );
+    expect(screen.getByTestId('asset-modal-type-reset')).toBeInTheDocument();
+
+    const autoAsset: AssetDetail = { ...asset, type: 'switch', typeSource: 'auto' };
+    rerender(<AssetDetailModal open asset={autoAsset} devices={devices} onClose={() => {}} />);
+    expect(screen.queryByTestId('asset-modal-type-reset')).not.toBeInTheDocument();
+  });
+
+  it('reset control PATCHes resetTypeToAuto:true', async () => {
+    const manualAsset: AssetDetail = {
+      ...asset,
+      type: 'switch',
+      typeSource: 'manual',
+      detectedType: 'workstation',
+    };
+    const onUpdated = vi.fn();
+    render(
+      <AssetDetailModal open asset={manualAsset} devices={devices} onClose={() => {}} onUpdated={onUpdated} />
+    );
+
+    fireEvent.click(screen.getByTestId('asset-modal-type-reset'));
+
+    await waitFor(() => {
+      expect(patchCallsFor('asset-1').length).toBeGreaterThan(0);
+    });
+    const body = JSON.parse((patchCallsFor('asset-1')[0]![1] as RequestInit).body as string);
+    expect(body.resetTypeToAuto).toBe(true);
+    expect(onUpdated).toHaveBeenCalledWith('asset-1');
   });
 });
 

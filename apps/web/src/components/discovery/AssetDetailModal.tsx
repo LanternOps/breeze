@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Globe, ExternalLink } from 'lucide-react';
-import type { DiscoveredAsset, OpenPortEntry } from './DiscoveredAssetList';
+import type { DiscoveredAsset, OpenPortEntry, DiscoveredAssetType } from './DiscoveredAssetList';
 import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import AssetMonitoringSection from './AssetMonitoringSection';
 import { Dialog } from '../shared/Dialog';
@@ -65,6 +65,7 @@ export default function AssetDetailModal({
   const [editLabel, setEditLabel] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [editTags, setEditTags] = useState('');
+  const [editType, setEditType] = useState<DiscoveredAssetType>(asset?.type ?? 'unknown');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -93,6 +94,7 @@ export default function AssetDetailModal({
     setEditLabel(asset?.label ?? '');
     setEditNotes(asset?.notes ?? '');
     setEditTags(asset?.tags?.join(', ') ?? '');
+    setEditType(asset?.type ?? 'unknown');
     setSaveError(undefined);
     setSaveSuccess(false);
     setProxyEnabled((asset as any)?.proxyEnabled ?? false);
@@ -225,12 +227,32 @@ export default function AssetDetailModal({
         body: JSON.stringify({
           label: editLabel || null,
           notes: editNotes || null,
-          tags
+          tags,
+          ...(editType !== asset.type ? { assetType: editType } : {})
         })
       });
       if (!response.ok) {
         throw new Error('Failed to save asset info');
       }
+      setSaveSuccess(true);
+      onUpdated?.(asset.id);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleResetType = async () => {
+    if (!asset) return;
+    try {
+      setSaving(true);
+      setSaveError(undefined);
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ resetTypeToAuto: true })
+      });
+      if (!response.ok) throw new Error('Failed to reset type');
       setSaveSuccess(true);
       onUpdated?.(asset.id);
     } catch (err) {
@@ -455,6 +477,31 @@ export default function AssetDetailModal({
                     maxLength={255}
                     className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Asset Type</label>
+                  <div className="mt-1 flex items-center gap-2">
+                    <select
+                      data-testid="asset-modal-type-select"
+                      className="rounded-md border bg-background px-2 py-1 text-sm"
+                      value={editType}
+                      onChange={(e) => setEditType(e.target.value as DiscoveredAssetType)}
+                    >
+                      {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((t) => (
+                        <option key={t} value={t}>{typeConfig[t].label}</option>
+                      ))}
+                    </select>
+                    {asset.typeSource === 'manual' && (
+                      <button
+                        type="button"
+                        data-testid="asset-modal-type-reset"
+                        className="text-xs text-muted-foreground underline hover:text-foreground"
+                        onClick={() => void handleResetType()}
+                      >
+                        Reset to auto-detected
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Notes / Description</label>
