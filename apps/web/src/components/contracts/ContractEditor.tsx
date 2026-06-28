@@ -18,9 +18,10 @@ import {
 } from '../../lib/api/contracts';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import CatalogDistributorDrawer from '../settings/CatalogDistributorDrawer';
+import Pax8CatalogDrawer from '../settings/Pax8CatalogDrawer';
 import ContractPax8Drawer from './ContractPax8Drawer';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
-import { ecExpressStatus } from '../../lib/api/distributors';
+import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 
@@ -103,6 +104,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   // Pax8 link entry — available once the partner's Pax8 integration is set up.
   const [pax8IntegrationId, setPax8IntegrationId] = useState<string | null>(null);
   const [pax8Open, setPax8Open] = useState(false);
+  // Pax8 catalog import — distinct from subscription linking; needs only the integration.
+  const [pax8CatalogOpen, setPax8CatalogOpen] = useState(false);
+  const [pax8Active, setPax8Active] = useState(false);
 
   const lines: ContractLine[] = detail?.lines ?? [];
 
@@ -175,6 +179,19 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         if (!res.ok) return;
         const body = (await res.json().catch(() => null)) as { data?: { id?: string } | null } | null;
         if (body?.data?.id) setPax8IntegrationId(body.data.id);
+      } catch { /* leave hidden */ }
+    })();
+  }, [can]);
+
+  // Gate the Pax8 catalog-import entry on a connected + enabled Pax8 integration.
+  useEffect(() => {
+    if (!can('contracts', 'write')) return;
+    void (async () => {
+      try {
+        const res = await pax8Status();
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
+        setPax8Active(Boolean(body?.data?.configured && body?.data?.enabled));
       } catch { /* leave hidden */ }
     })();
   }, [can]);
@@ -572,7 +589,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
               {/* Add line */}
               <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-add-line">
-                {can('contracts', 'write') && (ecActive || (pax8IntegrationId && orgId)) && (
+                {can('contracts', 'write') && (ecActive || pax8Active || (pax8IntegrationId && orgId)) && (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b pb-3">
                     <span className="text-xs text-muted-foreground">Add from an integration — it pre-fills a line.</span>
                     <div className="flex flex-wrap items-center gap-2">
@@ -584,6 +601,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           data-testid="contract-link-pax8"
                         >
                           Link Pax8 subscription
+                        </button>
+                      )}
+                      {pax8Active && (
+                        <button
+                          type="button"
+                          onClick={() => setPax8CatalogOpen(true)}
+                          className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
+                          data-testid="contract-import-pax8-catalog"
+                        >
+                          Add from Pax8 catalog
                         </button>
                       )}
                       {ecActive && (
@@ -783,6 +810,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       <CatalogDistributorDrawer
         open={distributorOpen}
         onClose={() => setDistributorOpen(false)}
+        onImported={onDistributorImported}
+      />
+
+      <Pax8CatalogDrawer
+        open={pax8CatalogOpen}
+        onClose={() => setPax8CatalogOpen(false)}
         onImported={onDistributorImported}
       />
 
