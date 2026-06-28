@@ -67,3 +67,61 @@ export function sellPriceDefault(product: EcProduct): string {
   const value = product.msrp ?? product.cost;
   return value === null || value === undefined ? '' : value.toFixed(2);
 }
+
+const PAX8_BASE = '/catalog/distributors/pax8';
+
+export interface Pax8Product {
+  pax8ProductId: string;
+  name: string;
+  vendorName: string | null;
+  vendorSku: string | null;
+  shortDescription: string | null;
+  raw: Record<string, unknown>;
+}
+
+export interface Pax8PriceOption {
+  commitmentTerm: string | null;
+  billingTerm: string | null;
+  partnerBuyRate: string | null;        // cost
+  suggestedRetailPrice: string | null;  // list price
+  currencyCode: string | null;
+}
+
+export interface Pax8ImportItem {
+  name: string;
+  sku: string | null;
+  description: string | null;
+  unitPrice: number;
+  costBasis: number | null;
+}
+
+export interface Pax8ImportProduct {
+  source: 'pax8';
+  pax8ProductId: string;
+  name: string;
+  vendorName: string | null;
+  vendorSku: string | null;
+  commitmentTerm: string | null;
+  billingTerm: string | null;
+  partnerBuyRate: string | null;
+  currency: string | null;
+  raw: Record<string, unknown>;
+}
+
+export function pax8Status(): Promise<Response> {
+  return fetchWithAuth(`${PAX8_BASE}/status`);
+}
+
+export function pax8Search(q: string, vendor?: string): Promise<Response> {
+  const params = new URLSearchParams({ q });
+  if (vendor) params.set('vendor', vendor);
+  return fetchWithAuth(`${PAX8_BASE}/search?${params.toString()}`);
+}
+
+export function pax8Pricing(productId: string): Promise<Response> {
+  return fetchWithAuth(`${PAX8_BASE}/pricing?productId=${encodeURIComponent(productId)}`);
+}
+
+export function pax8Import(body: { product: Pax8ImportProduct; item: Pax8ImportItem }): Promise<Response> {
+  return fetchWithAuth(`${PAX8_BASE}/import`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
+}
