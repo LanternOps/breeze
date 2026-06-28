@@ -17,8 +17,7 @@ import {
   snmpDevices,
   snmpAlertThresholds,
   snmpMetrics,
-  devices,
-  discoveredAssetTypeEnum
+  devices
 } from '../db/schema';
 import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
@@ -338,7 +337,14 @@ const updateAssetSchema = z.object({
   label: z.string().max(255).optional(),
   notes: z.string().nullish(),
   tags: z.string().array().optional(),
-  assetType: z.enum(discoveredAssetTypeEnum.enumValues as [string, ...string[]]).optional(),
+  // NOTE: keep this list literal — do NOT derive it from `discoveredAssetTypeEnum.enumValues`.
+  // Several sibling tests fully mock '../db/schema' (vi.mock without importOriginal), so a
+  // runtime reference to the enum here makes this module throw at import in those suites
+  // (green locally, red in the full CI run — see #1424 / partner_multi_org_orgid.test.ts).
+  assetType: z.enum([
+    'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
+    'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
+  ]).optional(),
   resetTypeToAuto: z.boolean().optional()
 }).refine(
   (v) => !(v.assetType !== undefined && v.resetTypeToAuto === true),
