@@ -17,7 +17,8 @@ import {
   snmpDevices,
   snmpAlertThresholds,
   snmpMetrics,
-  devices
+  devices,
+  discoveredAssetTypeEnum
 } from '../db/schema';
 import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
@@ -337,10 +338,7 @@ const updateAssetSchema = z.object({
   label: z.string().max(255).optional(),
   notes: z.string().nullish(),
   tags: z.string().array().optional(),
-  assetType: z.enum([
-    'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
-    'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
-  ]).optional(),
+  assetType: z.enum(discoveredAssetTypeEnum.enumValues as [string, ...string[]]).optional(),
   resetTypeToAuto: z.boolean().optional()
 }).refine(
   (v) => !(v.assetType !== undefined && v.resetTypeToAuto === true),
