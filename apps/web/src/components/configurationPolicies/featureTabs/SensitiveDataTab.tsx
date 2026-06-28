@@ -189,7 +189,7 @@ export default function SensitiveDataTab({ policyId, existingLink, onLinkChanged
             max={1024}
             value={Math.round(settings.maxFileSizeBytes / (1024 * 1024))}
             onChange={(e) => update('maxFileSizeBytes', Number(e.target.value) * 1024 * 1024)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
           />
         </div>
       </div>
@@ -317,7 +317,7 @@ function ListEditor({ label, description, items, value, onChange, onAdd, onRemov
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), onAdd())}
           placeholder={placeholder}
-          className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <button type="button" onClick={onAdd} className="inline-flex items-center gap-1 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">
           <Plus className="h-4 w-4" /> Add

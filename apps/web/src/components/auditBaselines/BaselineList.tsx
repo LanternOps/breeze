@@ -130,7 +130,7 @@ export default function BaselineList() {
         </div>
       )}
 
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         <table className="w-full text-sm">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -238,7 +238,7 @@ export default function BaselineList() {
 
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Baseline</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete{' '}

@@ -300,13 +300,13 @@ export default function BackupJobList() {
         <p className="text-sm text-muted-foreground">Track job execution status and troubleshoot errors.</p>
       </div>
 
-      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-sm md:grid-cols-3">
+      <div className="grid gap-3 rounded-lg border bg-card p-4 shadow-xs md:grid-cols-3">
         <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
           <Search className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
           <label htmlFor="job-search" className="sr-only">Search device</label>
           <input
             id="job-search"
-            className="w-full bg-transparent text-sm outline-none"
+            className="w-full bg-transparent text-sm outline-hidden"
             placeholder="Search device..."
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -317,7 +317,7 @@ export default function BackupJobList() {
           <label htmlFor="job-status-filter" className="sr-only">Filter by status</label>
           <select
             id="job-status-filter"
-            className="w-full appearance-none bg-transparent text-sm outline-none"
+            className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value as JobStatus | 'all')}
           >
@@ -333,7 +333,7 @@ export default function BackupJobList() {
           <label htmlFor="job-config-filter" className="sr-only">Filter by config</label>
           <select
             id="job-config-filter"
-            className="w-full appearance-none bg-transparent text-sm outline-none"
+            className="w-full appearance-none bg-transparent text-sm outline-hidden"
             value={configFilter}
             onChange={(event) => setConfigFilter(event.target.value)}
           >
@@ -353,7 +353,7 @@ export default function BackupJobList() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+      <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
         <table className="w-full min-w-[700px]">
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>

@@ -151,7 +151,7 @@ export default function SetupWizard() {
     <div className="space-y-8">
       <SetupStepper steps={STEPS} currentStep={currentStep} onStepClick={handleStepClick} />
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         {currentStep === 0 && (
           <AccountSetupStep onNext={handleAccountStepComplete} />
         )}

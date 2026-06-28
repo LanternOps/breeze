@@ -136,7 +136,7 @@ export default function ApproverDevicesSection() {
   };
 
   return (
-    <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm" data-testid="approver-devices-section">
+    <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs" data-testid="approver-devices-section">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold">Approval security</h2>
         <p className="text-sm text-muted-foreground">

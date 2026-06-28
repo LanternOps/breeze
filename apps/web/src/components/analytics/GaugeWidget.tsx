@@ -42,7 +42,7 @@ export default function GaugeWidget({
     status === 'critical' ? 'text-destructive' : status === 'warning' ? 'text-warning' : 'text-success';
 
   return (
-    <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-sm">
+    <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-xs">
       <div className="space-y-1">
         <p className="text-sm font-semibold">{title}</p>
         {description && <p className="text-xs text-muted-foreground">{description}</p>}

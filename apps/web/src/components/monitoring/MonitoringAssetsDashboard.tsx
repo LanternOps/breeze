@@ -371,7 +371,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
 
   if (loading && assets.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-4 text-sm text-muted-foreground">Loading monitoring assets...</p>
@@ -425,7 +425,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
 
       {/* Summary */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
               <Activity className="h-5 w-5 text-primary" />
@@ -436,7 +436,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
           </div>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
               <CheckCircle className="h-5 w-5 text-green-600" />
@@ -447,7 +447,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
           </div>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
               <PowerOff className="h-5 w-5 text-muted-foreground" />
@@ -458,7 +458,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
           </div>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-yellow-500/10">
               <AlertTriangle className="h-5 w-5 text-yellow-600" />
@@ -469,7 +469,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
             </div>
           </div>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
               <Activity className="h-5 w-5 text-primary" />
@@ -482,7 +482,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Assets</h2>
@@ -710,7 +710,7 @@ function EditMonitoringModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Configure Monitoring</h2>
@@ -789,7 +789,7 @@ function EditMonitoringModal({
                 <select
                   value={snmpVersion}
                   onChange={(e) => setSnmpVersion(e.target.value as any)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="v1">v1</option>
                   <option value="v2c">v2c</option>
@@ -804,7 +804,7 @@ function EditMonitoringModal({
                   onChange={(e) => setPollingInterval(Number(e.target.value))}
                   min={30}
                   max={86400}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             </div>
@@ -819,7 +819,7 @@ function EditMonitoringModal({
                   type="text"
                   value={community}
                   onChange={(e) => setCommunity(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   placeholder="public"
                 />
               </div>
@@ -836,7 +836,7 @@ function EditMonitoringModal({
                     type="text"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -845,7 +845,7 @@ function EditMonitoringModal({
                     <select
                       value={authProtocol}
                       onChange={(e) => setAuthProtocol(e.target.value)}
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       <option value="md5">MD5</option>
                       <option value="sha">SHA</option>
@@ -858,7 +858,7 @@ function EditMonitoringModal({
                       type="password"
                       value={authPassword}
                       onChange={(e) => setAuthPassword(e.target.value)}
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       placeholder="Leave blank to keep"
                     />
                   </div>
@@ -869,7 +869,7 @@ function EditMonitoringModal({
                     <select
                       value={privProtocol}
                       onChange={(e) => setPrivProtocol(e.target.value)}
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       <option value="des">DES</option>
                       <option value="aes">AES</option>
@@ -882,7 +882,7 @@ function EditMonitoringModal({
                       type="password"
                       value={privPassword}
                       onChange={(e) => setPrivPassword(e.target.value)}
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       placeholder="Leave blank to keep"
                     />
                   </div>
@@ -895,7 +895,7 @@ function EditMonitoringModal({
               <select
                 value={templateId}
                 onChange={(e) => setTemplateId(e.target.value)}
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="">No template</option>
                 {templates.map((t) => (

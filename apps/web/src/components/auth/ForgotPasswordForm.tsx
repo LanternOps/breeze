@@ -42,7 +42,7 @@ export default function ForgotPasswordForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
       aria-describedby={errorMessage ? formErrId : undefined}
     >
       <div className="space-y-1">
@@ -64,7 +64,7 @@ export default function ForgotPasswordForm({
           placeholder="you@company.com"
           aria-invalid={errors.email ? true : undefined}
           aria-describedby={errors.email ? emailErrId : undefined}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
         {errors.email && (

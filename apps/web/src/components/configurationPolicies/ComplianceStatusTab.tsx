@@ -83,7 +83,7 @@ export default function ComplianceStatusTab({ policyId, timezone }: ComplianceSt
     return (
       <div
         data-testid="compliance-status-loading"
-        className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm"
+        className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs"
       >
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
@@ -113,7 +113,7 @@ export default function ComplianceStatusTab({ policyId, timezone }: ComplianceSt
 
   return (
     <div data-testid="compliance-status-tab" className="space-y-4">
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
@@ -160,7 +160,7 @@ export default function ComplianceStatusTab({ policyId, timezone }: ComplianceSt
         )}
       </div>
 
-      <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+      <div className="overflow-hidden rounded-lg border bg-card shadow-xs">
         <div className="max-h-[500px] overflow-auto">
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40 sticky top-0">

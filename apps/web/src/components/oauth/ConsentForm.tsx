@@ -282,7 +282,7 @@ function ConsentShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       {title && <h2 className="text-base font-semibold tracking-tight">{title}</h2>}
       {subtitle && (
         <p className="mt-1 font-mono text-xs text-muted-foreground break-all">{subtitle}</p>
@@ -302,7 +302,7 @@ function ScopeList({ scopes }: { scopes: string[] }) {
           <li key={scope} className="flex items-start gap-2">
             <span
               aria-hidden="true"
-              className={`mt-1 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${
+              className={`mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
                 isHighRiskScope(scope) ? 'bg-red-500' : 'bg-emerald-500'
               }`}
             />
@@ -337,7 +337,7 @@ function TenantPicker({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        className="block h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        className="block h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
       >
         {partners.map((p) => (
           <option key={p.partnerId} value={p.partnerId}>{p.partnerName}</option>

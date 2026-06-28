@@ -80,7 +80,7 @@ export default function PeripheralPoliciesList() {
         <select
           value={filterClass}
           onChange={(e) => setFilterClass(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="">All Classes</option>
           <option value="storage">Storage</option>
@@ -91,7 +91,7 @@ export default function PeripheralPoliciesList() {
         <select
           value={filterAction}
           onChange={(e) => setFilterAction(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="">All Actions</option>
           <option value="allow">Allow</option>
@@ -102,7 +102,7 @@ export default function PeripheralPoliciesList() {
         <select
           value={filterActive}
           onChange={(e) => setFilterActive(e.target.value)}
-          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="">All Status</option>
           <option value="true">Active</option>
@@ -134,7 +134,7 @@ export default function PeripheralPoliciesList() {
       )}
 
       {/* Table */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />

@@ -534,7 +534,7 @@ export default function NetworkChangesPanel({
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-wrap items-center gap-3">
           <div>
             <h2 className="text-lg font-semibold">Network Changes</h2>
@@ -559,7 +559,7 @@ export default function NetworkChangesPanel({
               aria-label="Site"
               value={filters.siteId}
               onChange={(event) => setFilters((previous) => ({ ...previous, siteId: event.target.value }))}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All sites</option>
               {siteOptions.map((site) => (
@@ -576,7 +576,7 @@ export default function NetworkChangesPanel({
               aria-label="Profile"
               value={filters.profileId}
               onChange={(event) => setFilters((previous) => ({ ...previous, profileId: event.target.value }))}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All profiles</option>
               {profiles.map((profile) => (
@@ -592,7 +592,7 @@ export default function NetworkChangesPanel({
             <select
               value={filters.eventType}
               onChange={(event) => setFilters((previous) => ({ ...previous, eventType: event.target.value as FilterState['eventType'] }))}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All types</option>
               <option value="new_device">New device</option>
@@ -607,7 +607,7 @@ export default function NetworkChangesPanel({
             <select
               value={filters.acknowledged}
               onChange={(event) => setFilters((previous) => ({ ...previous, acknowledged: event.target.value as FilterState['acknowledged'] }))}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All</option>
               <option value="false">Unacknowledged</option>
@@ -621,7 +621,7 @@ export default function NetworkChangesPanel({
               type="datetime-local"
               value={filters.since}
               onChange={(event) => setFilters((previous) => ({ ...previous, since: event.target.value }))}
-              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
         </div>
@@ -668,7 +668,7 @@ export default function NetworkChangesPanel({
             value={bulkNotes}
             onChange={(event) => setBulkNotes(event.target.value)}
             placeholder="Optional bulk acknowledgement notes"
-            className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <button
             type="button"

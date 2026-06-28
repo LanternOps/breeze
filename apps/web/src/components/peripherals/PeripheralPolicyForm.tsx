@@ -137,7 +137,7 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
               onChange={(e) => setName(e.target.value)}
               required
               maxLength={200}
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 
@@ -147,7 +147,7 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
               <select
                 value={deviceClass}
                 onChange={(e) => setDeviceClass(e.target.value)}
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="storage">Storage</option>
                 <option value="all_usb">All USB</option>
@@ -160,7 +160,7 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
               <select
                 value={action}
                 onChange={(e) => setAction(e.target.value)}
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="allow">Allow</option>
                 <option value="block">Block</option>
@@ -216,19 +216,19 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
                       value={ex.vendor}
                       onChange={(e) => updateException(idx, 'vendor', e.target.value)}
                       placeholder="Vendor"
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                     <input
                       value={ex.product}
                       onChange={(e) => updateException(idx, 'product', e.target.value)}
                       placeholder="Product"
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                     <input
                       value={ex.serialNumber}
                       onChange={(e) => updateException(idx, 'serialNumber', e.target.value)}
                       placeholder="Serial Number"
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="grid gap-2 sm:grid-cols-3">
@@ -245,13 +245,13 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
                       value={ex.reason}
                       onChange={(e) => updateException(idx, 'reason', e.target.value)}
                       placeholder="Reason"
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                     <input
                       type="datetime-local"
                       value={ex.expiresAt ? ex.expiresAt.slice(0, 16) : ''}
                       onChange={(e) => updateException(idx, 'expiresAt', e.target.value ? new Date(e.target.value).toISOString() : '')}
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>

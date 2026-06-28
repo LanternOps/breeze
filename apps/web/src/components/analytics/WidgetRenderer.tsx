@@ -27,7 +27,7 @@ function SummaryWidget({ title, data }: { title?: string; data: SummaryWidgetDat
   const changeDirection = change >= 0 ? 'up' : 'down';
 
   return (
-    <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-sm">
+    <div className="flex h-full flex-col justify-between rounded-lg border bg-card p-4 shadow-xs">
       <div className="space-y-1">
         {title && <p className="text-sm text-muted-foreground">{title}</p>}
         <div className="text-2xl font-semibold">

@@ -17,7 +17,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex items-center gap-3">
           <div className="rounded-full border bg-muted/30 p-2">
             <Activity className="h-4 w-4 text-muted-foreground" />
@@ -35,7 +35,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex items-center gap-3">
           <div className="rounded-full border bg-muted/30 p-2">
             <AlertTriangle className="h-4 w-4 text-muted-foreground" />
@@ -49,7 +49,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex items-center gap-3">
           <div className="rounded-full border bg-muted/30 p-2">
             <Layers className="h-4 w-4 text-muted-foreground" />
@@ -61,7 +61,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex items-center gap-3">
           <div className="rounded-full border bg-muted/30 p-2">
             <ClipboardCheck className="h-4 w-4 text-muted-foreground" />

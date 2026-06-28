@@ -142,7 +142,7 @@ export default function PartnerBillingSettings() {
 
   return (
     <div className="space-y-6" data-testid="partner-billing-settings">
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Invoice defaults</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Currency, tax, numbering, and terms applied to new invoices across your customers.
@@ -225,7 +225,7 @@ export default function PartnerBillingSettings() {
         </div>
       </section>
 
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Company contact</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Shown as the seller on quotes and invoices.

@@ -65,7 +65,7 @@ export function CreatedKeyModal({ isOpen, apiKey, onClose }: CreatedKeyModalProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/10">
             <svg
@@ -88,7 +88,7 @@ export function CreatedKeyModal({ isOpen, apiKey, onClose }: CreatedKeyModalProp
         <div className="mt-6 rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
           <div className="flex items-start gap-2">
             <svg
-              className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600"
+              className="mt-0.5 h-4 w-4 shrink-0 text-amber-600"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -242,7 +242,7 @@ export default function ApiKeyForm({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8 overflow-y-auto">
-      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm my-8">
+      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs my-8">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{title}</h2>
           <p className="text-sm text-muted-foreground">{description}</p>
@@ -261,7 +261,7 @@ export default function ApiKeyForm({
               onChange={e => setName(e.target.value)}
               placeholder="My API Key"
               className={cn(
-                'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring',
+                'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
                 errors.name && 'border-destructive focus:ring-destructive'
               )}
             />
@@ -289,7 +289,7 @@ export default function ApiKeyForm({
                 onChange={e => setExpiresAt(e.target.value)}
                 min="2024-01-15"
                 className={cn(
-                  'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring',
+                  'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
                   errors.expiresAt && 'border-destructive focus:ring-destructive'
                 )}
               />
@@ -310,7 +310,7 @@ export default function ApiKeyForm({
               placeholder="Leave empty for default"
               min={1}
               className={cn(
-                'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring',
+                'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
                 errors.rateLimit && 'border-destructive focus:ring-destructive'
               )}
             />

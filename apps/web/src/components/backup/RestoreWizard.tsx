@@ -383,7 +383,7 @@ export default function RestoreWizard() {
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         <div className="flex flex-wrap gap-2">
           {['Select snapshot', 'Restore type', 'Select files', 'Destination', 'Review'].map(
             (label, index) => (
@@ -674,8 +674,8 @@ export default function RestoreWizard() {
       </div>
 
       {(latestKnownRestore || restoreHistoryLoading || restoreHistory.length > 0) ? (
-        <div className="grid gap-6 xl:grid-cols-[1.2fr,0.8fr]">
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold text-foreground">Latest restore job</h3>
@@ -750,7 +750,7 @@ export default function RestoreWizard() {
                   </div>
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Result payload</p>
-                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] text-foreground">
+                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word chart-legend-xs text-foreground">
                       {renderJson(latestKnownRestore.resultDetails)}
                     </pre>
                   </div>
@@ -763,7 +763,7 @@ export default function RestoreWizard() {
             )}
           </div>
 
-          <div className="rounded-lg border bg-card p-5 shadow-sm">
+          <div className="rounded-lg border bg-card p-5 shadow-xs">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold text-foreground">Recent restore history</h3>

@@ -131,7 +131,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
   return (
     <div className="space-y-6">
       {/* Log Forwarding Section */}
-      <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -339,7 +339,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
       </section>
 
       {/* Event Log Collection Info */}
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start gap-3">
           <Info className="mt-0.5 h-5 w-5 text-muted-foreground" />
           <div className="space-y-2">

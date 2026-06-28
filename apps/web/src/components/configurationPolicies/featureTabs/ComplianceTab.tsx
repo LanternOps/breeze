@@ -393,7 +393,7 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
                       value={item.name}
                       onChange={(e) => updateItem(index, { name: e.target.value })}
                       placeholder="e.g. Required Security Software"
-                      className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
 
@@ -729,7 +729,7 @@ export default function ComplianceTab({ policyId, existingLink, onLinkChanged, l
                       max={1440}
                       value={item.checkIntervalMinutes}
                       onChange={(e) => updateItem(index, { checkIntervalMinutes: Number(e.target.value) || 60 })}
-                      className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>

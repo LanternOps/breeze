@@ -395,7 +395,7 @@ export default function PartnerDashboard() {
         <div className="flex flex-wrap gap-2">
           <a
             href="/partner/customers/new"
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:opacity-90"
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:opacity-90"
           >
             <UserPlus className="h-4 w-4" />
             Add customer
@@ -425,7 +425,7 @@ export default function PartnerDashboard() {
 
       <div className="grid gap-6 xl:grid-cols-3">
         <div className="xl:col-span-2">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">Customer health</h2>
@@ -441,13 +441,13 @@ export default function PartnerDashboard() {
                     placeholder="Search customers"
                     value={query}
                     onChange={event => setQuery(event.target.value)}
-                    className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <select
                   value={healthFilter}
                   onChange={event => setHealthFilter(event.target.value as 'all' | HealthLabel)}
-                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="all">All health</option>
                   <option value="healthy">Healthy</option>
@@ -457,7 +457,7 @@ export default function PartnerDashboard() {
                 <select
                   value={sortKey}
                   onChange={event => setSortKey(event.target.value as SortKey)}
-                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="health">Sort by health score</option>
                   <option value="devices">Sort by device count</option>
@@ -473,7 +473,7 @@ export default function PartnerDashboard() {
                   <a
                     key={customer.id}
                     href={`/partner/customers/${encodeURIComponent(customer.id)}`}
-                    className="group rounded-lg border bg-background p-4 transition hover:border-primary/40 hover:shadow-sm"
+                    className="group rounded-lg border bg-background p-4 transition hover:border-primary/40 hover:shadow-xs"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
@@ -535,7 +535,7 @@ export default function PartnerDashboard() {
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Billing summary</h2>
@@ -585,7 +585,7 @@ export default function PartnerDashboard() {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Portfolio snapshot</h2>
@@ -632,7 +632,7 @@ export default function PartnerDashboard() {
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold">Devices across customers</h2>

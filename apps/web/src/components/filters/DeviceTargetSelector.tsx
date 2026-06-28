@@ -252,7 +252,7 @@ export function DeviceTargetSelector({
                 value={deviceSearch}
                 onChange={(e) => setDeviceSearch(e.target.value)}
                 placeholder="Search devices..."
-                className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="max-h-64 overflow-y-auto space-y-1">
@@ -341,7 +341,7 @@ export function DeviceTargetSelector({
                 <select
                   value={selectedSavedFilterId}
                   onChange={(e) => handleSavedFilterSelect(e.target.value)}
-                  className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="">Select...</option>
                   {savedFilters.map(f => (

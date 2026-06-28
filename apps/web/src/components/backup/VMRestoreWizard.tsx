@@ -225,7 +225,7 @@ export default function VMRestoreWizard() {
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         {/* Step indicators */}
         <div className="flex flex-wrap gap-2">
           {steps.map((label, index) => (

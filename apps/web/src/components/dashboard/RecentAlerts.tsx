@@ -90,7 +90,7 @@ export default function RecentAlerts() {
 
   if (isLoading && alerts.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center justify-between">
           <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
@@ -114,7 +114,7 @@ export default function RecentAlerts() {
 
   if (error && alerts.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex items-center justify-between">
           <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
           <a href="/alerts" className="text-xs font-medium text-primary hover:text-primary/80 transition-colors">
@@ -136,7 +136,7 @@ export default function RecentAlerts() {
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="mb-4 flex items-center justify-between">
         <h3 data-testid="dashboard-recent-alerts-heading" className="text-sm font-semibold">Recent Alerts</h3>
         <a href="/alerts" className="text-sm text-primary hover:underline">
@@ -166,7 +166,7 @@ export default function RecentAlerts() {
                   config.borderColor
                 )}
               >
-                <Icon className={cn('mt-0.5 h-5 w-5 flex-shrink-0', config.textColor)} />
+                <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', config.textColor)} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{alertTitle}</div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">

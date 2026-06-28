@@ -436,10 +436,10 @@ export default function BackupDashboard() {
           <div className="space-y-6">
             <HypervDashboard />
 
-            <div className="grid gap-6 2xl:grid-cols-[1.2fr,0.8fr]">
+            <div className="grid gap-6 2xl:grid-cols-[1.2fr_0.8fr]">
               <VMRestoreWizard />
 
-              <div className="space-y-3 rounded-lg border bg-card p-5 shadow-sm">
+              <div className="space-y-3 rounded-lg border bg-card p-5 shadow-xs">
                 <div>
                   <h3 className="text-base font-semibold text-foreground">Active instant boots</h3>
                   <p className="text-sm text-muted-foreground">

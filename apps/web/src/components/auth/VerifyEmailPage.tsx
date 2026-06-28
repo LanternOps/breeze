@@ -76,7 +76,7 @@ export default function VerifyEmailPage() {
 
   if (state.phase === 'loading') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm" aria-busy="true">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs" aria-busy="true">
         <div className="space-y-2 text-center">
           <StatusIcon variant="pending" label="Verifying" />
           <h2 className="text-lg font-semibold">Verifying your email…</h2>
@@ -87,7 +87,7 @@ export default function VerifyEmailPage() {
 
   if (state.phase === 'no-token') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-2 text-center">
           <StatusIcon variant="error" />
           <h2 className="text-lg font-semibold">No verification token</h2>
@@ -107,7 +107,7 @@ export default function VerifyEmailPage() {
 
   if (state.phase === 'success') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-2 text-center">
           <StatusIcon variant="success" />
           <h2 className="text-lg font-semibold">Email verified</h2>
@@ -131,7 +131,7 @@ export default function VerifyEmailPage() {
   const showResendLink = state.reason === 'invalid' || state.reason === 'expired';
 
   return (
-    <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+    <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="space-y-2 text-center">
         <StatusIcon variant="error" />
         <h2 className="text-lg font-semibold">{copy.title}</h2>

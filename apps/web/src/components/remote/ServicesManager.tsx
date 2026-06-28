@@ -211,7 +211,7 @@ export default function ServicesManager({
   // Show Windows-only alert for non-Windows devices
   if (deviceOs !== 'windows') {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-4">
           <AlertTriangle className="h-5 w-5 text-yellow-600" />
           <div>
@@ -227,7 +227,7 @@ export default function ServicesManager({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
@@ -252,7 +252,7 @@ export default function ServicesManager({
                 setQuery(e.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
             />
           </div>
 
@@ -263,7 +263,7 @@ export default function ServicesManager({
               setStatusFilter(e.target.value as 'all' | 'Running' | 'Stopped');
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
           >
             <option value="all">All Status</option>
             <option value="Running">Running</option>
@@ -595,7 +595,7 @@ export default function ServicesManager({
                                 value={service.startupType}
                                 onChange={e => handleStartupTypeChange(service.name, e.target.value)}
                                 disabled={actionLoading === service.name}
-                                className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                                className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {startupTypeOptions.map(option => (
                                   <option key={option} value={option}>

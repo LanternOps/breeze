@@ -42,9 +42,9 @@ function MessageBubble({ message }: { message: ScriptAiMessage }) {
           : 'bg-muted'
       }`}>
         {isUser ? (
-          <div className="whitespace-pre-wrap break-words">{message.content}</div>
+          <div className="whitespace-pre-wrap wrap-break-word">{message.content}</div>
         ) : (
-          <div className="prose prose-sm max-w-none break-words dark:prose-invert prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none">
+          <div className="prose prose-sm max-w-none wrap-break-word dark:prose-invert prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{

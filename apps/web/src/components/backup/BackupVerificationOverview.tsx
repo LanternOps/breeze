@@ -205,7 +205,7 @@ export default function BackupVerificationOverview() {
       </div>
 
       {/* Recent failures table */}
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         <h3 className="text-base font-semibold text-foreground">Recent Failures</h3>
         <p className="text-sm text-muted-foreground">Failed verification checks across all devices.</p>
         {failures.length === 0 ? (
@@ -245,7 +245,7 @@ export default function BackupVerificationOverview() {
       </div>
 
       {/* Low readiness devices table */}
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         <h3 className="text-base font-semibold text-foreground">Low Readiness Devices</h3>
         <p className="text-sm text-muted-foreground">Devices scoring below the 85-point readiness threshold.</p>
         {lowDevices.length === 0 ? (

@@ -129,7 +129,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
   };
 
   return (
-    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold">Theming</h2>
         <p className="text-sm text-muted-foreground">Set your display preferences for this account.</p>

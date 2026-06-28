@@ -187,7 +187,7 @@ export default function AccountDeletionPage() {
       ) : (
         <form
           onSubmit={handleSubmit}
-          className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+          className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
           aria-describedby={submitState.kind === 'error' ? formErrId : undefined}
         >
           <section className="space-y-2 rounded-md border bg-muted/40 p-4 text-sm">
@@ -225,7 +225,7 @@ export default function AccountDeletionPage() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 
@@ -242,7 +242,7 @@ export default function AccountDeletionPage() {
               required
               value={confirmation}
               onChange={(e) => setConfirmation(e.target.value)}
-              className="h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 
@@ -257,7 +257,7 @@ export default function AccountDeletionPage() {
               onChange={(e) => setReason(e.target.value)}
               maxLength={2000}
               placeholder="Help us improve — what made you decide to leave?"
-              className="w-full rounded-md border bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background p-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 
@@ -306,7 +306,7 @@ function PendingState({
   error: string | null;
 }) {
   return (
-    <div className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
+    <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex gap-3">
         <CheckCircle2 className="h-6 w-6 flex-none text-primary" aria-hidden />
         <div className="space-y-1">

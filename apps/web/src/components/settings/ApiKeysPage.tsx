@@ -236,7 +236,7 @@ export default function ApiKeysPage() {
       {/* View Modal */}
       {modalMode === 'view' && selectedKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">API Key Details</h2>
             <div className="mt-4 space-y-4">
               <div>
@@ -315,7 +315,7 @@ export default function ApiKeysPage() {
       {/* Rotate Confirmation Modal */}
       {modalMode === 'rotate' && selectedKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Rotate API Key</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to rotate{' '}
@@ -351,7 +351,7 @@ export default function ApiKeysPage() {
       {/* Revoke Confirmation Modal */}
       {modalMode === 'revoke' && selectedKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Revoke API Key</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to revoke{' '}

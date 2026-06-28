@@ -124,7 +124,7 @@ export default function ForcedMfaSetupPage() {
       {step === 'password' && (
         <form
           onSubmit={handleStart}
-          className="space-y-4 rounded-lg border bg-card p-6 shadow-sm"
+          className="space-y-4 rounded-lg border bg-card p-6 shadow-xs"
         >
           <div className="space-y-1">
             <h2 className="text-lg font-semibold">Confirm your password</h2>
@@ -143,7 +143,7 @@ export default function ForcedMfaSetupPage() {
               autoFocus
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               disabled={loading}
             />
           </div>

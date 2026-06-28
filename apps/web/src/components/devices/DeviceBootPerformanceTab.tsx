@@ -183,7 +183,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
   // Loading state
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading boot performance data...</p>
@@ -212,7 +212,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
   if (boots.length === 0) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+        <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
           <div className="text-center">
             <Timer className="mx-auto h-10 w-10 text-muted-foreground" />
             <h3 className="mt-3 text-lg font-semibold">No Boot Performance Data</h3>
@@ -242,7 +242,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
   return (
     <div className="space-y-6">
       {/* Header bar */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-lg font-semibold">Boot Performance</h3>
@@ -281,28 +281,28 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
       {/* Summary cards */}
       {summary && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Timer className="h-4 w-4" />
               Avg Boot Time
             </div>
             <p className="mt-2 text-2xl font-bold">{formatBootTime(summary.avgBootTimeSeconds)}</p>
           </div>
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Zap className="h-4 w-4" />
               Fastest Boot
             </div>
             <p className="mt-2 text-2xl font-bold">{formatBootTime(summary.fastestBootSeconds)}</p>
           </div>
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <AlertTriangle className="h-4 w-4" />
               Slowest Boot
             </div>
             <p className="mt-2 text-2xl font-bold">{formatBootTime(summary.slowestBootSeconds)}</p>
           </div>
-          <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Activity className="h-4 w-4" />
               Boots Tracked
@@ -313,7 +313,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
       )}
 
       {/* Boot time trend chart */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Boot Time Trend</h3>
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
@@ -425,7 +425,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
 
       {/* Startup items table (most recent boot) */}
       {boots[0]?.startupItems?.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Startup Items (Latest Boot)
           </h3>
@@ -498,7 +498,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
       )}
 
       {/* Boot history table */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Boot History</h3>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

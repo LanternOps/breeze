@@ -63,7 +63,7 @@ const healthConfig: Record<IntegrationHealth, { label: string; className: string
 
 export default function ConnectorStatusPanel() {
   return (
-    <div className="rounded-xl border bg-card p-6 shadow-sm">
+    <div className="rounded-xl border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Connector status</h2>

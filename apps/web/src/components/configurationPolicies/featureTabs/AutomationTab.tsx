@@ -324,7 +324,7 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
                         value={item.name}
                         onChange={(e) => updateItem(index, { name: e.target.value })}
                         placeholder="e.g. Daily Disk Cleanup"
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                     </div>
                     <label className="flex items-center gap-2 cursor-pointer pb-1">
@@ -369,7 +369,7 @@ export default function AutomationTab({ policyId, existingLink, onLinkChanged, l
                           value={item.cronExpression}
                           onChange={(e) => updateItem(index, { cronExpression: e.target.value })}
                           placeholder="0 */6 * * *"
-                          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                         />
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {cronPresets.map((preset) => (

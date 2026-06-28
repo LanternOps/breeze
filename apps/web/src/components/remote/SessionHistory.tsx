@@ -301,7 +301,7 @@ export default function SessionHistory({
   }, [propSessions, loading, fetchSessions]);
 
   return (
-    <div className={cn('rounded-lg border bg-card shadow-sm', className)}>
+    <div className={cn('rounded-lg border bg-card shadow-xs', className)}>
       {/* Header with stats */}
       <div className="border-b p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -369,7 +369,7 @@ export default function SessionHistory({
                 setQuery(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 
@@ -379,7 +379,7 @@ export default function SessionHistory({
               setTypeFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Types</option>
             <option value="terminal">Terminal</option>
@@ -393,7 +393,7 @@ export default function SessionHistory({
               setUserFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Users</option>
             {uniqueUsers.map(user => (
@@ -407,7 +407,7 @@ export default function SessionHistory({
               setDateFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Time</option>
             <option value="today">Today</option>

@@ -143,7 +143,7 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
           <select
             value={settings.recurrence}
             onChange={(e) => update('recurrence', e.target.value as MaintenanceSettings['recurrence'])}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {recurrenceOptions.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
@@ -159,7 +159,7 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
               type="datetime-local"
               value={settings.windowStart}
               onChange={(e) => update('windowStart', e.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-xs text-muted-foreground">The specific date and time for this one-time maintenance window.</p>
           </div>
@@ -174,7 +174,7 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
             max={72}
             value={settings.durationHours}
             onChange={(e) => update('durationHours', Number(e.target.value) || 1)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
 
@@ -184,7 +184,7 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
           <select
             value={settings.timezone}
             onChange={(e) => update('timezone', e.target.value)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {timezoneOptions.map((tz) => (
               <option key={tz} value={tz}>{tz}</option>
@@ -201,7 +201,7 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
             max={1440}
             value={settings.notifyBeforeMinutes}
             onChange={(e) => update('notifyBeforeMinutes', Number(e.target.value) || 0)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
       </div>

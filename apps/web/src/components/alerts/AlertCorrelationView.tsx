@@ -149,7 +149,7 @@ export default function AlertCorrelationView() {
   if (isLoading && alerts.length === 0) {
     return (
       <div className="space-y-6">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex h-48 items-center justify-center">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           </div>
@@ -161,7 +161,7 @@ export default function AlertCorrelationView() {
   if (error && alerts.length === 0) {
     return (
       <div className="space-y-6">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
             <p>{error}</p>
             <button
@@ -179,7 +179,7 @@ export default function AlertCorrelationView() {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Alert Correlation</h2>
@@ -218,7 +218,7 @@ export default function AlertCorrelationView() {
               onChange={event => setSelectedAlertId(event.target.value)}
               disabled={autoLoad}
               className={cn(
-                'mt-3 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring',
+                'mt-3 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
                 autoLoad ? 'opacity-60' : ''
               )}
             >
@@ -343,7 +343,7 @@ export default function AlertCorrelationView() {
                     <div key={event.id} className="relative z-10 flex flex-col items-center gap-2">
                       <span className={cn('h-3 w-3 rounded-full', severityConfig[event.severity].dotColor)} />
                       <span className="text-xs font-medium">{event.time}</span>
-                      <span className="text-[11px] text-muted-foreground text-center w-20">{event.label}</span>
+                      <span className="chart-legend-xs text-muted-foreground text-center w-20">{event.label}</span>
                     </div>
                   ))}
                 </div>

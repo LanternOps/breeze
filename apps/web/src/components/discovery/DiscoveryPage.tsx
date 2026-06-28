@@ -633,7 +633,7 @@ export default function DiscoveryPage() {
       </div>
 
       {allOrgsMode ? (
-        <div className="flex flex-col items-center justify-center rounded-lg border bg-card p-12 text-center shadow-sm">
+        <div className="flex flex-col items-center justify-center rounded-lg border bg-card p-12 text-center shadow-xs">
           <Building2 className="h-10 w-10 text-muted-foreground" />
           <h2 className="mt-4 text-lg font-semibold">Select an organization to view network discovery</h2>
           <p className="mt-2 max-w-md text-sm text-muted-foreground">
@@ -716,7 +716,7 @@ export default function DiscoveryPage() {
 
       {isProfileModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-5xl rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-5xl rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">

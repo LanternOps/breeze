@@ -227,7 +227,7 @@ export default function UserRiskPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-[420px] items-center justify-center" data-testid="user-risk-loading">
+      <div className="flex u-min-h-px-420 items-center justify-center" data-testid="user-risk-loading">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );

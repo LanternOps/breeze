@@ -159,7 +159,7 @@ export default function WebhookTestPanel({ webhookId, timezone }: WebhookTestPan
   }
 
   return (
-    <div className="rounded-xl border bg-card p-6 shadow-sm">
+    <div className="rounded-xl border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Webhook testing</h2>
@@ -189,7 +189,7 @@ export default function WebhookTestPanel({ webhookId, timezone }: WebhookTestPan
             <select
               value={eventType}
               onChange={event => setEventType(event.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               {eventTypes.map(type => (
                 <option key={type} value={type}>

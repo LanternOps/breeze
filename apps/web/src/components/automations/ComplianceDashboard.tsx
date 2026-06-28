@@ -294,7 +294,7 @@ export default function ComplianceDashboard({
     <div className="space-y-6">
       {/* Overview Cards */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
             <Shield className="h-5 w-5" />
             <span className="text-sm font-medium">Overall Compliance</span>
@@ -311,7 +311,7 @@ export default function ComplianceDashboard({
           </p>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-green-600">
             <CheckCircle className="h-5 w-5" />
             <span className="text-sm font-medium">Compliant</span>
@@ -320,7 +320,7 @@ export default function ComplianceDashboard({
           <p className="text-sm text-muted-foreground">devices passing all policies</p>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-red-600">
             <XCircle className="h-5 w-5" />
             <span className="text-sm font-medium">Non-Compliant</span>
@@ -329,7 +329,7 @@ export default function ComplianceDashboard({
           <p className="text-sm text-muted-foreground">devices with violations</p>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
             <AlertCircle className="h-5 w-5" />
             <span className="text-sm font-medium">Unknown</span>
@@ -342,7 +342,7 @@ export default function ComplianceDashboard({
       {/* Charts Row */}
       <div className="grid gap-6 md:grid-cols-2">
         {/* Pie Chart */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4">Compliance by Status</h3>
           <div className="flex items-center justify-center gap-8">
             <CompliancePieChart data={overallCompliance} />
@@ -364,14 +364,14 @@ export default function ComplianceDashboard({
         </div>
 
         {/* Trend Chart */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4">Compliance Trend</h3>
           <TrendChart trend={trend} />
         </div>
       </div>
 
       {/* Policy Breakdown */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="text-sm font-semibold mb-4">Policy Breakdown</h3>
         <div className="space-y-3">
           {policies.length === 0 ? (
@@ -434,7 +434,7 @@ export default function ComplianceDashboard({
       </div>
 
       {/* Non-Compliant Devices */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-4">
           <h3 className="text-sm font-semibold">Non-Compliant Devices</h3>
           <div className="relative">
@@ -447,7 +447,7 @@ export default function ComplianceDashboard({
                 setDeviceQuery(e.target.value);
                 setCurrentPage(1);
               }}
-              className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-64"
+              className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-64"
             />
           </div>
         </div>

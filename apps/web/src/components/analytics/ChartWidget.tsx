@@ -59,7 +59,7 @@ export default function ChartWidget({
   }, [data, series, type, xKey]);
 
   return (
-    <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-sm">
+    <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-xs">
       <div className="mb-4 flex flex-col gap-1">
         <h3 className="text-sm font-semibold">{title}</h3>
         {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}

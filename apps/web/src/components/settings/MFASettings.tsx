@@ -305,7 +305,7 @@ export default function MFASettings({
           autoFocus={index === 0}
           inputMode="numeric"
           autoComplete={index === 0 ? 'one-time-code' : 'off'}
-          className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-hidden focus:ring-2 focus:ring-ring"
           maxLength={1}
           value={digit}
           onChange={event => handleChange(index, event.target.value)}
@@ -328,7 +328,7 @@ export default function MFASettings({
           autoFocus={index === 0}
           inputMode="numeric"
           autoComplete={index === 0 ? 'one-time-code' : 'off'}
-          className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-hidden focus:ring-2 focus:ring-ring"
           maxLength={1}
           value={digit}
           onChange={event => handlePhoneDigitChange(index, event.target.value)}
@@ -360,7 +360,7 @@ export default function MFASettings({
   // Phone verify view
   if (view === 'phone-verify') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Verify your phone number</h2>
           <p className="text-sm text-muted-foreground">
@@ -453,7 +453,7 @@ export default function MFASettings({
   // SMS setup confirmation view
   if (view === 'sms-setup') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Enable SMS MFA</h2>
           <p className="text-sm text-muted-foreground">
@@ -517,7 +517,7 @@ export default function MFASettings({
   // Status view - shows current MFA state
   if (view === 'status') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Multi-factor authentication</h2>
           <p className="text-sm text-muted-foreground">
@@ -673,7 +673,7 @@ export default function MFASettings({
   // it for the subsequent /mfa/enable call without re-prompting.
   if (view === 'confirm-password-setup') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Confirm your password</h2>
           <p className="text-sm text-muted-foreground">
@@ -732,7 +732,7 @@ export default function MFASettings({
   // Setup view - QR code and verification (TOTP)
   if (view === 'setup') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-3">
           <h2 className="text-lg font-semibold">Set up authenticator</h2>
           <p className="text-sm text-muted-foreground">
@@ -790,7 +790,7 @@ export default function MFASettings({
   // Disable view - requires verification
   if (view === 'disable') {
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Disable MFA</h2>
           <p className="text-sm text-muted-foreground">
@@ -859,7 +859,7 @@ export default function MFASettings({
   if (view === 'recovery') {
     const displayCodes = smsRecoveryCodes || recoveryCodes;
     return (
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Recovery codes</h2>
           <p className="text-sm text-muted-foreground">

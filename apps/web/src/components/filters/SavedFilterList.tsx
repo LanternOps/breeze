@@ -189,7 +189,7 @@ export function SavedFilterList({
               type="text"
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               placeholder="e.g., Windows Servers"
             />
           </div>
@@ -199,7 +199,7 @@ export function SavedFilterList({
             <textarea
               value={formDescription}
               onChange={(e) => setFormDescription(e.target.value)}
-              className="mt-1 min-h-[80px] w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1 u-min-h-px-80 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               placeholder="Describe what this filter matches"
             />
           </div>
@@ -268,7 +268,7 @@ export function SavedFilterList({
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search filters..."
-          className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
       </div>
 

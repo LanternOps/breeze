@@ -112,7 +112,7 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
           rows={3}
           disabled={disabled || sending}
           data-testid="ticket-composer-input"
-          className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
         />
         <div className="mt-2 flex justify-end">
           <button

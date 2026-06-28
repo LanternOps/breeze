@@ -200,15 +200,15 @@ export default function VaultDashboard() {
 
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs font-medium text-muted-foreground">Total Vaults</p>
           <p className="mt-1 text-2xl font-bold text-foreground">{totalVaults}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs font-medium text-muted-foreground">Total Synced Size</p>
           <p className="mt-1 text-2xl font-bold text-foreground">{formatBytes(totalSyncedSize)}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs font-medium text-muted-foreground">Vaults with Errors</p>
           <p className={cn('mt-1 text-2xl font-bold', vaultsWithErrors > 0 ? 'text-destructive' : 'text-foreground')}>
             {vaultsWithErrors}
@@ -239,7 +239,7 @@ export default function VaultDashboard() {
           </p>
         </div>
       ) : (
-        <div className="rounded-lg border bg-card shadow-sm">
+        <div className="rounded-lg border bg-card shadow-xs">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -269,7 +269,7 @@ export default function VaultDashboard() {
                         <div>
                           <div>{vault.vaultPath}</div>
                           {vault.lastSyncError ? (
-                            <div className="mt-1 flex items-start gap-1 text-[11px] text-destructive">
+                            <div className="mt-1 flex items-start gap-1 chart-legend-xs text-destructive">
                               <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
                               <span className="line-clamp-2">{vault.lastSyncError}</span>
                             </div>

@@ -191,7 +191,7 @@ export default function AlertList({
   }, [alerts, devices]);
 
   return (
-    <div className="rounded-lg border bg-card shadow-sm">
+    <div className="rounded-lg border bg-card shadow-xs">
       {/* Search + filter toggle bar */}
       <div className="flex items-center gap-2 p-4 border-b">
         <div className="relative flex-1">
@@ -204,7 +204,7 @@ export default function AlertList({
               setQuery(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <button
@@ -240,7 +240,7 @@ export default function AlertList({
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Status</option>
             <option value="active">Active</option>
@@ -254,7 +254,7 @@ export default function AlertList({
               setSeverityFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Severity</option>
             <option value="critical">Critical</option>
@@ -270,7 +270,7 @@ export default function AlertList({
                 setDeviceFilter(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All Devices</option>
               {availableDevices.map(device => (
@@ -286,7 +286,7 @@ export default function AlertList({
               setDateRangeFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Time</option>
             <option value="1h">Last Hour</option>
@@ -449,7 +449,7 @@ export default function AlertList({
                         </p>
                         {hasCorrelationSummary && alertCorrelationDisabled && (
                           <span
-                            className="mt-1 inline-flex max-w-full cursor-not-allowed items-center gap-1 rounded-md border border-muted-foreground/30 bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+                            className="mt-1 inline-flex max-w-full cursor-not-allowed items-center gap-1 rounded-md border border-muted-foreground/30 bg-muted/40 px-1.5 py-0.5 chart-legend-xs font-medium text-muted-foreground"
                             title="Alert correlation is disabled for this organization"
                             aria-disabled="true"
                           >
@@ -463,7 +463,7 @@ export default function AlertList({
                           <a
                             href="/alerts/correlations"
                             onClick={e => e.stopPropagation()}
-                            className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/10"
+                            className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-1.5 py-0.5 chart-legend-xs font-medium text-primary hover:bg-primary/10"
                             title={`Open incident group ${alert.correlationGroupId}`}
                           >
                             <GitBranch className="h-3 w-3 shrink-0" />
@@ -477,7 +477,7 @@ export default function AlertList({
                         )}
                         {alert.anomalyContext && (
                           <span
-                            className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[11px] font-medium text-sky-700"
+                            className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 chart-legend-xs font-medium text-sky-700"
                             title="Promoted metric anomaly"
                           >
                             <Activity className="h-3 w-3 shrink-0" />

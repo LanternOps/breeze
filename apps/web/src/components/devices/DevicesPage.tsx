@@ -840,7 +840,7 @@ export default function DevicesPage() {
             <div className="h-10 w-28 rounded-md bg-muted animate-pulse" />
           </div>
         </div>
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center justify-between mb-6">
             <div className="h-5 w-20 rounded bg-muted animate-pulse" />
             <div className="h-10 w-56 rounded-md bg-muted animate-pulse" />

@@ -36,7 +36,7 @@ export default function RingSelector({
           value={selectedRingId ?? ''}
           onChange={(e) => onChange(e.target.value || null)}
           disabled={loading}
-          className="h-9 w-full appearance-none rounded-md border bg-background pl-3 pr-8 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 sm:w-52"
+          className="h-9 w-full appearance-none rounded-md border bg-background pl-3 pr-8 text-sm font-medium focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50 sm:w-52"
         >
           <option value="">All Rings</option>
           {sorted.map((ring) => (

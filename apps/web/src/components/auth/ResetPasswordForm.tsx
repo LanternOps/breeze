@@ -54,7 +54,7 @@ export default function ResetPasswordForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
       aria-describedby={errorMessage ? formErrId : undefined}
     >
       <div className="space-y-2">

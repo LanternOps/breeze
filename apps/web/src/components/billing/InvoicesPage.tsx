@@ -368,7 +368,7 @@ export function InvoicesPage() {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search number or org"
           aria-label="Search invoices"
-          className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="invoices-search"
         />
         <select
@@ -376,7 +376,7 @@ export function InvoicesPage() {
           onChange={(e) => applyFilter({ orgId: e.target.value })}
           data-testid="invoices-filter-org"
           aria-label="Filter by organization"
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="">All organizations</option>
           {orgs.map((o) => (
@@ -388,7 +388,7 @@ export function InvoicesPage() {
           onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
           data-testid="invoices-filter-status"
           aria-label="Filter by status"
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           {STATUS_OPTIONS.map((s) => (
             <option key={s.value} value={s.value}>{s.label}</option>
@@ -400,7 +400,7 @@ export function InvoicesPage() {
           onChange={(e) => applyFilter({ from: e.target.value })}
           data-testid="invoices-filter-from"
           aria-label="Issued from"
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           type="date"
@@ -408,12 +408,12 @@ export function InvoicesPage() {
           onChange={(e) => applyFilter({ to: e.target.value })}
           data-testid="invoices-filter-to"
           aria-label="Issued to"
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
       </div>
 
       {/* Table */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
           <div className="divide-y" data-testid="invoices-loading">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -566,7 +566,7 @@ export function InvoicesPage() {
               onChange={(e) => setVoidReason(e.target.value)}
               rows={3}
               data-testid="invoices-bulk-void-reason"
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </label>
           <div className="flex justify-end gap-2">
@@ -625,7 +625,7 @@ export function InvoicesPage() {
                 onClick={() => setMode(m)}
                 aria-pressed={mode === m}
                 className={`flex-1 rounded px-3 py-1.5 text-sm font-medium transition ${
-                  mode === m ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                  mode === m ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
                 }`}
                 data-testid={`invoices-mode-${m}`}
               >
@@ -640,7 +640,7 @@ export function InvoicesPage() {
               value={assembleOrgId}
               onChange={(e) => { setAssembleOrgId(e.target.value); void loadAssembleSites(e.target.value); }}
               data-testid="invoices-assemble-org"
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="">Select an organization…</option>
               {orgs.map((o) => (
@@ -655,7 +655,7 @@ export function InvoicesPage() {
               onChange={(e) => setAssembleSiteId(e.target.value)}
               data-testid="invoices-assemble-site"
               disabled={!assembleOrgId || assembleSites.length === 0}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
             >
               <option value="">All sites</option>
               {assembleSites.map((s) => (
@@ -673,7 +673,7 @@ export function InvoicesPage() {
                   value={assembleFrom}
                   onChange={(e) => setAssembleFrom(e.target.value)}
                   data-testid="invoices-assemble-from"
-                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm">
@@ -683,7 +683,7 @@ export function InvoicesPage() {
                   value={assembleTo}
                   onChange={(e) => setAssembleTo(e.target.value)}
                   data-testid="invoices-assemble-to"
-                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </label>
             </div>

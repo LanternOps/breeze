@@ -164,7 +164,7 @@ export default function S1ThreatList() {
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="s1-list">
+    <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="s1-list">
       {error && (
         <div
           className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
@@ -190,7 +190,7 @@ export default function S1ThreatList() {
               placeholder="Search threats"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div className="flex flex-wrap gap-2">
@@ -198,7 +198,7 @@ export default function S1ThreatList() {
               data-testid="s1-filter-severity"
               value={severityFilter}
               onChange={(event) => setSeverityFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All severities</option>
               <option value="low">Low</option>
@@ -210,7 +210,7 @@ export default function S1ThreatList() {
               data-testid="s1-filter-status"
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All statuses</option>
               <option value="active">Active</option>
@@ -225,7 +225,7 @@ export default function S1ThreatList() {
                 aria-label="Start date"
                 value={startDate}
                 onChange={(event) => setStartDate(event.target.value)}
-                className="bg-transparent text-sm focus:outline-none"
+                className="bg-transparent text-sm focus:outline-hidden"
               />
               <span className="text-muted-foreground">to</span>
               <input
@@ -233,7 +233,7 @@ export default function S1ThreatList() {
                 aria-label="End date"
                 value={endDate}
                 onChange={(event) => setEndDate(event.target.value)}
-                className="bg-transparent text-sm focus:outline-none"
+                className="bg-transparent text-sm focus:outline-hidden"
               />
             </div>
             <button

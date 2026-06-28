@@ -115,7 +115,7 @@ export default function HuntressIncidentList() {
   );
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm" data-testid="huntress-list">
+    <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="huntress-list">
       {error && (
         <div
           className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
@@ -141,7 +141,7 @@ export default function HuntressIncidentList() {
               placeholder="Search incidents"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
           <div className="flex flex-wrap gap-2">
@@ -149,7 +149,7 @@ export default function HuntressIncidentList() {
               data-testid="huntress-filter-severity"
               value={severityFilter}
               onChange={(event) => setSeverityFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All severities</option>
               <option value="low">Low</option>
@@ -161,7 +161,7 @@ export default function HuntressIncidentList() {
               data-testid="huntress-filter-status"
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <option value="all">All statuses</option>
               <option value="open">Open</option>

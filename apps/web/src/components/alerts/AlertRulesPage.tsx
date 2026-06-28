@@ -231,7 +231,7 @@ export default function AlertRulesPage() {
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedRule && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Alert Rule</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete <span className="font-medium">{selectedRule.name}</span>?
@@ -261,7 +261,7 @@ export default function AlertRulesPage() {
       {/* Test Result Modal */}
       {modalMode === 'test' && selectedRule && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Test Alert Rule</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Testing <span className="font-medium">{selectedRule.name}</span>

@@ -187,7 +187,7 @@ export default function PolicyList({
   const paginatedPolicies = filteredPolicies.slice(startIndex, startIndex + pageSize);
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Policies</h2>
@@ -206,7 +206,7 @@ export default function PolicyList({
                 setQuery(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
           <select
@@ -215,7 +215,7 @@ export default function PolicyList({
               setEnforcementFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Enforcement</option>
             <option value="monitor">Monitor</option>
@@ -228,7 +228,7 @@ export default function PolicyList({
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
           >
             <option value="all">All Status</option>
             <option value="enabled">Enabled</option>
@@ -318,7 +318,7 @@ export default function PolicyList({
                           onChange={e => onToggle?.(policy, e.target.checked)}
                           className="peer sr-only"
                         />
-                        <div className="h-6 w-11 rounded-full bg-muted peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-ring after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:after:translate-x-full" />
+                        <div className="h-6 w-11 rounded-full bg-muted peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-ring after:absolute after:u-left-px-2 after:u-top-px-2 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:after:translate-x-full" />
                       </label>
                     </td>
                     <td className="px-4 py-3">

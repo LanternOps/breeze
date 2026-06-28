@@ -203,7 +203,7 @@ export default function DeviceFilters({
           <select
             value={siteFilter ?? ''}
             onChange={e => onSiteChange(e.target.value || null)}
-            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="">All Sites</option>
             {sites.map(site => (
@@ -260,7 +260,7 @@ export default function DeviceFilters({
 
   // Sidebar layout
   return (
-    <div className="w-64 rounded-lg border bg-card p-4 shadow-sm">
+    <div className="w-64 rounded-lg border bg-card p-4 shadow-xs">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">Filters</h3>
         {hasActiveFilters && (
@@ -394,7 +394,7 @@ export default function DeviceFilters({
               <select
                 value={siteFilter ?? ''}
                 onChange={e => onSiteChange(e.target.value || null)}
-                className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="">All Sites</option>
                 {sites.map(site => (

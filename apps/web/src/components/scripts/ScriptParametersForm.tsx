@@ -57,7 +57,7 @@ export default function ScriptParametersForm({
               <select
                 value={String(values[param.name] || '')}
                 onChange={e => onChange(param.name, e.target.value)}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="">Select...</option>
                 {param.options.split(',').map(opt => (
@@ -83,7 +83,7 @@ export default function ScriptParametersForm({
                   }
                 }}
                 placeholder={param.defaultValue || ''}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             )}
           </div>

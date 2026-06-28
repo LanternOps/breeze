@@ -309,14 +309,14 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
             </div>
           ) : devices.length === 0 ? (
-            <div className="rounded-lg border bg-card p-6 text-center shadow-sm">
+            <div className="rounded-lg border bg-card p-6 text-center shadow-xs">
               <p className="text-sm text-muted-foreground">
                 No {baseline?.osType} devices found in this organization.
               </p>
             </div>
           ) : (
             <>
-              <div className="rounded-lg border bg-card shadow-sm">
+              <div className="rounded-lg border bg-card shadow-xs">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">
                     <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -389,7 +389,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
       {/* Step: Preview */}
       {step === 'preview' && dryRunResult && (
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h3 className="text-sm font-semibold">Dry Run Results</h3>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div className="rounded-md border bg-muted/20 p-3">
@@ -468,7 +468,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
 
     if (approvals.length === 0) {
       return (
-        <div className="rounded-lg border bg-card p-8 text-center shadow-sm">
+        <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
           <h3 className="text-sm font-semibold">No approval requests</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             {baseline
@@ -480,7 +480,7 @@ export default function BaselineApplyTab({ baseline, mode }: Props) {
     }
 
     return (
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         <table className="w-full text-sm">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

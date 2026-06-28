@@ -44,7 +44,7 @@ export default function AssetCheckout({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div>
         <h2 className="text-sm font-semibold text-foreground">Asset checkout</h2>
@@ -60,7 +60,7 @@ export default function AssetCheckout({
         <input
           id="expectedReturnDate"
           type="date"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('expectedReturnDate')}
         />
         {errors.expectedReturnDate && (
@@ -76,7 +76,7 @@ export default function AssetCheckout({
           id="notes"
           rows={3}
           placeholder="Add any pickup or delivery details"
-          className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('notes')}
         />
       </div>

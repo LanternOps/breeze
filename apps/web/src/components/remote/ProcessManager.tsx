@@ -238,7 +238,7 @@ export default function ProcessManager({
   const processToKill = processes.find(p => p.pid === selectedPid);
 
   return (
-    <div className="rounded-lg border bg-card shadow-sm">
+    <div className="rounded-lg border bg-card shadow-xs">
       {/* Header */}
       <div className="border-b bg-muted/40 px-4 py-3">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -258,7 +258,7 @@ export default function ProcessManager({
                 placeholder="Search by name or PID..."
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
               />
             </div>
 

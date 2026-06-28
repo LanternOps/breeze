@@ -143,7 +143,7 @@ export default function C2CConnectionWizard({ onClose, onComplete }: C2CConnecti
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-xs">
       <div className="w-full max-w-lg rounded-lg border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <h2 className="text-lg font-semibold">Add Cloud Connection</h2>

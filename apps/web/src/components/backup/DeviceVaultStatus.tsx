@@ -86,7 +86,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
   const StatusIcon = sCfg.icon;
 
   return (
-    <div className="rounded-lg border bg-card p-4 shadow-sm">
+    <div className="rounded-lg border bg-card p-4 shadow-xs">
       <div className="flex items-center justify-between">
         <h4 className="flex items-center gap-2 text-sm font-semibold">
           <HardDrive className="h-4 w-4" />

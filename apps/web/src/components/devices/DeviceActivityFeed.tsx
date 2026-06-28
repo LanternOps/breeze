@@ -247,7 +247,7 @@ export default function DeviceActivityFeed({
   const visible = events;
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center gap-2">
         <Activity className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-lg font-semibold">Activity</h3>

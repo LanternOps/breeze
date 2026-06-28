@@ -132,7 +132,7 @@ export default function PSAMappingEditor() {
   }
 
   return (
-    <div className="rounded-xl border bg-card p-6 shadow-sm">
+    <div className="rounded-xl border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">PSA field mapping</h2>
@@ -182,7 +182,7 @@ export default function PSAMappingEditor() {
               <div className="flex items-center gap-2">
                 <p className="text-sm font-medium">{row.breezeField}</p>
                 {row.required && (
-                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 chart-legend-xs text-amber-700">
                     Required
                   </span>
                 )}
@@ -195,7 +195,7 @@ export default function PSAMappingEditor() {
                 <select
                   value={row.psaField}
                   onChange={event => updateMapping(row.id, 'psaField', event.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {row.options.map(option => (
                     <option key={option} value={option}>
@@ -210,7 +210,7 @@ export default function PSAMappingEditor() {
                   type="text"
                   value={row.defaultValue}
                   onChange={event => updateMapping(row.id, 'defaultValue', event.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             </div>

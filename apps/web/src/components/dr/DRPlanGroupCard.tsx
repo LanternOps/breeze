@@ -184,7 +184,7 @@ export default function DRPlanGroupCard({
                     </span>
                     <span
                       className={cn(
-                        'rounded-full px-2 py-0.5 text-[11px] font-medium',
+                        'rounded-full px-2 py-0.5 chart-legend-xs font-medium',
                         device.status === 'online'
                           ? 'bg-success/10 text-success'
                           : 'bg-muted text-muted-foreground'

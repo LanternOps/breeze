@@ -79,7 +79,7 @@ export default function KnownGuestsSettings() {
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <h2 className="text-lg font-semibold">Known Guests</h2>
       <p className="text-sm text-muted-foreground mt-1">
         Devices on this whitelist are automatically approved across all your managed organizations.
@@ -96,21 +96,21 @@ export default function KnownGuestsSettings() {
           placeholder="AA:BB:CC:DD:EE:FF"
           value={mac}
           onChange={e => setMac(e.target.value)}
-          className="h-9 w-48 rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 w-48 rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           type="text"
           placeholder="Label (e.g. John's laptop)"
           value={label}
           onChange={e => setLabel(e.target.value)}
-          className="h-9 flex-1 min-w-48 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 flex-1 min-w-48 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <input
           type="text"
           placeholder="Notes (optional)"
           value={notes}
           onChange={e => setNotes(e.target.value)}
-          className="h-9 flex-1 min-w-48 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 flex-1 min-w-48 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <button
           type="submit"

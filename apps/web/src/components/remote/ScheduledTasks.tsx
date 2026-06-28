@@ -275,17 +275,17 @@ function FolderTree({
       >
         {hasChildren ? (
           expanded ? (
-            <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-gray-500" />
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-500" />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-gray-500" />
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-500" />
           )
         ) : (
           <span className="w-3.5" />
         )}
         {expanded ? (
-          <FolderOpen className="h-4 w-4 flex-shrink-0 text-yellow-600" />
+          <FolderOpen className="h-4 w-4 shrink-0 text-yellow-600" />
         ) : (
-          <Folder className="h-4 w-4 flex-shrink-0 text-yellow-600" />
+          <Folder className="h-4 w-4 shrink-0 text-yellow-600" />
         )}
         <span className="truncate">{node.name}</span>
       </button>

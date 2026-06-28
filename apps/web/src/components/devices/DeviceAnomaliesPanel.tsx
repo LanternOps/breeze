@@ -349,7 +349,7 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
 
   if (loading) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-center py-8">
           <div className="h-7 w-7 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
@@ -377,7 +377,7 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
 
   if (anomaliesDisabled) {
     return (
-      <div className={`rounded-lg border bg-card shadow-sm ${compact ? 'p-4' : 'p-6'}`}>
+      <div className={`rounded-lg border bg-card shadow-xs ${compact ? 'p-4' : 'p-6'}`}>
         <div className="flex items-center gap-2">
           <TrendingUp className="h-4 w-4 text-muted-foreground" />
           <div>
@@ -396,7 +396,7 @@ export default function DeviceAnomaliesPanel({ deviceId, compact = false, focuse
   }
 
   return (
-    <div className={`rounded-lg border bg-card shadow-sm ${compact ? 'p-4' : 'p-6'}`}>
+    <div className={`rounded-lg border bg-card shadow-xs ${compact ? 'p-4' : 'p-6'}`}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <TrendingUp className="h-4 w-4 text-muted-foreground" />

@@ -576,7 +576,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
   if (isLoadingUser) {
     return (
-      <div className="flex min-h-[400px] items-center justify-center">
+      <div className="flex u-min-h-px-400 items-center justify-center">
         <div className="text-sm text-muted-foreground">Loading profile...</div>
       </div>
     );
@@ -594,7 +594,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* Profile Information */}
       <form
         onSubmit={handleSubmit(handleProfileSubmit)}
-        className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+        className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
       >
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Profile information</h2>
@@ -700,7 +700,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             type="text"
             autoComplete="name"
             placeholder="Your name"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -766,7 +766,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       />
 
       {/* Passkeys */}
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Passkeys</h2>
           <p className="text-sm text-muted-foreground">
@@ -924,7 +924,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       />
 
       {/* Onboarding */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Onboarding</h2>
         <p className="text-sm text-muted-foreground mt-1 mb-4">
           Reset the product tour to see the welcome walkthrough again.

@@ -213,7 +213,7 @@ export default function DeviceWarrantyCard({
 
   if (loading) {
     return (
-      <div className="rounded-lg border bg-card p-4 shadow-sm animate-pulse">
+      <div className="rounded-lg border bg-card p-4 shadow-xs animate-pulse">
         <div className="h-4 w-24 rounded bg-muted" />
         <div className="mt-3 h-6 w-48 rounded bg-muted" />
       </div>
@@ -223,7 +223,7 @@ export default function DeviceWarrantyCard({
   if (!warranty) {
     if (compact) {
       return (
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <ShieldCheck className="h-4 w-4" />
             Warranty
@@ -259,7 +259,7 @@ export default function DeviceWarrantyCard({
 
   if (compact) {
     return (
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <ShieldCheck className="h-4 w-4" />

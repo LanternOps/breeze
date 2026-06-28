@@ -412,7 +412,7 @@ export default function EventViewer({
   const hasActiveFilters = query || levelFilters.size > 0 || sourceFilter || eventIdFilter || dateRangeFilter !== 'all';
 
   return (
-    <div className="flex h-full min-h-[600px] rounded-lg border bg-card shadow-sm overflow-hidden">
+    <div className="flex h-full u-min-h-px-600 rounded-lg border bg-card shadow-xs overflow-hidden">
       {/* Sidebar - Log List */}
       <div className="w-1/5 min-w-[200px] border-r bg-muted/30 flex flex-col">
         <div className="p-4 border-b">
@@ -438,7 +438,7 @@ export default function EventViewer({
                   : 'hover:bg-muted text-foreground'
               )}
             >
-              <FileText className="h-4 w-4 flex-shrink-0" />
+              <FileText className="h-4 w-4 shrink-0" />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{log.displayName}</p>
                 {log.recordCount !== undefined && (
@@ -475,7 +475,7 @@ export default function EventViewer({
                     setQuery(e.target.value);
                     setCurrentPage(1);
                   }}
-                  className="h-9 w-48 rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-48 rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
 
@@ -583,7 +583,7 @@ export default function EventViewer({
                       setSourceFilter(e.target.value);
                       setCurrentPage(1);
                     }}
-                    className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="">All Sources</option>
                     {availableSources.map((source) => (
@@ -603,7 +603,7 @@ export default function EventViewer({
                       setEventIdFilter(e.target.value);
                       setCurrentPage(1);
                     }}
-                    className="h-8 w-24 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 w-24 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
 
@@ -616,7 +616,7 @@ export default function EventViewer({
                       setDateRangeFilter(e.target.value);
                       setCurrentPage(1);
                     }}
-                    className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="all">All Time</option>
                     <option value="1h">Last Hour</option>
@@ -900,7 +900,7 @@ export default function EventViewer({
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Message</label>
                   <div className="mt-2 p-3 rounded-md bg-muted/50 border">
-                    <p className="text-sm whitespace-pre-wrap break-words">{selectedEvent.message}</p>
+                    <p className="text-sm whitespace-pre-wrap wrap-break-word">{selectedEvent.message}</p>
                   </div>
                 </div>
 

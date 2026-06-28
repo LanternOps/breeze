@@ -100,7 +100,7 @@ export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
         <div className="flex justify-end">
           <button
             onClick={onNext}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
           >
             Continue
           </button>
@@ -201,7 +201,7 @@ export default function ConfigReviewStep({ onNext }: ConfigReviewStepProps) {
       <div className="flex justify-end pt-2">
         <button
           onClick={onNext}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
         >
           Continue
         </button>

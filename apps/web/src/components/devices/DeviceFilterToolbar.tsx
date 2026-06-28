@@ -303,7 +303,7 @@ export function DeviceFilterToolbar({
             aria-label="Search devices"
             value={listFilters.search}
             onChange={e => patch({ search: e.target.value })}
-            className="w-full appearance-none border-0 bg-transparent p-0 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-0"
+            className="w-full appearance-none border-0 bg-transparent p-0 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-0"
           />
         </div>
 
@@ -341,10 +341,10 @@ export function DeviceFilterToolbar({
             })}
           </div>
           {edges.left && (
-            <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-background to-transparent" aria-hidden="true" />
+            <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-linear-to-r from-background to-transparent" aria-hidden="true" />
           )}
           {edges.right && (
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background to-transparent" aria-hidden="true" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-linear-to-l from-background to-transparent" aria-hidden="true" />
           )}
         </div>
 

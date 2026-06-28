@@ -170,7 +170,7 @@ export default function ExecutionHistory({
   const paginatedExecutions = sortedExecutions.slice(startIndex, startIndex + pageSize);
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center flex-wrap">
           <div className="relative">
@@ -183,7 +183,7 @@ export default function ExecutionHistory({
                 setQuery(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
           <select
@@ -192,7 +192,7 @@ export default function ExecutionHistory({
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Status</option>
             <option value="pending">Pending</option>
@@ -207,7 +207,7 @@ export default function ExecutionHistory({
               setDateFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Time</option>
             <option value="hour">Last Hour</option>
@@ -281,7 +281,7 @@ export default function ExecutionHistory({
                     key={execution.id}
                     tabIndex={0}
                     role="button"
-                    className="transition hover:bg-muted/40 cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-none"
+                    className="transition hover:bg-muted/40 cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-hidden"
                     onClick={() => onViewDetails?.(execution)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewDetails?.(execution); }

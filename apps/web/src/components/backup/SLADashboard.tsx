@@ -157,7 +157,7 @@ export default function SLADashboard() {
 
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-success" />
             <p className="text-xs font-medium text-muted-foreground">Compliance</p>
@@ -169,7 +169,7 @@ export default function SLADashboard() {
             {compliance.toFixed(1)}%
           </p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-destructive" />
             <p className="text-xs font-medium text-muted-foreground">Active Breaches</p>
@@ -178,14 +178,14 @@ export default function SLADashboard() {
             {activeBreaches}
           </p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-primary" />
             <p className="text-xs font-medium text-muted-foreground">Avg RPO</p>
           </div>
           <p className="mt-1 text-2xl font-bold text-foreground">{avgRpo} min</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-primary" />
             <p className="text-xs font-medium text-muted-foreground">Avg RTO</p>
@@ -195,7 +195,7 @@ export default function SLADashboard() {
       </div>
 
       {/* SLA Configs */}
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold">SLA Configurations</h3>
           <button
@@ -240,7 +240,7 @@ export default function SLADashboard() {
                       >
                         <span
                           className={cn(
-                            'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                            'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-xs transition-transform',
                             cfg.active ? 'translate-x-4' : 'translate-x-0'
                           )}
                         />
@@ -264,7 +264,7 @@ export default function SLADashboard() {
       </div>
 
       {/* Breach Events */}
-      <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="rounded-lg border bg-card p-5 shadow-xs">
         <h3 className="font-semibold">Breach Events</h3>
         {events.length === 0 ? (
           <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">

@@ -181,7 +181,7 @@ export default function HelperTab({ policyId, existingLink, onLinkChanged, linke
                 disabled={!settings.enabled}
                 onChange={(e) => update('portalUrl', e.target.value)}
                 placeholder="https://portal.example.com (defaults to server URL)"
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <p className="mt-1 text-xs text-muted-foreground">Leave blank to use the default Breeze server URL.</p>
             </div>

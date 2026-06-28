@@ -318,7 +318,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
       )}
 
       {isFormOpen && (
-        <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-6 shadow-sm">
+        <form onSubmit={handleSubmit} className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-xs font-semibold uppercase text-muted-foreground">Version</label>
@@ -327,7 +327,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
                 value={formState.version}
                 onChange={event => setFormState(prev => ({ ...prev, version: event.target.value }))}
                 placeholder="e.g. 1.0.0"
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -335,7 +335,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
               <select
                 value={formState.architecture}
                 onChange={event => setFormState(prev => ({ ...prev, architecture: event.target.value as Architecture }))}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="x64">x64</option>
                 <option value="arm64">arm64</option>
@@ -351,7 +351,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
               value={formState.downloadUrl}
               onChange={event => setFormState(prev => ({ ...prev, downloadUrl: event.target.value }))}
               placeholder="https://example.com/package-v1.0.0.msi"
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-xs text-muted-foreground">Provide a direct download URL or upload a file below</p>
           </div>
@@ -413,7 +413,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
                 value={formState.silentInstallArgs}
                 onChange={event => setFormState(prev => ({ ...prev, silentInstallArgs: event.target.value }))}
                 placeholder='e.g. msiexec /i "{file}" /qn /norestart'
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -423,7 +423,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
                 value={formState.silentUninstallArgs}
                 onChange={event => setFormState(prev => ({ ...prev, silentUninstallArgs: event.target.value }))}
                 placeholder='e.g. msiexec /x "{file}" /qn /norestart'
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -434,7 +434,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
               value={formState.notes}
               onChange={event => setFormState(prev => ({ ...prev, notes: event.target.value }))}
               placeholder="One item per line"
-              className="mt-2 min-h-[96px] w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 u-min-h-px-96 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
 
@@ -469,7 +469,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         </form>
       )}
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Version History</h2>
@@ -546,7 +546,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
 
       {selectedVersion && latestVersion && (
         <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-primary" />
               <h3 className="text-lg font-semibold">What's new</h3>
@@ -566,7 +566,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center gap-2">
               <Download className="h-5 w-5 text-primary" />
               <h3 className="text-lg font-semibold">Version comparison</h3>

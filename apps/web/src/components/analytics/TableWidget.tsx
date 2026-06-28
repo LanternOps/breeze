@@ -56,14 +56,14 @@ export default function TableWidget<T extends Record<string, unknown>>({
   };
 
   return (
-    <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-sm">
+    <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-xs">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">{title}</h3>
         <input
           value={query}
           onChange={event => setQuery(event.target.value)}
           placeholder="Filter"
-          className="h-8 w-40 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-8 w-40 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
       </div>
       <div className="flex-1 overflow-hidden">

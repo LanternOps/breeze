@@ -108,7 +108,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
   const safeLogoPreview = sanitizeImageSrc(logoPreview);
 
   return (
-    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+    <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">Branding</h2>
@@ -389,7 +389,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
 
               <div className="rounded-md border bg-muted/30 p-3">
                 <p className="text-xs font-medium">Custom CSS payload</p>
-                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{customCss || '/* No custom CSS */'}</pre>
+                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap chart-legend-xs text-muted-foreground">{customCss || '/* No custom CSS */'}</pre>
               </div>
             </div>
           </div>

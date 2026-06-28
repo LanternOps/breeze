@@ -161,7 +161,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
 
   return (
     <div className="space-y-6" data-testid="org-ticket-settings">
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">SLA overrides</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Override the partner-wide SLA defaults for this organization. Leave a cell blank to inherit the partner default.
@@ -210,7 +210,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
         </div>
       </section>
 
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Billing defaults</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Default billing settings for time entries on tickets for this organization.

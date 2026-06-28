@@ -32,7 +32,7 @@ export default function ExecutiveSummary({
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-      <div className="rounded-lg border bg-card p-4 shadow-sm">
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="mb-4 flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold">Device Overview</p>
@@ -59,7 +59,7 @@ export default function ExecutiveSummary({
         </div>
       </div>
       <div className="grid gap-4">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <p className="text-sm font-semibold">Alert Summary</p>
@@ -92,7 +92,7 @@ export default function ExecutiveSummary({
             </div>
           </div>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="mb-3 flex items-center justify-between">
             <div>
               <p className="text-sm font-semibold">{trendLabel}</p>

@@ -37,7 +37,7 @@ export default function CapacityForecast({
   thresholds
 }: CapacityForecastProps) {
   return (
-    <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-sm">
+    <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-xs">
       <div className="mb-4 flex items-start justify-between">
         <div>
           <h3 className="text-sm font-semibold">{title}</h3>
@@ -50,7 +50,7 @@ export default function CapacityForecast({
           </p>
         </div>
       </div>
-      <div className="flex-1 min-h-[240px]">
+      <div className="flex-1 u-min-h-px-240">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />

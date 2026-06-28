@@ -152,7 +152,7 @@ export default function FolderPickerDialog({
         </div>
 
         {/* Directory listing */}
-        <div className="min-h-[200px] flex-1 overflow-auto">
+        <div className="u-min-h-px-200 flex-1 overflow-auto">
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

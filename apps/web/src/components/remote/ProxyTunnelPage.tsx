@@ -155,7 +155,7 @@ export default function ProxyTunnelPage({ tunnelId, target }: Props) {
 
       {error ? (
         <div className="flex flex-1 items-start justify-center p-8">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
               <Network className="h-5 w-5" />
               Tunnel Details

@@ -202,7 +202,7 @@ export default function RoleManager({
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Roles</h2>
@@ -216,12 +216,12 @@ export default function RoleManager({
             placeholder="Search roles"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-56"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
           <select
             value={typeFilter}
             onChange={(event) => setTypeFilter(event.target.value as 'all' | 'system' | 'custom')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
           >
             <option value="all">All types</option>
             <option value="system">System roles</option>
@@ -762,7 +762,7 @@ export function RoleFormModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{title}</h2>
           <p className="text-sm text-muted-foreground">
@@ -787,7 +787,7 @@ export function RoleFormModal({
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g., Technician"
                 required
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="space-y-2">
@@ -800,7 +800,7 @@ export function RoleFormModal({
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="Brief description of this role"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -817,7 +817,7 @@ export function RoleFormModal({
               value={parentRoleId || ''}
               onChange={(e) => setParentRoleId(e.target.value || null)}
               disabled={loading}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option value="">No parent (base role)</option>
               {filteredParentRoles.map((parentRole) => (
@@ -911,7 +911,7 @@ export function DeleteRoleModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Delete Role</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           Are you sure you want to delete the role{' '}
@@ -966,7 +966,7 @@ export function RoleUsersModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Users with Role: {role.name}</h2>

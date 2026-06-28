@@ -432,7 +432,7 @@ export default function RemoteTerminal({
   return (
     <div
       className={cn(
-        'flex flex-col rounded-lg border bg-card shadow-sm overflow-hidden',
+        'flex flex-col rounded-lg border bg-card shadow-xs overflow-hidden',
         isFullscreen && 'fixed inset-4 z-50',
         className
       )}
@@ -522,7 +522,7 @@ export default function RemoteTerminal({
       <div
         ref={terminalContainerRef}
         className={cn(
-          'flex-1 min-h-[400px] bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden',
+          'flex-1 u-min-h-px-400 bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden',
           isFullscreen && 'min-h-0'
         )}
         onClick={() => terminalRef.current?.focus()}

@@ -539,7 +539,7 @@ export default function CommandPalette() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex h-9 w-9 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring xl:hidden"
+        className="flex h-9 w-9 items-center justify-center rounded-md border bg-background text-muted-foreground hover:bg-muted/40 focus:outline-hidden focus:ring-2 focus:ring-ring xl:hidden"
         aria-label="Search"
       >
         <Search className="h-4 w-4 shrink-0" />
@@ -547,7 +547,7 @@ export default function CommandPalette() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="hidden h-9 w-full min-w-0 items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring xl:flex"
+        className="hidden h-9 w-full min-w-0 items-center gap-2 rounded-md border bg-background px-3 text-sm text-muted-foreground hover:bg-muted/40 focus:outline-hidden focus:ring-2 focus:ring-ring xl:flex"
         aria-label="Search"
       >
         <Search className="h-4 w-4 shrink-0" />
@@ -576,7 +576,7 @@ export default function CommandPalette() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search devices, scripts, alerts, users, settings..."
-                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden"
               />
               <span className="rounded border px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
                 Esc
@@ -633,7 +633,7 @@ export default function CommandPalette() {
                           >
                             <item.icon
                               className={cn(
-                                'h-4 w-4 flex-shrink-0',
+                                'h-4 w-4 shrink-0',
                                 isActive ? 'text-primary-foreground' : 'text-muted-foreground'
                               )}
                             />

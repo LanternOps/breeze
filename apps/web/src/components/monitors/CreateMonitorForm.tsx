@@ -122,7 +122,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-sm">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Create Network Monitor</h2>
@@ -170,7 +170,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 placeholder="e.g. Production Web Server"
               />
             </div>
@@ -181,7 +181,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   type="text"
                   value={target}
                   onChange={(e) => setTarget(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   placeholder="192.168.1.1 or server.example.com"
                 />
               </div>
@@ -198,7 +198,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                 onChange={(e) => setPingCount(Number(e.target.value))}
                 min={1}
                 max={20}
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           )}
@@ -213,7 +213,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   onChange={(e) => setTcpPort(Number(e.target.value))}
                   min={1}
                   max={65535}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -222,7 +222,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   type="text"
                   value={expectBanner}
                   onChange={(e) => setExpectBanner(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   placeholder="e.g. SSH-"
                 />
               </div>
@@ -237,7 +237,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   type="text"
                   value={httpUrl}
                   onChange={(e) => setHttpUrl(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   placeholder="https://example.com/health"
                 />
               </div>
@@ -247,7 +247,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   <select
                     value={httpMethod}
                     onChange={(e) => setHttpMethod(e.target.value)}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="GET">GET</option>
                     <option value="HEAD">HEAD</option>
@@ -262,7 +262,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                     onChange={(e) => setExpectedStatus(Number(e.target.value))}
                     min={100}
                     max={599}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <div className="flex items-end gap-4">
@@ -292,7 +292,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   type="text"
                   value={expectedBody}
                   onChange={(e) => setExpectedBody(e.target.value)}
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   placeholder='e.g. "status":"ok"'
                 />
               </div>
@@ -308,7 +308,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                     type="text"
                     value={dnsHostname}
                     onChange={(e) => setDnsHostname(e.target.value)}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     placeholder="example.com"
                   />
                 </div>
@@ -317,7 +317,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                   <select
                     value={recordType}
                     onChange={(e) => setRecordType(e.target.value)}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     <option value="A">A</option>
                     <option value="AAAA">AAAA</option>
@@ -335,7 +335,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                     type="text"
                     value={expectedValue}
                     onChange={(e) => setExpectedValue(e.target.value)}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     placeholder="e.g. 93.184.216.34"
                   />
                 </div>
@@ -345,7 +345,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                     type="text"
                     value={nameserver}
                     onChange={(e) => setNameserver(e.target.value)}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     placeholder="8.8.8.8"
                   />
                 </div>
@@ -363,7 +363,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                 onChange={(e) => setPollingInterval(Number(e.target.value))}
                 min={10}
                 max={86400}
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -374,7 +374,7 @@ export default function CreateMonitorForm({ orgId, assetId, defaultTarget, onCre
                 onChange={(e) => setTimeout_(Number(e.target.value))}
                 min={1}
                 max={300}
-                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>

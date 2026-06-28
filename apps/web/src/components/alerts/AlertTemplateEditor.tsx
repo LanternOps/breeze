@@ -843,7 +843,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
       <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-sm font-semibold">Template metadata</h2>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
@@ -851,7 +851,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 <input
                   value={name}
                   onChange={event => setName(event.target.value)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
 
@@ -890,7 +890,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                         value={availabilityOrgId}
                         onChange={event => setAvailabilityOrgId(event.target.value)}
                         data-testid="availability-org-select"
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         <option value="">Select an organization</option>
                         {scopeOrganizations.map(org => (
@@ -926,7 +926,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 <select
                   value={category}
                   onChange={event => setCategory(event.target.value)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {categoryOptions.map(option => (
                     <option key={option} value={option}>
@@ -941,13 +941,13 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                   value={description}
                   onChange={event => setDescription(event.target.value)}
                   rows={3}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold">Condition builder</h2>
@@ -1000,7 +1000,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                         onChange={event =>
                           handleConditionTypeChange(condition.id, event.target.value as AlertCondition['type'])
                         }
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         <option value="metric">Metric threshold</option>
                         <option value="event">Event pattern</option>
@@ -1018,7 +1018,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                                 metric: event.target.value as MetricOption
                               })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           >
                             {metricOptions.map(option => (
                               <option key={option.value} value={option.value}>
@@ -1036,7 +1036,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                                 operator: event.target.value as OperatorOption
                               })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           >
                             {operatorOptions.map(option => (
                               <option key={option.value} value={option.value}>
@@ -1055,7 +1055,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                                 threshold: Number(event.target.value)
                               })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           />
                         </div>
                         <div>
@@ -1068,7 +1068,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                                 durationMinutes: Number(event.target.value)
                               })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           />
                         </div>
                         <div>
@@ -1081,7 +1081,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                                 occurrences: Number(event.target.value)
                               })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           />
                         </div>
                       </>
@@ -1096,7 +1096,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                                 eventSource: event.target.value as EventSourceOption
                               })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           >
                             {eventSourceOptions.map(option => (
                               <option key={option.value} value={option.value}>
@@ -1114,7 +1114,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                                 pattern: event.target.value
                               })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           />
                         </div>
                       </>
@@ -1125,7 +1125,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-sm font-semibold">Threshold configuration</h2>
             <p className="mt-2 text-xs text-muted-foreground">
               Defaults used when adding new metric triggers. Adjust per trigger as needed.
@@ -1142,7 +1142,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       value: Number(event.target.value)
                     }))
                   }
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -1156,7 +1156,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       durationMinutes: Number(event.target.value)
                     }))
                   }
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
               <div>
@@ -1170,13 +1170,13 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       occurrences: Number(event.target.value)
                     }))
                   }
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
               </div>
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold">Escalation rules</h2>
@@ -1219,7 +1219,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                             afterMinutes: Number(event.target.value)
                           })
                         }
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                     </div>
                     <div>
@@ -1231,7 +1231,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                             severity: event.target.value as AlertSeverity
                           })
                         }
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         {severityOptions.map(option => (
                           <option key={option.value} value={option.value}>
@@ -1249,7 +1249,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                             route: event.target.value as NotificationRoute
                           })
                         }
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
                         {escalationRoutes.map(option => (
                           <option key={option.value} value={option.value}>
@@ -1264,7 +1264,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold">Suppression rules</h2>
@@ -1308,7 +1308,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                         duplicateSuppressionMinutes: Number(event.target.value)
                       }))
                     }
-                    className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
               )}
@@ -1342,7 +1342,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                             onChange={event =>
                               handleMaintenanceUpdate(window.id, { name: event.target.value })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           />
                         </div>
                         <div>
@@ -1352,7 +1352,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                             onChange={event =>
                               handleMaintenanceUpdate(window.id, { timezone: event.target.value })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           >
                             {timezones.map(zone => (
                               <option key={zone} value={zone}>
@@ -1369,7 +1369,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                             onChange={event =>
                               handleMaintenanceUpdate(window.id, { startsAt: event.target.value })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           />
                         </div>
                         <div>
@@ -1380,7 +1380,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                             onChange={event =>
                               handleMaintenanceUpdate(window.id, { endsAt: event.target.value })
                             }
-                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           />
                         </div>
                       </div>
@@ -1393,7 +1393,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-sm font-semibold">Notification routing</h2>
             <div className="mt-4 space-y-3">
               {notificationOptions.map(option => (
@@ -1416,7 +1416,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-sm font-semibold">Auto-remediation</h2>
             <p className="mt-2 text-xs text-muted-foreground">
               Link an automation playbook to run when this alert fires.
@@ -1446,7 +1446,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       automationId: event.target.value
                     }))
                   }
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="">Select automation</option>
                   {automations.map(automation => (
@@ -1464,7 +1464,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
             )}
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-sm font-semibold">Target scope</h2>
             <p className="mt-2 text-xs text-muted-foreground">
               Apply this template to organizations, sites, or groups.
@@ -1474,7 +1474,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
               <select
                 value={targetScope.type}
                 onChange={event => handleTargetTypeChange(event.target.value as TargetScopeType)}
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="organization">Organizations</option>
                 <option value="site">Sites</option>

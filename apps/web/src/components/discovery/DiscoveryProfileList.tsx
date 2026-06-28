@@ -46,7 +46,7 @@ export default function DiscoveryProfileList({
 }: DiscoveryProfileListProps) {
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-4 text-sm text-muted-foreground">Loading discovery profiles...</p>
@@ -166,7 +166,7 @@ export default function DiscoveryProfileList({
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Discovery Profiles</h2>

@@ -103,7 +103,7 @@ export function ConditionGroup({
           <select
             value={value.operator}
             onChange={(e) => handleOperatorChange(e.target.value as 'AND' | 'OR')}
-            className="h-7 rounded border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-7 rounded border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             <option value="AND">All (AND)</option>
             <option value="OR">Any (OR)</option>

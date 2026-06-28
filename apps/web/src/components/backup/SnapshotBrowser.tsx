@@ -416,7 +416,7 @@ export default function SnapshotBrowser() {
         </p>
       </div>
 
-      <div className="rounded-lg border bg-card p-5 shadow-sm space-y-4">
+      <div className="rounded-lg border bg-card p-5 shadow-xs space-y-4">
         {(error || actionError) && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {actionError ?? error}

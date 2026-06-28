@@ -62,7 +62,7 @@ export default function WebhookDeliveryHistory({
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div>
         <h2 className="text-lg font-semibold">Delivery History</h2>
         <p className="text-sm text-muted-foreground">

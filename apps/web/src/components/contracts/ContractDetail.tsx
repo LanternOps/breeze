@@ -146,7 +146,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header (read-only) + lines + period history ───────────────── */}
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-header">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header">
             <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
                 <dt className="text-xs uppercase text-muted-foreground">Billing timing</dt>
@@ -204,7 +204,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           </div>
 
           {/* Lines (read-only) */}
-          <div className="rounded-lg border bg-card shadow-sm">
+          <div className="rounded-lg border bg-card shadow-xs">
             <table className="w-full text-sm" data-testid="contract-detail-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -242,7 +242,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           </div>
 
           {/* Billing-period history */}
-          <div className="rounded-lg border bg-card shadow-sm">
+          <div className="rounded-lg border bg-card shadow-xs">
             <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Billing history
             </h3>
@@ -289,7 +289,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
 
         {/* ── status + lifecycle + generate ─────────────────────────────── */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-detail-summary">
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-detail-summary">
             <div className="mb-3 flex items-center justify-between">
               <span
                 className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[contract.status]}`}

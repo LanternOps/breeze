@@ -134,7 +134,7 @@ export default function AiChatMessages({
               onClick={() => onSendQuickAction?.(action.prompt)}
               className="flex items-center w-full rounded-md border border-border px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
-              <span className={`inline-block h-1.5 w-1.5 rounded-full ${action.dotColor} mr-2 flex-shrink-0`} />
+              <span className={`inline-block h-1.5 w-1.5 rounded-full ${action.dotColor} mr-2 shrink-0`} />
               {action.label}
             </button>
           ))}

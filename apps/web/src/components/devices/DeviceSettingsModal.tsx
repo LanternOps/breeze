@@ -126,7 +126,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
               type="text"
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
               placeholder={device.hostname}
             />
             <p className="mt-1 text-xs text-muted-foreground">
@@ -143,7 +143,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
               id="siteId"
               value={siteId}
               onChange={e => setSiteId(e.target.value)}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
             >
               {sites.length === 0 && (
                 <option value={siteId}>{device.siteName}</option>
@@ -181,7 +181,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
                 value={newTag}
                 onChange={e => setNewTag(e.target.value)}
                 onKeyDown={handleTagKeyDown}
-                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 placeholder="Add a tag..."
               />
               <button

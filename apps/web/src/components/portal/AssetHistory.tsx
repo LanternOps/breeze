@@ -21,7 +21,7 @@ const actionStyles: Record<AssetHistoryEntry['action'], string> = {
 
 export default function AssetHistory({ entries, timezone }: AssetHistoryProps) {
   return (
-    <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+    <div className="overflow-hidden rounded-lg border bg-card shadow-xs">
       <div className="border-b px-4 py-3">
         <h3 className="text-sm font-semibold text-foreground">Asset history</h3>
         <p className="text-xs text-muted-foreground">Recent check-in and check-out activity</p>

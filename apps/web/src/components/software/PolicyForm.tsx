@@ -86,7 +86,7 @@ export default function PolicyForm({
           <input
             id="policy-name"
             placeholder="e.g. Block Unauthorized Software"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -98,7 +98,7 @@ export default function PolicyForm({
           </label>
           <select
             id="policy-mode"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('mode')}
           >
             <option value="blocklist">Blocklist</option>
@@ -114,7 +114,7 @@ export default function PolicyForm({
           <input
             id="policy-description"
             placeholder="Describe the purpose of this policy..."
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('description')}
           />
         </div>
@@ -150,27 +150,27 @@ export default function PolicyForm({
                 <div className="flex-1 grid gap-2 sm:grid-cols-2 md:grid-cols-5">
                   <input
                     placeholder="Name *"
-                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`software.${index}.name`)}
                   />
                   <input
                     placeholder="Vendor"
-                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`software.${index}.vendor`)}
                   />
                   <input
                     placeholder="Min ver"
-                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`software.${index}.minVersion`)}
                   />
                   <input
                     placeholder="Max ver"
-                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`software.${index}.maxVersion`)}
                   />
                   <input
                     placeholder="Reason"
-                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`software.${index}.reason`)}
                   />
                 </div>
@@ -235,7 +235,7 @@ export default function PolicyForm({
               type="number"
               min={0}
               max={2160}
-              className="h-9 w-24 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-24 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('gracePeriod')}
             />
             <span className="text-xs text-muted-foreground">Max 2160h</span>

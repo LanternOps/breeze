@@ -52,7 +52,7 @@ function HostBadges({ hosts }: { hosts: string[] | null }) {
       {hosts.map((h) => (
         <span
           key={h}
-          className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400"
+          className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-1.5 py-0.5 chart-legend-xs text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400"
         >
           {HOST_LABEL[h] ?? h}
         </span>

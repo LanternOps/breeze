@@ -56,7 +56,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void search(); } }}
           data-testid={`quote-distributor-search-${blockId}`}
-          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <button
           type="button"
@@ -92,7 +92,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
                 value={priceVal}
                 onChange={(e) => setPrices((s) => ({ ...s, [p.synnexSku]: e.target.value }))}
                 data-testid={`quote-distributor-price-${p.synnexSku}`}
-                className="h-9 w-28 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 w-28 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <button
                 type="button"

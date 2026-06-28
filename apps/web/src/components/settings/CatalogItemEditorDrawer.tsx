@@ -430,7 +430,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   if (!open || typeof document === 'undefined') return null;
 
-  const fieldCls = 'w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+  const fieldCls = 'w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 
   return createPortal(
     <div
@@ -446,7 +446,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="drawer-panel flex h-full w-full max-w-md flex-col border-l bg-card shadow-xl focus:outline-none"
+        className="drawer-panel flex h-full w-full max-w-md flex-col border-l bg-card shadow-xl focus:outline-hidden"
         style={{ animation: 'slide-in-from-right 220ms cubic-bezier(0.22, 1, 0.36, 1)' }}
         data-testid="catalog-item-editor"
       >
@@ -488,7 +488,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                   onClick={() => setItemType(t)}
                   aria-pressed={itemType === t}
                   className={`rounded px-2 py-1.5 text-sm font-medium transition ${
-                    itemType === t ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                    itemType === t ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
                   }`}
                   data-testid={`catalog-form-type-${t}`}
                 >
@@ -604,7 +604,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                       Import from URL
                     </button>
                   </div>
-                  <p className="text-[11px] text-muted-foreground">PNG, JPEG, or WebP up to 5 MB.</p>
+                  <p className="chart-legend-xs text-muted-foreground">PNG, JPEG, or WebP up to 5 MB.</p>
                 </>
               ) : (
                 <p className="text-xs text-muted-foreground" data-testid="catalog-form-image-hint">
@@ -670,7 +670,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                           <select
                             value={c.componentItemId}
                             onChange={(e) => patchComponent(idx, { componentItemId: e.target.value })}
-                            className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             data-testid={`catalog-bundle-item-${idx}`}
                           >
                             <option value="">Select item…</option>
@@ -686,7 +686,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                             onChange={(e) => patchComponent(idx, { quantity: e.target.value })}
                             inputMode="decimal"
                             aria-label="Quantity"
-                            className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
                             data-testid={`catalog-bundle-qty-${idx}`}
                           />
                           {canWrite && (
@@ -763,7 +763,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                 <select
                   value={newOverrideOrgId}
                   onChange={(e) => setNewOverrideOrgId(e.target.value)}
-                  className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 flex-1 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   data-testid="catalog-override-org"
                 >
                   <option value="">Select organization…</option>
@@ -777,7 +777,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                   inputMode="decimal"
                   aria-label="Override price"
                   placeholder="0.00"
-                  className="h-9 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
                   data-testid="catalog-override-price-input"
                 />
                 <button
@@ -791,7 +791,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                 </button>
               </div>
               {organizations.length > 0 && orgsWithoutOverride.length === 0 && (
-                <p className="text-center text-[11px] text-muted-foreground">All organizations have an override.</p>
+                <p className="text-center chart-legend-xs text-muted-foreground">All organizations have an override.</p>
               )}
             </div>
           )}

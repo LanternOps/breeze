@@ -206,7 +206,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
           <select
             value={selectedUserId}
             onChange={event => setSelectedUserId(event.target.value)}
-            className="bg-transparent text-sm font-medium text-foreground outline-none"
+            className="bg-transparent text-sm font-medium text-foreground outline-hidden"
           >
             {users.map(user => (
               <option key={user.id} value={user.id}>

@@ -210,7 +210,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading IP history...</p>
@@ -235,7 +235,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Network className="h-4 w-4 text-muted-foreground" />
@@ -262,14 +262,14 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
             placeholder="Search IP, interface, gateway, DNS..."
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20"
           />
         </div>
 
         <select
           value={assignmentFilter}
           onChange={(event) => setAssignmentFilter(event.target.value as 'all' | IPAssignmentType)}
-          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
           {ASSIGNMENT_TYPES.map((value) => (
             <option key={value} value={value}>
@@ -281,7 +281,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
         <select
           value={interfaceFilter}
           onChange={(event) => setInterfaceFilter(event.target.value)}
-          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
           <option value="all">All Interfaces</option>
           {interfaceNames.map((name) => (
@@ -294,7 +294,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
         <select
           value={ipTypeFilter}
           onChange={(event) => setIpTypeFilter(event.target.value as 'all' | IPType)}
-          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+          className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
         >
           <option value="all">All IP Types</option>
           <option value="ipv4">IPv4</option>
@@ -320,7 +320,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
             type="date"
             value={sinceDate}
             onChange={(event) => setSinceDate(event.target.value)}
-            className="rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+            className="rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
           />
         </label>
         <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
@@ -329,7 +329,7 @@ export default function DeviceIpHistoryTab({ deviceId }: DeviceIpHistoryTabProps
             type="date"
             value={untilDate}
             onChange={(event) => setUntilDate(event.target.value)}
-            className="rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+            className="rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
           />
         </label>
         {hasFilters && (

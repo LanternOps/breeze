@@ -106,7 +106,7 @@ export default function OrganizationForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
@@ -116,7 +116,7 @@ export default function OrganizationForm({
           <input
             id="organization-name"
             placeholder="Acme Corp"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...nameField}
             onChange={event => {
               nameField.onChange(event);
@@ -137,7 +137,7 @@ export default function OrganizationForm({
           <input
             id="organization-slug"
             placeholder="acme-corp"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...slugField}
             onChange={event => {
               // Once the user touches the slug, stop syncing it from the name.
@@ -154,7 +154,7 @@ export default function OrganizationForm({
           </label>
           <select
             id="organization-type"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('type')}
           >
             {typeOptions.map(option => (
@@ -172,7 +172,7 @@ export default function OrganizationForm({
           </label>
           <select
             id="organization-status"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('status')}
           >
             {statusOptions.map(option => (
@@ -192,7 +192,7 @@ export default function OrganizationForm({
             id="max-devices"
             type="number"
             min={1}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('maxDevices')}
           />
           {errors.maxDevices && (
@@ -207,7 +207,7 @@ export default function OrganizationForm({
           <input
             id="contract-start"
             type="date"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('contractStart')}
           />
         </div>
@@ -219,7 +219,7 @@ export default function OrganizationForm({
           <input
             id="contract-end"
             type="date"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('contractEnd')}
           />
           {errors.contractEnd && (

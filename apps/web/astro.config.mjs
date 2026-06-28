@@ -1,6 +1,6 @@
 import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
-import tailwind from '@astrojs/tailwind';
+import tailwindcss from '@tailwindcss/vite';
 import node from '@astrojs/node';
 import sentry from '@sentry/astro';
 
@@ -88,10 +88,7 @@ export default defineConfig({
   },
   integrations: [
     ...sentryIntegration,
-    react(),
-    tailwind({
-      applyBaseStyles: false
-    })
+    react()
   ],
   server: {
     port: 4321,
@@ -99,6 +96,7 @@ export default defineConfig({
     allowedHosts: ['2breeze.app']
   },
   vite: {
+    plugins: [tailwindcss()],
     resolve: {
       dedupe: ['react', 'react-dom']
     },

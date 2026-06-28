@@ -113,28 +113,28 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
 
       {/* Summary cards */}
       <div className="grid gap-4 sm:grid-cols-4">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Activity className="h-4 w-4" />
             Events (24h)
           </div>
           <p className="mt-2 text-2xl font-bold">{loadingEvents ? '—' : totalEvents24h}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <ShieldAlert className="h-4 w-4" />
             Blocked (24h)
           </div>
           <p className="mt-2 text-2xl font-bold">{loadingEvents ? '—' : blockedEvents24h}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Usb className="h-4 w-4" />
             Connected (24h)
           </div>
           <p className="mt-2 text-2xl font-bold">{loadingEvents ? '—' : connectedCount}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Shield className="h-4 w-4" />
             Active Policies
@@ -144,7 +144,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
       </div>
 
       {/* Recent events */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         <div className="border-b px-4 py-3">
           <h3 className="text-sm font-semibold">Recent Events</h3>
         </div>
@@ -193,7 +193,7 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
       </div>
 
       {/* Applied policies */}
-      <div className="rounded-lg border bg-card shadow-sm">
+      <div className="rounded-lg border bg-card shadow-xs">
         <div className="border-b px-4 py-3">
           <h3 className="text-sm font-semibold">Active Policies</h3>
         </div>

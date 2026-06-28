@@ -293,7 +293,7 @@ export default function PolicyForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Basic Information */}
       <div className="grid gap-6 md:grid-cols-2">
@@ -304,7 +304,7 @@ export default function PolicyForm({
           <input
             id="policy-name"
             placeholder="Security baseline policy"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -318,7 +318,7 @@ export default function PolicyForm({
             id="policy-description"
             placeholder="Describe what this policy enforces..."
             rows={2}
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
             {...register('description')}
           />
         </div>
@@ -347,7 +347,7 @@ export default function PolicyForm({
             <div className="space-y-2">
               <label className="text-sm font-medium">Target Type</label>
               <select
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('targetType')}
               >
                 {targetTypeOptions.map(opt => (
@@ -421,7 +421,7 @@ export default function PolicyForm({
                   <div className="flex-1 space-y-3">
                     <div className="flex items-center gap-3">
                       <select
-                        className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`rules.${index}.type`)}
                       >
                         {ruleTypeOptions.map(opt => (
@@ -439,14 +439,14 @@ export default function PolicyForm({
                           <label className="text-xs font-medium text-muted-foreground">Software Name</label>
                           <input
                             placeholder="e.g., Google Chrome"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.softwareName`)}
                           />
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs font-medium text-muted-foreground">Version Check</label>
                           <select
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.versionOperator`)}
                           >
                             {versionOperatorOptions.map(opt => (
@@ -460,7 +460,7 @@ export default function PolicyForm({
                           <label className="text-xs font-medium text-muted-foreground">Version</label>
                           <input
                             placeholder="e.g., 120.0"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.softwareVersion`)}
                           />
                         </div>
@@ -473,7 +473,7 @@ export default function PolicyForm({
                         <label className="text-xs font-medium text-muted-foreground">Software Name</label>
                         <input
                           placeholder="e.g., BitTorrent"
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`rules.${index}.softwareName`)}
                         />
                         <p className="text-xs text-muted-foreground">
@@ -491,7 +491,7 @@ export default function PolicyForm({
                             type="number"
                             min={1}
                             placeholder="10"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.diskSpaceGB`)}
                           />
                         </div>
@@ -499,7 +499,7 @@ export default function PolicyForm({
                           <label className="text-xs font-medium text-muted-foreground">Disk/Path (optional)</label>
                           <input
                             placeholder="C: or /home"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.diskPath`)}
                           />
                         </div>
@@ -512,7 +512,7 @@ export default function PolicyForm({
                         <div className="space-y-1">
                           <label className="text-xs font-medium text-muted-foreground">Operating System</label>
                           <select
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.osType`)}
                           >
                             {osTypeOptions.map(opt => (
@@ -526,7 +526,7 @@ export default function PolicyForm({
                           <label className="text-xs font-medium text-muted-foreground">Minimum Version</label>
                           <input
                             placeholder="e.g., 10.0 or 22.04"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.osMinVersion`)}
                           />
                         </div>
@@ -540,7 +540,7 @@ export default function PolicyForm({
                           <label className="text-xs font-medium text-muted-foreground">Registry Path</label>
                           <input
                             placeholder="HKLM\SOFTWARE\Policies\..."
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.registryPath`)}
                           />
                         </div>
@@ -549,7 +549,7 @@ export default function PolicyForm({
                             <label className="text-xs font-medium text-muted-foreground">Value Name</label>
                             <input
                               placeholder="EnableFeature"
-                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                               {...register(`rules.${index}.registryValueName`)}
                             />
                           </div>
@@ -557,7 +557,7 @@ export default function PolicyForm({
                             <label className="text-xs font-medium text-muted-foreground">Expected Value</label>
                             <input
                               placeholder="1"
-                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                               {...register(`rules.${index}.registryExpectedValue`)}
                             />
                           </div>
@@ -572,7 +572,7 @@ export default function PolicyForm({
                           <label className="text-xs font-medium text-muted-foreground">Config File Path</label>
                           <input
                             placeholder="/etc/ssh/sshd_config"
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`rules.${index}.configFilePath`)}
                           />
                         </div>
@@ -581,7 +581,7 @@ export default function PolicyForm({
                             <label className="text-xs font-medium text-muted-foreground">Config Key</label>
                             <input
                               placeholder="PermitRootLogin"
-                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                               {...register(`rules.${index}.configKey`)}
                             />
                           </div>
@@ -589,7 +589,7 @@ export default function PolicyForm({
                             <label className="text-xs font-medium text-muted-foreground">Expected Value</label>
                             <input
                               placeholder="no"
-                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                               {...register(`rules.${index}.configExpectedValue`)}
                             />
                           </div>
@@ -670,7 +670,7 @@ export default function PolicyForm({
             <div className="mt-3 space-y-2">
               <label className="text-sm font-medium">Remediation Script</label>
               <select
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('remediationScriptId')}
               >
                 <option value="">Select a remediation script...</option>
@@ -697,7 +697,7 @@ export default function PolicyForm({
             type="number"
             min={5}
             max={1440}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             {...register('checkIntervalMinutes')}
           />
           {errors.checkIntervalMinutes && (

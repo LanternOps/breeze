@@ -199,7 +199,7 @@ function DetailHeader({ request }: { request: AdminDeletionRequest }) {
 
 function UserCard({ request }: { request: AdminDeletionRequest }) {
   return (
-    <section className="space-y-2 rounded-lg border bg-card p-6 text-sm shadow-sm">
+    <section className="space-y-2 rounded-lg border bg-card p-6 text-sm shadow-xs">
       <h2 className="text-base font-semibold">Requesting user</h2>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-muted-foreground">
         <dt>Name</dt>
@@ -219,7 +219,7 @@ function UserCard({ request }: { request: AdminDeletionRequest }) {
 
 function RequestCard({ request }: { request: AdminDeletionRequest }) {
   return (
-    <section className="space-y-3 rounded-lg border bg-card p-6 text-sm shadow-sm">
+    <section className="space-y-3 rounded-lg border bg-card p-6 text-sm shadow-xs">
       <h2 className="text-base font-semibold">Request details</h2>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-muted-foreground">
         <dt>Status</dt>
@@ -263,7 +263,7 @@ function RequestCard({ request }: { request: AdminDeletionRequest }) {
 
 function ActionFooter({ onApprove, onReject }: { onApprove: () => void; onReject: () => void }) {
   return (
-    <section className="flex flex-col-reverse gap-2 rounded-lg border bg-card p-6 shadow-sm sm:flex-row sm:justify-end">
+    <section className="flex flex-col-reverse gap-2 rounded-lg border bg-card p-6 shadow-xs sm:flex-row sm:justify-end">
       <button
         type="button"
         onClick={onReject}
@@ -289,7 +289,7 @@ function ProcessedNotice({ request }: { request: AdminDeletionRequest }) {
       ? 'Rejected. User has been notified.'
       : 'Completed.';
   return (
-    <section className="flex items-start gap-3 rounded-lg border bg-card p-6 shadow-sm">
+    <section className="flex items-start gap-3 rounded-lg border bg-card p-6 shadow-xs">
       <CheckCircle2 className="mt-0.5 h-5 w-5 flex-none text-primary" aria-hidden />
       <div>
         <p className="font-medium">{label}</p>
@@ -374,7 +374,7 @@ function ConfirmDialog({
             value={state.typedEmail}
             onChange={(e) => onChange({ typedEmail: e.target.value })}
             placeholder={targetEmail}
-            className="h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
 
           <label htmlFor="admin-note" className="block text-sm font-medium">
@@ -390,7 +390,7 @@ function ConfirmDialog({
             placeholder={isApprove
               ? 'Optional internal context for the audit log…'
               : 'Why are you declining? This is emailed to the user.'}
-            className="w-full rounded-md border bg-background p-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full rounded-md border bg-background p-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             required={!isApprove}
           />
         </div>

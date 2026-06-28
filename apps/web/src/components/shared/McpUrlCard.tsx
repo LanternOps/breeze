@@ -51,14 +51,14 @@ export default function McpUrlCard({ variant = 'card', className, requireOAuth =
       <div className={cn('text-xs text-muted-foreground', className)}>
         <p className="mb-1">Connecting an AI agent?</p>
         <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-          <code className="flex-1 truncate font-mono text-[11px]" title={url}>
+          <code className="flex-1 truncate font-mono chart-legend-xs" title={url}>
             {url || '…'}
           </code>
           <button
             type="button"
             onClick={onCopy}
             disabled={!url}
-            className="shrink-0 rounded border bg-background px-2 py-0.5 text-[11px] font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            className="shrink-0 rounded border bg-background px-2 py-0.5 chart-legend-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
             {copied ? 'Copied' : 'Copy'}
           </button>

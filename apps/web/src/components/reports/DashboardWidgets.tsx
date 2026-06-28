@@ -281,7 +281,7 @@ export default function DashboardWidgets({
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* Device Status Widget */}
         {showDeviceStatus && deviceStatus && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <Monitor className="h-5 w-5 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
@@ -311,7 +311,7 @@ export default function DashboardWidgets({
 
         {/* Alert Counts Widget */}
         {showAlertCounts && alertCounts && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <AlertTriangle className="h-5 w-5 text-muted-foreground" />
               {alertCounts.critical > 0 && (
@@ -366,7 +366,7 @@ export default function DashboardWidgets({
 
         {/* Compliance Widget */}
         {showCompliance && compliance && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <Shield className="h-5 w-5 text-muted-foreground" />
               {compliance.issueCount > 0 && (
@@ -399,7 +399,7 @@ export default function DashboardWidgets({
 
         {/* Resources Widget */}
         {showResources && resources && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <Activity className="h-5 w-5 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">Averages</span>
@@ -436,7 +436,7 @@ export default function DashboardWidgets({
         <div className="grid gap-4 md:grid-cols-3">
           {/* Top CPU */}
           {resources.topCpu.length > 0 && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm">
+            <div className="rounded-lg border bg-card p-4 shadow-xs">
               <div className="flex items-center gap-2 mb-4">
                 <Cpu className="h-4 w-4 text-muted-foreground" />
                 <h3 className="text-sm font-semibold">Top CPU Usage</h3>
@@ -466,7 +466,7 @@ export default function DashboardWidgets({
 
           {/* Top RAM */}
           {resources.topRam.length > 0 && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm">
+            <div className="rounded-lg border bg-card p-4 shadow-xs">
               <div className="flex items-center gap-2 mb-4">
                 <MemoryStick className="h-4 w-4 text-muted-foreground" />
                 <h3 className="text-sm font-semibold">Top Memory Usage</h3>
@@ -496,7 +496,7 @@ export default function DashboardWidgets({
 
           {/* Top Disk */}
           {resources.topDisk.length > 0 && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm">
+            <div className="rounded-lg border bg-card p-4 shadow-xs">
               <div className="flex items-center gap-2 mb-4">
                 <HardDrive className="h-4 w-4 text-muted-foreground" />
                 <h3 className="text-sm font-semibold">Top Disk Usage</h3>

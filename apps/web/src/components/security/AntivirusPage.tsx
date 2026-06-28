@@ -147,7 +147,7 @@ export default function AntivirusPage() {
 
       <div className="grid gap-6 lg:grid-cols-12">
         {pieData.length > 0 && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm lg:col-span-4">
+          <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
             <p className="text-sm font-semibold">Provider Distribution</p>
             <div className="mt-4 h-56">
               <ResponsiveContainer width="100%" height="100%">
@@ -184,7 +184,7 @@ export default function AntivirusPage() {
                 placeholder="Search devices..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 rounded-md border bg-background px-3 text-sm">
@@ -202,7 +202,7 @@ export default function AntivirusPage() {
             </select>
           </div>
 
-          <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+          <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

@@ -162,7 +162,7 @@ export default function WebhookForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <input type="hidden" {...register('enabled')} />
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -193,7 +193,7 @@ export default function WebhookForm({
           <input
             id="webhook-name"
             placeholder="Production Webhook"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -206,7 +206,7 @@ export default function WebhookForm({
           <input
             id="webhook-url"
             placeholder="https://api.example.com/webhooks"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('url')}
           />
           {errors.url && <p className="text-sm text-destructive">{errors.url.message}</p>}
@@ -292,7 +292,7 @@ export default function WebhookForm({
               id="webhook-secret"
               type="text"
               placeholder="Enter a signing secret"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('secret')}
             />
             {errors.secret && <p className="text-sm text-destructive">{errors.secret.message}</p>}
@@ -319,7 +319,7 @@ export default function WebhookForm({
               id="webhook-token"
               type="text"
               placeholder="Enter a bearer token"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('bearerToken')}
             />
             {errors.bearerToken && (
@@ -348,7 +348,7 @@ export default function WebhookForm({
               id="payload-template"
               rows={8}
               placeholder='{"event":"device.online","device":{"id":"{{device.id}}"}}'
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('payloadTemplate')}
             />
             {errors.payloadTemplate && (
@@ -395,12 +395,12 @@ export default function WebhookForm({
               <div key={field.id} className="flex items-center gap-2">
                 <input
                   placeholder="Header key"
-                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register(`headers.${index}.key`)}
                 />
                 <input
                   placeholder="Header value"
-                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   {...register(`headers.${index}.value`)}
                 />
                 <button

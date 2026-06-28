@@ -63,7 +63,7 @@ export default function PolicyLinkSelector({ fetchUrl, selectedId, onSelect, onP
       <select
         value={selectedId ?? ''}
         onChange={(e) => onSelect(e.target.value || null)}
-        className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       >
         <option value="">Select a policy...</option>
         {options.map((opt) => (

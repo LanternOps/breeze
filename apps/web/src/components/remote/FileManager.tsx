@@ -935,7 +935,7 @@ export default function FileManager({
     .reduce((sum, candidate) => sum + candidate.sizeBytes, 0) ?? 0;
 
   return (
-    <div className={cn('flex flex-col min-h-0 flex-1 rounded-lg border bg-card shadow-sm overflow-hidden', className)}>
+    <div className={cn('flex flex-col min-h-0 flex-1 rounded-lg border bg-card shadow-xs overflow-hidden', className)}>
       {/* Header */}
       <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-2">
         <div className="flex items-center gap-3">
@@ -1127,7 +1127,7 @@ export default function FileManager({
         >
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-violet-400" />
-            <span className="text-sm font-medium bg-gradient-to-r from-violet-400 to-blue-400 bg-clip-text text-transparent">Disk Cleanup Intelligence</span>
+            <span className="text-sm font-medium bg-linear-to-r from-violet-400 to-blue-400 bg-clip-text text-transparent">Disk Cleanup Intelligence</span>
           </div>
           {showDiskIntel ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
         </button>
@@ -1204,7 +1204,7 @@ export default function FileManager({
                   <div className="rounded-md border bg-background p-2">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Largest Directories</p>
                     {diskSnapshot.topLargestDirectories.some((dir) => dir.estimated) && (
-                      <p className="mt-1 text-[11px] text-muted-foreground">{'>='} indicates lower-bound size.</p>
+                      <p className="mt-1 chart-legend-xs text-muted-foreground">{'>='} indicates lower-bound size.</p>
                     )}
                     <div className="mt-1 space-y-1">
                       {collapsedTopDirectories.map((dir) => (

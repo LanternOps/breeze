@@ -193,7 +193,7 @@ export default function PoliciesTab() {
 
       {/* Inline form */}
       {showForm && (
-        <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="rounded-lg border bg-card p-5 shadow-xs">
           <h3 className="text-sm font-semibold">{editingId ? 'Edit Policy' : 'Create Policy'}</h3>
           <div className="mt-4 grid gap-4">
             <div>
@@ -202,7 +202,7 @@ export default function PoliciesTab() {
                 value={form.name}
                 onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
                 placeholder="Policy name"
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>

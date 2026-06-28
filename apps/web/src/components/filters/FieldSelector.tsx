@@ -109,7 +109,7 @@ export function FieldSelector({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search fields..."
-                className="h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>

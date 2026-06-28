@@ -310,7 +310,7 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                       value={item.name}
                       onChange={(e) => updateItem(index, { name: e.target.value })}
                       placeholder="e.g. High CPU Alert"
-                      className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
 
@@ -469,7 +469,7 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                         max={1440}
                         value={item.cooldownMinutes}
                         onChange={(e) => updateItem(index, { cooldownMinutes: Number(e.target.value) || 15 })}
-                        className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
                       <p className="mt-1 text-xs text-muted-foreground">Min time between alerts</p>
                     </div>

@@ -28,7 +28,7 @@ export default function RecoveryCodes({ codes, onContinue }: RecoveryCodesProps)
   };
 
   return (
-    <div className="space-y-6 rounded-lg border bg-card p-6 shadow-sm">
+    <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="space-y-2">
         <h2 className="text-lg font-semibold">Save your recovery codes</h2>
         <p className="text-sm text-muted-foreground">

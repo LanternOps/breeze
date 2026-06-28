@@ -104,7 +104,7 @@ export function RejectionDenialLog({ executions, securityEvents, loading }: Prop
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search..."
-              className="h-8 rounded-lg border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+              className="h-8 rounded-lg border bg-card pl-8 pr-3 text-xs focus:outline-hidden focus:ring-1 focus:ring-primary"
             />
           </div>
           <div className="flex gap-1">
@@ -132,11 +132,11 @@ export function RejectionDenialLog({ executions, securityEvents, loading }: Prop
           ))}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-sm">
+        <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground shadow-xs">
           No rejections or denials found.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border shadow-sm">
+        <div className="overflow-hidden rounded-lg border shadow-xs">
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

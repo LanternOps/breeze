@@ -114,7 +114,7 @@ export default function RegisterForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="space-y-2">
         <label htmlFor="name" className="text-sm font-medium">
@@ -125,7 +125,7 @@ export default function RegisterForm({
           type="text"
           autoComplete="name"
           placeholder="Jane Doe"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('name')}
         />
         {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -140,7 +140,7 @@ export default function RegisterForm({
           type="email"
           autoComplete="email"
           placeholder="you@company.com"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
         {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
@@ -155,7 +155,7 @@ export default function RegisterForm({
           type="password"
           autoComplete="new-password"
           placeholder="Create a password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
         />
         {errors.password && (
@@ -184,7 +184,7 @@ export default function RegisterForm({
           type="password"
           autoComplete="new-password"
           placeholder="Re-enter your password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('confirmPassword')}
         />
         {errors.confirmPassword && (

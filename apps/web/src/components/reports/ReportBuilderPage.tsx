@@ -88,7 +88,7 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Builder Section */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 mb-6">
             <FileText className="h-5 w-5 text-muted-foreground" />
             <h2 className="text-lg font-semibold">Report Configuration</h2>
@@ -102,7 +102,7 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
         </div>
 
         {/* Preview Section */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <ReportPreview
             data={previewData ?? undefined}
             loading={loading}

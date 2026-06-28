@@ -871,7 +871,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
           <button
             type="button"
             onClick={handleExportPdf}
-            className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm font-medium shadow-sm hover:bg-muted"
+            className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm font-medium shadow-xs hover:bg-muted"
           >
             <FileText className="h-4 w-4" />
             Export PDF
@@ -879,7 +879,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
           <button
             type="button"
             onClick={handleExportCsv}
-            className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm font-medium shadow-sm hover:bg-muted"
+            className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm font-medium shadow-xs hover:bg-muted"
           >
             <FileDown className="h-4 w-4" />
             Export CSV
@@ -887,7 +887,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
           <button
             type="button"
             onClick={handleShare}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:opacity-90"
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:opacity-90"
           >
             <Share2 className="h-4 w-4" />
             {copied ? 'Link copied' : 'Share link'}
@@ -911,7 +911,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-4 lg:max-w-xl">
             <div>
@@ -927,7 +927,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                 placeholder="Search by hostname"
                 value={query}
                 onChange={event => setQuery(event.target.value)}
-                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="max-h-72 space-y-2 overflow-auto pr-1">
@@ -1045,7 +1045,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
 
       {canCompare && (
         <>
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Specs at a glance</h2>
@@ -1083,7 +1083,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Software diff</h2>
@@ -1124,7 +1124,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Patch status comparison</h2>
@@ -1202,7 +1202,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Configuration diff</h2>
@@ -1250,7 +1250,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
             </div>
           </div>
 
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Performance comparison</h2>
@@ -1276,7 +1276,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                 <select
                   value={timeRange}
                   onChange={event => setTimeRange(event.target.value as TimeRange)}
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {Object.entries(timeRangeOptions).map(([value, option]) => (
                     <option key={value} value={value}>{option.label}</option>

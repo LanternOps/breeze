@@ -231,7 +231,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
               onChange={(e) => setRetentionCount(Number(e.target.value) || 3)}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
-            <p className="mt-1 text-[11px] text-muted-foreground">
+            <p className="mt-1 chart-legend-xs text-muted-foreground">
               Number of snapshots to keep in the vault (1-100).
             </p>
           </div>

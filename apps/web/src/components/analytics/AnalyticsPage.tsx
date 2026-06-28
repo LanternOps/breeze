@@ -720,7 +720,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           <select
             value={selectedDashboard}
             onChange={event => setSelectedDashboard(event.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {dashboardOptions.map(option => (
               <option key={option.value} value={option.value}>
@@ -731,7 +731,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           <select
             value={dateRange}
             onChange={event => setDateRange(event.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {dateRanges.map(option => (
               <option key={option.value} value={option.value}>
@@ -762,13 +762,13 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             type="date"
             value={customStartDate}
             onChange={event => setCustomStartDate(event.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <input
             type="date"
             value={customEndDate}
             onChange={event => setCustomEndDate(event.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
       )}

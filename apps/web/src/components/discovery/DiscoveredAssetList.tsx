@@ -430,7 +430,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
 
   if (loading && assets.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-4 text-sm text-muted-foreground">Loading discovered assets...</p>
@@ -544,7 +544,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   );
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div>
         <h2 className="text-lg font-semibold">Discovered Assets</h2>
         <p className="text-sm text-muted-foreground">Review assets detected in your environment.</p>

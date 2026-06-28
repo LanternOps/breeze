@@ -79,7 +79,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}

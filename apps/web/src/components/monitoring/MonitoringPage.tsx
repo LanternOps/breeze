@@ -87,7 +87,7 @@ export default function MonitoringPage() {
       {activeTab === 'checks' && <NetworkMonitorList assetId={initialAssetId} />}
 
       {activeTab === 'templates' && (
-        <div className="grid gap-6 xl:grid-cols-[2fr,1fr]">
+        <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
           <SNMPTemplateList
             selectedTemplateId={selectedTemplateId}
             refreshToken={templateRefreshToken}

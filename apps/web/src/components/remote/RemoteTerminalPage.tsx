@@ -70,7 +70,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
+      <div className="flex items-center justify-center u-min-h-px-400">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
@@ -78,7 +78,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+      <div className="flex flex-col items-center justify-center u-min-h-px-400 gap-4">
         <AlertCircle className="h-12 w-12 text-red-500" />
         <h2 className="text-lg font-semibold">Error</h2>
         <p className="text-muted-foreground">{error}</p>
@@ -96,7 +96,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
 
   if (!device) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+      <div className="flex flex-col items-center justify-center u-min-h-px-400 gap-4">
         <Monitor className="h-12 w-12 text-muted-foreground" />
         <h2 className="text-lg font-semibold">Device Not Found</h2>
         <p className="text-muted-foreground">The requested device could not be found.</p>
@@ -146,7 +146,7 @@ export default function RemoteTerminalPage({ deviceId }: RemoteTerminalPageProps
         onSessionCreated={handleSessionCreated}
         onDisconnect={handleDisconnect}
         onError={handleError}
-        className="min-h-[600px]"
+        className="u-min-h-px-600"
       />
     </div>
   );

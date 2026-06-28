@@ -73,7 +73,7 @@ export default function DeviceStatusChart() {
 
   if (isLoading && totalCount === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="h-4 w-24 rounded bg-muted animate-pulse mb-4" />
         <div className="space-y-3">
           {[1, 2, 3].map(i => (
@@ -89,7 +89,7 @@ export default function DeviceStatusChart() {
 
   if (error && totalCount === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <a href="/devices" className="mb-4 inline-block text-sm font-semibold hover:text-primary transition-colors">Fleet Status</a>
         <div className="flex flex-col items-center justify-center py-8 text-center">
           <div className="rounded-full bg-destructive/10 p-3 mb-3">
@@ -107,7 +107,7 @@ export default function DeviceStatusChart() {
 
   if (totalCount === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <a href="/devices" className="mb-4 inline-block text-sm font-semibold hover:text-primary transition-colors">Fleet Status</a>
         <div className="flex flex-col items-center justify-center py-8 text-center">
           <p className="text-sm text-muted-foreground">No devices enrolled yet</p>
@@ -123,7 +123,7 @@ export default function DeviceStatusChart() {
   const offlineTotal = totalCount - onlineCount;
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="mb-4 flex items-center justify-between">
         <a href="/devices" className="text-sm font-semibold hover:text-primary transition-colors">Fleet Status</a>
         <span className={cn(
@@ -152,10 +152,10 @@ export default function DeviceStatusChart() {
                 href={`/devices/${device.id}`}
                 className="flex items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-muted/50 transition-colors"
               >
-                <WifiOff className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                <WifiOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate flex-1 font-medium">{device.name || device.hostname || 'Unknown'}</span>
                 {lastTime && (
-                  <span className="text-xs text-muted-foreground flex-shrink-0">
+                  <span className="text-xs text-muted-foreground shrink-0">
                     {formatTimeAgo(lastTime)}
                   </span>
                 )}

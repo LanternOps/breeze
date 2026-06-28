@@ -146,7 +146,7 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
             max={365}
             value={settings.retentionDays}
             onChange={(e) => update('retentionDays', Math.max(7, Math.min(365, Number(e.target.value) || 30)))}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <p className="mt-1 text-xs text-muted-foreground">How long to keep event logs (7-365 days).</p>
         </div>
@@ -160,7 +160,7 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
             max={500}
             value={settings.maxEventsPerCycle}
             onChange={(e) => update('maxEventsPerCycle', Math.max(10, Math.min(500, Number(e.target.value) || 100)))}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <p className="mt-1 text-xs text-muted-foreground">Agent-side cap per collection cycle.</p>
         </div>
@@ -171,7 +171,7 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
           <select
             value={settings.minimumLevel}
             onChange={(e) => update('minimumLevel', e.target.value as EventLogSettings['minimumLevel'])}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           >
             {levelOptions.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
@@ -189,7 +189,7 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
             max={60}
             value={settings.collectionIntervalMinutes}
             onChange={(e) => update('collectionIntervalMinutes', Math.max(1, Math.min(60, Number(e.target.value) || 5)))}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <p className="mt-1 text-xs text-muted-foreground">How often the agent sends logs (1-60 minutes).</p>
         </div>
@@ -203,7 +203,7 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
             max={100000}
             value={settings.rateLimitPerHour}
             onChange={(e) => update('rateLimitPerHour', Math.max(100, Math.min(100000, Number(e.target.value) || 12000)))}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <p className="mt-1 text-xs text-muted-foreground">API-side per-device rate limit (events/hour).</p>
         </div>

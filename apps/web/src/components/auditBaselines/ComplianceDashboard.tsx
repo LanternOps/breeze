@@ -96,7 +96,7 @@ export default function ComplianceDashboard() {
 
   if (!data || data.totalDevices === 0) {
     return (
-      <div className="rounded-lg border bg-card p-8 text-center shadow-sm">
+      <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <BarChart3 className="mx-auto h-10 w-10 text-muted-foreground" />
         <h3 className="mt-4 text-sm font-semibold">No compliance data yet</h3>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -113,7 +113,7 @@ export default function ComplianceDashboard() {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="rounded-full border bg-muted/30 p-2">
               <Monitor className="h-4 w-4 text-muted-foreground" />
@@ -125,7 +125,7 @@ export default function ComplianceDashboard() {
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="rounded-full border bg-muted/30 p-2">
               <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -142,7 +142,7 @@ export default function ComplianceDashboard() {
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="rounded-full border bg-muted/30 p-2">
               <AlertTriangle className="h-4 w-4 text-red-500" />
@@ -154,7 +154,7 @@ export default function ComplianceDashboard() {
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="rounded-full border bg-muted/30 p-2">
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
@@ -170,7 +170,7 @@ export default function ComplianceDashboard() {
       </div>
 
       {data.baselines.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold">Compliance by Baseline</h3>
           <table className="mt-4 w-full text-sm">
             <thead className="bg-muted/40">

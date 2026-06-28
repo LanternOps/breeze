@@ -523,7 +523,7 @@ export default function HuntressIntegration() {
         </div>
       )}
       {!isPartnerView && !integration && (
-        <div className="rounded-xl border bg-card p-8 text-center shadow-sm">
+        <div className="rounded-xl border bg-card p-8 text-center shadow-xs">
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <Unplug className="h-5 w-5" />
           </div>
@@ -541,7 +541,7 @@ export default function HuntressIntegration() {
       )}
 
       {isPartnerView && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold">Partner connection</h2>
@@ -560,7 +560,7 @@ export default function HuntressIntegration() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Partner Huntress"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               />
             </div>
             <div>
@@ -572,7 +572,7 @@ export default function HuntressIntegration() {
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
                 placeholder="Huntress account ID"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               />
             </div>
             <SecretInput
@@ -680,7 +680,7 @@ export default function HuntressIntegration() {
       )}
 
       {isPartnerView && integration && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Webhook className="h-4 w-4" />
@@ -743,7 +743,7 @@ export default function HuntressIntegration() {
 
       {integration && (
         <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-          <div className="rounded-xl border bg-card p-6 shadow-sm">
+          <div className="rounded-xl border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between gap-4">
               <h2 className="text-lg font-semibold">Sync status</h2>
               {syncStatusBadge(integration)}
@@ -767,7 +767,7 @@ export default function HuntressIntegration() {
             </div>
           </div>
 
-          <div className="rounded-xl border bg-card p-6 shadow-sm">
+          <div className="rounded-xl border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Coverage</h2>
             {coverage && (
               <div className="mt-4 grid grid-cols-2 gap-4">
@@ -797,7 +797,7 @@ export default function HuntressIntegration() {
       )}
 
       {isPartnerView && integration && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold">Organization mapping</h2>
@@ -822,7 +822,7 @@ export default function HuntressIntegration() {
                   value={mappingSearch}
                   onChange={(event) => setMappingSearch(event.target.value)}
                   placeholder="Search Huntress or Breeze organizations"
-                  className="h-9 w-full rounded-md border bg-background pl-9 pr-8 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  className="h-9 w-full rounded-md border bg-background pl-9 pr-8 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
                 />
                 {mappingSearch && (
                   <button
@@ -875,7 +875,7 @@ export default function HuntressIntegration() {
                           value={row.mappedOrgId ?? ''}
                           onChange={(event) => void handleMap(row.huntressOrgId, event.target.value || null)}
                           disabled={mappingSaving[row.huntressOrgId]}
-                          className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                          className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                         >
                           <option value="">Select organization</option>
                           {orgOptions.map((org) => (
@@ -953,7 +953,7 @@ export default function HuntressIntegration() {
       )}
 
       {integration && recentIncidents.length > 0 && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="rounded-xl border bg-card p-6 shadow-xs">
           <h2 className="text-lg font-semibold">Recent incidents</h2>
           <div className="mt-4 space-y-3">
             {recentIncidents.map((incident) => (
@@ -995,7 +995,7 @@ function SecretInput(props: {
           value={props.value}
           onChange={(event) => props.onChange(event.target.value)}
           placeholder={props.placeholder}
-          className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+          className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
         />
         <button
           type="button"

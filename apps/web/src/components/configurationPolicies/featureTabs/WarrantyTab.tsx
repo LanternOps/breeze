@@ -118,7 +118,7 @@ export default function WarrantyTab({ policyId, existingLink, onLinkChanged, lin
                 max={365}
                 value={settings.warnDays}
                 onChange={(e) => update('warnDays', Number(e.target.value) || 90)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <p className="mt-1 text-xs text-muted-foreground">Generate a warning alert when warranty expires within this many days.</p>
             </div>
@@ -131,7 +131,7 @@ export default function WarrantyTab({ policyId, existingLink, onLinkChanged, lin
                 max={365}
                 value={settings.criticalDays}
                 onChange={(e) => update('criticalDays', Number(e.target.value) || 30)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <p className="mt-1 text-xs text-muted-foreground">Generate a critical alert when warranty expires within this many days.</p>
             </div>

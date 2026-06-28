@@ -127,7 +127,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               maxLength={200}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+              className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden focus:ring-2 focus:ring-primary"
               placeholder="e.g. Windows CIS L1 Baseline"
             />
           </div>
@@ -141,7 +141,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
                 id="bl-os"
                 value={osType}
                 onChange={(e) => setOsType(e.target.value as Baseline['osType'])}
-                className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+                className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden focus:ring-2 focus:ring-primary"
               >
                 {OS_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -159,7 +159,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
                 id="bl-profile"
                 value={profile}
                 onChange={(e) => setProfile(e.target.value as Baseline['profile'])}
-                className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+                className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden focus:ring-2 focus:ring-primary"
               >
                 {PROFILE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -202,7 +202,7 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
               rows={8}
               value={settingsJson}
               onChange={(e) => setSettingsJson(e.target.value)}
-              className="mt-1 block w-full rounded-md border bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-primary"
+              className="mt-1 block w-full rounded-md border bg-background px-3 py-2 font-mono text-sm outline-hidden focus:ring-2 focus:ring-primary"
               placeholder={profile === 'custom' ? '{\n  "key": "value"\n}' : 'Optional — template defaults will be used'}
             />
           </div>

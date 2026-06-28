@@ -176,7 +176,7 @@ export default function NotificationChannelList({
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Notification Channels</h2>
@@ -195,7 +195,7 @@ export default function NotificationChannelList({
                 setQuery(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
           <select
@@ -204,7 +204,7 @@ export default function NotificationChannelList({
               setTypeFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
           >
             <option value="all">All Types</option>
             <option value="email">Email</option>

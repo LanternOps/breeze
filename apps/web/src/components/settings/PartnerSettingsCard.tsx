@@ -18,7 +18,7 @@ export default function PartnerSettingsCard() {
   return (
     <a
       href="/settings/partner"
-      className="col-span-full rounded-lg border-2 border-primary/20 bg-primary/5 p-6 shadow-sm transition hover:border-primary hover:shadow-md"
+      className="col-span-full rounded-lg border-2 border-primary/20 bg-primary/5 p-6 shadow-xs transition hover:border-primary hover:shadow-md"
     >
       <div className="flex items-start gap-4">
         <div className="rounded-lg bg-primary/10 p-3">

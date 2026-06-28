@@ -24,7 +24,7 @@ export function TierOverviewMatrix() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter tools..."
-            className="h-8 w-56 rounded-lg border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-8 w-56 rounded-lg border bg-card pl-8 pr-3 text-xs focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
         </div>
       </div>
@@ -75,7 +75,7 @@ function TierCard({
 
   return (
     <div
-      className={`rounded-lg border border-l-4 bg-card shadow-sm ${tier.borderColor}`}
+      className={`rounded-lg border border-l-4 bg-card shadow-xs ${tier.borderColor}`}
     >
       {/* Header */}
       <div className="flex items-center justify-between p-5 pb-3">
@@ -138,9 +138,9 @@ function CategoryGroup({
         className="flex w-full items-center gap-2 px-5 py-2.5 text-left text-xs hover:bg-muted/30 transition-colors"
       >
         {isCollapsed ? (
-          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         ) : (
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         )}
         <span className="font-medium">{category}</span>
         <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -152,7 +152,7 @@ function CategoryGroup({
         <div className="px-5 pb-3 space-y-1">
           {tools.map((tool) => (
             <div key={tool.name} className="flex gap-2 text-xs leading-5 pl-5">
-              <span className="mt-[7px] h-1.5 w-1.5 flex-shrink-0 rounded-full bg-muted-foreground/40" />
+              <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
               <p>
                 <span className="font-medium">
                   {formatToolName(tool.name)}

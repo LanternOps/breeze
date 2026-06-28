@@ -415,7 +415,7 @@ export default function AssetDetailModal({
                     onChange={e => setEditLabel(e.target.value)}
                     placeholder="e.g. Main Switch"
                     maxLength={255}
-                    className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <div>
@@ -425,7 +425,7 @@ export default function AssetDetailModal({
                     onChange={e => setEditNotes(e.target.value)}
                     placeholder="e.g. Located in Closet A, 2nd floor"
                     rows={2}
-                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
                   />
                 </div>
                 <div>
@@ -435,7 +435,7 @@ export default function AssetDetailModal({
                     value={editTags}
                     onChange={e => setEditTags(e.target.value)}
                     placeholder="e.g. critical, floor-2, networking"
-                    className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <div className="flex items-center gap-2">
@@ -474,7 +474,7 @@ export default function AssetDetailModal({
                 <select
                   value={selectedDevice}
                   onChange={event => setSelectedDevice(event.target.value)}
-                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="">Select a managed device</option>
                   {devices.map(device => (
@@ -538,7 +538,7 @@ export default function AssetDetailModal({
                         <label className="text-xs font-medium text-muted-foreground">
                           Proxy through agent
                         </label>
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        <p className="mt-0.5 chart-legend-xs text-muted-foreground">
                           Pick an online agent that can reach {asset.ip} on its network (usually the
                           one that discovered it). This is separate from the identity link above.
                         </p>
@@ -546,7 +546,7 @@ export default function AssetDetailModal({
                           value={selectedBridgeDeviceId}
                           onChange={e => setSelectedBridgeDeviceId(e.target.value)}
                           data-testid="proxy-bridge-select"
-                          className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                         >
                           {onlineDevices.map(d => (
                             <option key={d.id} value={d.id}>
@@ -565,7 +565,7 @@ export default function AssetDetailModal({
                             setSelectedScheme(newScheme);
                             if (newScheme !== 'https') setAllowSelfSigned(false);
                           }}
-                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                         >
                           {openPorts.length > 0 ? (
                             openPorts.map(p => (
@@ -588,7 +588,7 @@ export default function AssetDetailModal({
                             if (scheme !== 'https') setAllowSelfSigned(false);
                           }}
                           data-testid="proxy-scheme-select"
-                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                         >
                           <option value="http">HTTP</option>
                           <option value="https">HTTPS</option>
@@ -605,7 +605,7 @@ export default function AssetDetailModal({
                         </button>
                       </div>
                       {selectedScheme === 'https' && (
-                        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <label className="flex items-center gap-2 chart-legend-xs text-muted-foreground">
                           <input
                             type="checkbox"
                             checked={allowSelfSigned}

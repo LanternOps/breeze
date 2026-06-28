@@ -1299,7 +1299,7 @@ export default function DeviceList({
                       onSelect?.(device);
                     }
                   }}
-                  className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+                  className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden"
                 >
                   <td className="px-3 py-3">
                     <input
@@ -1483,7 +1483,7 @@ export default function DeviceList({
                 value={effectivePageSize}
                 aria-label="Devices per page"
                 onChange={event => handlePageSizeChange(Number(event.target.value))}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
               >
                 {PAGE_SIZE_OPTIONS.map(opt => (
                   <option key={opt} value={opt}>

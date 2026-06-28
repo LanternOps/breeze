@@ -451,7 +451,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
 
       {/* Tabs + Content (sidebar layout) */}
       <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
-        <aside className="space-y-2 rounded-lg border bg-card p-4 shadow-sm">
+        <aside className="space-y-2 rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Site Settings
           </p>
@@ -482,7 +482,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           {/* Details Tab */}
           {activeTab === 'details' && (
             <div className="space-y-6">
-              <section className="rounded-lg border bg-card p-6 shadow-sm">
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
                 <h2 className="text-lg font-semibold">Site Information</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
@@ -490,7 +490,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                     <input
                       value={formName}
                       onChange={handleFieldChange(setFormName)}
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -498,7 +498,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                     <select
                       value={formTimezone}
                       onChange={handleFieldChange(setFormTimezone)}
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       {timezoneOptions.map((tz) => (
                         <option key={tz} value={tz}>
@@ -510,7 +510,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                 </div>
               </section>
 
-              <section className="rounded-lg border bg-card p-6 shadow-sm">
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
                 <h2 className="text-lg font-semibold">Address</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="space-y-2 md:col-span-2">
@@ -519,7 +519,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formAddressLine1}
                       onChange={handleFieldChange(setFormAddressLine1)}
                       placeholder="123 Market Street"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2 md:col-span-2">
@@ -528,7 +528,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formAddressLine2}
                       onChange={handleFieldChange(setFormAddressLine2)}
                       placeholder="Suite 500"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -537,7 +537,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formCity}
                       onChange={handleFieldChange(setFormCity)}
                       placeholder="San Francisco"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -546,7 +546,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formState}
                       onChange={handleFieldChange(setFormState)}
                       placeholder="CA"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -555,7 +555,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formPostalCode}
                       onChange={handleFieldChange(setFormPostalCode)}
                       placeholder="94107"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -564,13 +564,13 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formCountry}
                       onChange={handleFieldChange(setFormCountry)}
                       placeholder="United States"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>
               </section>
 
-              <section className="rounded-lg border bg-card p-6 shadow-sm">
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
                 <h2 className="text-lg font-semibold">Primary Contact</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-3">
                   <div className="space-y-2">
@@ -579,7 +579,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formContactName}
                       onChange={handleFieldChange(setFormContactName)}
                       placeholder="Alex Morgan"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -589,7 +589,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formContactEmail}
                       onChange={handleFieldChange(setFormContactEmail)}
                       placeholder="alex@company.com"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="space-y-2">
@@ -598,7 +598,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       value={formContactPhone}
                       onChange={handleFieldChange(setFormContactPhone)}
                       placeholder="+1 (555) 123-4567"
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                 </div>
@@ -628,7 +628,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
               )}
 
               {/* Assigned policies table */}
-              <div className="rounded-lg border bg-card p-6 shadow-sm">
+              <div className="rounded-lg border bg-card p-6 shadow-xs">
                 <h2 className="text-lg font-semibold">Assigned Policies</h2>
                 {assignments.length === 0 && !assignmentsError ? (
                   <p className="mt-4 text-sm text-muted-foreground">
@@ -691,7 +691,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
               </div>
 
               {/* Quick-assign form */}
-              <div className="rounded-lg border bg-card p-6 shadow-sm">
+              <div className="rounded-lg border bg-card p-6 shadow-xs">
                 <h2 className="text-lg font-semibold">Assign Policy</h2>
                 <div className="mt-4 grid gap-4 sm:grid-cols-3">
                   <div>
@@ -699,7 +699,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                     <select
                       value={selectedPolicyId}
                       onChange={(e) => setSelectedPolicyId(e.target.value)}
-                      className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     >
                       <option value="">Select a policy...</option>
                       {unassignedPolicies.map((p) => (
@@ -717,7 +717,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                       max={1000}
                       value={assignPriority}
                       onChange={(e) => setAssignPriority(e.target.value)}
-                      className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
                   <div className="flex items-end">
@@ -738,7 +738,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
 
           {/* Devices Tab */}
           {activeTab === 'devices' && (
-            <div className="rounded-lg border bg-card p-6 shadow-sm">
+            <div className="rounded-lg border bg-card p-6 shadow-xs">
               <h3 className="text-base font-semibold">Devices</h3>
               <p className="mt-2 text-3xl font-bold">{site.deviceCount ?? 0}</p>
               <p className="mt-1 text-sm text-muted-foreground">

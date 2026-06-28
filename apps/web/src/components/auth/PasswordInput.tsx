@@ -14,7 +14,7 @@ const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(function 
         type={visible ? 'text' : 'password'}
         className={
           className ??
-          'h-10 w-full rounded-md border bg-background pl-3 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-ring'
+          'h-10 w-full rounded-md border bg-background pl-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring'
         }
         {...rest}
       />
@@ -24,7 +24,7 @@ const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(function 
         aria-pressed={visible}
         aria-label={visible ? 'Hide password' : 'Show password'}
         tabIndex={-1}
-        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground transition hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground transition hover:text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
       >
         {visible ? (
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

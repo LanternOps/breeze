@@ -132,7 +132,7 @@ export default function PsaConnectionForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="space-y-4">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -146,7 +146,7 @@ export default function PsaConnectionForm({
             <input
               id="connection-name"
               placeholder="e.g., Jira Production"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('name')}
             />
             {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -158,7 +158,7 @@ export default function PsaConnectionForm({
             </label>
             <select
               id="connection-provider"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('provider')}
             >
               {Object.entries(providerMeta).map(([value, meta]) => (
@@ -185,7 +185,7 @@ export default function PsaConnectionForm({
               id="connection-url"
               type="url"
               placeholder={credentialHint.urlPlaceholder}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('baseUrl')}
             />
             {errors.baseUrl && <p className="text-sm text-destructive">{errors.baseUrl.message}</p>}
@@ -198,7 +198,7 @@ export default function PsaConnectionForm({
             <input
               id="connection-default-queue"
               placeholder="e.g., IT Support"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('defaultQueue')}
             />
             <p className="text-xs text-muted-foreground">
@@ -220,7 +220,7 @@ export default function PsaConnectionForm({
             <input
               id="connection-username"
               placeholder="admin@example.com"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('username')}
             />
           </div>
@@ -237,7 +237,7 @@ export default function PsaConnectionForm({
                 id="connection-password"
                 type={showPassword ? 'text' : 'password'}
                 placeholder={isEditing && hasCredentials?.password ? '********' : 'password'}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('password')}
               />
               <button
@@ -271,7 +271,7 @@ export default function PsaConnectionForm({
                 id="connection-api-token"
                 type={showApiToken ? 'text' : 'password'}
                 placeholder={isEditing && hasCredentials?.apiToken ? '********' : 'api-token'}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('apiToken')}
               />
               <button
@@ -300,7 +300,7 @@ export default function PsaConnectionForm({
             <input
               id="connection-client-id"
               placeholder="oauth-client-id"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('clientId')}
             />
           </div>
@@ -317,7 +317,7 @@ export default function PsaConnectionForm({
                 id="connection-client-secret"
                 type={showClientSecret ? 'text' : 'password'}
                 placeholder={isEditing && hasCredentials?.clientSecret ? '********' : 'client-secret'}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('clientSecret')}
               />
               <button
@@ -367,7 +367,7 @@ export default function PsaConnectionForm({
               </label>
               <select
                 id="sync-interval"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 disabled={!syncEnabled}
                 {...register('syncInterval')}
               >
@@ -385,7 +385,7 @@ export default function PsaConnectionForm({
               </label>
               <select
                 id="sync-direction"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 disabled={!syncEnabled}
                 {...register('syncDirection')}
               >

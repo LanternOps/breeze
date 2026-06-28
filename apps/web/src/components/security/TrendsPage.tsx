@@ -207,7 +207,7 @@ export default function TrendsPage() {
         ))}
       </div>
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-4 flex flex-wrap gap-2">
           {Object.entries(lineLabels).map(([key, label]) => (
             <button

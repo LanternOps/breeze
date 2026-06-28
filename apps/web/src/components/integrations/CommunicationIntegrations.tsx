@@ -351,7 +351,7 @@ export default function CommunicationIntegrations() {
       )}
 
       <div className="grid gap-6 xl:grid-cols-3">
-        <section className="rounded-xl border bg-card p-6 shadow-sm">
+        <section className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-foreground">
@@ -443,7 +443,7 @@ export default function CommunicationIntegrations() {
           </div>
         </section>
 
-        <section className="rounded-xl border bg-card p-6 shadow-sm">
+        <section className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-foreground">
@@ -527,7 +527,7 @@ export default function CommunicationIntegrations() {
           </div>
         </section>
 
-        <section className="rounded-xl border bg-card p-6 shadow-sm">
+        <section className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-foreground">
@@ -590,7 +590,7 @@ export default function CommunicationIntegrations() {
         </section>
       </div>
 
-      <section className="rounded-xl border bg-card p-6 shadow-sm">
+      <section className="rounded-xl border bg-card p-6 shadow-xs">
         <div>
           <h2 className="text-lg font-semibold">Channel routing rules</h2>
           <p className="text-sm text-muted-foreground">
@@ -653,7 +653,7 @@ export default function CommunicationIntegrations() {
         </p>
       </section>
 
-      <section className="rounded-xl border bg-card p-6 shadow-sm">
+      <section className="rounded-xl border bg-card p-6 shadow-xs">
         <div>
           <h2 className="text-lg font-semibold">Message templates</h2>
           <p className="text-sm text-muted-foreground">
@@ -666,7 +666,7 @@ export default function CommunicationIntegrations() {
             value={messageTemplate}
             onChange={event => setMessageTemplate(event.target.value)}
             rows={6}
-            className="min-h-[140px] w-full rounded-md border bg-background p-3 text-sm"
+            className="u-min-h-px-140 w-full rounded-md border bg-background p-3 text-sm"
           />
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             {templateVariables.map(variable => (

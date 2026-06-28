@@ -34,19 +34,19 @@ export default function BaselineOverviewTab({ baseline, onUpdated }: Props) {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Name</p>
           <p className="mt-1 font-medium">{baseline.name}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">OS Type</p>
           <p className="mt-1 font-medium">{osLabel[baseline.osType] ?? baseline.osType}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Profile</p>
           <p className="mt-1 font-medium">{profileLabel[baseline.profile] ?? baseline.profile}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Status</p>
           <span
             className={cn(
@@ -65,18 +65,18 @@ export default function BaselineOverviewTab({ baseline, onUpdated }: Props) {
             {baseline.isActive ? 'Active' : 'Inactive'}
           </span>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Created</p>
           <p className="mt-1 text-sm">{formatDateTime(baseline.createdAt)}</p>
         </div>
-        <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
           <p className="text-xs text-muted-foreground">Last Updated</p>
           <p className="mt-1 text-sm">{formatDateTime(baseline.updatedAt)}</p>
         </div>
       </div>
 
       {settings.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold">Settings</h3>
           <div className="mt-4 space-y-2">
             {settings.map(([key, value]) => (

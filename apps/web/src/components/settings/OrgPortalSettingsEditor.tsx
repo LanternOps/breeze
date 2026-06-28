@@ -108,7 +108,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
 
   return (
     <div className="space-y-6" data-testid="org-portal-settings">
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Portal features</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Control what this customer can do in their portal. Each organization is independent.
@@ -132,7 +132,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
         </div>
       </section>
 
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Support contact</h2>
         <p className="mt-1 text-sm text-muted-foreground">Shown to customers in the portal.</p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">

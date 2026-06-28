@@ -261,7 +261,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
       )}
 
       {/* Add Assignment Form */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Add Assignment</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-3">
           <div>
@@ -272,7 +272,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
             <select
               value={newLevel}
               onChange={(e) => setNewLevel(e.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               {assignmentLevels.map((level) => (
                 <option key={level.value} value={level.value}>
@@ -291,7 +291,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
             <button
               type="button"
               onClick={() => setTargetDropdownOpen(!targetDropdownOpen)}
-              className="mt-2 flex h-10 w-full items-center justify-between rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 flex h-10 w-full items-center justify-between rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               <span className={cn(selectedTargetName ? 'text-foreground' : 'text-muted-foreground')}>
                 {selectedTargetName || (loadingTargets ? 'Loading...' : 'Select a target...')}
@@ -307,7 +307,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
                     value={targetSearch}
                     onChange={(e) => setTargetSearch(e.target.value)}
                     placeholder="Search..."
-                    className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                    className="w-full bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
                     autoFocus
                   />
                 </div>
@@ -338,7 +338,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
                             <div className="truncate text-xs text-muted-foreground">{option.extra}</div>
                           )}
                         </div>
-                        <span className="ml-2 flex-shrink-0 font-mono text-[10px] text-muted-foreground">
+                        <span className="ml-2 shrink-0 font-mono text-[10px] text-muted-foreground">
                           {option.id.slice(0, 8)}
                         </span>
                       </button>
@@ -359,7 +359,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
               max={1000}
               value={newPriority}
               onChange={(e) => setNewPriority(e.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
           </div>
         </div>
@@ -369,7 +369,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
               Role Filter <span className="text-xs text-muted-foreground">(optional)</span>
               <HelpTooltip text="Restrict this assignment to devices with specific roles. Leave empty to apply to all roles." />
             </label>
-            <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-[2.5rem]">
+            <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
               {DEVICE_ROLES.map((role) => {
                 const isSelected = newRoleFilter.includes(role);
                 return (
@@ -399,7 +399,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
           </div>
           <div>
             <label className="text-sm font-medium">OS Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
-            <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-[2.5rem]">
+            <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
               {osFilterOptions.map((os) => {
                 const isSelected = newOsFilter.includes(os.value);
                 return (
@@ -442,7 +442,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
       </div>
 
       {/* Assignments List */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Current Assignments</h2>
         {assignmentsLoading ? (
           <div className="flex items-center justify-center py-8">

@@ -12,7 +12,7 @@ export default function RoleSelector({
   disabled
 }: RoleSelectorProps) {
   return (
-    <div className="space-y-3 rounded-lg border bg-card p-4 shadow-sm">
+    <div className="space-y-3 rounded-lg border bg-card p-4 shadow-xs">
       <div>
         <p className="text-xs uppercase tracking-wide text-muted-foreground">Current role</p>
         <p className="text-base font-semibold">{value}</p>
@@ -26,7 +26,7 @@ export default function RoleSelector({
           value={value}
           onChange={event => onChange(event.target.value)}
           disabled={disabled}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
         >
           {roles.map(role => (
             <option key={role} value={role}>

@@ -334,7 +334,7 @@ export default function UsersPage() {
       {/* Edit Modal */}
       {modalMode === 'edit' && selectedUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
             <div className="space-y-1">
               <h2 className="text-lg font-semibold">Edit User</h2>
               <p className="text-sm text-muted-foreground">
@@ -375,7 +375,7 @@ export default function UsersPage() {
                   id="edit-role"
                   name="roleId"
                   defaultValue={roles.find(r => r.name === selectedUser.role)?.id ?? ''}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {roles.map(role => (
                     <option key={role.id} value={role.id}>
@@ -409,7 +409,7 @@ export default function UsersPage() {
       {/* Remove Confirmation Modal */}
       {modalMode === 'remove' && selectedUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Remove User</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to remove <span className="font-medium">{selectedUser.name}</span> ({selectedUser.email})?

@@ -59,7 +59,7 @@ export default function CatalogEnrichButton({ hint, disabled, idSuffix, onApply 
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void run(); } }}
           data-testid={`catalog-enrich-input-${idSuffix}`}
-          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
         <button
           type="button"

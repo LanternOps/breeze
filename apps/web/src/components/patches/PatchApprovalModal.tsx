@@ -211,7 +211,7 @@ export default function PatchApprovalModal({
             value={notes}
             onChange={event => setNotes(event.target.value)}
             placeholder="Add context or a reason for the decision..."
-            className="mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="mt-2 h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             disabled={isSubmitting}
           />
         </div>
@@ -226,7 +226,7 @@ export default function PatchApprovalModal({
               type="datetime-local"
               value={deferUntil}
               onChange={(event) => setDeferUntil(event.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               disabled={isSubmitting}
             />
           </div>

@@ -91,7 +91,7 @@ export default function InstantBootStatus() {
         const StatusIcon = config.icon;
 
         return (
-          <div key={boot.id} className="rounded-lg border bg-card p-4 shadow-sm">
+          <div key={boot.id} className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <Monitor className="h-5 w-5 text-primary" />

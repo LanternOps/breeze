@@ -496,7 +496,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     id="installer-site"
                     value={selectedSiteId}
                     onChange={(e) => setSelectedSiteId(e.target.value)}
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {orgSites.map((site) => (
                       <option key={site.id} value={site.id}>
@@ -542,7 +542,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                     onChange={(e) => setDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))}
                     min={1}
                     max={1000}
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
                     How many devices will use this installer.
@@ -561,7 +561,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                       const n = Number(e.target.value);
                       if (Number.isFinite(n)) setTtlMinutes(n);
                     }}
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     data-testid="link-ttl"
                   >
                     <option value={60}>1 hour</option>
@@ -632,7 +632,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                         type="text"
                         readOnly
                         value={generatedLink}
-                        className="flex-1 h-9 rounded-md border bg-background px-3 text-xs font-mono focus:outline-none"
+                        className="flex-1 h-9 rounded-md border bg-background px-3 text-xs font-mono focus:outline-hidden"
                         onClick={(e) => (e.target as HTMLInputElement).select()}
                       />
                       <button
@@ -870,7 +870,7 @@ export default function AddDeviceModal({ isOpen, onClose }: AddDeviceModalProps)
                       <button
                         type="button"
                         onClick={() => handleCopyCommand(command)}
-                        className="flex-shrink-0 p-1 hover:bg-muted rounded"
+                        className="shrink-0 p-1 hover:bg-muted rounded"
                       >
                         <Copy className="h-4 w-4" />
                       </button>

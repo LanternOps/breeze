@@ -54,7 +54,7 @@ export default function MacOSPermissionsCard({ deviceId, tccPermissions: initial
   }, [hasMissing, fetchTcc]);
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center gap-2 mb-4">
         <ShieldCheck className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-sm font-semibold">macOS Permissions</h3>

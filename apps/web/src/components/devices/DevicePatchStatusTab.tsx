@@ -999,7 +999,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading patch status...</p>
@@ -1030,7 +1030,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       {/* ================================================================ */}
       {/* Patch Controls                                                   */}
       {/* ================================================================ */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h3 className="text-lg font-semibold">Patch Controls</h3>
@@ -1126,7 +1126,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       {/* ================================================================ */}
       {/* Patch Compliance                                                 */}
       {/* ================================================================ */}
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-lg font-semibold">Patch Compliance</h3>
@@ -1152,7 +1152,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         {/* ============================================================== */}
         {/* Pending Native OS Updates                                       */}
         {/* ============================================================== */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <NativeIcon className="h-4 w-4 text-gray-600" />
             <h3 className="text-sm font-semibold">{displayCopy.pendingNativeTitle}</h3>
@@ -1220,13 +1220,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   )}
                                   {/* Show KB inline badge only when there is no dedicated KB column */}
                                   {normalizedOsType !== 'windows' && kbLabel && (
-                                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground">
                                       {kbLabel}
                                     </span>
                                   )}
                                   {releaseLabel && <span>{releaseLabel}</span>}
                                   {patch.requiresReboot && (
-                                    <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+                                    <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
                                       Reboot required
                                     </span>
                                   )}
@@ -1237,7 +1237,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                           {normalizedOsType === 'windows' && (
                             <td className="px-4 py-3">
                               {kbLabel ? (
-                                <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                <span className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground">
                                   {kbLabel}
                                 </span>
                               ) : (
@@ -1247,7 +1247,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                           )}
                           <td className="px-4 py-3">
                             {srcBadge ? (
-                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${srcBadge.className}`}>
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 chart-legend-xs font-medium ${srcBadge.className}`}>
                                 {srcBadge.label}
                               </span>
                             ) : (
@@ -1302,7 +1302,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         {/* ============================================================== */}
         {/* Pending Third-Party Updates                                     */}
         {/* ============================================================== */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
             <h3 className="text-sm font-semibold">{displayCopy.pendingThirdPartyTitle}</h3>
@@ -1384,13 +1384,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                     </span>
                                   )}
                                   {kbLabel && (
-                                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                    <span className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground">
                                       {kbLabel}
                                     </span>
                                   )}
                                   {releaseLabel && <span>{releaseLabel}</span>}
                                   {patch.requiresReboot && (
-                                    <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+                                    <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
                                       Reboot required
                                     </span>
                                   )}
@@ -1405,7 +1405,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                           </td>
                           <td className="px-4 py-3">
                             {srcBadge ? (
-                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${srcBadge.className}`}>
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 chart-legend-xs font-medium ${srcBadge.className}`}>
                                 {srcBadge.label}
                               </span>
                             ) : (
@@ -1464,7 +1464,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         {/* ============================================================== */}
         {/* Installed Native OS Updates                                     */}
         {/* ============================================================== */}
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <NativeIcon className="h-4 w-4 text-gray-600" />
@@ -1499,7 +1499,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                           {normalizedOsType === 'windows' && (
                             <td className="px-4 py-3">
                               {kbLabel ? (
-                                <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground">
+                                <span className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground">
                                   {kbLabel}
                                 </span>
                               ) : (
@@ -1534,7 +1534,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       {/* Installed Third-Party Updates                                     */}
       {/* ================================================================ */}
       {installedThirdParty.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500" />
             <Package className="h-4 w-4 text-blue-500" />
@@ -1574,7 +1574,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                         </td>
                         <td className="px-4 py-3">
                           {srcBadge ? (
-                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${srcBadge.className}`}>
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 chart-legend-xs font-medium ${srcBadge.className}`}>
                               {srcBadge.label}
                             </span>
                           ) : (

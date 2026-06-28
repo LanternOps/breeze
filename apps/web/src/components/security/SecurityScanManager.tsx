@@ -222,7 +222,7 @@ export default function SecurityScanManager() {
         </div>
       )}
 
-      <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="space-y-1">
             <h3 className="text-base font-semibold">Start a Scan</h3>
@@ -234,14 +234,14 @@ export default function SecurityScanManager() {
             <button
               type="button"
               onClick={() => handleSelectMode('single')}
-              className={`rounded-md px-3 py-1 ${selectionMode === 'single' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+              className={`rounded-md px-3 py-1 ${selectionMode === 'single' ? 'bg-background shadow-xs' : 'text-muted-foreground'}`}
             >
               Single select
             </button>
             <button
               type="button"
               onClick={() => handleSelectMode('multi')}
-              className={`rounded-md px-3 py-1 ${selectionMode === 'multi' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+              className={`rounded-md px-3 py-1 ${selectionMode === 'multi' ? 'bg-background shadow-xs' : 'text-muted-foreground'}`}
             >
               Multi select
             </button>
@@ -285,7 +285,7 @@ export default function SecurityScanManager() {
                 <select
                   value={scanType}
                   onChange={(event) => setScanType(event.target.value as 'quick' | 'full' | 'custom')}
-                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="quick">Quick scan</option>
                   <option value="full">Full scan</option>
@@ -300,7 +300,7 @@ export default function SecurityScanManager() {
                     value={customPath}
                     onChange={(event) => setCustomPath(event.target.value)}
                     placeholder="C:\\Data\\"
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
               )}
@@ -346,7 +346,7 @@ export default function SecurityScanManager() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center justify-between">
             <h3 className="text-base font-semibold">Active scans</h3>
             <Activity className="h-5 w-5 text-muted-foreground" />
@@ -373,7 +373,7 @@ export default function SecurityScanManager() {
           </div>
         </div>
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center justify-between">
             <h3 className="text-base font-semibold">Scan history</h3>
             <HardDrive className="h-5 w-5 text-muted-foreground" />

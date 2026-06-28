@@ -212,7 +212,7 @@ export default function AlertRuleList({
   );
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Alert Rules</h2>
@@ -234,7 +234,7 @@ export default function AlertRuleList({
         <select
           value={templateFilter}
           onChange={event => setTemplateFilter(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
         >
           <option value="all">All templates</option>
           {templateOptions.map(template => (
@@ -246,7 +246,7 @@ export default function AlertRuleList({
         <select
           value={targetFilter}
           onChange={event => setTargetFilter(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
         >
           <option value="all">All targets</option>
           <option value="org">Org</option>
@@ -257,7 +257,7 @@ export default function AlertRuleList({
         <select
           value={statusFilter}
           onChange={event => setStatusFilter(event.target.value)}
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
         >
           <option value="all">All status</option>
           <option value="active">Active</option>

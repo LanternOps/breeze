@@ -348,7 +348,7 @@ export default function MssqlDashboard() {
         <label htmlFor="mssql-search" className="sr-only">Search instances</label>
         <input
           id="mssql-search"
-          className="w-full bg-transparent text-sm outline-none"
+          className="w-full bg-transparent text-sm outline-hidden"
           placeholder="Search by instance name, version, or edition..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -356,7 +356,7 @@ export default function MssqlDashboard() {
       </div>
 
       {/* Instance Table */}
-      <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+      <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <tr>
@@ -404,7 +404,7 @@ export default function MssqlDashboard() {
 
       {/* Backup Chains */}
       {chains.length > 0 && (
-        <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="rounded-lg border bg-card p-5 shadow-xs">
           <h3 className="mb-4 font-semibold">Backup Chains</h3>
           <div className="space-y-4">
             {chains.map((chain) => (

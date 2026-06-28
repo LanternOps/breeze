@@ -65,7 +65,7 @@ function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEdit
           onBlur={addTag}
           placeholder="Add tag…"
           maxLength={50}
-          className="rounded border bg-background px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          className="rounded border bg-background px-1.5 py-0.5 text-xs outline-hidden focus:ring-1 focus:ring-ring"
           aria-label="Add tag"
         />
       )}
@@ -598,7 +598,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             type="text"
             defaultValue={ticket.subject}
             key={ticket.subject}
-            className="min-w-0 flex-1 truncate bg-transparent text-base font-semibold outline-none hover:bg-muted/30 focus:bg-muted/30 focus:ring-1 focus:ring-ring rounded px-1 -mx-1"
+            className="min-w-0 flex-1 truncate bg-transparent text-base font-semibold outline-hidden hover:bg-muted/30 focus:bg-muted/30 focus:ring-1 focus:ring-ring rounded px-1 -mx-1"
             data-testid="ticket-workbench-subject-edit"
             aria-label="Ticket subject"
             onBlur={(e) => {

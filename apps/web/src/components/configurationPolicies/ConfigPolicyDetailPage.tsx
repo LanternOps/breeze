@@ -349,7 +349,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
       {/* Overview Tab */}
       {activeTab === 'overview' && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h2 className="text-lg font-semibold">Policy Details</h2>
           <div className="mt-4 grid gap-4">
             <div>
@@ -357,7 +357,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
               <input
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -365,7 +365,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
               <textarea
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
-                className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -373,7 +373,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
               <select
                 value={editStatus}
                 onChange={(e) => setEditStatus(e.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
               >
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>

@@ -141,7 +141,7 @@ export default function ConfigPolicyCreatePage() {
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         {/* Linked policy selector */}
         {mode === 'linked' && (
-          <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center gap-2">
               <LinkIcon className="h-5 w-5 text-primary" />
               <h2 className="text-lg font-semibold">Master Policy</h2>
@@ -159,7 +159,7 @@ export default function ConfigPolicyCreatePage() {
           </div>
         )}
 
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2">
             <Layers className="h-5 w-5 text-primary" />
             <h2 className="text-lg font-semibold">Policy Details</h2>
@@ -169,7 +169,7 @@ export default function ConfigPolicyCreatePage() {
               <label className="text-sm font-medium">Name</label>
               <input
                 {...register('name')}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 placeholder="e.g. Standard Workstation Policy"
               />
               {errors.name && (
@@ -180,7 +180,7 @@ export default function ConfigPolicyCreatePage() {
               <label className="text-sm font-medium">Description</label>
               <textarea
                 {...register('description')}
-                className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 placeholder="Optional description of what this policy configures"
               />
             </div>
@@ -188,7 +188,7 @@ export default function ConfigPolicyCreatePage() {
               <label className="text-sm font-medium">Status</label>
               <select
                 {...register('status')}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
               >
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>

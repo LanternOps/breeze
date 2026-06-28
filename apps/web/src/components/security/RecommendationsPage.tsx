@@ -198,17 +198,17 @@ export default function RecommendationsPage() {
           recs.map((rec) => {
             const isExpanded = expandedIds.has(rec.id);
             return (
-              <div key={rec.id} className="rounded-lg border bg-card p-4 shadow-sm">
+              <div key={rec.id} className="rounded-lg border bg-card p-4 shadow-xs">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase', priorityBadge[rec.priority])}>
+                      <span className={cn('inline-flex rounded-full border px-2 py-0.5 chart-legend-xs font-semibold uppercase', priorityBadge[rec.priority])}>
                         {rec.priority}
                       </span>
-                      <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold', statusBadge[rec.status])}>
+                      <span className={cn('inline-flex rounded-full border px-2 py-0.5 chart-legend-xs font-semibold', statusBadge[rec.status])}>
                         {rec.status}
                       </span>
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                      <span className="rounded-full bg-muted px-2 py-0.5 chart-legend-xs font-medium text-muted-foreground">
                         {categoryLabel[rec.category] ?? rec.category}
                       </span>
                     </div>

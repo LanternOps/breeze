@@ -103,7 +103,7 @@ export default function DeviceAlertHistory({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading alert history...</p>
@@ -128,7 +128,7 @@ export default function DeviceAlertHistory({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" />
@@ -142,7 +142,7 @@ export default function DeviceAlertHistory({
                 type="date"
                 value={startDateInput}
                 onChange={event => setStartDateInput(event.target.value)}
-                className="h-9 rounded-md border bg-background pl-8 pr-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 rounded-md border bg-background pl-8 pr-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <span className="text-xs text-muted-foreground">to</span>
@@ -152,7 +152,7 @@ export default function DeviceAlertHistory({
                 type="date"
                 value={endDateInput}
                 onChange={event => setEndDateInput(event.target.value)}
-                className="h-9 rounded-md border bg-background pl-8 pr-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="h-9 rounded-md border bg-background pl-8 pr-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <button

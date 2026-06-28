@@ -96,7 +96,7 @@ export default function AccessReviewList({
   }, [query, reviews, statusFilter]);
 
   return (
-    <div className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
+    <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Access Reviews</h2>
@@ -124,13 +124,13 @@ export default function AccessReviewList({
             placeholder="Search by name or description"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as AccessReviewStatus | 'all')}
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <option value="all">All Statuses</option>
           <option value="pending">Pending</option>

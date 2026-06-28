@@ -186,7 +186,7 @@ export default function MFAVerifyForm({
                   autoFocus={index === 0}
                   inputMode="numeric"
                   autoComplete={index === 0 ? 'one-time-code' : 'off'}
-                  className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-11 w-11 rounded-md border bg-background text-center text-lg tracking-widest focus:outline-hidden focus:ring-2 focus:ring-ring"
                   maxLength={1}
                   value={digit}
                   onChange={event => handleChange(index, event.target.value)}

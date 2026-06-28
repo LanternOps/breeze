@@ -351,7 +351,7 @@ export default function SsoProvidersPage() {
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedProvider && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete SSO Provider</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete <span className="font-medium">{selectedProvider.name}</span>?
@@ -391,7 +391,7 @@ export default function SsoProvidersPage() {
       {/* Test Result Modal */}
       {modalMode === 'test' && selectedProvider && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Connection Test Result</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Testing <span className="font-medium">{selectedProvider.name}</span>
@@ -402,7 +402,7 @@ export default function SsoProvidersPage() {
                 <div className="space-y-4">
                   <div className="flex items-center gap-3 rounded-md border border-green-200 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950">
                     <svg
-                      className="h-6 w-6 flex-shrink-0 text-green-600 dark:text-green-400"
+                      className="h-6 w-6 shrink-0 text-green-600 dark:text-green-400"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -439,7 +439,7 @@ export default function SsoProvidersPage() {
               ) : (
                 <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-4">
                   <svg
-                    className="h-6 w-6 flex-shrink-0 text-destructive"
+                    className="h-6 w-6 shrink-0 text-destructive"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"

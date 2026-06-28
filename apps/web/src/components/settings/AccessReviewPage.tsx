@@ -553,7 +553,7 @@ export default function AccessReviewPage() {
         onViewReview={handleViewReview}
       />
 
-      <div className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
         <div>
           <h2 className="text-lg font-semibold">Review History</h2>
           <p className="text-sm text-muted-foreground">
@@ -639,7 +639,7 @@ export default function AccessReviewPage() {
       {/* Review Detail Modal */}
       {modalMode === 'review' && selectedReview && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-background/80 px-4 py-8 overflow-y-auto">
-          <div className="w-full max-w-5xl rounded-lg border bg-card p-6 shadow-sm my-8">
+          <div className="w-full max-w-5xl rounded-lg border bg-card p-6 shadow-xs my-8">
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-1">
                 <h2 className="text-lg font-semibold">{selectedReview.name}</h2>
@@ -747,7 +747,7 @@ export default function AccessReviewPage() {
                   id="decision-filter"
                   value={decisionFilter}
                   onChange={(event) => setDecisionFilter(event.target.value as AccessReviewDecision | 'all')}
-                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="all">All decisions</option>
                   <option value="pending">Pending</option>
@@ -768,7 +768,7 @@ export default function AccessReviewPage() {
                     value={bulkReason}
                     onChange={(event) => setBulkReason(event.target.value)}
                     placeholder="Reason for bulk action (optional)"
-                    className="h-10 flex-1 min-w-[220px] rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-10 flex-1 min-w-[220px] rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <button
                     type="button"
@@ -905,7 +905,7 @@ export default function AccessReviewPage() {
                                 setItemNotes((prev) => ({ ...prev, [item.id]: event.target.value }))
                               }
                               placeholder="Reason (optional)"
-                              className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                              className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                             />
                           )}
                         </td>

@@ -51,7 +51,7 @@ function RequestForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
@@ -62,7 +62,7 @@ function RequestForm({
           type="email"
           autoComplete="email"
           placeholder="you@company.com"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
         {errors.email && (
@@ -116,7 +116,7 @@ function ConfirmForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div className="space-y-2">
         <label htmlFor="code" className="text-sm font-medium">
@@ -128,7 +128,7 @@ function ConfirmForm({
           inputMode="numeric"
           autoComplete="one-time-code"
           placeholder="123456"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('code')}
         />
         {errors.code && (
@@ -144,7 +144,7 @@ function ConfirmForm({
           type="password"
           autoComplete="new-password"
           placeholder="Enter a new password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
         />
         {errors.password && (
@@ -160,7 +160,7 @@ function ConfirmForm({
           type="password"
           autoComplete="new-password"
           placeholder="Re-enter your new password"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('confirmPassword')}
         />
         {errors.confirmPassword && (

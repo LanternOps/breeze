@@ -336,7 +336,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
               </a>
             </div>
           ) : (
-            <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+            <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
               <table className="w-full">
                 <thead className="bg-muted/40">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -449,7 +449,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
               </p>
             </div>
           ) : (
-            <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+            <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
               <table className="w-full">
                 <thead className="bg-muted/40">
                   <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">

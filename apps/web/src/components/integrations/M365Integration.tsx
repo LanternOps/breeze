@@ -199,7 +199,7 @@ export default function M365Integration() {
       )}
 
       {/* Connection card */}
-      <div className="rounded-xl border bg-card p-6 shadow-sm">
+      <div className="rounded-xl border bg-card p-6 shadow-xs">
         <h2 className="text-lg font-semibold">Connection</h2>
         <p className="mb-4 text-sm text-muted-foreground">
           Enter the tenant id, app (client) id, and a client secret from your Entra app registration.
@@ -243,7 +243,7 @@ export default function M365Integration() {
               value={tenantId}
               onChange={(e) => setTenantId(e.target.value)}
               placeholder="contoso.onmicrosoft.com or tenant GUID"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
             />
           </div>
 
@@ -254,7 +254,7 @@ export default function M365Integration() {
               value={clientId}
               onChange={(e) => setClientId(e.target.value)}
               placeholder="application (client) id"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
             />
           </div>
 
@@ -271,7 +271,7 @@ export default function M365Integration() {
                 value={clientSecret}
                 onChange={(e) => setClientSecret(e.target.value)}
                 placeholder={isConnected ? '•••••••••• (stored, encrypted)' : 'app client secret'}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               />
               <button
                 type="button"
@@ -325,7 +325,7 @@ export default function M365Integration() {
 
       {/* Status card */}
       {isConnected && (
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="rounded-xl border bg-card p-6 shadow-xs">
           <h2 className="text-lg font-semibold">Connection details</h2>
           <div className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between text-muted-foreground">

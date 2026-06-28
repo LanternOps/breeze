@@ -342,7 +342,7 @@ export default function PatchList({
   );
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-sm">
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Patches</h2>
@@ -361,7 +361,7 @@ export default function PatchList({
                 setQuery(event.target.value);
                 setCurrentPage(1);
               }}
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
           <select
@@ -370,7 +370,7 @@ export default function PatchList({
               setSeverityFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Severities</option>
             <option value="critical">Critical</option>
@@ -384,7 +384,7 @@ export default function PatchList({
               setStatusFilter(event.target.value);
               setCurrentPage(1);
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-36"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"
           >
             <option value="all">All Status</option>
             <option value="pending">Pending</option>
@@ -417,7 +417,7 @@ export default function PatchList({
                   setSourceFilter(event.target.value);
                   setCurrentPage(1);
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-40"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-40"
               >
                 <option value="all">All Sources</option>
                 {availableSources.map(source => (
@@ -432,7 +432,7 @@ export default function PatchList({
                   setOsFilter(event.target.value);
                   setCurrentPage(1);
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring sm:w-32"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
               >
                 <option value="all">All OS</option>
                 {availableOs.map(os => (
@@ -689,7 +689,7 @@ export default function PatchList({
                 setPageSize(Number(event.target.value));
                 setCurrentPage(1);
               }}
-              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
               {PAGE_SIZE_OPTIONS.map(size => (
                 <option key={size} value={size}>

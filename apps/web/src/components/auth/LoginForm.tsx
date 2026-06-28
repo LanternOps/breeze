@@ -60,7 +60,7 @@ export default function LoginForm({
           autoComplete="email"
           placeholder="you@company.com"
           data-testid="login-email-input"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
         {errors.email && (
@@ -83,7 +83,7 @@ export default function LoginForm({
           autoComplete="current-password"
           placeholder="Enter your password"
           data-testid="login-password-input"
-          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
         />
         {errors.password && (

@@ -379,7 +379,7 @@ function BlockOrgWideDialog({
             onChange={(e) => onChange(e.target.value)}
             maxLength={500}
             placeholder="Vendor risk review, suspected compromise, policy change…"
-            className="w-full rounded-md border bg-background p-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full rounded-md border bg-background p-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             required
           />
         </div>

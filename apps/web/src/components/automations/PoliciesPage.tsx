@@ -196,7 +196,7 @@ export default function PoliciesPage() {
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedPolicy && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-sm">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">Delete Policy</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Are you sure you want to delete <span className="font-medium">{selectedPolicy.name}</span>?

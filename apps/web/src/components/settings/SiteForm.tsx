@@ -90,7 +90,7 @@ export default function SiteForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <p className="text-sm text-muted-foreground">
         Only the site name is required. Address and contact are optional — you can fill these in later.
@@ -103,7 +103,7 @@ export default function SiteForm({
           <input
             id="site-name"
             placeholder="Headquarters"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
           {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
@@ -115,7 +115,7 @@ export default function SiteForm({
           </label>
           <select
             id="site-timezone"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('timezone')}
           >
             {zones.map(zone => (
@@ -136,7 +136,7 @@ export default function SiteForm({
           <input
             id="address-line-1"
             placeholder="123 Market Street"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('addressLine1')}
           />
           {errors.addressLine1 && (
@@ -151,7 +151,7 @@ export default function SiteForm({
           <input
             id="address-line-2"
             placeholder="Suite 500"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('addressLine2')}
           />
         </div>
@@ -163,7 +163,7 @@ export default function SiteForm({
           <input
             id="city"
             placeholder="San Francisco"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('city')}
           />
           {errors.city && <p className="text-sm text-destructive">{errors.city.message}</p>}
@@ -176,7 +176,7 @@ export default function SiteForm({
           <input
             id="state"
             placeholder="CA"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('state')}
           />
           {errors.state && <p className="text-sm text-destructive">{errors.state.message}</p>}
@@ -189,7 +189,7 @@ export default function SiteForm({
           <input
             id="postal-code"
             placeholder="94107"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('postalCode')}
           />
           {errors.postalCode && (
@@ -204,7 +204,7 @@ export default function SiteForm({
           <input
             id="country"
             placeholder="United States"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('country')}
           />
           {errors.country && (
@@ -223,7 +223,7 @@ export default function SiteForm({
             <input
               id="contact-name"
               placeholder="Alex Morgan"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('contactName')}
             />
             {errors.contactName && (
@@ -239,7 +239,7 @@ export default function SiteForm({
               id="contact-email"
               type="email"
               placeholder="alex@company.com"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('contactEmail')}
             />
             {errors.contactEmail && (
@@ -254,7 +254,7 @@ export default function SiteForm({
             <input
               id="contact-phone"
               placeholder="+1 (555) 123-4567"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('contactPhone')}
             />
             {errors.contactPhone && (
