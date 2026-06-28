@@ -74,6 +74,7 @@ vi.mock('../services/networkBaseline', () => ({
 
 import { db } from '../db';
 import { buildApprovalDecision } from '../services/assetApproval';
+import type { DiscoveredHostResult } from './discoveryWorker';
 
 const { cleanupSpeculativeTopologyLinks, processResults } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
 
@@ -101,7 +102,7 @@ describe('processResults — type_source', () => {
   let selectCallIndex: number;
 
   // Minimal host payload that exercises the asset upsert path
-  const makeData = (hosts: unknown[]) => ({
+  const makeData = (hosts: DiscoveredHostResult[]) => ({
     type: 'process-results' as const,
     jobId: 'job-1',
     orgId: 'org-1',
