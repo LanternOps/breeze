@@ -789,6 +789,14 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           setSelectedAsset(prev => (prev ? { ...prev, linkedDeviceId: deviceId } : prev));
           await fetchAssets();
         }}
+        onUnlinked={async (assetId) => {
+          // Reflect the cleared link in place (keep the modal open, mirroring
+          // onLinked) so the panel updates without a reopen, then refresh.
+          setSelectedAsset(prev =>
+            prev && prev.id === assetId ? { ...prev, linkedDeviceId: null, linkSource: null } : prev
+          );
+          await fetchAssets();
+        }}
         onDeleted={async () => {
           setSelectedAsset(null);
           await fetchAssets();

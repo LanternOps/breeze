@@ -39,6 +39,7 @@ type AssetDetailModalProps = {
   devices?: { id: string; name: string; online?: boolean }[];
   onClose: () => void;
   onLinked?: (assetId: string, deviceId: string) => void;
+  onUnlinked?: (assetId: string) => void;
   onDeleted?: (assetId: string) => void;
   onUpdated?: (assetId: string) => void;
 };
@@ -50,6 +51,7 @@ export default function AssetDetailModal({
   devices = [],
   onClose,
   onLinked,
+  onUnlinked,
   onDeleted,
   onUpdated
 }: AssetDetailModalProps) {
@@ -141,6 +143,36 @@ export default function AssetDetailModal({
           : 'Asset linked. It is now marked approved.'
       );
       onLinked?.(asset.id, selectedDevice);
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  // Only manually-created links may be removed; auto-linked assets keep their
+  // MAC/IP match. Mirrors handleLink's inline success/error messaging.
+  const handleUnlink = async () => {
+    if (!asset?.linkedDeviceId) return;
+    if (typeof window !== 'undefined' && !window.confirm('Unlink this device?')) {
+      return;
+    }
+
+    try {
+      setLinking(true);
+      setLinkError(undefined);
+      setLinkSuccess(undefined);
+      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/link`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to unlink asset');
+      }
+
+      setSelectedDevice('');
+      setLinkSuccess('Device unlinked.');
+      onUnlinked?.(asset.id);
     } catch (err) {
       setLinkError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -493,6 +525,17 @@ export default function AssetDetailModal({
                 >
                   {linking ? 'Linking...' : 'Link asset'}
                 </button>
+                {asset.linkedDeviceId && asset.linkSource === 'manual' && (
+                  <button
+                    type="button"
+                    data-testid="asset-modal-unlink"
+                    onClick={handleUnlink}
+                    disabled={linking}
+                    className="h-9 rounded-md border border-destructive/40 px-4 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {linking ? 'Working...' : 'Unlink'}
+                  </button>
+                )}
               </div>
               {linkSuccess && (
                 <div className="mt-3 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">

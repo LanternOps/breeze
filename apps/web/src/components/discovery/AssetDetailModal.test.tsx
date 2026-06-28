@@ -121,6 +121,56 @@ describe('AssetDetailModal — link to managed device', () => {
   });
 });
 
+describe('AssetDetailModal — unlink (manual links only)', () => {
+  const manualLinked: AssetDetail = { ...asset, linkedDeviceId: 'dev-1', linkSource: 'manual' };
+  const autoLinked: AssetDetail = { ...asset, linkedDeviceId: 'dev-1', linkSource: 'auto' };
+
+  it('shows Unlink only for a manually linked asset', () => {
+    const { rerender } = render(
+      <AssetDetailModal open asset={manualLinked} devices={devices} onClose={() => {}} />
+    );
+    expect(screen.getByTestId('asset-modal-unlink')).toBeInTheDocument();
+
+    rerender(<AssetDetailModal open asset={autoLinked} devices={devices} onClose={() => {}} />);
+    expect(screen.queryByTestId('asset-modal-unlink')).not.toBeInTheDocument();
+
+    rerender(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
+    expect(screen.queryByTestId('asset-modal-unlink')).not.toBeInTheDocument();
+  });
+
+  it('DELETEs the link and calls onUnlinked when confirmed', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onUnlinked = vi.fn();
+    render(
+      <AssetDetailModal open asset={manualLinked} devices={devices} onClose={() => {}} onUnlinked={onUnlinked} />
+    );
+
+    fireEvent.click(screen.getByTestId('asset-modal-unlink'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/discovery/assets/asset-1/link',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+    expect(onUnlinked).toHaveBeenCalledWith('asset-1');
+    await screen.findByText('Device unlinked.');
+    confirmSpy.mockRestore();
+  });
+
+  it('does not DELETE when the confirm dialog is dismissed', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<AssetDetailModal open asset={manualLinked} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('asset-modal-unlink'));
+
+    expect(
+      fetchMock.mock.calls.some(c => c[0] === '/discovery/assets/asset-1/link' && (c[1] as RequestInit)?.method === 'DELETE')
+    ).toBe(false);
+    confirmSpy.mockRestore();
+  });
+});
+
 describe('AssetDetailModal — proxy bridge agent (decoupled from link)', () => {
   const proxyAsset: AssetDetail = {
     ...asset,
