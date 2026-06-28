@@ -42,3 +42,16 @@ describe('DiscoveredAssetList transforms — snmpData seam (#1731)', () => {
     expect(detail.snmpData).toEqual({});
   });
 });
+
+it('mapAsset carries typeSource and detectedType through', () => {
+  const mapped = mapAsset({
+    id: 'a1', assetType: 'router', typeSource: 'manual', detectedAssetType: 'workstation'
+  } as any);
+  expect(mapped.typeSource).toBe('manual');
+  expect(mapped.detectedType).toBe('workstation');
+});
+
+it('mapAsset defaults typeSource to auto when absent', () => {
+  const mapped = mapAsset({ id: 'a2', assetType: 'server' } as any);
+  expect(mapped.typeSource).toBe('auto');
+});

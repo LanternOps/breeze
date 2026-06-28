@@ -21,6 +21,8 @@ export type DiscoveredAssetType =
   | 'nas'
   | 'unknown';
 
+export type DiscoveredAssetTypeSource = 'manual' | 'auto';
+
 export type OpenPortEntry = { port: number; service: string };
 
 export type DiscoveredAsset = {
@@ -40,6 +42,8 @@ export type DiscoveredAsset = {
   responseTimeMs?: number | null;
   linkedDeviceId?: string | null;
   linkSource?: DiscoveredAssetLinkSource | null;
+  typeSource?: DiscoveredAssetTypeSource | null;
+  detectedType?: DiscoveredAssetType | null;
   linkedDeviceName?: string;
   monitoringEnabled?: boolean;
   discoveryMethods?: string[];
@@ -66,6 +70,8 @@ export type ApiDiscoveryAsset = {
   responseTimeMs?: number | null;
   linkedDeviceId?: string | null;
   linkSource?: DiscoveredAssetLinkSource | null;
+  typeSource?: DiscoveredAssetTypeSource | null;
+  detectedAssetType?: string | null;
   linkedDeviceName?: string | null;
   monitoringEnabled?: boolean;
   discoveryMethods?: string[] | null;
@@ -163,6 +169,10 @@ export function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     responseTimeMs: asset.responseTimeMs ?? null,
     linkedDeviceId: asset.linkedDeviceId,
     linkSource: parseDiscoveredAssetLinkSource(asset.linkSource),
+    typeSource: asset.typeSource ?? 'auto',
+    detectedType: asset.detectedAssetType
+      ? (assetTypeMap[asset.detectedAssetType.toLowerCase()] ?? 'unknown')
+      : null,
     linkedDeviceName: asset.linkedDeviceName ?? undefined,
     monitoringEnabled: asset.monitoringEnabled ?? false,
     discoveryMethods: asset.discoveryMethods ?? undefined,
