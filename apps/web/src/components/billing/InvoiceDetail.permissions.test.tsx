@@ -36,7 +36,7 @@ const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 const lines: InvoiceDetailData['lines'] = [
   {
     id: 'l1', invoiceId: 'inv-1', sourceType: 'catalog', parentLineId: null, catalogItemId: 'c1',
-    description: 'Widget', quantity: '1.00', unitPrice: '120.00', costBasis: '80.00', revenueAllocation: '120.00',
+    name: null, description: 'Widget', quantity: '1.00', unitPrice: '120.00', costBasis: '80.00', revenueAllocation: '120.00',
     taxable: true, customerVisible: true, lineTotal: '120.00', isUnapprovedTime: false, sortOrder: 0,
   },
 ];

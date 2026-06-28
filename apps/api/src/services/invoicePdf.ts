@@ -66,6 +66,15 @@ function lineTax(lineTotal: string | number | null | undefined, taxable: boolean
   return Math.round(cents * rate) / 100;
 }
 
+// Title falls back to description for legacy lines created before the
+// name/description split; the blurb only renders when a distinct name exists.
+function lineTitle(l: { name: string | null; description: string | null }): string {
+  return (l.name ?? l.description ?? '').trim() || '—';
+}
+function lineBlurb(l: { name: string | null; description: string | null }): string {
+  return l.name ? (l.description ?? '').trim() : '';
+}
+
 interface BillToAddress {
   line1?: string | null; line2?: string | null; city?: string | null;
   region?: string | null; postalCode?: string | null; country?: string | null;
@@ -127,7 +136,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
         : '';
       return `
       <tr>
-        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(l.description)}</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(lineTitle(l))}${lineBlurb(l) ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(lineBlurb(l))}</div>` : ''}</td>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(l.quantity)))}</td>
         ${taxCell}
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency))}</td>
@@ -289,9 +298,17 @@ export function renderInvoicePdfBuffer(invoice: InvoiceRow, lines: InvoiceLineRo
         for (const l of group.lines) {
           if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
           doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
-          const descHeight = doc.heightOfString(l.description, { width: colDescW });
-          doc.text(l.description, left, y, { width: colDescW });
-          doc.text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
+          const title = lineTitle(l);
+          const blurb = lineBlurb(l);
+          const titleHeight = doc.heightOfString(title, { width: colDescW });
+          const blurbHeight = blurb ? doc.heightOfString(blurb, { width: colDescW }) + 2 : 0;
+          const descHeight = titleHeight + blurbHeight;
+          doc.font('Helvetica-Bold').text(title, left, y, { width: colDescW });
+          if (blurb) {
+            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, left, y + titleHeight + 2, { width: colDescW });
+            doc.fillColor('#1f2937').fontSize(10);
+          }
+          doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
           if (showTax) {
             const t = lineTax(l.lineTotal, l.taxable, taxRate);
             doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), colTaxX, y, { width: colNumW, align: 'right' });

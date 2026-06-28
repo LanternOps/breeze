@@ -17,6 +17,8 @@ import {
   formatDate,
   formatMoney,
   lineTaxAmount,
+  lineTitle,
+  lineBlurb,
   pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
@@ -280,8 +282,11 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     className={`border-t ${l.parentLineId ? 'bg-muted/20 text-xs text-muted-foreground' : ''}`}
                   >
                     <td className={`px-3 py-2 ${l.parentLineId ? 'pl-8' : ''}`}>
-                      {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{l.description}
+                      <span className={l.parentLineId ? '' : 'font-medium text-foreground'}>
+                        {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
+                      </span>
                       {accountingView && !l.customerVisible ? ' (hidden)' : ''}
+                      {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>
                     <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>

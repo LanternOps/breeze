@@ -66,7 +66,8 @@ export interface InvoiceLine {
   sourceType: InvoiceLineSourceType;
   parentLineId: string | null;
   catalogItemId: string | null;
-  description: string;
+  name: string | null;
+  description: string | null;
   quantity: string;
   unitPrice: string;
   costBasis: string | null;
@@ -76,6 +77,16 @@ export interface InvoiceLine {
   lineTotal: string;
   isUnapprovedTime: boolean;
   sortOrder: number;
+}
+
+// A line's title falls back to its description for legacy lines created before
+// the name/description split; the blurb only renders when a distinct name exists.
+export function lineTitle(l: { name: string | null; description: string | null }): string {
+  return (l.name ?? l.description ?? '').trim();
+}
+export function lineBlurb(l: { name: string | null; description: string | null }): string | null {
+  const b = l.name ? (l.description ?? '').trim() : '';
+  return b || null;
 }
 
 export interface InvoiceDetail {

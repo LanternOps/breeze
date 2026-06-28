@@ -20,6 +20,24 @@ describe('quote validators', () => {
     expect(line.recurrence).toBe('monthly');
   });
 
+  it('accepts a line with only a name (no description)', () => {
+    const line = quoteLineInputSchema.parse({
+      sourceType: 'manual', name: 'Onsite setup', quantity: 1, unitPrice: 250, taxable: false,
+    });
+    expect(line.name).toBe('Onsite setup');
+    expect(line.description ?? null).toBeNull();
+  });
+
+  it('rejects a line with neither a name nor a description', () => {
+    expect(quoteLineInputSchema.safeParse({
+      sourceType: 'manual', quantity: 1, unitPrice: 10, taxable: false,
+    }).success).toBe(false);
+    // blank/whitespace-only also fails the refine
+    expect(quoteLineInputSchema.safeParse({
+      sourceType: 'manual', name: '   ', description: '', quantity: 1, unitPrice: 10, taxable: false,
+    }).success).toBe(false);
+  });
+
   it('rejects a heading block with no text', () => {
     expect(() => quoteBlockInputSchema.parse({ blockType: 'heading', content: {} })).toThrow();
   });

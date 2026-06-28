@@ -262,7 +262,8 @@ export async function addManualLine(quoteId: string, input: QuoteLineInput, acto
     blockId: input.blockId ?? null,
     sourceType: input.sourceType,
     catalogItemId: input.catalogItemId ?? null,
-    description: input.description,
+    name: input.name ?? null,
+    description: input.description ?? null,
     quantity,
     unitPrice,
     taxable: input.taxable,
@@ -317,7 +318,9 @@ export async function addCatalogLine(
     blockId: blockId ?? null,
     sourceType: 'catalog',
     catalogItemId,
-    description: item.name,
+    // Mirror the catalog item: its name is the line title, its description the blurb.
+    name: item.name,
+    description: item.description ?? null,
     quantity: qty,
     unitPrice: item.unitPrice,
     taxable: item.taxable,
@@ -336,7 +339,7 @@ export async function updateLine(
   quoteId: string,
   lineId: string,
   input: {
-    description?: string; quantity?: number; unitPrice?: number;
+    name?: string | null; description?: string | null; quantity?: number; unitPrice?: number;
     taxable?: boolean; customerVisible?: boolean;
     recurrence?: 'one_time' | 'monthly' | 'annual';
     termMonths?: number | null; sortOrder?: number;
@@ -350,7 +353,10 @@ export async function updateLine(
   const quantity = input.quantity != null ? String(input.quantity) : existing.quantity;
   const unitPrice = input.unitPrice != null ? Number(input.unitPrice).toFixed(2) : existing.unitPrice;
   const set: Record<string, unknown> = {
-    description: input.description ?? existing.description,
+    // name/description are independently patchable; undefined leaves them as-is,
+    // an explicit null clears them (the refine on the route schema keeps ≥1 set).
+    name: input.name !== undefined ? input.name : existing.name,
+    description: input.description !== undefined ? input.description : existing.description,
     quantity,
     unitPrice,
     taxable: input.taxable ?? existing.taxable,

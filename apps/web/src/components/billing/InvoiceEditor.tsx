@@ -10,6 +10,8 @@ import {
   type InvoiceDetail,
   type InvoiceLine,
   formatMoney,
+  lineTitle,
+  lineBlurb,
 } from './invoiceTypes';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -44,6 +46,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
 
   // Add-line form
   const [addMode, setAddMode] = useState<AddMode>('catalog');
+  const [manualName, setManualName] = useState('');
   const [manualDesc, setManualDesc] = useState('');
   const [manualQty, setManualQty] = useState('1');
   const [manualPrice, setManualPrice] = useState('0.00');
@@ -85,12 +88,14 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
     setBusy(true);
     try {
       if (addMode === 'manual') {
-        if (!manualDesc.trim()) return;
+        // A line needs at least a title (name) or a description (mirrors the API refine).
+        if (!manualName.trim() && !manualDesc.trim()) return;
         await runAction({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/lines`, {
             method: 'POST',
             body: JSON.stringify({
-              description: manualDesc.trim(),
+              name: manualName.trim() || null,
+              description: manualDesc.trim() || null,
               quantity: Number(manualQty),
               unitPrice: Number(manualPrice),
               taxable: manualTaxable,
@@ -100,7 +105,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           successMessage: 'Line added',
           onUnauthorized: UNAUTHORIZED,
         });
-        setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
+        setManualName(''); setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
       } else {
         if (!picked) return;
         const path = picked.isBundle
@@ -123,7 +128,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, addMode, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh]);
+  }, [busy, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh]);
 
   const patchLine = useCallback(async (lineId: string, patch: Record<string, unknown>) => {
     if (busy) return;
@@ -316,9 +321,16 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               ))}
             </div>
             {addMode === 'manual' ? (
+              <div className="space-y-2">
+              <input
+                type="text" placeholder="Name" aria-label="Line name" value={manualName}
+                onChange={(e) => setManualName(e.target.value)}
+                data-testid="invoice-manual-name"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              />
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_80px_100px_auto_auto]">
                 <input
-                  type="text" placeholder="Description" aria-label="Line description" value={manualDesc}
+                  type="text" placeholder="Description (optional)" aria-label="Line description" value={manualDesc}
                   onChange={(e) => setManualDesc(e.target.value)}
                   data-testid="invoice-manual-desc"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -340,12 +352,13 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   Taxable
                 </label>
                 <button
-                  type="button" onClick={() => void addLine()} disabled={busy || !manualDesc.trim()}
+                  type="button" onClick={() => void addLine()} disabled={busy || (!manualName.trim() && !manualDesc.trim())}
                   data-testid="invoice-add-line-submit"
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
                   Add
                 </button>
+              </div>
               </div>
             ) : picked ? (
               <div className="flex flex-wrap items-center gap-2" data-testid="invoice-catalog-picked">
@@ -507,7 +520,10 @@ function LineRow({
   return (
     <>
       <tr className="border-t" data-testid={`invoice-line-${line.id}`}>
-        <td className="px-3 py-2">{line.description}</td>
+        <td className="px-3 py-2">
+          <div className="font-medium text-foreground">{lineTitle(line)}</div>
+          {lineBlurb(line) && <div className="text-xs text-muted-foreground">{lineBlurb(line)}</div>}
+        </td>
         <td className="px-3 py-2 text-right">
           <input
             type="number" min="0" step="0.01" value={qty} disabled={editDisabled}
@@ -555,7 +571,7 @@ function LineRow({
       </tr>
       {children.map((ch) => (
         <tr key={ch.id} className="border-t bg-muted/20 text-xs text-muted-foreground" data-testid={`invoice-line-child-${ch.id}`}>
-          <td className="px-3 py-1.5 pl-8"><span aria-hidden="true">↳ </span>{ch.description}{!ch.customerVisible ? ' (hidden)' : ''}</td>
+          <td className="px-3 py-1.5 pl-8"><span aria-hidden="true">↳ </span>{lineTitle(ch)}{!ch.customerVisible ? ' (hidden)' : ''}</td>
           <td className="px-3 py-1.5 text-right">{ch.quantity}</td>
           <td className="px-3 py-1.5 text-right">{formatMoney(ch.unitPrice, currency)}</td>
           <td colSpan={4} />

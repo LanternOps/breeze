@@ -22,6 +22,11 @@ describe('manualLineSchema', () => {
     expect(manualLineSchema.safeParse({ description: 'x', quantity: -1, unitPrice: 1, taxable: false }).success).toBe(false);
     expect(manualLineSchema.safeParse({ description: 'x', quantity: 1, unitPrice: 1.005, taxable: false }).success).toBe(false);
   });
+  it('accepts a name-only line and rejects one with neither name nor description', () => {
+    expect(manualLineSchema.safeParse({ name: 'Managed Firewall', quantity: 1, unitPrice: 85, taxable: true }).success).toBe(true);
+    expect(manualLineSchema.safeParse({ quantity: 1, unitPrice: 10, taxable: false }).success).toBe(false);
+    expect(manualLineSchema.safeParse({ name: '  ', description: '', quantity: 1, unitPrice: 10, taxable: false }).success).toBe(false);
+  });
 });
 
 describe('recordPaymentSchema', () => {

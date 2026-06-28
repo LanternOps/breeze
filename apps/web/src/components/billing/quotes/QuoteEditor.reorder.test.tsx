@@ -55,7 +55,7 @@ const headingBlock: QuoteDetailData['blocks'][number] = {
 
 const mkLine = (id: string, sortOrder: number): QuoteDetailData['lines'][number] => ({
   id, quoteId: 'q-1', blockId: 'blk-1', orgId: 'org-1', sourceType: 'manual',
-  catalogItemId: null, parentLineId: null, description: `Line ${id}`, quantity: '1.00',
+  catalogItemId: null, parentLineId: null, name: null, description: `Line ${id}`, quantity: '1.00',
   unitPrice: '50.00', taxable: false, customerVisible: true, lineTotal: '50.00',
   recurrence: 'monthly', termMonths: null, billingFrequency: null, sortOrder,
   createdAt: '2026-06-01T00:00:00Z',

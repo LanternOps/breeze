@@ -14,6 +14,7 @@ function line(over: Partial<QuoteLineForContract>): QuoteLineForContract {
   return {
     recurrence: 'monthly',
     customerVisible: true,
+    name: null,
     description: 'Managed endpoint',
     unitPrice: '99.00',
     quantity: '1',
@@ -85,6 +86,24 @@ describe('buildContractSpecsFromQuote', () => {
     expect(c.lines.map((l) => l.sortOrder)).toEqual([0, 1]);
     expect(c.lines[0]!.manualQuantity).toBe('25');
     expect(c.lines[0]!.unitPrice).toBe('10.00');
+  });
+
+  it('combines a line name and description into the single contract-line label', () => {
+    const specs = buildContractSpecsFromQuote(
+      quote,
+      [
+        line({ recurrence: 'monthly', name: 'Managed EDR', description: 'CrowdStrike Falcon, per seat' }),
+        line({ recurrence: 'monthly', name: 'Backup', description: null }),
+        line({ recurrence: 'monthly', name: null, description: 'Legacy line' }),
+      ],
+      '2026-06-21',
+      'user-1',
+    );
+    expect(specs[0]!.lines.map((l) => l.description)).toEqual([
+      'Managed EDR — CrowdStrike Falcon, per seat',
+      'Backup',
+      'Legacy line',
+    ]);
   });
 
   it('produces two contracts when both monthly and annual lines exist', () => {

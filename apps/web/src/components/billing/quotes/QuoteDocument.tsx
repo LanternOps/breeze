@@ -13,6 +13,8 @@ import {
   formatDate,
   formatMoney,
   lineTaxAmount,
+  lineTitle,
+  lineBlurb,
   pctFromFraction,
   sellerLines,
 } from './quoteTypes';
@@ -124,11 +126,14 @@ function PricingTable({ lines, currency, label, taxRate, showTax }: { lines: Quo
               return (
                 <tr key={l.id} className="border-b align-top last:border-0">
                   <td className="px-4 py-3 text-foreground sm:px-5">
-                    <span>{l.description}</span>
+                    <span className="font-medium">{lineTitle(l)}</span>
                     {tag && (
                       <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                         {tag}
                       </span>
+                    )}
+                    {lineBlurb(l) && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{lineBlurb(l)}</p>
                     )}
                   </td>
                   <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>

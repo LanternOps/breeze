@@ -14,7 +14,8 @@ export interface QuoteForContract {
 export interface QuoteLineForContract {
   recurrence: 'one_time' | 'monthly' | 'annual';
   customerVisible: boolean;
-  description: string;
+  name: string | null;
+  description: string | null;
   unitPrice: string;
   quantity: string;
   taxable: boolean;
@@ -98,7 +99,9 @@ export function buildContractSpecsFromQuote(
       createdBy,
       lines: group.map((l, i) => ({
         lineType: 'manual' as const,
-        description: l.description,
+        // Contract lines carry a single label; combine the title and blurb so
+        // neither is lost when the quote line splits them.
+        description: (l.name && l.description ? `${l.name} — ${l.description}` : (l.name ?? l.description ?? '')),
         unitPrice: l.unitPrice,
         manualQuantity: l.quantity,
         taxable: l.taxable,

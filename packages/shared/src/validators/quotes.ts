@@ -31,7 +31,10 @@ export const quoteLineInputSchema = z.object({
   sourceType: quoteLineSourceTypeSchema,
   catalogItemId: z.string().guid().optional(),
   blockId: z.string().guid().optional(),
-  description: z.string().min(1).max(2000),
+  // Title (mirrors catalog name). `description` is the optional blurb beneath it.
+  // At least one must be non-empty (refined below) so a line is never blank.
+  name: z.string().max(255).nullable().optional(),
+  description: z.string().max(2000).nullable().optional(),
   quantity: positiveQty,
   unitPrice: money,
   taxable: z.boolean(),
@@ -39,13 +42,16 @@ export const quoteLineInputSchema = z.object({
   recurrence: quoteLineRecurrenceSchema.default('one_time'),
   termMonths: z.number().int().min(1).max(120).nullable().optional(),
   billingFrequency: z.enum(['monthly', 'annual']).nullable().optional(),
+}).refine((d) => Boolean(d.name?.trim() || d.description?.trim()), {
+  message: 'A line needs a name or a description', path: ['name'],
 });
 
 export const catalogQuoteLineSchema = z.object({ catalogItemId: z.string().guid(), quantity: positiveQty, blockId: z.string().guid().optional() });
 export const bundleQuoteLineSchema = z.object({ bundleId: z.string().guid(), quantity: positiveQty, blockId: z.string().guid().optional() });
 
 export const updateQuoteLineSchema = z.object({
-  description: z.string().min(1).max(2000).optional(),
+  name: z.string().max(255).nullable().optional(),
+  description: z.string().max(2000).nullable().optional(),
   quantity: positiveQty.optional(),
   unitPrice: money.optional(),
   taxable: z.boolean().optional(),

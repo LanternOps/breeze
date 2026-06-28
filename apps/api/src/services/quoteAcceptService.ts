@@ -227,6 +227,7 @@ export async function acceptQuote(
     lines.map((l) => ({
       recurrence: l.recurrence,
       customerVisible: l.customerVisible,
+      name: l.name ?? null,
       description: l.description,
       unitPrice: l.unitPrice,
       quantity: l.quantity,

@@ -85,7 +85,11 @@ export const quoteLines = pgTable('quote_lines', {
   sourceType: quoteLineSourceTypeEnum('source_type').notNull(),
   catalogItemId: uuid('catalog_item_id'),
   parentLineId: uuid('parent_line_id').references((): AnyPgColumn => quoteLines.id, { onDelete: 'cascade' }),
-  description: text('description').notNull(),
+  // Title (mirrors catalog name). Nullable for legacy lines created before the
+  // split, where `description` holds the title and the renderer falls back to it.
+  name: varchar('name', { length: 255 }),
+  // Optional descriptive blurb shown beneath the title (mirrors catalog description).
+  description: text('description'),
   quantity: numeric('quantity', { precision: 12, scale: 2 }).notNull(),
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
   taxable: boolean('taxable').notNull().default(false),

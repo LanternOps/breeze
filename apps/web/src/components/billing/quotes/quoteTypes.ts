@@ -74,7 +74,8 @@ export interface QuoteLine {
   sourceType: QuoteLineSourceType;
   catalogItemId: string | null;
   parentLineId: string | null;
-  description: string;
+  name: string | null;
+  description: string | null;
   quantity: string;
   unitPrice: string;
   taxable: boolean;
@@ -85,6 +86,16 @@ export interface QuoteLine {
   billingFrequency: string | null;
   sortOrder: number;
   createdAt: string;
+}
+
+// A line's title falls back to its description for legacy lines created before
+// the name/description split; the blurb only renders when a distinct name exists.
+export function lineTitle(l: { name: string | null; description: string | null }): string {
+  return (l.name ?? l.description ?? '').trim();
+}
+export function lineBlurb(l: { name: string | null; description: string | null }): string | null {
+  const b = l.name ? (l.description ?? '').trim() : '';
+  return b || null;
 }
 
 /** Document branding resolved server-side (mirrors the PDF renderer) so the
@@ -186,6 +197,34 @@ export function formatDate(value: string | null | undefined): string {
   const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleDateString();
+}
+
+/**
+ * Flatten author-entered rich-text HTML to plain display text. rich_text blocks
+ * store HTML; both the internal detail view and the customer-facing document
+ * render the result as an auto-escaped React text node (never via
+ * dangerouslySetInnerHTML), so this is display cleanup, not a security boundary.
+ * The tag strip runs to a fixpoint so a split tag (e.g. `<<script>script>`) can't
+ * survive one pass, and `&amp;` is decoded LAST so it can't re-introduce an entity
+ * a later rule re-decodes. Shared so detail and document can't diverge (a block
+ * that showed literal `<p>` tags in one view but clean text in the other).
+ */
+export function stripHtml(html: string): string {
+  let out = html
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n');
+  let prev: string;
+  do { prev = out; out = out.replace(/<[^>]*>/g, ''); } while (out !== prev);
+  return out
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** Compact recurrence suffix for a line: 'one-time' | '/mo' | '/yr'. */

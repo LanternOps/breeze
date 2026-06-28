@@ -95,7 +95,7 @@ export async function addManualLine(invoiceId: string, input: ManualLineInput, a
   const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice));
   return insertLineAndRecompute(invoiceId, inv.orgId, {
     sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
-    description: input.description, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
+    name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
     costBasis: input.costBasis != null ? Number(input.costBasis).toFixed(2) : null,
     taxable: input.taxable, customerVisible: true, lineTotal, isUnapprovedTime: false
   });
@@ -104,12 +104,12 @@ export async function addManualLine(invoiceId: string, input: ManualLineInput, a
 export async function addCatalogLine(invoiceId: string, catalogItemId: string, quantity: number, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
   const resolved = await resolvePrice(catalogItemId, inv.orgId, { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds });
-  const [item] = await db.select({ name: catalogItems.name, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
+  const [item] = await db.select({ name: catalogItems.name, description: catalogItems.description, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
   if (item?.isBundle) throw new InvoiceServiceError('Use addBundleLine for bundles', 400, 'INVALID_STATE');
   const qty = String(quantity);
   return insertLineAndRecompute(invoiceId, inv.orgId, {
     sourceType: 'catalog', sourceId: null, catalogItemId, parentLineId: null, ticketId: null,
-    description: item?.name ?? 'Catalog item', quantity: qty, unitPrice: resolved.unitPrice,
+    name: item?.name ?? 'Catalog item', description: item?.description ?? null, quantity: qty, unitPrice: resolved.unitPrice,
     costBasis: resolved.costBasis, taxable: resolved.taxable, customerVisible: true,
     lineTotal: computeLineTotal(qty, resolved.unitPrice), isUnapprovedTime: false
   });
@@ -119,11 +119,11 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
   const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
   const catalogActor = { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
   const econ = await computeBundleEconomics(bundleId, inv.orgId, catalogActor); // throws NOT_A_BUNDLE etc.
-  const [bundle] = await db.select({ name: catalogItems.name }).from(catalogItems).where(eq(catalogItems.id, bundleId)).limit(1);
+  const [bundle] = await db.select({ name: catalogItems.name, description: catalogItems.description }).from(catalogItems).where(eq(catalogItems.id, bundleId)).limit(1);
   const qty = String(quantity);
   const parent = await insertLineAndRecompute(invoiceId, inv.orgId, {
     sourceType: 'bundle', sourceId: null, catalogItemId: bundleId, parentLineId: null, ticketId: null,
-    description: bundle?.name ?? 'Bundle', quantity: qty, unitPrice: econ.headlinePrice,
+    name: bundle?.name ?? 'Bundle', description: bundle?.description ?? null, quantity: qty, unitPrice: econ.headlinePrice,
     costBasis: econ.totalCost, taxable: true, customerVisible: true,
     lineTotal: computeLineTotal(qty, econ.headlinePrice), isUnapprovedTime: false
   });
@@ -131,14 +131,14 @@ export async function addBundleLine(invoiceId: string, bundleId: string, quantit
   const comps = await db.select({
     componentItemId: catalogBundleComponents.componentItemId, quantity: catalogBundleComponents.quantity,
     showOnInvoice: catalogBundleComponents.showOnInvoice, revenueAllocation: catalogBundleComponents.revenueAllocation,
-    name: catalogItems.name, costBasis: catalogItems.costBasis
+    name: catalogItems.name, description: catalogItems.description, costBasis: catalogItems.costBasis
   }).from(catalogBundleComponents)
     .innerJoin(catalogItems, eq(catalogItems.id, catalogBundleComponents.componentItemId))
     .where(eq(catalogBundleComponents.bundleItemId, bundleId));
   for (const comp of comps) {
     await db.insert(invoiceLines).values({
       invoiceId, orgId: inv.orgId, sourceType: 'bundle', sourceId: null, catalogItemId: comp.componentItemId,
-      parentLineId: parent.id, ticketId: null, description: comp.name, quantity: comp.quantity, unitPrice: '0.00',
+      parentLineId: parent.id, ticketId: null, name: comp.name, description: comp.description ?? null, quantity: comp.quantity, unitPrice: '0.00',
       costBasis: comp.costBasis, revenueAllocation: comp.revenueAllocation, taxable: false,
       customerVisible: comp.showOnInvoice, lineTotal: '0.00', isUnapprovedTime: false,
       sortOrder: parent.sortOrder // children sort directly under the parent
@@ -210,14 +210,15 @@ export async function addContractLine(
   });
 }
 
-export async function updateLine(invoiceId: string, lineId: string, patch: { description?: string; quantity?: number; unitPrice?: number; taxable?: boolean; customerVisible?: boolean }, actor: InvoiceActor) {
+export async function updateLine(invoiceId: string, lineId: string, patch: { name?: string | null; description?: string | null; quantity?: number; unitPrice?: number; taxable?: boolean; customerVisible?: boolean }, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
   const [existing] = await db.select().from(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId))).limit(1);
   if (!existing) throw new InvoiceServiceError('Line not found', 404, 'LINE_NOT_FOUND');
   const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
   const unitPrice = patch.unitPrice != null ? Number(patch.unitPrice).toFixed(2) : existing.unitPrice;
   await db.update(invoiceLines).set({
-    description: patch.description ?? existing.description, quantity, unitPrice,
+    name: patch.name !== undefined ? patch.name : existing.name,
+    description: patch.description !== undefined ? patch.description : existing.description, quantity, unitPrice,
     taxable: patch.taxable ?? existing.taxable, customerVisible: patch.customerVisible ?? existing.customerVisible,
     lineTotal: computeLineTotal(quantity, unitPrice)
   }).where(eq(invoiceLines.id, lineId));
@@ -645,7 +646,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     // parentLineId remapped to the cloned parent.
     const cloneValues = (l: typeof srcLines[number], parentLineId: string | null) => ({
       invoiceId: draft!.id, orgId: l.orgId, sourceType: l.sourceType, sourceId: l.sourceId, catalogItemId: l.catalogItemId,
-      parentLineId, ticketId: l.ticketId, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
+      parentLineId, ticketId: l.ticketId, name: l.name, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
       lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
     });

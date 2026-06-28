@@ -87,7 +87,11 @@ export const invoiceLines = pgTable('invoice_lines', {
   catalogItemId: uuid('catalog_item_id'),
   parentLineId: uuid('parent_line_id').references((): AnyPgColumn => invoiceLines.id, { onDelete: 'cascade' }),
   ticketId: uuid('ticket_id'),
-  description: text('description').notNull(),
+  // Title (mirrors catalog name). Nullable for legacy lines created before the
+  // split, where `description` holds the title and the renderer falls back to it.
+  name: varchar('name', { length: 255 }),
+  // Optional descriptive blurb shown beneath the title (mirrors catalog description).
+  description: text('description'),
   quantity: numeric('quantity', { precision: 12, scale: 2 }).notNull(),
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
   costBasis: numeric('cost_basis', { precision: 12, scale: 2 }),

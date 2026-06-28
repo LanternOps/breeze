@@ -44,7 +44,7 @@ const block: QuoteBlock = {
 };
 const line: QuoteLine = {
   id: 'l-1', quoteId: 'q-1', blockId: 'blk-1', orgId: 'org-1', sourceType: 'manual',
-  catalogItemId: null, parentLineId: null, description: 'Onboarding', quantity: '1',
+  catalogItemId: null, parentLineId: null, name: null, description: 'Onboarding', quantity: '1',
   unitPrice: '500.00', taxable: false, customerVisible: true, lineTotal: '500.00',
   recurrence: 'one_time', termMonths: null, billingFrequency: null, sortOrder: 0,
   createdAt: '2026-06-01T00:00:00Z',

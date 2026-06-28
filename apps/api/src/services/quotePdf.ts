@@ -123,7 +123,8 @@ interface QuoteLine {
   id: string;
   blockId?: string | null;
   catalogItemId?: string | null;
-  description: string;
+  name?: string | null;
+  description?: string | null;
   quantity: string | number;
   unitPrice: string | number;
   lineTotal?: string | number | null;
@@ -241,15 +242,24 @@ async function renderLineTable(
   const descX = c.colDescX;
   for (const l of lines) {
     y = ensureSpace(doc, y, Math.max(30, gutter));
+    // Title falls back to description for legacy lines that predate the name/description split.
+    const title = (l.name ?? l.description ?? '').trim() || '—';
+    const blurb = l.name ? (l.description ?? '').trim() : '';
     doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
-    const descHeight = doc.heightOfString(l.description, { width: descW });
+    const titleHeight = doc.heightOfString(title, { width: descW });
+    const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW }) + 2 : 0;
+    const descHeight = titleHeight + blurbHeight;
     doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
     const img = imageByLine.get(l.id);
     if (img) {
       try { doc.image(img, descX, y, { fit: [THUMB, THUMB] }); } catch { /* corrupt image: skip */ }
     }
-    doc.text(l.description, descX + gutter, y, { width: descW });
-    doc.text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
+    doc.font('Helvetica-Bold').text(title, descX + gutter, y, { width: descW });
+    if (blurb) {
+      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW });
+      doc.fillColor('#1f2937').fontSize(10);
+    }
+    doc.font('Helvetica').text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
       doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), c.colTaxX, y, { width: c.colNumW, align: 'right' });

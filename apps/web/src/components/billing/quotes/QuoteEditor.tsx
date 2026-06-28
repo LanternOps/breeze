@@ -35,6 +35,8 @@ import {
   formatRecurrence,
   pctFromFraction,
   lineTaxAmount,
+  lineTitle,
+  lineBlurb,
 } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -63,7 +65,8 @@ const BLOCK_TYPE_LABELS: Record<string, string> = {
 // updateQuoteLineSchema (description/quantity/unitPrice/taxable/recurrence) —
 // the only fields the inline editor exposes.
 type LineUpdate = Partial<{
-  description: string;
+  name: string | null;
+  description: string | null;
   quantity: number;
   unitPrice: number;
   taxable: boolean;
@@ -575,9 +578,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   const addManual = useCallback((
     blockId: string,
-    form: { description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
+    form: { name: string; description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
   ) => {
-    if (!form.description.trim()) return Promise.resolve(false);
+    // A line needs at least a title (name) or a description (mirrors the API refine).
+    if (!form.name.trim() && !form.description.trim()) return Promise.resolve(false);
     // Guard qty 0 / non-numeric here too — the inline edit path already does, and
     // a silent $0-quantity line is a real footgun on the add path.
     const qtyNum = Number(form.quantity);
@@ -597,7 +601,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         request: () => addManualLine(quote.id, {
           sourceType: 'manual',
           blockId,
-          description: form.description.trim(),
+          name: form.name.trim() || null,
+          description: form.description.trim() || null,
           quantity: qtyNum,
           unitPrice: priceNum,
           taxable: form.taxable,
@@ -613,7 +618,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         await runAction({
           request: () => createCatalogItem({
             itemType: 'service',
-            name: form.description.trim(),
+            name: form.name.trim() || form.description.trim(),
+            description: form.description.trim() || null,
             billingType: form.recurrence === 'one_time' ? 'one_time' : 'recurring',
             billingFrequency: form.recurrence === 'monthly'
               ? 'monthly'
@@ -1083,7 +1089,7 @@ function BlockCard({
   onImportAddDistributor: (blockId: string, product: EcProduct, sellPrice: number) => void;
   onAddManual: (
     blockId: string,
-    form: { description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
+    form: { name: string; description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
   ) => Promise<boolean>;
   onEditLine: (lineId: string, body: LineUpdate) => Promise<boolean>;
   onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
@@ -1099,6 +1105,7 @@ function BlockCard({
   const addLineBusy = isPending(`add-line:${block.id}`);
 
   const [mode, setMode] = useState<'catalog' | 'manual' | 'distributor'>('catalog');
+  const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
   const [qty, setQty] = useState('1');
   const [price, setPrice] = useState('0.00');
@@ -1154,10 +1161,10 @@ function BlockCard({
   };
 
   const submitManual = async () => {
-    const ok = await onAddManual(block.id, { description: desc, quantity: qty, unitPrice: price, taxable, recurrence, saveToCatalog });
+    const ok = await onAddManual(block.id, { name, description: desc, quantity: qty, unitPrice: price, taxable, recurrence, saveToCatalog });
     // Only clear the form on success, so a rejected add (e.g. qty 0) keeps the
     // user's input to correct rather than wiping it.
-    if (ok) { setDesc(''); setQty('1'); setPrice('0.00'); setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); }
+    if (ok) { setName(''); setDesc(''); setQty('1'); setPrice('0.00'); setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); }
   };
 
   return (
@@ -1290,7 +1297,10 @@ function BlockCard({
                         <td className="px-2 py-2">
                           <div className="flex items-start gap-2">
                             {l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
-                            <span>{l.description}</span>
+                            <div>
+                              <div className="font-medium">{lineTitle(l)}</div>
+                              {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+                            </div>
                           </div>
                         </td>
                         <td className="px-2 py-2 text-right tabular-nums">{l.quantity}</td>
@@ -1361,13 +1371,20 @@ function BlockCard({
                     idSuffix={`quote-${block.id}`}
                     onApply={(result) => {
                       const d = result.draft;
-                      setDesc(d.description ? `${d.name} — ${d.description}` : d.name);
+                      setName(d.name);
+                      setDesc(d.description ?? '');
                       setTaxable(d.taxable);
                     }}
                   />
+                  <input
+                    type="text" placeholder="Name" aria-label="Line name" value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    data-testid={`quote-manual-name-${block.id}`}
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  />
                   <div className="grid grid-cols-1 items-start gap-2 sm:grid-cols-[1fr_70px_90px_110px]">
                     <textarea
-                      placeholder="Description" aria-label="Line description" value={desc}
+                      placeholder="Description (optional)" aria-label="Line description" value={desc}
                       onChange={(e) => setDesc(e.target.value)}
                       rows={2}
                       data-testid={`quote-manual-desc-${block.id}`}
@@ -1451,7 +1468,8 @@ function EditableLineRow({
   onRemove: (line: QuoteLine) => void;
   onDraft: (lineId: string, draft: QuoteLineForMath | null) => void;
 }) {
-  const [desc, setDesc] = useState(line.description);
+  const [name, setName] = useState(line.name ?? '');
+  const [desc, setDesc] = useState(line.description ?? '');
   const [qty, setQty] = useState(line.quantity);
   const [price, setPrice] = useState(line.unitPrice);
   // recurrence/taxable are committed on change (not blur); keep them in local
@@ -1471,10 +1489,12 @@ function EditableLineRow({
   //     ("edit qty→5, blur, type 7" never loses the 7), and
   //   • after the user stops editing, the next prop adopts the server's canonical
   //     value (e.g. 9.999 → 10.00), clearing the dirty ring and the optimism.
+  const nameEdited = useRef(false);
   const descEdited = useRef(false);
   const qtyEdited = useRef(false);
   const priceEdited = useRef(false);
-  useEffect(() => { if (!descEdited.current) setDesc(line.description); }, [line.description]);
+  useEffect(() => { if (!nameEdited.current) setName(line.name ?? ''); }, [line.name]);
+  useEffect(() => { if (!descEdited.current) setDesc(line.description ?? ''); }, [line.description]);
   useEffect(() => { if (!qtyEdited.current) setQty(line.quantity); }, [line.quantity]);
   useEffect(() => { if (!priceEdited.current) setPrice(line.unitPrice); }, [line.unitPrice]);
   // recurrence/taxable are committed on change (the PATCH resolves before the
@@ -1498,7 +1518,8 @@ function EditableLineRow({
   }, [onEdit, line.id, flashSaved]);
   // Per-field dirty cue (mirrors the terms/tax ring) so every editable surface
   // signals unsaved state the same way.
-  const descDirty = desc.trim() !== line.description;
+  const nameDirty = name.trim() !== (line.name ?? '');
+  const descDirty = desc.trim() !== (line.description ?? '');
   const qtyDirty = Number(qty) !== Number(line.quantity);
   const priceDirty = Number(price) !== Number(line.unitPrice);
 
@@ -1536,11 +1557,28 @@ function EditableLineRow({
   // keep a phantom override.
   useEffect(() => () => onDraft(line.id, null), [onDraft, line.id]);
 
+  const commitName = () => {
+    const next = name.trim();
+    nameEdited.current = false; // committing — let the server value re-adopt next
+    if (next === (line.name ?? '')) { setName(line.name ?? ''); return; }
+    // A line can't have both name and description blank (mirrors the API refine).
+    if (!next && !(line.description ?? '').trim()) {
+      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      setName(line.name ?? '');
+      return;
+    }
+    void edit({ name: next || null });
+  };
   const commitDesc = () => {
     const next = desc.trim();
     descEdited.current = false; // committing — let the server value re-adopt next
-    if (!next || next === line.description) { setDesc(line.description); return; }
-    void edit({ description: next });
+    if (next === (line.description ?? '')) { setDesc(line.description ?? ''); return; }
+    if (!next && !(line.name ?? '').trim()) {
+      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      setDesc(line.description ?? '');
+      return;
+    }
+    void edit({ description: next || null });
   };
   const commitQty = () => {
     const n = Number(qty);
@@ -1572,16 +1610,30 @@ function EditableLineRow({
       <td className="px-2 py-2">
         <div className="flex items-start gap-2">
           {line.catalogItemId && <CatalogLineThumb catalogItemId={line.catalogItemId} />}
-          <textarea
-            value={desc}
-            aria-label="Line description"
-            onChange={(e) => { setDesc(e.target.value); descEdited.current = true; }}
-            onBlur={commitDesc}
-            rows={2}
-            disabled={busy}
-            data-testid={`quote-line-desc-${line.id}`}
-            className={`min-h-9 w-full resize-y rounded-md border bg-background px-2 py-1 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${descDirty ? 'ring-1 ring-warning' : ''}`}
-          />
+          <div className="w-full space-y-1">
+            <input
+              type="text"
+              value={name}
+              aria-label="Line name"
+              placeholder="Name"
+              onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
+              onBlur={commitName}
+              disabled={busy}
+              data-testid={`quote-line-name-${line.id}`}
+              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${nameDirty ? 'ring-1 ring-warning' : ''}`}
+            />
+            <textarea
+              value={desc}
+              aria-label="Line description"
+              placeholder="Description (optional)"
+              onChange={(e) => { setDesc(e.target.value); descEdited.current = true; }}
+              onBlur={commitDesc}
+              rows={2}
+              disabled={busy}
+              data-testid={`quote-line-desc-${line.id}`}
+              className={`min-h-9 w-full resize-y rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${descDirty ? 'ring-1 ring-warning' : ''}`}
+            />
+          </div>
         </div>
       </td>
       <td className="px-2 py-2 text-right">

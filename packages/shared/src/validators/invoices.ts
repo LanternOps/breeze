@@ -17,11 +17,15 @@ export const assembleFromOrgSchema = z.object({
 });
 
 export const manualLineSchema = z.object({
-  description: z.string().min(1).max(2000),
+  // Title (mirrors catalog name); `description` is the optional blurb beneath it.
+  name: z.string().max(255).nullable().optional(),
+  description: z.string().max(2000).nullable().optional(),
   quantity: positiveQty,
   unitPrice: money,
   taxable: z.boolean(),
   costBasis: money.optional()
+}).refine((d) => Boolean(d.name?.trim() || d.description?.trim()), {
+  message: 'A line needs a name or a description', path: ['name'],
 });
 
 export const catalogLineSchema = z.object({
@@ -35,7 +39,8 @@ export const bundleLineSchema = z.object({
 });
 
 export const updateLineSchema = z.object({
-  description: z.string().min(1).max(2000).optional(),
+  name: z.string().max(255).nullable().optional(),
+  description: z.string().max(2000).nullable().optional(),
   quantity: positiveQty.optional(),
   unitPrice: money.optional(),
   taxable: z.boolean().optional(),
