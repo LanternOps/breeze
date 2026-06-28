@@ -16,6 +16,8 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  lineTaxAmount,
+  pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
 
@@ -43,6 +45,11 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
   const [payRef, setPayRef] = useState('');
   const [payDate, setPayDate] = useState(() => new Date().toISOString().slice(0, 10));
 
+  // Payment confirm dialog
+  const [payConfirmOpen, setPayConfirmOpen] = useState(false);
+  // Reverse-a-payment confirm: reversing is a financial mutation, so it goes
+  // through a confirm step that names the specific payment.
+  const [reversePayment, setReversePayment] = useState<InvoicePayment | null>(null);
   // Void dialog
   const [voidOpen, setVoidOpen] = useState(false);
   // Delete dialog
@@ -81,6 +88,10 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     const cost = Number(l.costBasis) * Number(l.quantity);
     return formatMoney(revenue - cost, currency);
   };
+
+  // Per-line Tax column appears only when this invoice carries tax (mirrors the
+  // header Tax row), otherwise it'd be a column of dashes.
+  const showTax = Number(invoice.taxTotal) > 0;
 
   const canRecordPayment = invoice.status !== 'void' && invoice.status !== 'paid' && Number(invoice.balance) > 0;
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
@@ -172,13 +183,14 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     try {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/payments/${paymentId}`, { method: 'DELETE' }),
-        errorFallback: 'Could not void the payment.',
-        successMessage: 'Payment voided',
+        errorFallback: 'Could not reverse the payment.',
+        successMessage: 'Payment reversed',
         onUnauthorized: UNAUTHORIZED,
       });
+      setReversePayment(null);
       refresh();
     } catch (err) {
-      handleActionError(err, 'Could not void the payment.');
+      handleActionError(err, 'Could not reverse the payment.');
     } finally {
       setBusy(false);
     }
@@ -254,27 +266,32 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                   <th className="px-3 py-2 text-right font-medium">Price</th>
                   {accountingView && <th className="px-3 py-2 text-right font-medium">Cost</th>}
                   {accountingView && <th className="px-3 py-2 text-right font-medium">Margin</th>}
+                  {showTax && <th className="px-3 py-2 text-right font-medium">Tax</th>}
                   <th className="px-3 py-2 text-right font-medium">Total</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleLines.map((l) => (
+                {visibleLines.map((l) => {
+                  const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, invoice.taxRate) : null;
+                  return (
                   <tr
                     key={l.id}
                     data-testid={`invoice-detail-line-${l.id}`}
                     className={`border-t ${l.parentLineId ? 'bg-muted/20 text-xs text-muted-foreground' : ''}`}
                   >
                     <td className={`px-3 py-2 ${l.parentLineId ? 'pl-8' : ''}`}>
-                      {l.parentLineId ? '↳ ' : ''}{l.description}
+                      {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{l.description}
                       {accountingView && !l.customerVisible ? ' (hidden)' : ''}
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>
                     <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
                     {accountingView && <td className="px-3 py-2 text-right">{l.costBasis == null ? '—' : formatMoney(l.costBasis, currency)}</td>}
                     {accountingView && <td className="px-3 py-2 text-right">{lineMargin(l)}</td>}
+                    {showTax && <td className="px-3 py-2 text-right text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>}
                     <td className="px-3 py-2 text-right">{formatMoney(l.lineTotal, currency)}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -284,22 +301,24 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
-              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status">
+              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status" aria-label={`Status: ${statusLabel(invoice)}`}>
                 {statusLabel(invoice)}
               </span>
               <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
             </div>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd>{formatMoney(invoice.subtotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Tax</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
-              <div className="flex justify-between font-semibold"><dt>Total</dt><dd>{formatMoney(invoice.total, currency)}</dd></div>
+              {showTax && (
+                <div className="flex justify-between"><dt className="text-muted-foreground">Tax{invoice.taxRate ? ` (${pctFromFraction(invoice.taxRate)}%)` : ''}</dt><dd>{formatMoney(invoice.taxTotal, currency)}</dd></div>
+              )}
+              <div className="flex min-w-0 justify-between gap-2 font-semibold"><dt>Total</dt><dd className="break-words">{formatMoney(invoice.total, currency)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">Paid</dt><dd>{formatMoney(invoice.amountPaid, currency)}</dd></div>
             </dl>
             {/* Balance-due focal number */}
-            <div className="mt-3 flex items-end justify-between border-t pt-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Balance due</span>
+            <div className="mt-3 flex min-w-0 items-end justify-between gap-2 border-t pt-3">
+              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Balance due</span>
               <span
-                className={`text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
+                className={`break-words text-2xl font-semibold tabular-nums ${Number(invoice.balance) > 0 && invoice.status !== 'void' ? '' : 'text-muted-foreground'}`}
                 data-testid="invoice-detail-balance"
               >
                 {formatMoney(invoice.balance, currency)}
@@ -399,14 +418,15 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                     </span>
                     {/* Stripe payments are refunded through Stripe, never hand-voided. */}
                     {p.source === 'stripe' ? (
-                      <span className="whitespace-nowrap chart-legend-xs text-muted-foreground">via Stripe</span>
+                      <span className="whitespace-nowrap text-[11px] text-muted-foreground">via Stripe</span>
                     ) : can('invoices', 'send') ? (
                       <button
-                        type="button" onClick={() => void voidPayment(p.id)} disabled={busy || invoice.status === 'void'}
+                        type="button" onClick={() => setReversePayment(p)} disabled={busy || invoice.status === 'void'}
+                        aria-label={`Reverse payment of ${formatMoney(p.amount, currency)}`}
                         data-testid={`invoice-payment-void-${p.id}`}
                         className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                       >
-                        Void
+                        Reverse
                       </button>
                     ) : null}
                   </li>
@@ -436,11 +456,13 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                   <input
                     type="number" min="0" step="0.01" placeholder="Amount" value={payAmount}
                     onChange={(e) => setPayAmount(e.target.value)}
+                    aria-label="Amount"
                     data-testid="invoice-payment-amount"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <select
                     value={payMethod} onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
+                    aria-label="Payment method"
                     data-testid="invoice-payment-method"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
@@ -451,17 +473,19 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                   <input
                     type="text" placeholder="Reference (optional)" value={payRef}
                     onChange={(e) => setPayRef(e.target.value)}
+                    aria-label="Reference"
                     data-testid="invoice-payment-ref"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <input
                     type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)}
+                    aria-label="Payment date"
                     data-testid="invoice-payment-date"
                     className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
                 <button
-                  type="button" onClick={() => void recordPayment()} disabled={busy || !payAmount}
+                  type="button" onClick={() => setPayConfirmOpen(true)} disabled={busy || !payAmount}
                   title={!payAmount ? 'Enter a payment amount to record it' : undefined}
                   aria-describedby={!payAmount ? 'invoice-payment-submit-hint' : undefined}
                   data-testid="invoice-payment-submit"
@@ -477,6 +501,31 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Reverse-a-payment confirm dialog */}
+      <ConfirmDialog
+        open={reversePayment !== null}
+        onClose={() => setReversePayment(null)}
+        onConfirm={() => { if (reversePayment) void voidPayment(reversePayment.id); }}
+        isLoading={busy}
+        title="Reverse this payment?"
+        message={reversePayment ? `This reverses the ${formatMoney(reversePayment.amount, currency)} ${PAYMENT_METHOD_LABELS[reversePayment.method]} payment and removes it from the invoice balance. This can't be undone.` : ''}
+        confirmLabel="Reverse payment"
+        confirmTestId="invoice-payment-reverse-confirm"
+      />
+
+      {/* Record payment confirm dialog */}
+      <ConfirmDialog
+        open={payConfirmOpen}
+        onClose={() => setPayConfirmOpen(false)}
+        onConfirm={() => { setPayConfirmOpen(false); void recordPayment(); }}
+        isLoading={busy}
+        variant="warning"
+        title="Record payment"
+        message={`Record a ${formatMoney(Number(payAmount), currency)} payment (${PAYMENT_METHOD_LABELS[payMethod]}) dated ${payDate}?`}
+        confirmLabel="Record payment"
+        confirmTestId="invoice-payment-confirm"
+      />
 
       {/* Delete draft dialog */}
       <ConfirmDialog

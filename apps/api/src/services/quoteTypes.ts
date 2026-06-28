@@ -25,7 +25,8 @@ export type QuoteServiceErrorCode =
   | 'CATALOG_ITEM_NOT_FOUND'
   | 'INVALID_STATE'
   | 'QUOTE_EXPIRED'
-  | 'NOT_CONVERTED';
+  | 'NOT_CONVERTED'
+  | 'REORDER_IDS_MISMATCH';
 
 export class QuoteServiceError extends Error {
   constructor(

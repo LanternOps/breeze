@@ -24,6 +24,16 @@ function money(value: string | number, currencyCode: string): string {
   }
 }
 
+/** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
+ *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
+ *  as '—'). The header Tax stays invoice.taxTotal (authoritative). */
+function lineTax(lineTotal: string | number, taxable: boolean, rate: number): number | null {
+  if (!taxable || !(rate > 0)) return null;
+  const cents = Math.round(Number(lineTotal) * 100);
+  if (!Number.isFinite(cents)) return null;
+  return Math.round(cents * rate) / 100;
+}
+
 function shortDate(value: string | null): string {
   if (!value) return '—';
   const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
@@ -89,6 +99,10 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
   const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0;
+  // Per-line Tax column only when this invoice carries tax (mirrors the Tax row).
+  const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
+  const showTax = Number(invoice.taxTotal) > 0;
+  const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
 
   const seller = (invoice.sellerSnapshot ?? null) as DocSeller | null;
   const headerDates = [
@@ -212,24 +226,29 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
 
         <div className="overflow-hidden rounded-lg border bg-card">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-md text-sm">
+            <table className="w-full min-w-[28rem] text-sm">
               <thead>
                 <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
                   <th className="px-2 py-2.5 text-right font-medium">Qty</th>
                   <th className="px-2 py-2.5 text-right font-medium">Price</th>
+                  {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
                   <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
                 </tr>
               </thead>
               <tbody>
-                {lines.map((l) => (
+                {lines.map((l) => {
+                  const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
+                  return (
                   <tr key={l.id} className="border-b align-top last:border-0">
                     <td className="px-4 py-3 text-foreground sm:px-5">{l.description}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
+                    {showTax && <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : money(tax, currency)}</td>}
                     <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{money(l.lineTotal, currency)}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -238,7 +257,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         <section className="flex justify-end">
           <div className="w-full max-w-xs space-y-2.5">
             <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span className="tabular-nums text-foreground">{money(invoice.subtotal, currency)}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Tax</span><span className="tabular-nums text-foreground">{money(invoice.taxTotal, currency)}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Tax{taxPct ? ` (${taxPct}%)` : ''}</span><span className="tabular-nums text-foreground">{money(invoice.taxTotal, currency)}</span></div>
             <div className="flex justify-between border-t pt-2.5 text-sm"><span className="font-medium text-foreground">Total</span><span className="font-medium tabular-nums text-foreground">{money(invoice.total, currency)}</span></div>
             {Number(invoice.amountPaid) > 0 && (
               <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="tabular-nums text-foreground">−{money(invoice.amountPaid, currency)}</span></div>

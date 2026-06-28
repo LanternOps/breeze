@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type KeyboardEvent } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import QuoteEditor from './QuoteEditor';
@@ -33,23 +33,32 @@ export default function QuoteWorkspace({ id }: Props) {
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
 
-  const load = useCallback(async () => {
+  // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
+  // so the editor stays mounted — a full-page spinner would remount the form and
+  // discard the user's in-progress local state and cursor position. Only the
+  // initial load shows the spinner / replaces the view on error.
+  const fetchDetail = useCallback(async (quiet = false) => {
     if (!id) { setError('Missing quote id'); setLoading(false); return; }
     try {
-      setLoading(true);
+      if (!quiet) setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/quotes/${id}`);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { setError('Quote not found.'); return; }
+      if (res.status === 404) { if (!quiet) setError('Quote not found.'); return; }
       if (!res.ok) throw new Error('Failed to load quote');
       const body = (await res.json()) as { data: QuoteDetailData };
       setDetail(body.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load quote');
+      // A failed quiet reload leaves the editor intact; the inline action's own
+      // runAction toast already surfaced the failure.
+      if (!quiet) setError(err instanceof Error ? err.message : 'Failed to load quote');
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [id]);
+
+  const load = useCallback(() => fetchDetail(false), [fetchDetail]);
+  const reload = useCallback(() => fetchDetail(true), [fetchDetail]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -72,6 +81,24 @@ export default function QuoteWorkspace({ id }: Props) {
     if (typeof window !== 'undefined') window.location.hash = `#${next}`;
   }, []);
 
+  // Roving keyboard navigation across the tablist (WAI-ARIA tabs pattern):
+  // Left/Right move between tabs, Home/End jump to the ends, and the moved-to
+  // tab is both activated and focused.
+  const onTabKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>, tabs: { value: Tab }[], current: Tab) => {
+    const idx = tabs.findIndex((t) => t.value === current);
+    if (idx < 0) return;
+    let nextIdx: number | null = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextIdx = (idx + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = tabs.length - 1;
+    if (nextIdx === null) return;
+    e.preventDefault();
+    const next = tabs[nextIdx].value;
+    selectTab(next);
+    if (typeof document !== 'undefined') document.getElementById(`quote-tab-${next}`)?.focus();
+  }, [selectTab]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16" data-testid="quote-workspace-loading">
@@ -93,6 +120,12 @@ export default function QuoteWorkspace({ id }: Props) {
     );
   }
 
+  // The Editor only applies to drafts, so it's hidden once a quote is issued —
+  // no dead-end tab that just shows a "can't edit" message. A stale #editor hash
+  // on a non-draft falls back to Detail.
+  const visibleTabs = isDraft ? TABS : TABS.filter((t) => t.value !== 'editor');
+  const activeTab: Tab = visibleTabs.some((t) => t.value === tab) ? tab : 'detail';
+
   return (
     <div className="space-y-4" data-testid="quote-workspace">
       <div className="flex items-center justify-between">
@@ -105,17 +138,25 @@ export default function QuoteWorkspace({ id }: Props) {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b" role="tablist" data-testid="quote-workspace-tabs">
-        {TABS.map((t) => (
+      <div
+        className="flex gap-1 border-b"
+        role="tablist"
+        data-testid="quote-workspace-tabs"
+        onKeyDown={(e) => onTabKeyDown(e, visibleTabs, activeTab)}
+      >
+        {visibleTabs.map((t) => (
           <button
             key={t.value}
             type="button"
             role="tab"
-            aria-selected={tab === t.value}
+            id={`quote-tab-${t.value}`}
+            aria-selected={activeTab === t.value}
+            aria-controls={`quote-tabpanel-${t.value}`}
+            tabIndex={activeTab === t.value ? 0 : -1}
             onClick={() => selectTab(t.value)}
             data-testid={`quote-tab-${t.value}`}
             className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition ${
-              tab === t.value
+              activeTab === t.value
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
@@ -125,19 +166,23 @@ export default function QuoteWorkspace({ id }: Props) {
         ))}
       </div>
 
-      {tab === 'editor' && (
-        isDraft ? (
-          <QuoteEditor detail={detail} onChanged={() => void load()} />
-        ) : (
-          <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground" data-testid="quote-editor-locked">
-            This quote is no longer a draft and can no longer be edited. Switch to the Detail tab to review it.
-          </div>
-        )
+      {activeTab === 'editor' && isDraft && (
+        <div role="tabpanel" id="quote-tabpanel-editor" aria-labelledby="quote-tab-editor" tabIndex={0}>
+          <QuoteEditor detail={detail} onChanged={() => void reload()} />
+        </div>
       )}
 
-      {tab === 'preview' && <QuoteDocumentPreview detail={detail} />}
+      {activeTab === 'preview' && (
+        <div role="tabpanel" id="quote-tabpanel-preview" aria-labelledby="quote-tab-preview" tabIndex={0}>
+          <QuoteDocumentPreview detail={detail} />
+        </div>
+      )}
 
-      {tab === 'detail' && <QuoteDetail detail={detail} onChanged={() => void load()} />}
+      {activeTab === 'detail' && (
+        <div role="tabpanel" id="quote-tabpanel-detail" aria-labelledby="quote-tab-detail" tabIndex={0}>
+          <QuoteDetail detail={detail} onChanged={() => void reload()} />
+        </div>
+      )}
     </div>
   );
 }

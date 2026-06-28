@@ -136,6 +136,26 @@ export function removeLine(id: string, lineId: string): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/lines/${lineId}`, { method: 'DELETE' });
 }
 
+/** Reorder a quote's blocks. Body is the full ordered id list; the server
+ *  renumbers sortOrder 0..n-1 (PATCH /quotes/:id/blocks/reorder). */
+export function reorderBlocks(id: string, body: { blockIds: string[] }): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/blocks/reorder`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+/** Reorder the lines within a pricing-table block. Full ordered id list; the
+ *  server renumbers sortOrder 0..n-1 (PATCH /quotes/:id/blocks/:blockId/lines/reorder). */
+export function reorderLines(id: string, blockId: string, body: { lineIds: string[] }): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/blocks/${blockId}/lines/reorder`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
 /** Absolute API path for the quote PDF (`GET /api/v1/quotes/:id/pdf`). The route
  *  streams `application/pdf` inline; callers fetch it via `fetchWithAuth` (to
  *  attach the auth header) the same way InvoiceDetail downloads its PDF. */

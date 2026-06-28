@@ -1,4 +1,4 @@
-import { AlertTriangle } from 'lucide-react';
+import { AlertOctagon, AlertTriangle } from 'lucide-react';
 import { Dialog } from './Dialog';
 
 export interface ConfirmDialogProps {
@@ -25,6 +25,11 @@ export function ConfirmDialog({
   isLoading = false,
   confirmTestId,
 }: ConfirmDialogProps) {
+  // Encode severity by SHAPE, not color alone: a stop-octagon for destructive
+  // (irreversible removal) vs a caution-triangle for warning (a guarded but
+  // non-destructive action like activate/generate). Colorblind users and a
+  // glance-read both get the distinction without relying on red-vs-amber.
+  const Icon = variant === 'destructive' ? AlertOctagon : AlertTriangle;
   return (
     <Dialog open={open} onClose={onClose} title={title} maxWidth="md" className="p-6">
       <div className="flex gap-4">
@@ -33,10 +38,11 @@ export function ConfirmDialog({
             variant === 'destructive' ? 'bg-destructive/10' : 'bg-warning/10'
           }`}
         >
-          <AlertTriangle
+          <Icon
             className={`h-5 w-5 ${
               variant === 'destructive' ? 'text-destructive' : 'text-warning'
             }`}
+            aria-hidden="true"
           />
         </div>
         <div className="flex-1">
@@ -64,7 +70,7 @@ export function ConfirmDialog({
               : 'bg-warning text-warning-foreground hover:bg-warning/90'
           }`}
         >
-          {isLoading ? 'Processing...' : confirmLabel}
+          {isLoading ? 'Processing…' : confirmLabel}
         </button>
       </div>
     </Dialog>

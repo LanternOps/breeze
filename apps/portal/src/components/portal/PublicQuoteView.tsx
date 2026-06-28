@@ -38,6 +38,11 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
   const open = status === 'sent' || status === 'viewed';
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
+  // Per-line Tax column + a Subtotal/Tax breakdown appear only when this quote
+  // carries tax (otherwise the totals stay focused on due-on-acceptance).
+  const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
+  const showTax = Number(quote.taxTotal ?? 0) > 0;
+  const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
 
   const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
 
@@ -125,10 +130,24 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
           imageUrl={(imageId) =>
             buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)
           }
+          taxRate={taxRate}
+          showTax={showTax}
         />
 
         <section className="flex justify-end">
           <div className="w-full max-w-xs space-y-2.5">
+            {showTax && (
+              <>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Subtotal</span>
+                  <span className="tabular-nums text-foreground">{money(quote.subtotal ?? 0, currency)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Tax{taxPct ? ` (${taxPct}%)` : ''}</span>
+                  <span className="tabular-nums text-foreground">{money(quote.taxTotal ?? 0, currency)}</span>
+                </div>
+              </>
+            )}
             {hasRecurring && Number(quote.monthlyRecurringTotal ?? 0) > 0 && (
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Monthly recurring</span>

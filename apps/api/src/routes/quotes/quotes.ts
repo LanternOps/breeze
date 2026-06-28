@@ -7,10 +7,12 @@ import { PERMISSIONS } from '../../services/permissions';
 import {
   createQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
+  reorderBlocksSchema, reorderLinesSchema,
 } from '@breeze/shared';
 import {
   createQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
+  reorderBlocks, reorderLines,
 } from '../../services/quoteService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
@@ -66,8 +68,16 @@ quoteCrudRoutes.post('/:id/blocks', scopes, writePerm, zValidator('param', idPar
   try { return c.json({ data: await addBlock(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
+quoteCrudRoutes.patch('/:id/blocks/reorder', scopes, writePerm, zValidator('param', idParam), zValidator('json', reorderBlocksSchema), async (c) => {
+  try { const { id } = c.req.valid('param'); await reorderBlocks(id, c.req.valid('json').blockIds, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
+  catch (err) { return handleServiceError(c, err); }
+});
 quoteCrudRoutes.patch('/:id/blocks/:blockId', scopes, writePerm, zValidator('param', blockParam), zValidator('json', quoteBlockInputSchema), async (c) => {
   try { const p = c.req.valid('param'); return c.json({ data: await updateBlock(p.id, p.blockId, c.req.valid('json'), quoteActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.patch('/:id/blocks/:blockId/lines/reorder', scopes, writePerm, zValidator('param', blockParam), zValidator('json', reorderLinesSchema), async (c) => {
+  try { const { id, blockId } = c.req.valid('param'); await reorderLines(id, blockId, c.req.valid('json').lineIds, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.delete('/:id/blocks/:blockId', scopes, writePerm, zValidator('param', blockParam), async (c) => {

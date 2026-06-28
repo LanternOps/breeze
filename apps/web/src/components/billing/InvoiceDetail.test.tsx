@@ -93,6 +93,10 @@ describe('InvoiceDetail', () => {
     fireEvent.change(screen.getByTestId('invoice-payment-method'), { target: { value: 'check' } });
     fireEvent.click(screen.getByTestId('invoice-payment-submit'));
 
+    // Confirm dialog must open before the POST fires.
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-confirm')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('invoice-payment-confirm'));
+
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     const postCall = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/payments') && (c[1] as RequestInit)?.method === 'POST');
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({ amount: 50, method: 'check' });

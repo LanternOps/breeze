@@ -1,0 +1,271 @@
+import { useCallback, useMemo, useState, type CSSProperties } from 'react';
+import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
+import { handleActionError } from '../../lib/runAction';
+import { useOrgStore } from '../../stores/orgStore';
+import {
+  type InvoiceDetail as InvoiceDetailData,
+  type InvoiceLine,
+  STATUS_COLORS,
+  statusLabel,
+  formatDate,
+  formatMoney,
+  lineTaxAmount,
+  pctFromFraction,
+  sellerLines,
+} from './invoiceTypes';
+
+const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
+
+function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean }) {
+  const child = !!line.parentLineId;
+  const tax = showTax ? lineTaxAmount(line.lineTotal, line.taxable, taxRate) : null;
+  return (
+    <tr className="border-b align-top last:border-0">
+      <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
+        {child ? <span aria-hidden="true">↳ </span> : ''}{line.description}
+      </td>
+      <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{line.quantity}</td>
+      <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{formatMoney(line.unitPrice, currency)}</td>
+      {showTax && (
+        <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>
+      )}
+      <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">{formatMoney(line.lineTotal, currency)}</td>
+    </tr>
+  );
+}
+
+interface DocumentProps {
+  detail: InvoiceDetailData;
+  /** Resolved customer/bill-to name (parent looks it up against the org list). */
+  customerName: string;
+}
+
+/** Pure, presentational customer-facing invoice document. Renders the same
+ *  customer-visible lines and totals the customer receives on their invoice,
+ *  using the seller snapshot and the app accent. The sibling of QuoteDocument;
+ *  works for drafts without a portal round-trip. */
+export function InvoiceDocument({ detail, customerName }: DocumentProps) {
+  const { invoice, lines } = detail;
+  const currency = invoice.currencyCode;
+  const seller = invoice.sellerSnapshot;
+  // Invoices carry no per-partner branding payload (unlike quotes), so the
+  // document is anchored on the app's primary accent.
+  const accentStyle = { ['--doc-accent']: 'hsl(var(--primary))' } as CSSProperties;
+
+  // Customers only ever see customer-visible lines — cost/margin and hidden
+  // bundle components never reach the document.
+  const visibleLines = useMemo(
+    () => lines.filter((l) => l.customerVisible).sort((a, b) => a.sortOrder - b.sortOrder),
+    [lines],
+  );
+  const isEmpty = visibleLines.length === 0;
+  const amountPaid = Number(invoice.amountPaid);
+  // Only surface the per-line Tax column when this invoice carries tax — mirrors
+  // the header Tax row's visibility (otherwise it's a column of dashes).
+  const showTax = Number(invoice.taxTotal) > 0;
+
+  return (
+    <div
+      style={accentStyle}
+      data-testid="invoice-document"
+      className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xs"
+    >
+      <div className="space-y-10 px-4 py-7 sm:px-12 sm:py-10">
+        {/* ── Header ─────────────────────────────────────────────── */}
+        <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-3">
+            {seller?.name ? (
+              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
+                {seller.name}
+              </p>
+            ) : (
+              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
+                Invoice
+              </p>
+            )}
+            {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
+            <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
+            {seller && (
+              <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
+                {sellerLines(seller.address).map((line, i) => <p key={i}>{line}</p>)}
+                {seller.phone && <p>{seller.phone}</p>}
+                {seller.email && <p>{seller.email}</p>}
+                {seller.website && <p>{seller.website}</p>}
+              </address>
+            )}
+          </div>
+
+          <div className="space-y-2 sm:text-right">
+            <p className="text-[1.75rem] font-semibold leading-none tracking-tight text-foreground" data-testid="invoice-document-number">
+              {invoice.invoiceNumber ?? 'Draft'}
+            </p>
+            <p className="text-sm font-medium text-muted-foreground">Invoice</p>
+            <span
+              className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`}
+              aria-label={`Status: ${statusLabel(invoice)}`}
+            >
+              {statusLabel(invoice)}
+            </span>
+            <dl className="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
+              {invoice.issueDate && (
+                <div className="flex gap-2"><dt>Issued</dt><dd className="font-medium text-foreground/80">{formatDate(invoice.issueDate)}</dd></div>
+              )}
+              {invoice.dueDate && (
+                <div className="flex gap-2"><dt>Due</dt><dd className="font-medium text-foreground/80">{formatDate(invoice.dueDate)}</dd></div>
+              )}
+            </dl>
+          </div>
+        </header>
+
+        {/* ── Bill to + notes ────────────────────────────────────── */}
+        <section className="space-y-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bill to</p>
+            <p className="mt-1 text-base font-medium text-foreground" data-testid="invoice-document-customer">{customerName}</p>
+          </div>
+          {invoice.notes?.trim() && (
+            <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">
+              {invoice.notes.trim()}
+            </p>
+          )}
+        </section>
+
+        {/* ── Lines ──────────────────────────────────────────────── */}
+        {isEmpty ? (
+          <div className="rounded-lg border border-dashed bg-muted/30 px-6 py-12 text-center text-sm text-muted-foreground">
+            This invoice doesn’t have any line items yet.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-lg border bg-card">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[30rem] text-sm" data-testid="invoice-document-lines">
+                <thead>
+                  <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-2.5 text-left font-medium sm:px-5">Description</th>
+                    <th className="px-2 py-2.5 text-right font-medium">Qty</th>
+                    <th className="px-2 py-2.5 text-right font-medium">Unit price</th>
+                    {showTax && <th className="px-2 py-2.5 text-right font-medium">Tax</th>}
+                    <th className="px-4 py-2.5 text-right font-medium sm:px-5">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleLines.map((l) => <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} />)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ── Totals ─────────────────────────────────────────────── */}
+        {!isEmpty && (
+          <section className="flex justify-end">
+            <div className="w-full max-w-xs space-y-2.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Subtotal</span>
+                <span className="tabular-nums text-foreground">{formatMoney(invoice.subtotal, currency)}</span>
+              </div>
+              {showTax && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Tax{invoice.taxRate ? ` (${pctFromFraction(invoice.taxRate)}%)` : ''}</span>
+                  <span className="tabular-nums text-foreground">{formatMoney(invoice.taxTotal, currency)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Total</span>
+                <span className="tabular-nums text-foreground">{formatMoney(invoice.total, currency)}</span>
+              </div>
+              {amountPaid > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Paid</span>
+                  <span className="tabular-nums text-foreground">{formatMoney(invoice.amountPaid, currency)}</span>
+                </div>
+              )}
+              <div
+                className="flex items-baseline justify-between border-t pt-3"
+                style={{ borderColor: 'var(--doc-accent)' }}
+              >
+                <span className="text-sm font-semibold text-foreground">Amount due</span>
+                <span
+                  className="text-2xl font-semibold tabular-nums"
+                  style={{ color: 'var(--doc-accent)' }}
+                  data-testid="invoice-document-due"
+                >
+                  {formatMoney(invoice.balance, currency)}
+                </span>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ── Terms ──────────────────────────────────────────────── */}
+        {invoice.termsAndConditions?.trim() && (
+          <section className="space-y-2 border-t pt-6">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms &amp; Conditions</h3>
+            <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">
+              {invoice.termsAndConditions.trim()}
+            </p>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Preview-tab wrapper: resolves the customer name from the loaded org list (same
+ *  source as InvoiceDetail), renders the document, and offers a PDF download. */
+export default function InvoiceDocumentPreview({ detail }: { detail: InvoiceDetailData }) {
+  const { invoice } = detail;
+  const organizations = useOrgStore((s) => s.organizations);
+  const [busy, setBusy] = useState(false);
+
+  const customerName = useMemo(() => {
+    const billTo = invoice.billToName?.trim();
+    if (billTo) return billTo;
+    const resolved = organizations.find((o) => o.id === invoice.orgId)?.name?.trim();
+    return resolved || invoice.orgId.slice(0, 8);
+  }, [invoice.billToName, invoice.orgId, organizations]);
+
+  const downloadPdf = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetchWithAuth(`/invoices/${invoice.id}/pdf`);
+      if (res.status === 401) return UNAUTHORIZED();
+      if (!res.ok) { handleActionError(new Error('pdf'), 'Could not download the invoice PDF.'); return; }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      handleActionError(err, 'Could not download the invoice PDF.');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, invoice.id, invoice.invoiceNumber]);
+
+  return (
+    <div className="space-y-4" data-testid="invoice-preview">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">This is what your customer sees on their invoice.</p>
+        <button
+          type="button"
+          onClick={() => void downloadPdf()}
+          disabled={busy}
+          data-testid="invoice-preview-download-pdf"
+          className="inline-flex items-center justify-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
+        >
+          {busy ? 'Preparing…' : 'Download PDF'}
+        </button>
+      </div>
+      <div className="rounded-xl bg-muted/30 p-2 sm:p-8">
+        <InvoiceDocument detail={detail} customerName={customerName} />
+      </div>
+    </div>
+  );
+}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
@@ -85,6 +86,7 @@ export function QuotesPage() {
   const [sort, setSort] = useState<Sort | null>(null);
 
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   // New-quote dialog state
@@ -191,6 +193,16 @@ export function QuotesPage() {
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
 
+  // Aggregate value awaiting the customer's signature (sent + viewed), mirroring
+  // the invoice list's Outstanding strip. Single-currency partners are the norm;
+  // label with the first quote's currency.
+  const summary = useMemo(() => {
+    const awaiting = quotes.filter((qt) => qt.status === 'sent' || qt.status === 'viewed');
+    const outForSignature = awaiting.reduce((sum, qt) => sum + num(qt.total), 0);
+    const ccy = quotes[0]?.currencyCode || 'USD';
+    return { outForSignature, awaitingCount: awaiting.length, ccy };
+  }, [quotes]);
+
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -245,19 +257,34 @@ export function QuotesPage() {
     [bulk, loadQuotes, filters],
   );
 
-  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => (
-    <th className="px-3 py-3 text-right font-medium">
-      <button
-        type="button"
-        onClick={() => toggleSort(sortKey)}
-        className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
-        data-testid={`quotes-sort-${sortKey}`}
-      >
-        {label}
-        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
-      </button>
-    </th>
-  );
+  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => {
+    const active = sort?.key === sortKey;
+    const ariaLabel = active
+      ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
+      : `Sort by ${label}`;
+    return (
+      <th className="px-3 py-3 text-right font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+        <button
+          type="button"
+          onClick={() => toggleSort(sortKey)}
+          className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
+          data-testid={`quotes-sort-${sortKey}`}
+          aria-label={ariaLabel}
+        >
+          {label}
+          {active ? (
+            sort!.dir === 'asc' ? (
+              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            )
+          ) : (
+            <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+      </th>
+    );
+  };
 
   return (
     <div className="space-y-5" data-testid="quotes-page">
@@ -280,6 +307,17 @@ export function QuotesPage() {
         )}
       </div>
 
+      {/* Out-for-signature summary */}
+      {!loading && !error && summary.awaitingCount > 0 && (
+        <div className="flex flex-wrap gap-3" data-testid="quotes-outstanding-strip">
+          <div className="rounded-lg border bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground">Out for signature</div>
+            <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(summary.outForSignature, summary.ccy)}</div>
+            <div className="text-xs text-muted-foreground">{summary.awaitingCount} awaiting</div>
+          </div>
+        </div>
+      )}
+
       {/* Toolbar: search + filters */}
       <div className="flex flex-wrap items-end gap-2" data-testid="quotes-filters">
         <input
@@ -287,7 +325,7 @@ export function QuotesPage() {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search number or org"
           aria-label="Search quotes"
-          className="h-10 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="quotes-search"
         />
         <select
@@ -413,6 +451,7 @@ export function QuotesPage() {
                         <span
                           className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[qt.status]}`}
                           data-testid={`quotes-status-${qt.id}`}
+                          aria-label={`Status: ${statusLabel(qt)}`}
                         >
                           {statusLabel(qt)}
                         </span>
@@ -429,13 +468,24 @@ export function QuotesPage() {
               onClear={bulk.clear}
               testIdPrefix="quotes"
               actions={[
-                ...(can('quotes', 'send') ? [{ key: 'send', label: 'Send', disabled: bulkBusy, onClick: () => void runBulkQuotes('/quotes/bulk-send', 'sent') }] : []),
+                ...(can('quotes', 'send') ? [{ key: 'send', label: 'Send', disabled: bulkBusy, onClick: () => setSendOpen(true) }] : []),
                 ...(can('quotes', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={sendOpen}
+        onClose={() => setSendOpen(false)}
+        onConfirm={() => { setSendOpen(false); void runBulkQuotes('/quotes/bulk-send', 'sent'); }}
+        title="Send quotes"
+        message={`Email ${bulk.size} selected proposal(s) to their customers? This can't be undone.`}
+        variant="warning"
+        confirmLabel="Send"
+        confirmTestId="quotes-bulk-send-confirm"
+      />
 
       <ConfirmDialog
         open={deleteOpen}
@@ -522,16 +572,29 @@ export function QuotesPage() {
 function SortHeaderLeft({
   label, sortKey, sort, onSort,
 }: { label: string; sortKey: SortKey; sort: Sort | null; onSort: (k: SortKey) => void }) {
+  const active = sort?.key === sortKey;
+  const ariaLabel = active
+    ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
+    : `Sort by ${label}`;
   return (
-    <th className="px-3 py-3 font-medium">
+    <th className="px-3 py-3 font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
       <button
         type="button"
         onClick={() => onSort(sortKey)}
         className="inline-flex items-center gap-1 hover:text-foreground"
         data-testid={`quotes-sort-${sortKey}`}
+        aria-label={ariaLabel}
       >
         {label}
-        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+        {active ? (
+          sort!.dir === 'asc' ? (
+            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+          )
+        ) : (
+          <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+        )}
       </button>
     </th>
   );

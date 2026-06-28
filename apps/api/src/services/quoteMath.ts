@@ -1,63 +1,7 @@
-import { toCents, fromCents, computeLineTotal } from './invoiceMath';
-
-export interface QuoteLineForMath {
-  quantity: string;
-  unitPrice: string;
-  taxable: boolean;
-  customerVisible: boolean;
-  recurrence: 'one_time' | 'monthly' | 'annual';
-}
-
-export interface QuoteTotals {
-  subtotal: string;
-  taxTotal: string;
-  total: string;
-  oneTimeTotal: string;
-  monthlyRecurringTotal: string;
-  annualRecurringTotal: string;
-  /**
-   * The amount actually invoiced when the customer accepts the quote. Accept
-   * auto-issues a one-time-only invoice (recurring lines are deferred to the
-   * Phase 4 recurring contract — see quoteAcceptService.ts), so this is the
-   * one-time subtotal PLUS tax on just the taxable one-time lines. It mirrors
-   * quoteAcceptService's `computeInvoiceTotals(oneTimeLines, taxRate)` exactly,
-   * and is the figure the UI must advertise as "due on acceptance" — NOT
-   * `total`, which also rolls in the first monthly + annual period.
-   */
-  dueOnAcceptanceTotal: string;
-}
-
-export function computeQuoteTotals(lines: QuoteLineForMath[], taxRate: number | null): QuoteTotals {
-  let oneTime = 0, monthly = 0, annual = 0, taxableBasis = 0, oneTimeTaxableBasis = 0;
-  for (const l of lines) {
-    if (!l.customerVisible) continue;
-    // Route through the canonical billing helpers so quote per-line cents equal
-    // the persisted line_total (rounded to cents) and match invoices exactly:
-    // a single round-half-up at the cent boundary, never rounding unitPrice first.
-    const lineCents = toCents(computeLineTotal(l.quantity, l.unitPrice));
-    if (l.recurrence === 'monthly') monthly += lineCents;
-    else if (l.recurrence === 'annual') annual += lineCents;
-    else oneTime += lineCents;
-    if (l.taxable) {
-      taxableBasis += lineCents;
-      if (l.recurrence === 'one_time') oneTimeTaxableBasis += lineCents;
-    }
-  }
-  // First-period basis: one-time + first monthly period + first annual period.
-  const subtotal = oneTime + monthly + annual;
-  // Match invoiceMath.computeInvoiceTotals' round-half-up; nullish so a 0 rate
-  // and null both yield 0 tax.
-  const rate = taxRate ?? 0;
-  const taxCents = Math.floor(taxableBasis * rate + 0.5);
-  // Tax on ONLY the one-time taxable lines — what accept actually invoices.
-  const oneTimeTaxCents = Math.floor(oneTimeTaxableBasis * rate + 0.5);
-  return {
-    subtotal: fromCents(subtotal),
-    taxTotal: fromCents(taxCents),
-    total: fromCents(subtotal + taxCents),
-    oneTimeTotal: fromCents(oneTime),
-    monthlyRecurringTotal: fromCents(monthly),
-    annualRecurringTotal: fromCents(annual),
-    dueOnAcceptanceTotal: fromCents(oneTime + oneTimeTaxCents),
-  };
-}
+// Quote totals now live in @breeze/shared so the web editor's optimistic "Live
+// totals" rail computes from the exact same logic the API persists — they can
+// never settle to different figures. Re-exported here to keep the existing
+// `./quoteMath` import sites (quoteService, quotesPublic, portal/quotes) stable.
+// The quoteMath.test.ts beside this file exercises the shared implementation and
+// guards parity.
+export { computeQuoteTotals, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';

@@ -90,6 +90,24 @@ describe('QuoteEditor — inline line editing', () => {
     expect(screen.getByTestId('quote-line-desc-line-1').tagName).toBe('TEXTAREA');
   });
 
+  it('renders a per-line Tax cell: "—" when not taxable, the computed amount when taxable', async () => {
+    // Non-taxable line + no rate → dash.
+    const { unmount } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('—');
+    unmount();
+
+    // Taxable line ($50 line total) at 10% → $5.00 in the Tax cell.
+    const taxed: QuoteDetailData = {
+      ...detail,
+      quote: { ...detail.quote, taxRate: '0.1' },
+      lines: [{ ...line, taxable: true }],
+    };
+    render(<QuoteEditor detail={taxed} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('$5.00');
+  });
+
   it('editing the description and blurring PATCHes the line, then refreshes', async () => {
     const onChanged = vi.fn();
     render(<QuoteEditor detail={detail} onChanged={onChanged} />);
@@ -102,8 +120,12 @@ describe('QuoteEditor — inline line editing', () => {
     await waitFor(() => {
       expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { description: 'Premium managed support' });
     });
-    expect(onChanged).toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Line updated' }));
+    // refresh() is coalesced (trailing), so onChanged fires shortly after the PATCH.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    // Routine inline edits no longer fire a success toast (that was per-field
+    // spam) — they flash a quiet "Saved" cue on the row instead.
+    await waitFor(() => expect(screen.getByTestId('quote-line-saved-line-1')).toBeInTheDocument());
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Line updated' }));
   });
 
   it('changing quantity sends a numeric quantity', async () => {
@@ -151,5 +173,120 @@ describe('QuoteEditor — inline line editing', () => {
     fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
     const manualDesc = screen.getByTestId('quote-manual-desc-blk-1');
     expect(manualDesc.tagName).toBe('TEXTAREA');
+  });
+
+  it('re-adopts a server-normalized value after commit (no stuck-dirty row)', async () => {
+    // Enter a sub-cent price the server will round (9.999 → 10.00). Once the user
+    // stops editing, the refreshed prop must re-adopt the canonical server value
+    // rather than leaving the field/total pinned to the raw entry.
+    const { rerender } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const priceEl = screen.getByTestId('quote-line-price-line-1') as HTMLInputElement;
+    fireEvent.change(priceEl, { target: { value: '9.999' } });
+    fireEvent.blur(priceEl);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { unitPrice: 9.999 }));
+
+    // The parent re-pulls; the server normalized the price to 10.00.
+    const normalized: QuoteDetailData = {
+      ...detail,
+      lines: [{ ...line, unitPrice: '10.00', lineTotal: '10.00' }],
+    };
+    rerender(<QuoteEditor detail={normalized} onChanged={vi.fn()} />);
+
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('10.00'),
+    );
+    // Row total reflects the authoritative server value, not the raw 9.999 entry.
+    expect(screen.getByTestId('quote-line-tax-line-1')).toBeInTheDocument();
+  });
+
+  it('recomputes the right-rail totals optimistically while a line qty is mid-edit', async () => {
+    // The fixture line is a $50/mo recurring line, so the rail shows $50.00
+    // monthly. Bumping qty to 3 must move the rail to $150.00 immediately —
+    // before any blur/save/refresh — so the rail no longer lags the row.
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$50.00');
+
+    fireEvent.change(screen.getByTestId('quote-line-qty-line-1'), { target: { value: '3' } });
+    await waitFor(() => expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$150.00'));
+    // No PATCH yet — this is pure pre-commit optimism.
+    expect(updateLineMock).not.toHaveBeenCalled();
+  });
+
+  it('row Total uses the shared cents math and agrees with the rail (sub-cent price)', async () => {
+    // 3 × 0.335 = 1.005 — naive float formatting can drift a cent from the
+    // server's round-half-up-at-the-cent-boundary. The row Total and the rail
+    // (both via the shared computeLineTotal) must land on the same $1.01.
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('quote-line-qty-line-1'), { target: { value: '3' } });
+    fireEvent.change(screen.getByTestId('quote-line-price-line-1'), { target: { value: '0.335' } });
+
+    await waitFor(() => expect(screen.getByTestId('quote-line-total-line-1')).toHaveTextContent('$1.01'));
+    // The fixture line is monthly, so the rail's monthly figure mirrors it exactly.
+    expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$1.01');
+  });
+
+  it('reflects a tax-rate edit optimistically in the rail (due on acceptance)', async () => {
+    // A $100 one-time taxable line, no rate yet. Typing a 10% rate must move the
+    // rail's "due on acceptance" to $110 immediately — before blur/save/refresh.
+    const taxableOneTime: QuoteDetailData = {
+      ...detail,
+      quote: {
+        ...detail.quote, taxRate: null, oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',
+        subtotal: '100.00', total: '100.00', dueOnAcceptanceTotal: '100.00',
+      },
+      lines: [{ ...line, recurrence: 'one_time', taxable: true, unitPrice: '100.00', quantity: '1.00', lineTotal: '100.00' }],
+    };
+    render(<QuoteEditor detail={taxableOneTime} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$100.00');
+
+    fireEvent.change(screen.getByTestId('quote-tax-rate'), { target: { value: '10' } });
+    await waitFor(() =>
+      expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$110.00'),
+    );
+  });
+
+  it('surfaces a cue (and reverts) when an invalid quantity is committed', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
+    fireEvent.change(qtyEl, { target: { value: '0' } });
+    fireEvent.blur(qtyEl);
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+    // No PATCH for the rejected value, and the field snaps back to the persisted qty.
+    expect(updateLineMock).not.toHaveBeenCalled();
+    expect(qtyEl.value).toBe('1.00');
+  });
+
+  it('keeps in-progress keystrokes when a stale refresh lands (no clobber)', async () => {
+    // "edit qty→5, blur, type 7": a refresh confirming 5 must not wipe the 7 the
+    // user has already typed into the still-focused field.
+    const { rerender } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
+    fireEvent.change(qtyEl, { target: { value: '5' } });
+    fireEvent.blur(qtyEl);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { quantity: 5 }));
+
+    // User immediately types 7 before the refresh GET (confirming 5) lands.
+    fireEvent.change(qtyEl, { target: { value: '7' } });
+    const confirmedFive: QuoteDetailData = {
+      ...detail,
+      lines: [{ ...line, quantity: '5.00', lineTotal: '250.00' }],
+    };
+    rerender(<QuoteEditor detail={confirmedFive} onChanged={vi.fn()} />);
+
+    // The 7 survives — the stale-but-changed prop did not clobber the edit.
+    expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('7');
   });
 });

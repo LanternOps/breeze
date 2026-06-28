@@ -4,3 +4,4 @@ export * from './semverCompare';
 export * from './timezone';
 export * from './assuranceLevel';
 export * from './ticketTemplate';
+export * from './quoteMath';

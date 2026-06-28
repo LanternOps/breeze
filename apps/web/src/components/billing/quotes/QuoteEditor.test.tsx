@@ -84,7 +84,10 @@ describe('QuoteEditor', () => {
         termsAndConditions: 'Net 30',
       });
     });
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Terms saved' }));
+    // Blur-to-save fields now share the quiet "Saved" cue instead of a success
+    // toast (unified save-feedback model across the editor).
+    await waitFor(() => expect(screen.getByTestId('quote-terms-saved')).toBeInTheDocument());
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Terms saved' }));
   });
 
   it('renders the T&C textarea pre-filled with existing termsAndConditions', async () => {

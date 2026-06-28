@@ -13,7 +13,9 @@ vi.mock('../../services/quoteService', () => ({
   addManualLine: vi.fn(),
   addCatalogLine: vi.fn(),
   updateLine: vi.fn(),
-  removeLine: vi.fn()
+  removeLine: vi.fn(),
+  reorderBlocks: vi.fn(),
+  reorderLines: vi.fn(),
 }));
 
 // QuoteServiceError lives in quoteTypes; routes import the class from there.
@@ -230,6 +232,82 @@ describe('quote crud + lines routes', () => {
     });
     expect(res.status).toBe(403);
     expect(svc.createQuote).not.toHaveBeenCalled();
+  });
+
+  const LINE_ID = '44444444-4444-4444-4444-444444444444';
+
+  describe('PATCH /:id/blocks/reorder', () => {
+    it('returns 200 { ok: true } and calls reorderBlocks with blockIds + actor', async () => {
+      (svc.reorderBlocks as any).mockResolvedValue(undefined);
+      const res = await app().request(`/${QUOTE_ID}/blocks/reorder`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockIds: [BLOCK_ID] }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.ok).toBe(true);
+      expect(svc.reorderBlocks).toHaveBeenCalledWith(QUOTE_ID, [BLOCK_ID], expect.anything());
+    });
+
+    it('rejects empty blockIds array (400, service not called)', async () => {
+      const res = await app().request(`/${QUOTE_ID}/blocks/reorder`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockIds: [] }),
+      });
+      expect(res.status).toBe(400);
+      expect(svc.reorderBlocks).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-UUID in blockIds (400, service not called)', async () => {
+      const res = await app().request(`/${QUOTE_ID}/blocks/reorder`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockIds: ['not-a-uuid'] }),
+      });
+      expect(res.status).toBe(400);
+      expect(svc.reorderBlocks).not.toHaveBeenCalled();
+    });
+
+    it('maps REORDER_IDS_MISMATCH to 400', async () => {
+      (svc.reorderBlocks as any).mockRejectedValue(
+        new QuoteServiceError('Block IDs do not match quote blocks', 400, 'REORDER_IDS_MISMATCH')
+      );
+      const res = await app().request(`/${QUOTE_ID}/blocks/reorder`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ blockIds: [BLOCK_ID] }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe('REORDER_IDS_MISMATCH');
+    });
+  });
+
+  describe('PATCH /:id/blocks/:blockId/lines/reorder', () => {
+    it('returns 200 { ok: true } and calls reorderLines with blockId + lineIds + actor', async () => {
+      (svc.reorderLines as any).mockResolvedValue(undefined);
+      const res = await app().request(`/${QUOTE_ID}/blocks/${BLOCK_ID}/lines/reorder`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ lineIds: [LINE_ID] }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.ok).toBe(true);
+      expect(svc.reorderLines).toHaveBeenCalledWith(QUOTE_ID, BLOCK_ID, [LINE_ID], expect.anything());
+    });
+
+    it('rejects non-UUID lineId (400, service not called)', async () => {
+      const res = await app().request(`/${QUOTE_ID}/blocks/${BLOCK_ID}/lines/reorder`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ lineIds: ['not-a-uuid'] }),
+      });
+      expect(res.status).toBe(400);
+      expect(svc.reorderLines).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /:id/pdf', () => {

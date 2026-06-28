@@ -139,6 +139,7 @@ describe('InvoiceEditor', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('invoice-issue-send'));
+    fireEvent.click(await screen.findByTestId('invoice-issue-send-confirm'));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Invoice issued and sent' }));
   });
@@ -177,6 +178,7 @@ describe('InvoiceEditor', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('invoice-issue-send'));
+    fireEvent.click(await screen.findByTestId('invoice-issue-send-confirm'));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
     // never a success "sent" claim when nothing went out

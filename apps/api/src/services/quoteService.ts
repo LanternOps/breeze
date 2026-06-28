@@ -343,3 +343,45 @@ export async function removeLine(quoteId: string, lineId: string, actor: QuoteAc
   await db.delete(quoteLines).where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId)));
   await recomputeAndPersist(quoteId);
 }
+
+// ---------------------------------------------------------------------------
+// Reorder
+// ---------------------------------------------------------------------------
+
+export async function reorderBlocks(quoteId: string, blockIds: string[], actor: QuoteActor) {
+  await loadDraft(quoteId, actor);
+  const existing = await db.select({ id: quoteBlocks.id }).from(quoteBlocks).where(eq(quoteBlocks.quoteId, quoteId));
+  const existingSet = new Set(existing.map(r => r.id));
+  // Use the deduped set size so a duplicated id (e.g. [A, A]) can't masquerade as
+  // a full permutation — that would renumber A twice and orphan another block's
+  // sort_order. (The zod schema also rejects duplicates; this is defense in depth.)
+  if (new Set(blockIds).size !== existing.length || !blockIds.every(id => existingSet.has(id))) {
+    throw new QuoteServiceError('Block IDs do not match quote blocks', 400, 'REORDER_IDS_MISMATCH');
+  }
+  await db.transaction(async (tx) => {
+    for (const [i, id] of blockIds.entries()) {
+      await tx.update(quoteBlocks).set({ sortOrder: i }).where(and(eq(quoteBlocks.id, id), eq(quoteBlocks.quoteId, quoteId)));
+    }
+  });
+}
+
+export async function reorderLines(quoteId: string, blockId: string, lineIds: string[], actor: QuoteActor) {
+  await loadDraft(quoteId, actor);
+  const [block] = await db.select({ id: quoteBlocks.id }).from(quoteBlocks)
+    .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
+    .limit(1);
+  if (!block) throw new QuoteServiceError('Block not found', 404, 'BLOCK_NOT_FOUND');
+  const existing = await db.select({ id: quoteLines.id }).from(quoteLines)
+    .where(and(eq(quoteLines.quoteId, quoteId), eq(quoteLines.blockId, blockId)));
+  const existingSet = new Set(existing.map(r => r.id));
+  // Deduped size guards against a duplicated id passing the permutation check
+  // (see reorderBlocks). The zod schema also rejects duplicates.
+  if (new Set(lineIds).size !== existing.length || !lineIds.every(id => existingSet.has(id))) {
+    throw new QuoteServiceError('Line IDs do not match block lines', 400, 'REORDER_IDS_MISMATCH');
+  }
+  await db.transaction(async (tx) => {
+    for (const [i, id] of lineIds.entries()) {
+      await tx.update(quoteLines).set({ sortOrder: i }).where(and(eq(quoteLines.id, id), eq(quoteLines.quoteId, quoteId), eq(quoteLines.blockId, blockId)));
+    }
+  });
+}

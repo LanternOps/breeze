@@ -5,6 +5,7 @@
 import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
+import { STATUS_PILL } from '../invoiceTypes';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
@@ -118,14 +119,20 @@ export const STATUS_LABELS: Record<QuoteStatus, string> = {
 };
 
 // Tailwind badge classes per status (mirrors the invoice/contract status-pill style).
+// Five semantic roles shared with the invoice pills (see STATUS_PILL): the
+// colour reads the lifecycle (neutral → info while it's with the customer →
+// success when won → warning when lapsing → danger when lost), and the label
+// carries the finer distinction. sent/viewed share info; accepted/converted
+// share success — collapsing the old blue/indigo/violet/emerald rainbow that
+// was hard to tell apart at pill scale.
 export const STATUS_COLORS: Record<QuoteStatus, string> = {
-  draft: 'border-border bg-muted text-muted-foreground',
-  sent: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  viewed: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400',
-  accepted: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  declined: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
-  expired: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  converted: 'border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-400',
+  draft: STATUS_PILL.neutral,
+  sent: STATUS_PILL.info,
+  viewed: STATUS_PILL.info,
+  accepted: STATUS_PILL.success,
+  declined: STATUS_PILL.danger,
+  expired: STATUS_PILL.warning,
+  converted: STATUS_PILL.success,
 };
 
 /** Display label for a quote's status. The 'sent' lifecycle status only reads as
@@ -154,6 +161,23 @@ export function formatMoney(value: string | number | null | undefined, currencyC
 export function pctFromFraction(frac: string | number | null): string {
   if (frac === null || frac === '') return '';
   return String(Number((Number(frac) * 100).toFixed(3)));
+}
+
+/** Per-line tax amount for the pricing-table Tax column: taxable lines get
+ *  lineTotal × rate rounded to cents; non-taxable lines, a null/empty rate, or a
+ *  non-positive rate return null (rendered as '—'). The document/detail header
+ *  Tax stays the server's authoritative `taxTotal`, so a quote with many taxable
+ *  lines can differ from the summed column by a rounding cent. */
+export function lineTaxAmount(
+  lineTotal: string | number,
+  taxable: boolean,
+  taxRate: string | number | null,
+): number | null {
+  if (!taxable) return null;
+  const rate = taxRate === null || taxRate === '' ? 0 : Number(taxRate);
+  const cents = Math.round(Number(lineTotal) * 100);
+  if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(cents)) return null;
+  return Math.round(cents * rate) / 100;
 }
 
 /** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */

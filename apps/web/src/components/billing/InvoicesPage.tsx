@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
@@ -295,19 +296,34 @@ export function InvoicesPage() {
     return { outstanding, overdue, openCount: open.length, ccy };
   }, [invoices]);
 
-  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => (
-    <th className="px-3 py-3 text-right font-medium">
-      <button
-        type="button"
-        onClick={() => toggleSort(sortKey)}
-        className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
-        data-testid={`invoices-sort-${sortKey}`}
-      >
-        {label}
-        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
-      </button>
-    </th>
-  );
+  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => {
+    const active = sort?.key === sortKey;
+    const ariaLabel = active
+      ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
+      : `Sort by ${label}`;
+    return (
+      <th className="px-3 py-3 text-right font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+        <button
+          type="button"
+          onClick={() => toggleSort(sortKey)}
+          className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
+          data-testid={`invoices-sort-${sortKey}`}
+          aria-label={ariaLabel}
+        >
+          {label}
+          {active ? (
+            sort!.dir === 'asc' ? (
+              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            )
+          ) : (
+            <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+      </th>
+    );
+  };
 
   if (forbidden) {
     return (
@@ -350,11 +366,11 @@ export function InvoicesPage() {
             <button
               type="button"
               onClick={() => applyFilter({ status: 'overdue' })}
-              className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-left transition hover:bg-red-500/10"
+              className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-left transition hover:bg-destructive/10"
               data-testid="invoices-overdue-card"
             >
-              <div className="text-xs text-red-700 dark:text-red-400">Overdue</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums text-red-700 dark:text-red-400">{summary.overdue}</div>
+              <div className="text-xs text-destructive">Overdue</div>
+              <div className="mt-0.5 text-lg font-semibold tabular-nums text-destructive">{summary.overdue}</div>
               <div className="text-xs text-muted-foreground">needs follow-up</div>
             </button>
           )}
@@ -368,7 +384,7 @@ export function InvoicesPage() {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search number or org"
           aria-label="Search invoices"
-          className="h-10 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="invoices-search"
         />
         <select
@@ -505,7 +521,7 @@ export function InvoicesPage() {
                         </td>
                         <td className="px-3 py-3 font-medium">
                           <span className="flex items-center gap-2">
-                            <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-red-500' : 'bg-transparent'}`} aria-hidden="true" />
+                            <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-destructive' : 'bg-transparent'}`} aria-hidden="true" />
                             {inv.invoiceNumber ?? (
                               <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                                 Draft
@@ -515,7 +531,7 @@ export function InvoicesPage() {
                         </td>
                         <td className="px-3 py-3">{orgName(inv.orgId)}</td>
                         <td className="px-3 py-3 text-muted-foreground">{formatDate(inv.issueDate)}</td>
-                        <td className={`px-3 py-3 ${overdue ? 'font-medium text-red-700 dark:text-red-400' : 'text-muted-foreground'}`}>
+                        <td className={`px-3 py-3 ${overdue ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
                           {formatDate(inv.dueDate)}
                         </td>
                         <td className="px-3 py-3 text-right tabular-nums">{formatMoney(inv.total, inv.currencyCode)}</td>
@@ -526,6 +542,7 @@ export function InvoicesPage() {
                           <span
                             className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
                             data-testid={`invoices-status-${inv.id}`}
+                            aria-label={`Status: ${statusLabel(inv)}`}
                           >
                             {statusLabel(inv)}
                           </span>
@@ -720,16 +737,29 @@ export function InvoicesPage() {
 function SortHeaderLeft({
   label, sortKey, sort, onSort,
 }: { label: string; sortKey: SortKey; sort: Sort | null; onSort: (k: SortKey) => void }) {
+  const active = sort?.key === sortKey;
+  const ariaLabel = active
+    ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
+    : `Sort by ${label}`;
   return (
-    <th className="px-3 py-3 font-medium">
+    <th className="px-3 py-3 font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
       <button
         type="button"
         onClick={() => onSort(sortKey)}
         className="inline-flex items-center gap-1 hover:text-foreground"
         data-testid={`invoices-sort-${sortKey}`}
+        aria-label={ariaLabel}
       >
         {label}
-        <span className="text-[10px] leading-none">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+        {active ? (
+          sort!.dir === 'asc' ? (
+            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+          )
+        ) : (
+          <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+        )}
       </button>
     </th>
   );
