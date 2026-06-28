@@ -94,7 +94,8 @@ function useSavedFlash(): [boolean, () => void] {
 // "Saved") to screen readers without taking visual space. Pairs with the visible
 // cue so sighted and SR users get the same feedback.
 function SrSaved({ show, label = 'Saved' }: { show: boolean; label?: string }) {
-  return <span role="status" aria-live="polite" className="sr-only">{show ? label : ''}</span>;
+  // role="status" already implies aria-live="polite" — don't double it.
+  return <span role="status" className="sr-only">{show ? label : ''}</span>;
 }
 
 // Up/down reorder controls: lucide chevrons in 28px targets (clears the WCAG
@@ -206,16 +207,34 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   useEffect(() => { setTaxPct(pctFromFraction(quote.taxRate)); setTaxDirty(false); }, [quote.taxRate]);
 
   // Coalesce re-pulls: each mutation calls refresh(), but tab-through editing
-  // would otherwise fire one full GET /quotes/:id per field. A short trailing
-  // delay collapses a burst of edits into a single refetch — the inline cues
-  // ("Saved", optimistic field/reorder state) already give immediate feedback,
-  // so only the server-recomputed totals wait. Guards against the documented US
-  // DB connection pressure from refetch storms.
+  // would otherwise fire one full GET /quotes/:id per field. This is a LEADING +
+  // trailing throttle, not a pure trailing debounce: the first edit of a burst
+  // refetches immediately (so the server-recomputed rail totals update at once),
+  // then further edits within the window collapse into a single trailing refetch
+  // that captures the final state. This caps requests at ~1 / window (guarding
+  // the documented US DB connection pressure) while never leaving the "Live
+  // totals" frozen mid-burst — a pure trailing debounce did exactly that.
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshTrailing = useRef(false);
   useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
   const refresh = useCallback(() => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => onChanged(), 300);
+    if (refreshTimer.current) {
+      // Inside the cooldown window — remember to fire once more when it closes.
+      refreshTrailing.current = true;
+      return;
+    }
+    onChanged(); // leading edge: refetch now
+    const openWindow = () => {
+      refreshTimer.current = setTimeout(function close() {
+        refreshTimer.current = null;
+        if (refreshTrailing.current) {
+          refreshTrailing.current = false;
+          onChanged();
+          openWindow(); // reopen so a fresh burst keeps coalescing
+        }
+      }, 300);
+    };
+    openWindow();
   }, [onChanged]);
 
   const saveTerms = useCallback(async () => {
@@ -296,8 +315,22 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   // server order always wins once it lands; a failed reorder reverts immediately.
   const [blockOrder, setBlockOrder] = useState<string[] | null>(null);
   const [lineOrder, setLineOrder] = useState<Record<string, string[]>>({});
-  useEffect(() => { setBlockOrder(null); }, [blocks]);
-  useEffect(() => { setLineOrder({}); }, [lines]);
+  // Debounced reorder commit: repeat chevron clicks accumulate into the optimistic
+  // order instantly (no click is dropped while a PATCH is "in flight"); a single
+  // trailing PATCH per axis sends the final full id list. The server renumbers
+  // 0..n-1 from that list, so a coalesced final order is always correct. The
+  // `*Base` refs hold the latest optimistic id order so successive clicks within
+  // one tick stack on each other rather than re-reading a stale render.
+  const blockReorderTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const blockReorderBase = useRef<string[] | null>(null);
+  const lineReorderTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const lineReorderBase = useRef<Record<string, string[]>>({});
+  useEffect(() => { setBlockOrder(null); blockReorderBase.current = null; }, [blocks]);
+  useEffect(() => { setLineOrder({}); lineReorderBase.current = {}; }, [lines]);
+  useEffect(() => () => {
+    if (blockReorderTimer.current) clearTimeout(blockReorderTimer.current);
+    Object.values(lineReorderTimers.current).forEach(clearTimeout);
+  }, []);
 
   // Apply an optimistic id ordering over a base list, but only if it's a clean
   // permutation (same membership) — otherwise fall back to the server order.
@@ -572,57 +605,76 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     }, 'Could not update the block.'),
   [quote.id, refresh, runScoped]);
 
-  // Reorder a block one slot up/down: compute the full new id order from a single
-  // swap and send it; the server renumbers sortOrder 0..n-1. Scoped pending keeps
-  // the rest of the editor live. refresh() re-pulls so sortedBlocks re-sorts.
-  // Reorder a block one slot: apply the new order optimistically so the card
-  // moves instantly (the buttons disable while the PATCH is in flight, so no
-  // double-fire), send the full id list, and revert the override on failure.
+  // Reorder a block one slot up/down. The optimistic order updates instantly on
+  // every click (clicks accumulate — none are dropped while a PATCH is pending),
+  // and a single trailing PATCH per burst sends the final full id list, which the
+  // server renumbers 0..n-1. Each click stacks on `blockReorderBase` so a flurry
+  // of clicks moves an item several slots before one request goes out. A failed
+  // reorder clears the override and re-pulls the authoritative server order.
   const moveBlock = useCallback((block: QuoteBlock, direction: 'up' | 'down') => {
-    // Drop a repeat click while this block's reorder is still in flight, so we
-    // never set an optimistic order the in-flight guard would then revert.
-    if (isPending(`reorder-block:${block.id}`)) return Promise.resolve(false);
-    const ordered = [...sortedBlocks];
-    const idx = ordered.findIndex((b) => b.id === block.id);
+    const currentIds = blockReorderBase.current ?? sortedBlocks.map((b) => b.id);
+    const idx = currentIds.indexOf(block.id);
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-    if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return Promise.resolve(false);
-    [ordered[idx], ordered[swapIdx]] = [ordered[swapIdx], ordered[idx]];
-    const ids = ordered.map((b) => b.id);
-    const prev = blockOrder;
-    setBlockOrder(ids);
-    return runScoped(`reorder-block:${block.id}`, async () => {
-      await runAction({
-        request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
-        errorFallback: 'Could not reorder blocks.',
-        onUnauthorized: UNAUTHORIZED,
-      });
-      refresh();
-    }, 'Could not reorder blocks.').then((ok) => { if (!ok) setBlockOrder(prev); return ok; });
-  }, [sortedBlocks, blockOrder, quote.id, refresh, runScoped, isPending]);
+    if (idx < 0 || swapIdx < 0 || swapIdx >= currentIds.length) return;
+    const ids = [...currentIds];
+    [ids[idx], ids[swapIdx]] = [ids[swapIdx], ids[idx]];
+    blockReorderBase.current = ids;
+    setBlockOrder(ids); // optimistic, instant
+    // Debounce the PATCH (not runScoped — its shared key would drop a second
+    // reorder that fires while the first is still in flight; the debounce already
+    // coalesces a burst). runAction surfaces failures; on failure we drop the
+    // override and re-pull the authoritative order.
+    if (blockReorderTimer.current) clearTimeout(blockReorderTimer.current);
+    blockReorderTimer.current = setTimeout(() => {
+      blockReorderTimer.current = null;
+      void (async () => {
+        try {
+          await runAction({
+            request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
+            errorFallback: 'Could not reorder blocks.',
+            onUnauthorized: UNAUTHORIZED,
+          });
+          refresh();
+        } catch (err) {
+          handleActionError(err, 'Could not reorder blocks.');
+          setBlockOrder(null);
+          blockReorderBase.current = null;
+          refresh();
+        }
+      })();
+    }, 250);
+  }, [sortedBlocks, quote.id, refresh]);
 
   const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') => {
-    if (isPending(`reorder-line:${line.id}`)) return Promise.resolve(false);
-    const ordered = linesForBlock(blockId);
-    const idx = ordered.findIndex((l) => l.id === line.id);
+    const currentIds = lineReorderBase.current[blockId] ?? linesForBlock(blockId).map((l) => l.id);
+    const idx = currentIds.indexOf(line.id);
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-    if (idx < 0 || swapIdx < 0 || swapIdx >= ordered.length) return Promise.resolve(false);
-    const next = [...ordered];
-    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
-    const ids = next.map((l) => l.id);
-    const prev = lineOrder[blockId];
-    setLineOrder((m) => ({ ...m, [blockId]: ids }));
-    return runScoped(`reorder-line:${line.id}`, async () => {
-      await runAction({
-        request: () => reorderLinesApi(quote.id, blockId, { lineIds: ids }),
-        errorFallback: 'Could not reorder lines.',
-        onUnauthorized: UNAUTHORIZED,
-      });
-      refresh();
-    }, 'Could not reorder lines.').then((ok) => {
-      if (!ok) setLineOrder((m) => ({ ...m, [blockId]: prev as string[] }));
-      return ok;
-    });
-  }, [linesForBlock, lineOrder, quote.id, refresh, runScoped, isPending]);
+    if (idx < 0 || swapIdx < 0 || swapIdx >= currentIds.length) return;
+    const ids = [...currentIds];
+    [ids[idx], ids[swapIdx]] = [ids[swapIdx], ids[idx]];
+    lineReorderBase.current = { ...lineReorderBase.current, [blockId]: ids };
+    setLineOrder((m) => ({ ...m, [blockId]: ids })); // optimistic, instant
+    const existing = lineReorderTimers.current[blockId];
+    if (existing) clearTimeout(existing);
+    lineReorderTimers.current[blockId] = setTimeout(() => {
+      delete lineReorderTimers.current[blockId];
+      void (async () => {
+        try {
+          await runAction({
+            request: () => reorderLinesApi(quote.id, blockId, { lineIds: ids }),
+            errorFallback: 'Could not reorder lines.',
+            onUnauthorized: UNAUTHORIZED,
+          });
+          refresh();
+        } catch (err) {
+          handleActionError(err, 'Could not reorder lines.');
+          setLineOrder((m) => { const n = { ...m }; delete n[blockId]; return n; });
+          delete lineReorderBase.current[blockId];
+          refresh();
+        }
+      })();
+    }, 250);
+  }, [linesForBlock, quote.id, refresh]);
 
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
@@ -631,7 +683,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     <div className="space-y-6" data-testid="quote-editor">
       {canWrite && (
         <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
-          Changes save automatically as you edit.
+          Changes save automatically as you edit. An amber outline marks an edit that hasn’t saved yet.
         </p>
       )}
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
@@ -774,7 +826,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
             {/* One concise SR announcement covering every figure, so editing a
                 recurring line (which doesn't move "due on acceptance") still tells
                 a screen-reader user the totals recomputed. */}
-            <p className="sr-only" role="status" aria-live="polite" data-testid="quote-totals-sr">
+            <p className="sr-only" role="status" data-testid="quote-totals-sr">
               {`Totals updated. One-time ${formatMoney(quote.oneTimeTotal, currency)}, `
                 + `monthly recurring ${formatMoney(quote.monthlyRecurringTotal, currency)}, `
                 + `annual recurring ${formatMoney(quote.annualRecurringTotal, currency)}`
@@ -1113,14 +1165,23 @@ function BlockCard({
 
         {isTable && (
           <div className="space-y-3">
-            <table className="w-full text-sm" data-testid={`quote-block-lines-${block.id}`}>
+            {/* The 7-column row (description + 4 inline controls + total + actions)
+                can't compress gracefully on a tablet, so the table keeps a sensible
+                min width and the wrapper scrolls horizontally below that. */}
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-2 py-2 font-medium">Description</th>
                   <th className="px-2 py-2 text-right font-medium">Qty</th>
                   <th className="px-2 py-2 text-right font-medium">Unit</th>
                   <th className="px-2 py-2 font-medium">Recurrence</th>
-                  <th className="px-2 py-2 text-right font-medium">Tax</th>
+                  <th
+                    className="px-2 py-2 text-right font-medium"
+                    title="Per-line tax. The header Tax total is authoritative and may differ by a rounding cent."
+                  >
+                    Tax
+                  </th>
                   <th className="px-2 py-2 text-right font-medium">Total</th>
                   <th className="px-2 py-2" />
                 </tr>
@@ -1173,6 +1234,7 @@ function BlockCard({
                 )}
               </tbody>
             </table>
+            </div>
 
             {/* Add line to this pricing table */}
             {canWrite && (
@@ -1320,10 +1382,29 @@ function EditableLineRow({
   const [rec, setRec] = useState(line.recurrence);
   const [taxable, setTaxable] = useState(line.taxable);
 
-  // Resync when the persisted line changes (after a refresh()).
-  useEffect(() => { setDesc(line.description); }, [line.description]);
-  useEffect(() => { setQty(line.quantity); }, [line.quantity]);
-  useEffect(() => { setPrice(line.unitPrice); }, [line.unitPrice]);
+  // Resync the typed fields from the server only when the user hasn't diverged
+  // from what we last showed — mirroring the block-draft guard. A quiet refresh
+  // (now leading-edge, so it can land while a fast typer is still in the field)
+  // must not overwrite an in-progress edit: if the local value no longer matches
+  // the prop we last synced, the user has typed since — keep their text. Without
+  // this, "edit qty→5, blur, type 7" loses the 7 when the GET for 5 returns.
+  const lastDesc = useRef(line.description);
+  const lastQty = useRef(line.quantity);
+  const lastPrice = useRef(line.unitPrice);
+  useEffect(() => {
+    setDesc((cur) => (cur === lastDesc.current ? line.description : cur));
+    lastDesc.current = line.description;
+  }, [line.description]);
+  useEffect(() => {
+    setQty((cur) => (cur === lastQty.current ? line.quantity : cur));
+    lastQty.current = line.quantity;
+  }, [line.quantity]);
+  useEffect(() => {
+    setPrice((cur) => (cur === lastPrice.current ? line.unitPrice : cur));
+    lastPrice.current = line.unitPrice;
+  }, [line.unitPrice]);
+  // recurrence/taxable are committed on change (the PATCH resolves before the
+  // refresh GET fires), so a stale resync can't race them — a plain resync wins.
   useEffect(() => { setRec(line.recurrence); }, [line.recurrence]);
   useEffect(() => { setTaxable(line.taxable); }, [line.taxable]);
 
@@ -1346,6 +1427,19 @@ function EditableLineRow({
   const descDirty = desc.trim() !== line.description;
   const qtyDirty = Number(qty) !== Number(line.quantity);
   const priceDirty = Number(price) !== Number(line.unitPrice);
+
+  // While qty/price are mid-edit, the row's Total and Tax cells must reflect the
+  // local values, not the server's stale `lineTotal` — otherwise the row visibly
+  // disagrees with itself (new qty, old total) until the debounced refresh lands.
+  // When the row isn't dirty we defer to the authoritative server total so any
+  // server-side normalization (e.g. clamped qty) still wins.
+  const qtyNum = Number(qty);
+  const priceNum = Number(price);
+  const displayTotal =
+    (qtyDirty || priceDirty) && Number.isFinite(qtyNum) && Number.isFinite(priceNum) && qtyNum >= 0 && priceNum >= 0
+      ? qtyNum * priceNum
+      : Number(line.lineTotal);
+  const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
 
   const commitDesc = () => {
     const next = desc.trim();
@@ -1437,15 +1531,12 @@ function EditableLineRow({
             data-testid={`quote-line-taxable-${line.id}`}
           />
           <span className="tabular-nums" data-testid={`quote-line-tax-${line.id}`}>
-            {(() => {
-              const tax = lineTaxAmount(line.lineTotal, taxable, taxRate);
-              return tax === null ? '—' : formatMoney(tax, currency);
-            })()}
+            {displayTax === null ? '—' : formatMoney(displayTax, currency)}
           </span>
         </label>
       </td>
       <td className="px-2 py-2 text-right tabular-nums">
-        {formatMoney(line.lineTotal, currency)}
+        {formatMoney(displayTotal, currency)}
         {saved && <span className="ml-1 text-xs font-medium text-success" data-testid={`quote-line-saved-${line.id}`}>Saved</span>}
         <SrSaved show={saved} />
       </td>
