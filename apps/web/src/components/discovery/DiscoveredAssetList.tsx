@@ -4,6 +4,7 @@ import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { parseDiscoveredAssetLinkSource, type DiscoveredAssetLinkSource } from './networkTypes';
 
 export type DiscoveredAssetApprovalStatus = 'pending' | 'approved' | 'dismissed';
 export type DiscoveredAssetType =
@@ -38,6 +39,7 @@ export type DiscoveredAsset = {
   snmpData?: Record<string, string>;
   responseTimeMs?: number | null;
   linkedDeviceId?: string | null;
+  linkSource?: DiscoveredAssetLinkSource | null;
   linkedDeviceName?: string;
   monitoringEnabled?: boolean;
   discoveryMethods?: string[];
@@ -63,6 +65,7 @@ export type ApiDiscoveryAsset = {
   snmpData?: Record<string, string> | null;
   responseTimeMs?: number | null;
   linkedDeviceId?: string | null;
+  linkSource?: DiscoveredAssetLinkSource | null;
   linkedDeviceName?: string | null;
   monitoringEnabled?: boolean;
   discoveryMethods?: string[] | null;
@@ -159,6 +162,7 @@ export function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     snmpData: asset.snmpData ?? undefined,
     responseTimeMs: asset.responseTimeMs ?? null,
     linkedDeviceId: asset.linkedDeviceId,
+    linkSource: parseDiscoveredAssetLinkSource(asset.linkSource),
     linkedDeviceName: asset.linkedDeviceName ?? undefined,
     monitoringEnabled: asset.monitoringEnabled ?? false,
     discoveryMethods: asset.discoveryMethods ?? undefined,

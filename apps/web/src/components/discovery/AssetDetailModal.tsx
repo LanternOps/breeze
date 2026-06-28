@@ -7,12 +7,14 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
+import type { DiscoveredAssetLinkSource } from './networkTypes';
 
 export type AssetDetail = DiscoveredAsset & {
   openPorts?: OpenPortEntry[];
   osFingerprint?: string;
   snmpData?: Record<string, string>;
   linkedDeviceId?: string | null;
+  linkSource?: DiscoveredAssetLinkSource | null;
   label?: string | null;
   notes?: string | null;
   tags?: string[];

@@ -52,6 +52,8 @@ export type DeviceOption = {
   label: string;
 };
 
+export type DiscoveredAssetLinkSource = 'manual' | 'auto';
+
 export const eventTypeConfig: Record<NetworkEventType, { label: string; color: string }> = {
   new_device: { label: 'New Device', color: 'bg-success/15 text-success border-success/30' },
   device_disappeared: { label: 'Disappeared', color: 'bg-warning/15 text-warning border-warning/30' },
@@ -69,6 +71,10 @@ function asString(value: unknown): string | null {
 
 function asBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
+}
+
+export function parseDiscoveredAssetLinkSource(value: unknown): DiscoveredAssetLinkSource | null {
+  return value === 'manual' || value === 'auto' ? value : null;
 }
 
 function asInteger(value: unknown): number | null {
