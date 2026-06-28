@@ -580,6 +580,72 @@ describe('discovery routes', () => {
       expect(body.data[0].snmpData).toEqual(snmp);
       expect(body.data[0].discoveryMethods).toEqual(['ping', 'snmp']);
     });
+
+    // Regression guard: the list serializer must forward typeSource and
+    // detectedAssetType so the frontend can show the override badge without
+    // fetching individual asset detail pages.
+    it('projects typeSource and detectedAssetType in the asset list response', async () => {
+      const now = new Date();
+      const row = {
+        asset: {
+          id: 'asset-002',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          assetType: 'router',
+          approvalStatus: 'approved',
+          isOnline: true,
+          hostname: 'router-01',
+          label: null,
+          ipAddress: '10.0.2.1',
+          macAddress: null,
+          manufacturer: null,
+          model: null,
+          openPorts: [],
+          snmpData: null,
+          responseTimeMs: null,
+          linkedDeviceId: null,
+          discoveryMethods: [],
+          notes: null,
+          tags: [],
+          typeSource: 'manual',
+          detectedAssetType: 'switch',
+          firstSeenAt: now,
+          lastSeenAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+        linkedDeviceHostname: null,
+        linkedDeviceDisplayName: null,
+        profileId: null,
+        profileName: null,
+        profileSubnets: null,
+      };
+
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            leftJoin: () => ({
+              leftJoin: () => ({
+                where: () => ({
+                  orderBy: () => Promise.resolve([row]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const res = await app.request('/discovery/assets', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].typeSource).toBe('manual');
+      expect(body.data[0].detectedAssetType).toBe('switch');
+    });
   });
 
   describe('GET /discovery/assets/:id', () => {
@@ -1631,7 +1697,11 @@ describe('discovery routes', () => {
 
       expect(res.status).toBe(200);
       expect(capturedSetPayload).toMatchObject({ typeSource: 'auto' });
-      expect(capturedSetPayload.assetType).toBeDefined();
+      // assetType must be a Drizzle sql`coalesce(...)` expression, not a plain
+      // string — a plain 'workstation' would pass `.toBeDefined()` while masking
+      // a regression where the coalesce was dropped.
+      expect(typeof capturedSetPayload.assetType).toBe('object');
+      expect(Array.isArray((capturedSetPayload.assetType as any).queryChunks)).toBe(true);
       const body = await res.json();
       expect(body.assetType).toBe('workstation');
       expect(body.typeSource).toBe('auto');
