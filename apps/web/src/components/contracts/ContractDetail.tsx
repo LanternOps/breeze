@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import Spinner from '../shared/Spinner';
 import {
   contractTransition,
   deleteContract,
@@ -62,8 +63,12 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   const { contract, lines, periods } = detail;
   const currency = contract.currencyCode;
 
-  const [busy, setBusy] = useState(false);
+  // Which action is in flight, so the active button shows a spinner + verb
+  // (matches ContractEditor's pattern). `busy` is derived for the disable guards.
+  const [pending, setPending] = useState<null | ContractTransition | 'generate' | 'delete'>(null);
+  const busy = pending !== null;
   const [delOpen, setDelOpen] = useState(false);
+  const [genOpen, setGenOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
 
   useEffect(() => {
@@ -80,7 +85,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
 
   const transition = useCallback(async (verb: ContractTransition) => {
     if (busy) return;
-    setBusy(true);
+    setPending(verb);
     try {
       await runAction({
         request: () => contractTransition(contract.id, verb),
@@ -92,13 +97,13 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     } catch (err) {
       handleActionError(err, `Could not ${verb} the contract.`);
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }, [busy, contract.id, refresh]);
 
   const generateNow = useCallback(async () => {
     if (busy) return;
-    setBusy(true);
+    setPending('generate');
     try {
       const result = await runAction<{ data?: { invoiceId?: string } }>({
         request: () => generateContractInvoice(contract.id),
@@ -106,6 +111,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
         successMessage: 'Invoice generated',
         onUnauthorized: UNAUTHORIZED,
       });
+      setGenOpen(false);
       const invoiceId = result?.data?.invoiceId;
       if (invoiceId) {
         void navigateTo(`/billing/invoices/${invoiceId}`);
@@ -115,13 +121,13 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     } catch (err) {
       handleActionError(err, 'Could not generate an invoice.');
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }, [busy, contract.id, refresh]);
 
   const remove = useCallback(async () => {
     if (busy) return;
-    setBusy(true);
+    setPending('delete');
     try {
       await runAction({
         request: () => deleteContract(contract.id),
@@ -134,7 +140,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     } catch (err) {
       handleActionError(err, 'Could not delete the draft.');
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }, [busy, contract.id]);
 
@@ -204,8 +210,8 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           </div>
 
           {/* Lines (read-only) */}
-          <div className="rounded-lg border bg-card shadow-sm">
-            <table className="w-full text-sm" data-testid="contract-detail-lines">
+          <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+            <table className="w-full min-w-[30rem] text-sm" data-testid="contract-detail-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-3 py-2 font-medium">Type</th>
@@ -233,7 +239,10 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                           ? <span className="text-muted-foreground">auto</span>
                           : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                       </td>
-                      <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
+                      <td className="px-3 py-2 text-center">
+                        <span aria-hidden="true">{l.taxable ? '✓' : '—'}</span>
+                        <span className="sr-only">{l.taxable ? 'Taxable' : 'Not taxable'}</span>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -246,7 +255,8 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Billing history
             </h3>
-            <table className="w-full text-sm" data-testid="contract-periods">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[28rem] text-sm" data-testid="contract-periods">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-3 py-2 font-medium">Period</th>
@@ -284,6 +294,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
 
@@ -318,7 +329,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                     onClick={() => void transition(verb)}
                     disabled={busy}
                     data-testid={`contract-${verb}-btn`}
-                    className={`inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
+                    className={`inline-flex w-full items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
                       destructive
                         ? 'border border-destructive/40 text-destructive hover:bg-destructive/10'
                         : verb === 'activate' || verb === 'resume'
@@ -326,23 +337,25 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                           : 'border hover:bg-muted'
                     }`}
                   >
-                    {TRANSITION_LABELS[verb]}
+                    {pending === verb && <Spinner />}
+                    {pending === verb ? `${TRANSITION_LABELS[verb]}…` : TRANSITION_LABELS[verb]}
                   </button>
                 );
               })}
             </div>
           )}
 
-          {/* Generate now */}
+          {/* Generate now (gated by a confirm — it bills the client immediately) */}
           {can('contracts', 'manage') && canGenerate && (
             <button
               type="button"
-              onClick={() => void generateNow()}
+              onClick={() => setGenOpen(true)}
               disabled={busy}
               data-testid="generate-now-btn"
-              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
-              Generate invoice now
+              {pending === 'generate' && <Spinner />}
+              {pending === 'generate' ? 'Generating…' : 'Generate invoice now'}
             </button>
           )}
 
@@ -361,10 +374,26 @@ export default function ContractDetail({ detail, onChanged }: Props) {
       </div>
 
       <ConfirmDialog
+        open={genOpen}
+        onClose={() => setGenOpen(false)}
+        onConfirm={() => void generateNow()}
+        isLoading={pending === 'generate'}
+        variant="warning"
+        title="Generate invoice now"
+        message={
+          `This bills ${contract.name} for the current period right away` +
+          `${estimate ? ` — about ${formatMoney(estimate.periodTotal, currency)}` : ''}` +
+          `${contract.autoIssue ? ', issued immediately.' : ' as a draft you can review.'}`
+        }
+        confirmLabel="Generate invoice"
+        confirmTestId="contract-generate-confirm"
+      />
+
+      <ConfirmDialog
         open={delOpen}
         onClose={() => setDelOpen(false)}
         onConfirm={() => void remove()}
-        isLoading={busy}
+        isLoading={pending === 'delete'}
         title="Delete draft contract"
         message="This permanently deletes the draft contract. This cannot be undone."
         confirmLabel="Delete draft"

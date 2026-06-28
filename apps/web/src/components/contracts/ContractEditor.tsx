@@ -10,6 +10,7 @@ import {
   removeContractLine,
   contractTransition,
   getContractEstimate,
+  formatCadenceAdverb,
   type ContractBillingTiming,
   type ContractDetail,
   type ContractLine,
@@ -17,12 +18,20 @@ import {
   type ContractEstimate,
 } from '../../lib/api/contracts';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
+import SearchableSelect from '../shared/SearchableSelect';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import Spinner from '../shared/Spinner';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 import { formatMoney } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
+
+/** The subset the lines table + estimate read. In edit mode these are persisted
+ *  ContractLines; in create mode they're lines staged locally before the
+ *  contract exists, committed atomically with the create. */
+type LineView = Pick<ContractLine, 'id' | 'lineType' | 'description' | 'unitPrice' | 'manualQuantity' | 'siteId' | 'taxable' | 'catalogItemId'>;
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -57,7 +66,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const isCreate = !detail;
   const contract = detail?.contract;
 
-  const [busy, setBusy] = useState(false);
+  // Which mutation is in flight, so the active button (not all of them) shows a
+  // spinner + verb. null = idle; `busy` is derived for the existing disable
+  // guards so every in-flight path still blocks concurrent mutations.
+  const [pending, setPending] = useState<null | 'create' | 'save' | 'addLine' | 'removeLine' | 'activate'>(null);
+  const busy = pending !== null;
+
+  // Confirmation gates for the two irreversible money-moments: removing a
+  // billing line and activating (which starts real invoice generation).
+  const [removeTarget, setRemoveTarget] = useState<LineView | null>(null);
+  const [confirmActivate, setConfirmActivate] = useState(false);
 
   // ---- header form ---------------------------------------------------------
   const [orgId, setOrgId] = useState(contract?.orgId ?? presetOrgId ?? '');
@@ -94,7 +112,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [lineSiteId, setLineSiteId] = useState('');
   const [lineCatalogId, setLineCatalogId] = useState('');
 
-  const lines: ContractLine[] = detail?.lines ?? [];
+  // Lines staged locally in create mode (no contract id yet); committed
+  // atomically with the contract on save. Edit mode reads persisted lines.
+  const [draftLines, setDraftLines] = useState<LineView[]>([]);
+  const lines: LineView[] = isCreate ? draftLines : (detail?.lines ?? []);
 
   const loadOrgs = useCallback(async () => {
     const res = await fetchWithAuth('/orgs/organizations');
@@ -146,6 +167,18 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const intervalIsValid = intervalMonths >= 1 && intervalMonths <= 60;
   const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalIsValid;
 
+  // First unmet requirement, surfaced under the disabled save button so the user
+  // never has to guess why it's greyed out.
+  const missingHint = !orgId
+    ? 'Select an organization to save.'
+    : name.trim().length === 0
+      ? 'Add a contract name to save.'
+      : !startDate
+        ? 'Set a start date to save.'
+        : !intervalIsValid
+          ? 'Enter a billing interval of 1–60 months.'
+          : null;
+
   // ---- live "Estimated this period" ----------------------------------------
   // flat/manual contribute qty×price; per_device/per_seat are resolved by the
   // generator from live counts, so we surface them as "auto" without a number.
@@ -175,10 +208,45 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
   const refresh = useCallback(() => { onChanged?.(); void loadEstimate(); }, [onChanged, loadEstimate]);
 
+  // ---- create-mode line staging (local; committed with the create) ----------
+  const addDraftLine = useCallback(() => {
+    if (!lineDesc.trim()) return;
+    setDraftLines((prev) => [...prev, {
+      id: crypto.randomUUID(),
+      lineType,
+      description: lineDesc.trim(),
+      unitPrice: linePrice,
+      manualQuantity: lineType === 'manual' ? lineQty : null,
+      siteId: lineType === 'per_device' ? (lineSiteId || null) : null,
+      catalogItemId: lineCatalogId || null,
+      taxable: lineTaxable,
+    }]);
+    setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
+    setLineTaxable(false); setLineSiteId(''); setLineCatalogId('');
+  }, [lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable]);
+
+  // Staged lines aren't persisted yet, so removal is instant (no confirm —
+  // unlike edit mode, where Remove deletes a real billing line).
+  const removeDraftLine = useCallback((id: string) => {
+    setDraftLines((prev) => prev.filter((l) => l.id !== id));
+  }, []);
+
+  /** Map staged lines to the contractLineInputSchema shape (omit absent
+   *  optionals rather than sending null, which the string schema rejects). */
+  const draftLinePayload = useCallback(() => draftLines.map((l) => ({
+    lineType: l.lineType,
+    description: l.description,
+    unitPrice: l.unitPrice,
+    taxable: l.taxable,
+    ...(l.lineType === 'manual' ? { manualQuantity: l.manualQuantity ?? '0' } : {}),
+    ...(l.lineType === 'per_device' && l.siteId ? { siteId: l.siteId } : {}),
+    ...(l.catalogItemId ? { catalogItemId: l.catalogItemId } : {}),
+  })), [draftLines]);
+
   // ---- create flow ---------------------------------------------------------
   const saveCreate = useCallback(async () => {
     if (busy || !canSaveHeader) return;
-    setBusy(true);
+    setPending('create');
     try {
       if (autoRenew && !renewalTermMonths) {
         showToast({ type: 'error', message: 'Enter a renewal term (months) before saving.' });
@@ -198,6 +266,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           renewalNoticeDays: autoRenew ? (renewalNoticeDays === '' ? null : Number(renewalNoticeDays)) : null,
           notes: notes.trim() || null,
           terms: terms.trim() || null,
+          // Commit staged lines atomically with the contract; on failure nothing
+          // persists and the staged lines stay in the form for a retry.
+          lines: draftLinePayload(),
         }),
         errorFallback: 'Could not create the contract.',
         successMessage: 'Contract created',
@@ -208,14 +279,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } catch (err) {
       handleActionError(err, 'Could not create the contract.');
     } finally {
-      setBusy(false);
+      setPending(null);
     }
-  }, [busy, canSaveHeader, orgId, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms]);
+  }, [busy, canSaveHeader, orgId, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms, draftLinePayload]);
 
   // ---- edit flow -----------------------------------------------------------
   const saveHeader = useCallback(async () => {
     if (busy || !contract || !canSaveHeader) return;
-    setBusy(true);
+    setPending('save');
     try {
       if (autoRenew && !renewalTermMonths) {
         showToast({ type: 'error', message: 'Enter a renewal term (months) before saving.' });
@@ -243,13 +314,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } catch (err) {
       handleActionError(err, 'Could not save the contract.');
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }, [busy, contract, canSaveHeader, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms, refresh]);
 
   const addLine = useCallback(async () => {
     if (busy || !contract || !lineDesc.trim()) return;
-    setBusy(true);
+    setPending('addLine');
     try {
       await runAction({
         request: () => addContractLine(contract.id, {
@@ -274,13 +345,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } catch (err) {
       handleActionError(err, 'Could not add the line.');
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable, refresh]);
 
   const removeLine = useCallback(async (lineId: string) => {
     if (busy || !contract) return;
-    setBusy(true);
+    setPending('removeLine');
     try {
       await runAction({
         request: () => removeContractLine(contract.id, lineId),
@@ -292,13 +363,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } catch (err) {
       handleActionError(err, 'Could not remove the line.');
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }, [busy, contract, refresh]);
 
   const activate = useCallback(async () => {
     if (busy || !contract) return;
-    setBusy(true);
+    setPending('activate');
     try {
       await runAction({
         request: () => contractTransition(contract.id, 'activate'),
@@ -310,7 +381,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } catch (err) {
       handleActionError(err, 'Could not activate the contract.');
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }, [busy, contract, refresh]);
 
@@ -319,154 +390,182 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     [sites],
   );
 
+  // Linked catalog item (if any) and whether the entered unit price diverges
+  // from it, so we can warn instead of silently letting the two disagree.
+  const linkedCatalogItem = useMemo(
+    () => catalogItems.find((i) => i.id === lineCatalogId) ?? null,
+    [catalogItems, lineCatalogId],
+  );
+  const catalogPriceMismatch =
+    linkedCatalogItem != null && Number(linkedCatalogItem.unitPrice) !== Number(linePrice || '0');
+
   return (
     <div className="space-y-6" data-testid="contract-editor">
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header form + lines ─────────────────────────────────────── */}
         <div className="space-y-6">
           <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-header-form">
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contract</h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {isCreate && (
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                  Organization
-                  <select
-                    value={orgId}
-                    onChange={(e) => setOrgId(e.target.value)}
-                    data-testid="contract-form-org"
-                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    <option value="">Select an organization…</option>
-                    {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                  </select>
-                </label>
-              )}
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                Name
-                <input
-                  type="text" value={name} onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Managed Services — Acme Co"
-                  data-testid="contract-form-name"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Billing timing
-                <select
-                  value={billingTiming} onChange={(e) => setBillingTiming(e.target.value as ContractBillingTiming)}
-                  data-testid="contract-form-timing"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  <option value="advance">In advance</option>
-                  <option value="arrears">In arrears</option>
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Billing cadence
-                <select
-                  value={intervalCustom ? 'custom' : String(intervalMonths)}
-                  onChange={(e) => {
-                    if (e.target.value === 'custom') { setIntervalCustom(true); return; }
-                    setIntervalCustom(false);
-                    setIntervalMonths(Number(e.target.value));
-                  }}
-                  data-testid="contract-form-interval"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                  <option value="custom">Custom…</option>
-                </select>
-              </label>
-              {intervalCustom && (
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Interval (months)
-                  <input
-                    type="number" min="1" max="60" value={intervalMonths}
-                    onChange={(e) => setIntervalMonths(Number(e.target.value))}
-                    data-testid="contract-form-interval-custom"
-                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                  />
-                </label>
-              )}
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Start date
-                <input
-                  type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-                  data-testid="contract-form-start"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                End date (optional)
-                <input
-                  type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); if (!e.target.value) setAutoRenew(false); }}
-                  data-testid="contract-form-end"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </label>
-              <label className="flex items-center gap-2 text-sm sm:col-span-2">
-                <input
-                  type="checkbox" checked={autoIssue} onChange={(e) => setAutoIssue(e.target.checked)}
-                  data-testid="contract-form-auto-issue"
-                />
-                Auto-issue generated invoices (otherwise they land as drafts)
-              </label>
-              <div className="sm:col-span-2">
-                <label className="flex items-center gap-2 text-sm" data-testid="contract-auto-renew-toggle">
-                  <input
-                    type="checkbox" checked={autoRenew} disabled={!endDate}
-                    onChange={(e) => setAutoRenew(e.target.checked)}
-                  />
-                  <span>Auto-renew at end of term{!endDate ? ' (set an end date first)' : ''}</span>
-                </label>
-                {autoRenew && (
-                  <div className="mt-2 grid grid-cols-2 gap-3" data-testid="contract-renewal-fields">
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Renewal term (months)
-                      <input
-                        type="number" min={1} max={120} value={renewalTermMonths}
-                        onChange={(e) => setRenewalTermMonths(e.target.value)}
-                        data-testid="contract-renewal-term"
-                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Advance notice (days)
-                      <input
-                        type="number" min={0} max={365} value={renewalNoticeDays}
-                        onChange={(e) => setRenewalNoticeDays(e.target.value)}
-                        data-testid="contract-renewal-notice-days"
-                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                    </label>
+            <div className="space-y-5">
+              {/* Identity */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {isCreate && (
+                  <div className="flex flex-col gap-1 text-xs font-medium text-foreground/85 sm:col-span-2">
+                    Organization
+                    <SearchableSelect
+                      options={orgs}
+                      value={orgId}
+                      onChange={setOrgId}
+                      placeholder="Search organizations…"
+                      ariaLabel="Organization"
+                      testId="contract-form-org"
+                    />
                   </div>
                 )}
+                <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85 sm:col-span-2">
+                  Name
+                  <input
+                    type="text" value={name} onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g. Managed Services — Acme Co"
+                    data-testid="contract-form-name"
+                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </label>
               </div>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                Notes (optional)
-                <textarea
-                  value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
-                  data-testid="contract-form-notes"
-                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                Terms (optional, shown on the invoice)
-                <textarea
-                  value={terms} onChange={(e) => setTerms(e.target.value)} rows={2}
-                  data-testid="contract-form-terms"
-                  placeholder="e.g. Net 30. Auto-renews unless cancelled 30 days prior."
-                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </label>
+
+              {/* Billing schedule */}
+              <fieldset className="m-0 space-y-3 border-0 p-0">
+                <legend className="mb-1 p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Billing schedule</legend>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    Billing timing
+                    <select
+                      value={billingTiming} onChange={(e) => setBillingTiming(e.target.value as ContractBillingTiming)}
+                      data-testid="contract-form-timing"
+                      className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      <option value="advance">In advance</option>
+                      <option value="arrears">In arrears</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    Billing cadence
+                    <select
+                      value={intervalCustom ? 'custom' : String(intervalMonths)}
+                      onChange={(e) => {
+                        if (e.target.value === 'custom') { setIntervalCustom(true); return; }
+                        setIntervalCustom(false);
+                        setIntervalMonths(Number(e.target.value));
+                      }}
+                      data-testid="contract-form-interval"
+                      className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                      <option value="custom">Custom…</option>
+                    </select>
+                  </label>
+                  {intervalCustom && (
+                    <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                      Interval (months)
+                      <input
+                        type="number" min="1" max="60" value={intervalMonths}
+                        onChange={(e) => setIntervalMonths(Number(e.target.value))}
+                        data-testid="contract-form-interval-custom"
+                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                  )}
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    Start date
+                    <input
+                      type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+                      data-testid="contract-form-start"
+                      className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    End date (optional)
+                    <input
+                      type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); if (!e.target.value) setAutoRenew(false); }}
+                      data-testid="contract-form-end"
+                      className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                </div>
+              </fieldset>
+
+              {/* Renewal & issuing */}
+              <fieldset className="m-0 space-y-3 border-0 p-0">
+                <legend className="mb-1 p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Renewal &amp; issuing</legend>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox" checked={autoIssue} onChange={(e) => setAutoIssue(e.target.checked)}
+                    data-testid="contract-form-auto-issue"
+                  />
+                  Auto-issue generated invoices (otherwise they land as drafts)
+                </label>
+                <div>
+                  <label className="flex items-center gap-2 text-sm" data-testid="contract-auto-renew-toggle">
+                    <input
+                      type="checkbox" checked={autoRenew} disabled={!endDate}
+                      onChange={(e) => setAutoRenew(e.target.checked)}
+                    />
+                    <span>Auto-renew at end of term{!endDate ? ' (set an end date first)' : ''}</span>
+                  </label>
+                  {autoRenew && (
+                    <div className="mt-2 grid grid-cols-2 gap-3" data-testid="contract-renewal-fields">
+                      <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                        Renewal term (months)
+                        <input
+                          type="number" min={1} max={120} value={renewalTermMonths}
+                          onChange={(e) => setRenewalTermMonths(e.target.value)}
+                          data-testid="contract-renewal-term"
+                          className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                        Advance notice (days)
+                        <input
+                          type="number" min={0} max={365} value={renewalNoticeDays}
+                          onChange={(e) => setRenewalNoticeDays(e.target.value)}
+                          data-testid="contract-renewal-notice-days"
+                          className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                      </label>
+                    </div>
+                  )}
+                </div>
+              </fieldset>
+
+              {/* Invoice text */}
+              <fieldset className="m-0 space-y-3 border-0 p-0">
+                <legend className="mb-1 p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Invoice text</legend>
+                <div className="grid grid-cols-1 gap-3">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    Notes (optional)
+                    <textarea
+                      value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+                      data-testid="contract-form-notes"
+                      className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    Terms (optional, shown on the invoice)
+                    <textarea
+                      value={terms} onChange={(e) => setTerms(e.target.value)} rows={2}
+                      data-testid="contract-form-terms"
+                      placeholder="e.g. Net 30. Auto-renews unless cancelled 30 days prior."
+                      className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                </div>
+              </fieldset>
             </div>
           </div>
 
-          {/* Lines (edit mode only — a contract needs an id before lines attach) */}
-          {!isCreate && (
-            <div className="space-y-4">
-              <div className="rounded-lg border bg-card shadow-sm">
-                <table className="w-full text-sm" data-testid="contract-editor-lines">
+          {/* Lines — staged locally in create mode, persisted in edit mode */}
+          <div className="space-y-4">
+              <div className="overflow-x-auto rounded-lg border bg-card shadow-sm">
+                <table className="w-full min-w-[34rem] text-sm" data-testid="contract-editor-lines">
                   <thead>
                     <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                       <th className="px-3 py-2 font-medium">Type</th>
@@ -474,7 +573,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       <th className="px-3 py-2 text-right font-medium">Unit price</th>
                       <th className="px-3 py-2 text-right font-medium">Qty</th>
                       <th className="px-3 py-2 text-center font-medium">Tax</th>
-                      <th className="px-3 py-2" />
+                      <th className="px-3 py-2"><span className="sr-only">Actions</span></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -502,11 +601,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                                   : <span className="text-muted-foreground">auto</span>)
                               : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                           </td>
-                          <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
+                          <td className="px-3 py-2 text-center">
+                            <span aria-hidden="true">{l.taxable ? '✓' : '—'}</span>
+                            <span className="sr-only">{l.taxable ? 'Taxable' : 'Not taxable'}</span>
+                          </td>
                           <td className="px-3 py-2 text-right">
                             {can('contracts', 'write') && (
                               <button
-                                type="button" onClick={() => void removeLine(l.id)} disabled={busy}
+                                type="button" onClick={() => isCreate ? removeDraftLine(l.id) : setRemoveTarget(l)} disabled={busy}
                                 data-testid={`line-remove-${idx}`}
                                 className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                               >
@@ -524,7 +626,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
               {/* Add line */}
               <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-add-line">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
                     Line type
                     <select
                       value={lineType}
@@ -537,7 +639,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       ))}
                     </select>
                   </label>
-                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
                     Description
                     <input
                       type="text" value={lineDesc} onChange={(e) => setLineDesc(e.target.value)}
@@ -546,7 +648,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </label>
-                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
                     Unit price
                     <input
                       type="number" min="0" step="0.01" value={linePrice}
@@ -556,7 +658,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     />
                   </label>
                   {lineType === 'manual' && (
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
                       Quantity
                       <input
                         type="number" min="0" step="0.01" value={lineQty}
@@ -567,7 +669,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     </label>
                   )}
                   {lineType === 'per_device' && (
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
                       Site (optional — scopes the device count)
                       <select
                         value={lineSiteId} onChange={(e) => setLineSiteId(e.target.value)}
@@ -580,13 +682,26 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     </label>
                   )}
                   {catalogItems.length > 0 && (
-                    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <div className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
                       Link catalog item (optional)
                       {lineCatalogId ? (
-                        <span className="inline-flex h-9 items-center gap-1.5 self-start rounded-md border bg-muted/40 px-2.5 text-sm text-foreground" data-testid="contract-line-catalog-picked">
-                          <span className="font-medium">{catalogItems.find((i) => i.id === lineCatalogId)?.name ?? 'Item'}</span>
-                          <button type="button" onClick={() => setLineCatalogId('')} aria-label="Clear catalog link" className="ml-1 text-muted-foreground hover:text-foreground">×</button>
-                        </span>
+                        <div className="flex flex-col gap-1" data-testid="contract-line-catalog-picked">
+                          <span className="inline-flex h-9 items-center gap-1 self-start rounded-md border bg-muted/40 pl-2.5 pr-1 text-sm text-foreground">
+                            <span className="font-medium">{linkedCatalogItem?.name ?? 'Item'}</span>
+                            <button
+                              type="button" onClick={() => setLineCatalogId('')}
+                              aria-label="Clear catalog link"
+                              className="inline-flex h-6 w-6 items-center justify-center rounded text-base leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+                            >
+                              ×
+                            </button>
+                          </span>
+                          {catalogPriceMismatch && linkedCatalogItem && (
+                            <span className="text-[11px] font-normal text-amber-600 dark:text-amber-500" data-testid="contract-line-catalog-price-note">
+                              Catalog lists {formatMoney(linkedCatalogItem.unitPrice, contract?.currencyCode)} — keeping your entered price.
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <CatalogItemPicker
                           items={catalogItems}
@@ -594,7 +709,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           onSelect={(it) => {
                             setLineCatalogId(it.id);
                             if (!lineDesc.trim()) setLineDesc(it.name);
-                            setLinePrice(it.unitPrice);
+                            // Don't clobber a price the user already typed (e.g. a
+                            // negotiated rate); only fill from the catalog when the
+                            // field is still at its default.
+                            if (linePrice === '' || Number(linePrice) === 0) setLinePrice(it.unitPrice);
                           }}
                           testId="contract-line-catalog-picker"
                           placeholder="Search catalog…"
@@ -618,25 +736,25 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim()}
+                      type="button" onClick={() => isCreate ? addDraftLine() : void addLine()} disabled={busy || !lineDesc.trim()}
                       data-testid="add-line-btn"
-                      className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      className="inline-flex h-9 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      Add line
+                      {pending === 'addLine' && <Spinner />}
+                      {pending === 'addLine' ? 'Adding…' : 'Add line'}
                     </button>
                   )}
                 </div>
               </div>
-            </div>
-          )}
+          </div>
         </div>
 
         {/* ── summary + actions ───────────────────────────────────────── */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-estimate">
+          <div className="rounded-lg border border-primary/30 bg-primary/[0.03] p-4 shadow-sm" data-testid="contract-estimate">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Estimated this period</h3>
-            {isCreate ? (
-              <p className="text-sm text-muted-foreground">Save the contract, then add lines to see an estimate.</p>
+            {isCreate && lines.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Add a line below to see the estimated total.</p>
             ) : (
               <>
                 <p className="text-2xl font-semibold tabular-nums" data-testid="contract-estimate-total">
@@ -665,32 +783,45 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           <div className="space-y-2">
             {isCreate ? (
               can('contracts', 'write') && (
-                <button
-                  type="button" onClick={() => void saveCreate()} disabled={busy || !canSaveHeader}
-                  data-testid="save-contract-btn"
-                  className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-                >
-                  Create contract
-                </button>
+                <>
+                  <button
+                    type="button" onClick={() => void saveCreate()} disabled={busy || !canSaveHeader}
+                    data-testid="save-contract-btn"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    {pending === 'create' && <Spinner />}
+                    {pending === 'create' ? 'Creating…' : 'Create contract'}
+                  </button>
+                  {!canSaveHeader && missingHint && (
+                    <p className="text-center text-xs text-muted-foreground" data-testid="contract-save-hint">{missingHint}</p>
+                  )}
+                </>
               )
             ) : (
               <>
                 {can('contracts', 'write') && (
-                  <button
-                    type="button" onClick={() => void saveHeader()} disabled={busy || !canSaveHeader}
-                    data-testid="save-contract-btn"
-                    className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-                  >
-                    Save changes
-                  </button>
+                  <>
+                    <button
+                      type="button" onClick={() => void saveHeader()} disabled={busy || !canSaveHeader}
+                      data-testid="save-contract-btn"
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    >
+                      {pending === 'save' && <Spinner />}
+                      {pending === 'save' ? 'Saving…' : 'Save changes'}
+                    </button>
+                    {!canSaveHeader && missingHint && (
+                      <p className="text-center text-xs text-muted-foreground" data-testid="contract-save-hint">{missingHint}</p>
+                    )}
+                  </>
                 )}
                 {can('contracts', 'manage') && contract?.status === 'draft' && (
                   <button
-                    type="button" onClick={() => void activate()} disabled={busy || lines.length === 0}
+                    type="button" onClick={() => setConfirmActivate(true)} disabled={busy || lines.length === 0}
                     data-testid="activate-contract-btn"
-                    className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-primary bg-primary/10 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
                   >
-                    Activate contract
+                    {pending === 'activate' && <Spinner />}
+                    {pending === 'activate' ? 'Activating…' : 'Activate contract'}
                   </button>
                 )}
                 {contract?.status === 'draft' && lines.length === 0 && (
@@ -703,6 +834,40 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        onClose={() => setRemoveTarget(null)}
+        onConfirm={() => { const id = removeTarget?.id; setRemoveTarget(null); if (id) void removeLine(id); }}
+        isLoading={busy}
+        variant="destructive"
+        title="Remove contract line"
+        message={
+          removeTarget
+            ? `Remove "${removeTarget.description}" from this contract? This changes what the client is billed each period.`
+            : ''
+        }
+        confirmLabel="Remove line"
+        confirmTestId="contract-line-remove-confirm"
+      />
+
+      <ConfirmDialog
+        open={confirmActivate}
+        onClose={() => setConfirmActivate(false)}
+        onConfirm={() => { setConfirmActivate(false); void activate(); }}
+        isLoading={busy}
+        variant="warning"
+        title="Activate contract"
+        message={
+          `Activating starts billing for "${name.trim() || 'this contract'}". It will generate ` +
+          `${liveEstimate ? formatMoney(liveEstimate.periodTotal, contract?.currencyCode) : formatMoney(estimate.known, contract?.currencyCode)}` +
+          `${!liveEstimate && estimate.hasAuto ? ' plus auto-counted device/seat lines' : ''} ` +
+          `${formatCadenceAdverb(intervalMonths)}, starting ${startDate ? new Date(`${startDate}T00:00:00`).toLocaleDateString() : 'the start date'}. ` +
+          `${autoIssue ? 'Invoices are issued automatically.' : 'Invoices land as drafts for review.'}`
+        }
+        confirmLabel="Activate contract"
+        confirmTestId="contract-activate-confirm"
+      />
     </div>
   );
 }

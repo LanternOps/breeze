@@ -31,6 +31,27 @@ describe('createContractSchema', () => {
     });
     expect(r.success).toBe(true);
   });
+  // Single-screen create: lines are committed atomically with the contract.
+  it('accepts an optional lines[] array of valid lines', () => {
+    const r = createContractSchema.safeParse({
+      orgId: '11111111-1111-1111-1111-111111111111', name: 'Acme MSP', billingTiming: 'advance',
+      intervalMonths: 1, startDate: '2026-07-01',
+      lines: [
+        { lineType: 'flat', description: 'Base fee', unitPrice: '500.00', taxable: false },
+        { lineType: 'manual', description: 'Onboarding', unitPrice: '150.00', manualQuantity: '2', taxable: true },
+      ],
+    });
+    expect(r.success).toBe(true);
+  });
+  it('rejects a create whose lines[] contains a malformed line (whole create fails)', () => {
+    const r = createContractSchema.safeParse({
+      orgId: '11111111-1111-1111-1111-111111111111', name: 'Acme MSP', billingTiming: 'advance',
+      intervalMonths: 1, startDate: '2026-07-01',
+      // manual line missing required manualQuantity → the line schema's refine fails
+      lines: [{ lineType: 'manual', description: 'Bad', unitPrice: '10.00', taxable: false }],
+    });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe('auto-renew fields', () => {

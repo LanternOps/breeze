@@ -74,6 +74,7 @@ export default function CatalogItemPicker({
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"
+        aria-activedescendant={open && results.length > 0 ? `${listId}-opt-${active}` : undefined}
         value={query}
         disabled={disabled}
         placeholder={placeholder}
@@ -91,7 +92,7 @@ export default function CatalogItemPicker({
           data-testid={`${testId}-list`}
         >
           {results.map((item, idx) => (
-            <li key={item.id} role="option" aria-selected={idx === active}>
+            <li key={item.id} id={`${listId}-opt-${idx}`} role="option" aria-selected={idx === active}>
               <button
                 type="button"
                 onMouseEnter={() => setActive(idx)}

@@ -37,6 +37,10 @@ export const createContractSchema = z.object({
   autoRenew: z.boolean().optional(),
   renewalTermMonths: z.number().int().min(1).max(120).nullable().optional(),
   renewalNoticeDays: z.number().int().min(0).max(365).nullable().optional(),
+  // Optional lines to create atomically with the contract (single-screen create).
+  // Each line is validated by the same schema the per-line POST endpoint uses, so
+  // a malformed line rejects the whole create (the request runs in one transaction).
+  lines: z.array(contractLineInputSchema).max(200).optional(),
 }).refine(
   (c) => c.endDate == null || c.endDate > c.startDate,
   { message: 'endDate must be after startDate', path: ['endDate'] }

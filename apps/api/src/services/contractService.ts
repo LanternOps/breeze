@@ -39,6 +39,7 @@ export async function createContract(input: {
   orgId: string; name: string; billingTiming: 'advance' | 'arrears'; intervalMonths: number;
   startDate: string; endDate?: string | null; autoIssue?: boolean; currencyCode?: string; notes?: string | null; terms?: string | null;
   autoRenew?: boolean; renewalTermMonths?: number | null; renewalNoticeDays?: number | null;
+  lines?: ContractLineInput[];
 }, actor: ContractActor) {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
@@ -55,6 +56,21 @@ export async function createContract(input: {
     autoRenew: input.autoRenew ?? false, renewalTermMonths: input.renewalTermMonths ?? null,
     renewalNoticeDays: input.renewalNoticeDays ?? null,
   }).returning();
+  // Insert any supplied lines in the same (request-scoped) transaction so the
+  // whole create is atomic — a bad line rolls back the contract too. Mapping
+  // mirrors addContractLineToContract exactly (denormalized orgId for RLS).
+  if (input.lines?.length) {
+    await db.insert(contractLines).values(
+      input.lines.map((l, i) => ({
+        contractId: row!.id, orgId: row!.orgId,
+        lineType: l.lineType, description: l.description,
+        catalogItemId: l.catalogItemId ?? null, unitPrice: l.unitPrice,
+        manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+        siteId: l.lineType === 'per_device' ? (l.siteId ?? null) : null,
+        taxable: l.taxable, sortOrder: l.sortOrder ?? i,
+      })),
+    );
+  }
   return row!;
 }
 

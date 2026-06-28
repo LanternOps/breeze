@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ContractEditor from './ContractEditor';
@@ -53,14 +53,14 @@ describe('ContractEditor (create)', () => {
 
   it('includes the Terms field in the create payload', async () => {
     render(<ContractEditor />);
-    const orgSelect = await screen.findByTestId('contract-form-org');
-    // The <option>s populate only after the async /orgs/organizations fetch
-    // resolves. Wait for the option before selecting it — otherwise the
-    // controlled <select> rejects a value with no matching option, orgId stays
-    // empty, canSaveHeader is false, and the save no-ops (flaky under CI load).
-    await within(orgSelect).findByRole('option', { name: 'Acme' });
-
-    fireEvent.change(orgSelect, { target: { value: 'org-1' } });
+    // The org picker is a searchable combobox: focus to open, type to filter,
+    // then click the matching option. The option only renders after the async
+    // /orgs/organizations fetch resolves, so findByTestId waits it out —
+    // otherwise orgId stays empty, canSaveHeader is false, and save no-ops.
+    const orgInput = await screen.findByTestId('contract-form-org-input');
+    fireEvent.focus(orgInput);
+    fireEvent.change(orgInput, { target: { value: 'Acme' } });
+    fireEvent.click(await screen.findByTestId('contract-form-org-option-org-1'));
     fireEvent.change(screen.getByTestId('contract-form-name'), { target: { value: 'Acme MSA' } });
     fireEvent.change(screen.getByTestId('contract-form-terms'), { target: { value: 'Net 30. Auto-renews.' } });
     fireEvent.click(screen.getByTestId('save-contract-btn'));
@@ -69,5 +69,36 @@ describe('ContractEditor (create)', () => {
     expect((api.createContract as any).mock.calls[0][0]).toMatchObject({
       orgId: 'org-1', name: 'Acme MSA', terms: 'Net 30. Auto-renews.',
     });
+  });
+
+  it('explains why the create button is disabled until requirements are met', async () => {
+    render(<ContractEditor />);
+    // No org selected yet → the save button is disabled with a reason shown.
+    const hint = await screen.findByTestId('contract-save-hint');
+    expect(hint).toHaveTextContent('Select an organization to save.');
+    expect(screen.getByTestId('save-contract-btn')).toBeDisabled();
+  });
+
+  it('stages lines locally and sends them in the atomic create payload', async () => {
+    render(<ContractEditor />);
+    const orgInput = await screen.findByTestId('contract-form-org-input');
+    fireEvent.focus(orgInput);
+    fireEvent.change(orgInput, { target: { value: 'Acme' } });
+    fireEvent.click(await screen.findByTestId('contract-form-org-option-org-1'));
+    fireEvent.change(screen.getByTestId('contract-form-name'), { target: { value: 'Acme MSA' } });
+
+    // The lines table + add-line form are available in create mode (no save-first
+    // step). Staging a line is local — it must NOT hit the line API.
+    fireEvent.change(screen.getByTestId('contract-line-desc'), { target: { value: 'Workstation mgmt' } });
+    fireEvent.change(screen.getByTestId('contract-line-price'), { target: { value: '40.00' } });
+    fireEvent.click(screen.getByTestId('add-line-btn'));
+    expect(await screen.findByText('Workstation mgmt')).toBeInTheDocument();
+    expect(api.addContractLine).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('save-contract-btn'));
+    await waitFor(() => expect(api.createContract).toHaveBeenCalled());
+    expect((api.createContract as any).mock.calls[0][0].lines).toEqual([
+      { lineType: 'flat', description: 'Workstation mgmt', unitPrice: '40.00', taxable: false },
+    ]);
   });
 });

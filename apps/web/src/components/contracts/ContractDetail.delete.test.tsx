@@ -99,3 +99,28 @@ describe('ContractDetail — delete action', () => {
     });
   });
 });
+
+describe('ContractDetail — generate invoice action', () => {
+  it('gates "Generate invoice now" behind a confirm before billing the client', async () => {
+    state.permissions = [{ resource: 'contracts', action: 'manage' }];
+    const generate = vi.mocked(contractsApi.generateContractInvoice);
+    generate.mockResolvedValue(resp({ data: { invoiceId: 'inv-1' } }));
+
+    const { navigateTo } = await import('@/lib/navigation');
+    const navigateMock = vi.mocked(navigateTo);
+
+    render(<ContractDetail detail={activeDetail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('contract-detail')).toBeInTheDocument());
+
+    // Clicking the button opens a confirm — it must NOT generate immediately.
+    fireEvent.click(screen.getByTestId('generate-now-btn'));
+    await waitFor(() => expect(screen.getByTestId('contract-generate-confirm')).toBeInTheDocument());
+    expect(generate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('contract-generate-confirm'));
+    await waitFor(() => {
+      expect(generate).toHaveBeenCalledWith('ct-1');
+      expect(navigateMock).toHaveBeenCalledWith('/billing/invoices/inv-1');
+    });
+  });
+});

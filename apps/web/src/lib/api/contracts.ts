@@ -193,6 +193,20 @@ export function formatCadence(intervalMonths: number): string {
   }
 }
 
+/** Adverb form for inline prose ("bills monthly", "renews annually"). */
+export function formatCadenceAdverb(intervalMonths: number): string {
+  switch (intervalMonths) {
+    case 1:
+      return 'monthly';
+    case 3:
+      return 'quarterly';
+    case 12:
+      return 'annually';
+    default:
+      return `every ${intervalMonths} months`;
+  }
+}
+
 /** Normalize a per-period value to an estimated monthly figure (annual ÷ 12,
  *  quarterly ÷ 3) for an "Est. monthly recurring" rollup. */
 export function monthlyValue(periodValue: string | number | null | undefined, intervalMonths: number): number {

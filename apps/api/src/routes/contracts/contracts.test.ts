@@ -86,6 +86,39 @@ describe('contract crud routes', () => {
     expect(svc.createContract).not.toHaveBeenCalled();
   });
 
+  it('POST / forwards a lines[] array to the service (atomic single-screen create)', async () => {
+    (svc.createContract as any).mockResolvedValue({ id: CONTRACT_ID, status: 'draft' });
+    const lines = [
+      { lineType: 'flat', description: 'Base fee', unitPrice: '500.00', taxable: false },
+      { lineType: 'manual', description: 'Onboarding', unitPrice: '150.00', manualQuantity: '2', taxable: true },
+    ];
+    const res = await app().request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, name: 'Managed Services', billingTiming: 'advance',
+        intervalMonths: 1, startDate: '2026-07-01', lines,
+      })
+    });
+    expect(res.status).toBe(200);
+    expect(svc.createContract).toHaveBeenCalledOnce();
+    expect((svc.createContract as any).mock.calls[0][0]).toMatchObject({ lines });
+  });
+
+  it('POST / rejects a create whose lines[] contains a malformed line (400, no service call)', async () => {
+    const res = await app().request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, name: 'Managed Services', billingTiming: 'advance',
+        intervalMonths: 1, startDate: '2026-07-01',
+        lines: [{ lineType: 'manual', description: 'no qty', unitPrice: '10.00', taxable: false }],
+      })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.createContract).not.toHaveBeenCalled();
+  });
+
   it('GET / lists contracts', async () => {
     (svc.listContracts as any).mockResolvedValue([{ id: CONTRACT_ID }]);
     const res = await app().request('/', { method: 'GET' });

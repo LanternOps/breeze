@@ -54,6 +54,24 @@ describe('contractService CRUD', () => {
     expect(got.lines).toHaveLength(0);
   });
 
+  it('creates a contract with lines atomically (single-screen create)', async () => {
+    const { actor, orgId } = await seedOrg();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'WithLines', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01',
+      lines: [
+        { lineType: 'flat', description: 'Base fee', unitPrice: '500.00', taxable: false },
+        { lineType: 'manual', description: 'Onboarding', unitPrice: '150.00', manualQuantity: '2', taxable: true },
+      ],
+    }, actor));
+    const got = await withSystemDbAccessContext(() => getContract(c.id, actor));
+    expect(got.lines).toHaveLength(2);
+    // Persisted in submitted order, with denormalized orgId and the manual qty.
+    expect(got.lines.map((l) => l.description)).toEqual(['Base fee', 'Onboarding']);
+    expect(got.lines.every((l) => l.orgId === orgId)).toBe(true);
+    expect(got.lines.map((l) => l.sortOrder)).toEqual([0, 1]);
+    expect(got.lines.find((l) => l.lineType === 'manual')!.manualQuantity).toBe('2');
+  });
+
   it('adds flat + per_device lines to a draft', async () => {
     const { actor, orgId } = await seedOrg();
     const c = await withSystemDbAccessContext(() => createContract({
