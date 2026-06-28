@@ -20,6 +20,7 @@ import {
   ChevronRight,
   ChevronDown,
   ChevronsLeft,
+  ChevronsDownUp,
   ShieldCheck,
   KeyRound,
   Package,
@@ -511,6 +512,18 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     });
   }, [activeSectionId]);
 
+  // Collapse every section except the one holding the active page, which stays
+  // open so the user never loses sight of where they are. Writes an explicit
+  // flag for every section so auto-expand can't silently re-open a sibling.
+  const collapseAllExceptActive = useCallback(() => {
+    const next: Record<string, boolean> = {};
+    for (const section of navSections) {
+      next[section.id] = section.id === activeSectionId;
+    }
+    setExpandedSections(next);
+    saveExpandedSections(next);
+  }, [activeSectionId]);
+
   // --- Sidebar mode cycling ------------------------------------------------
   const cycleMode = () => {
     const next: SidebarMode = mode === 'open' ? 'hover' : mode === 'hover' ? 'collapsed' : 'open';
@@ -675,16 +688,30 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
       <div className="flex h-16 items-center justify-between border-b px-4">
         <BrandHeader logoUrl={brandLogoUrl} name={brandName} showLabel={showLabels} />
-        {/* Only show mode toggle on non-tablet viewports */}
-        {!isTablet && (
-          <button
-            onClick={cycleMode}
-            title={toggleTitle}
-            className="rounded-md p-1.5 hover:bg-muted"
-          >
-            <ToggleIcon className="h-5 w-5" />
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          {/* Collapse every section except the active one. Only meaningful when
+              section labels (and thus expandable groups) are shown. */}
+          {showLabels && (
+            <button
+              onClick={collapseAllExceptActive}
+              title="Collapse all sections"
+              aria-label="Collapse all sections"
+              className="rounded-md p-1.5 hover:bg-muted"
+            >
+              <ChevronsDownUp className="h-5 w-5" />
+            </button>
+          )}
+          {/* Only show mode toggle on non-tablet viewports */}
+          {!isTablet && (
+            <button
+              onClick={cycleMode}
+              title={toggleTitle}
+              className="rounded-md p-1.5 hover:bg-muted"
+            >
+              <ToggleIcon className="h-5 w-5" />
+            </button>
+          )}
+        </div>
       </div>
 
       <nav ref={navScrollRef} data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
@@ -722,13 +749,23 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
         <div className="flex h-16 items-center justify-between border-b px-4">
           <BrandHeader logoUrl={brandLogoUrl} name={brandName} showLabel />
-          <button
-            onClick={closeMobileMenu}
-            className="rounded-md p-1.5 hover:bg-muted"
-            title="Close menu"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={collapseAllExceptActive}
+              title="Collapse all sections"
+              aria-label="Collapse all sections"
+              className="rounded-md p-1.5 hover:bg-muted"
+            >
+              <ChevronsDownUp className="h-5 w-5" />
+            </button>
+            <button
+              onClick={closeMobileMenu}
+              className="rounded-md p-1.5 hover:bg-muted"
+              title="Close menu"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         <nav className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2">

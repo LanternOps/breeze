@@ -203,6 +203,15 @@ export function readColumnOrder(): ColumnId[] {
   return readColumns().map((c) => c.id);
 }
 
+// Clears any saved preference and returns the catalog defaults: every column
+// in catalog order at its default visibility. Returns the fresh ordered list
+// so callers can sync React state without a second read.
+export function resetColumns(): StoredColumn[] {
+  const cols = defaultColumns();
+  writeColumns(cols);
+  return cols;
+}
+
 // Updates only the order, preserving each column's current visibility flag.
 export function writeColumnOrder(order: Iterable<ColumnId>): void {
   const visById = new Map(readColumns().map((c) => [c.id, c.visible] as const));

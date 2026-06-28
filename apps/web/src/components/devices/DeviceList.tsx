@@ -16,6 +16,7 @@ import {
   COLUMN_LABELS,
   readColumnOrder,
   readColumnVisibility,
+  resetColumns,
   writeColumnOrder,
   writeColumnVisibility,
   type ColumnId,
@@ -427,6 +428,13 @@ export default function DeviceList({
       writeColumnOrder(next);
       return next;
     });
+  };
+
+  // Restores both visibility and order to the catalog defaults.
+  const resetColumnsToDefault = () => {
+    const cols = resetColumns();
+    setColumnOrder(cols.map(c => c.id));
+    setVisibleColumns(new Set(cols.filter(c => c.visible).map(c => c.id)));
   };
 
   // Notify the parent that a freshly-created group has been handled. The group
@@ -1172,6 +1180,15 @@ export default function DeviceList({
                       <span>{COLUMN_LABELS[id]}</span>
                     </label>
                   ))}
+                  <hr className="my-1" />
+                  <button
+                    type="button"
+                    onClick={resetColumnsToDefault}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Reset to defaults
+                  </button>
                 </div>
               )}
             </div>
