@@ -53,7 +53,7 @@ export function ecExpressLookup(q: string): Promise<Response> {
   return fetchWithAuth(`${BASE}/lookup?q=${encodeURIComponent(q)}`);
 }
 
-export function ecExpressImport(body: { product: EcProduct; item: EcImportItem }): Promise<Response> {
+export function ecExpressImport(body: { product: EcProduct; item: EcImportItem; aiCleanup?: boolean }): Promise<Response> {
   return fetchWithAuth(`${BASE}/import`, {
     method: 'POST',
     headers: JSON_HEADERS,

@@ -263,6 +263,7 @@ const ecImportSchema = z.object({
     markupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
     taxable: z.boolean().optional(),
   }),
+  aiCleanup: z.boolean().optional(),
 });
 
 function handleEcError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
@@ -291,7 +292,7 @@ catalogDistributorRoutes.get('/distributors/td-synnex-ec/lookup', scopes, readPe
 catalogDistributorRoutes.post('/distributors/td-synnex-ec/import', scopes, writePerm, requireMfa(), zValidator('json', ecImportSchema), async (c) => {
   try {
     const body = c.req.valid('json');
-    const data = await importEcExpressCatalogItem({ product: body.product, item: body.item }, catalogActorFrom(c));
+    const data = await importEcExpressCatalogItem({ product: body.product, item: body.item, aiCleanup: body.aiCleanup }, catalogActorFrom(c));
     return c.json({ data });
   } catch (err) { return handleEcError(c, err); }
 });

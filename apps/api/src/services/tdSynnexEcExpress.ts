@@ -5,6 +5,7 @@ import { tdSynnexEcExpressIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { safeFetch } from './urlSafety';
 import { createCatalogItem, type CatalogActor } from './catalogService';
+import { cleanupDistributorListing } from './catalogEnrichmentService';
 import type { CreateCatalogItemInput } from '@breeze/shared';
 
 const TABLE = 'td_synnex_ec_express_integrations';
@@ -492,15 +493,36 @@ export interface EcImportInput {
     markupPercent?: number | null;
     taxable?: boolean;
   };
+  /** When true, run a best-effort AI clean-up of the raw distributor title into a
+   *  tidy name + description before persisting. Falls back to the raw values if
+   *  the AI is rate-limited/unavailable, so import never fails because of it. */
+  aiCleanup?: boolean;
 }
 
 export async function importEcExpressCatalogItem(input: EcImportInput, actor: CatalogActor) {
   const { product, item } = input;
+
+  // The quote/catalog lookup flows pass the raw distributor title as item.name,
+  // which is unreadable ("SPL Dell Pro 14 PC14250 ... DISTI"). When asked, tidy it
+  // into a name + description; on any failure keep the raw values (cleaned == null).
+  let name = item.name;
+  let description = item.description ?? product.description ?? undefined;
+  if (input.aiCleanup) {
+    const cleaned = await cleanupDistributorListing(product.name, {
+      userId: actor.userId,
+      orgId: actor.accessibleOrgIds?.[0] ?? null,
+    });
+    if (cleaned) {
+      name = cleaned.name;
+      description = cleaned.description;
+    }
+  }
+
   const payload: CreateCatalogItemInput = {
     itemType: 'hardware',
-    name: item.name,
+    name,
     sku: item.sku ?? product.synnexSku,
-    description: item.description ?? product.description ?? undefined,
+    description: description ?? undefined,
     billingType: 'one_time',
     unitPrice: item.unitPrice,
     // product.cost is numeric (numOrNull) — but guard a non-finite value out of
@@ -525,6 +547,10 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
         warehouses: product.warehouses,
         raw: product.raw,
         importedAt: new Date().toISOString(),
+        // Traceability: keep the original distributor title and note when the
+        // stored name/description came from the AI clean-up rather than the feed.
+        rawName: product.name,
+        aiCleaned: input.aiCleanup === true && name !== item.name,
       },
     },
   };

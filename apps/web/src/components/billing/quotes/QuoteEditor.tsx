@@ -558,6 +558,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               unitPrice: sellPrice,
               costBasis: product.cost != null && Number.isFinite(product.cost) ? Number(product.cost.toFixed(2)) : null,
             },
+            // Tidy the raw distributor title into a readable name + description
+            // server-side (best-effort; falls back to the raw values).
+            aiCleanup: true,
           }),
           errorFallback: 'Could not import the distributor item.',
           // no success toast here — the "Item added" toast from doAddCatalog is the meaningful one
