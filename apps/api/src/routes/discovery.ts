@@ -1172,6 +1172,10 @@ discoveryRoutes.patch(
       setValues.typeSource = 'auto';
     }
 
+    if (Object.keys(setValues).length === 1) {
+      return c.json({ error: 'No updates provided' }, 400);
+    }
+
     const [updated] = await db.update(discoveredAssets)
       .set(setValues)
       .where(and(...conditions))

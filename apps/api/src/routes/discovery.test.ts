@@ -1666,6 +1666,16 @@ describe('discovery routes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('rejects a PATCH whose only field is a falsy no-op (resetTypeToAuto:false)', async () => {
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ resetTypeToAuto: false })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
     it('resetTypeToAuto restores detectedAssetType and sets typeSource=auto', async () => {
       // DB resolves coalesce(detected_asset_type, asset_type) to 'workstation'
       let capturedSetPayload: any;
