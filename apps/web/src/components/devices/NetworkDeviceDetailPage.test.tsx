@@ -193,6 +193,72 @@ describe('NetworkDeviceDetailPage', () => {
     expect(link.textContent).toContain('agent-host');
   });
 
+  it('shows Unlink for a manually linked asset', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
+      }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+    expect(await screen.findByTestId('network-detail-unlink')).toBeTruthy();
+  });
+
+  it('hides Unlink for an auto-linked asset', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'auto' },
+      }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+    await screen.findByTestId('network-detail-linked-device');
+    expect(screen.queryByTestId('network-detail-unlink')).toBeNull();
+  });
+
+  it('hides Unlink for an unlinked asset', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+    await screen.findByTestId('network-detail-monitoring');
+    expect(screen.queryByTestId('network-detail-unlink')).toBeNull();
+  });
+
+  it('calls DELETE on the link endpoint when unlink is confirmed', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fetchWithAuthMock
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
+        }),
+      )
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: 'dev-9' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, linkSource: null } }));
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+    fireEvent.click(await screen.findByTestId('network-detail-unlink'));
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/discovery/assets/${ASSET_ID}/link`,
+        { method: 'DELETE' },
+      ),
+    );
+    confirmSpy.mockRestore();
+  });
+
   it('shows a not-found error for a 404 response', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({}, false, 404));
 

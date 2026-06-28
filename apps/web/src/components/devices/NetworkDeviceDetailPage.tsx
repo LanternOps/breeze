@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Globe, ExternalLink, Wifi, WifiOff } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -154,6 +155,28 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     void navigateTo('/devices');
   };
 
+  const [unlinking, setUnlinking] = useState(false);
+
+  // Only manually-created links can be removed here; auto-linked assets keep
+  // their match. runAction surfaces success/failure via toast.
+  const handleUnlink = useCallback(async () => {
+    if (!asset?.linkedDeviceId) return;
+    if (typeof window !== 'undefined' && !window.confirm('Unlink this device?')) return;
+    setUnlinking(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/discovery/assets/${asset.id}/link`, { method: 'DELETE' }),
+        successMessage: 'Device unlinked.',
+        errorFallback: 'Failed to unlink device.',
+      });
+      await fetchAsset();
+    } catch {
+      // runAction already toasted the failure; leave the linked state in place.
+    } finally {
+      setUnlinking(false);
+    }
+  }, [asset, fetchAsset]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12" data-testid="network-device-detail-loading">
@@ -249,8 +272,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
             </p>
           </div>
         </div>
-        {/* Approve / reclassify / link-unlink remain in Discovery until slice 3
-            of #1424 brings them inline; this read-only page links out for now. */}
+        {/* Approve / reclassify remain in Discovery until slice 3 of #1424
+            brings them inline; unlink for manual links is available inline on
+            the Monitoring tab. Other actions link out for now. */}
         <a
           href={`/discovery?asset=${asset.id}#assets`}
           data-testid="network-detail-manage-discovery"
@@ -396,13 +420,26 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 label="Linked Device"
                 value={
                   asset.linkedDeviceId ? (
-                    <a
-                      href={`/devices/${asset.linkedDeviceId}`}
-                      data-testid="network-detail-linked-device"
-                      className="text-primary hover:underline"
-                    >
-                      {asset.linkedDeviceName || 'View managed device'}
-                    </a>
+                    <span className="inline-flex items-center gap-3">
+                      <a
+                        href={`/devices/${asset.linkedDeviceId}`}
+                        data-testid="network-detail-linked-device"
+                        className="text-primary hover:underline"
+                      >
+                        {asset.linkedDeviceName || 'View managed device'}
+                      </a>
+                      {asset.linkSource === 'manual' && (
+                        <button
+                          type="button"
+                          data-testid="network-detail-unlink"
+                          onClick={handleUnlink}
+                          disabled={unlinking}
+                          className="text-xs text-destructive hover:underline disabled:opacity-50"
+                        >
+                          {unlinking ? 'Unlinking…' : 'Unlink'}
+                        </button>
+                      )}
+                    </span>
                   ) : (
                     'Not linked'
                   )
