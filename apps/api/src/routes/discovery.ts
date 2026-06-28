@@ -947,6 +947,7 @@ discoveryRoutes.get(
           responseTimeMs: a.responseTimeMs,
           linkedDeviceId: a.linkedDeviceId,
           linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
+          linkSource: a.linkSource,
           snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
           networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
           monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
@@ -1046,6 +1047,7 @@ discoveryRoutes.get(
         responseTimeMs: a.responseTimeMs,
         linkedDeviceId: a.linkedDeviceId,
         linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
+        linkSource: a.linkSource,
         snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
         networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
         monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
@@ -1233,6 +1235,7 @@ discoveryRoutes.post(
       .set({
         approvalStatus: 'approved',
         linkedDeviceId: body.deviceId,
+        linkSource: 'manual',
         updatedAt: new Date()
       })
       .where(eq(discoveredAssets.id, assetId))
@@ -1245,6 +1248,71 @@ discoveryRoutes.post(
       resourceId: updated?.id ?? assetId,
       resourceName: updated?.hostname ?? updated?.ipAddress ?? undefined,
       details: { linkedDeviceId: body.deviceId }
+    });
+
+    return c.json(updated);
+  }
+);
+
+discoveryRoutes.delete(
+  '/assets/:id/link',
+  requireScope('organization', 'partner', 'system'),
+  requireDiscoveryWrite,
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const assetId = c.req.param('id')!;
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+    if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+
+    const [existing] = await db.select({
+      id: discoveredAssets.id,
+      orgId: discoveredAssets.orgId,
+      siteId: discoveredAssets.siteId,
+      hostname: discoveredAssets.hostname,
+      ipAddress: discoveredAssets.ipAddress,
+      linkedDeviceId: discoveredAssets.linkedDeviceId,
+      linkSource: discoveredAssets.linkSource
+    }).from(discoveredAssets)
+      .where(and(...conditions)).limit(1);
+    if (!existing) return c.json({ error: 'Asset not found' }, 404);
+
+    // Site-scope is an app-layer-only authz axis; RLS does not defend it.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    // Already unlinked: idempotent no-op.
+    if (!existing.linkedDeviceId) {
+      return c.json(existing);
+    }
+
+    // Only manually-created links may be removed here.
+    if (existing.linkSource !== 'manual') {
+      return c.json({ error: 'Only manually linked assets can be unlinked' }, 403);
+    }
+
+    const previousDeviceId = existing.linkedDeviceId;
+    const [updated] = await db.update(discoveredAssets)
+      .set({
+        linkedDeviceId: null,
+        linkSource: null,
+        updatedAt: new Date()
+      })
+      .where(eq(discoveredAssets.id, assetId))
+      .returning();
+
+    writeRouteAudit(c, {
+      orgId: updated?.orgId ?? orgResult.orgId,
+      action: 'discovery.asset.unlink',
+      resourceType: 'discovered_asset',
+      resourceId: updated?.id ?? assetId,
+      resourceName: updated?.hostname ?? updated?.ipAddress ?? undefined,
+      details: { previousLinkedDeviceId: previousDeviceId }
     });
 
     return c.json(updated);

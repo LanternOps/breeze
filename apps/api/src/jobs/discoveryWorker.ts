@@ -859,7 +859,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
           if (match) {
             await db
               .update(discoveredAssets)
-              .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved' })
+              .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved', linkSource: 'auto' })
               .where(eq(discoveredAssets.id, upsertedAssetId));
             autoLinkedDeviceId = match.deviceId;
 
