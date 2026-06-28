@@ -6,7 +6,9 @@ import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 import { formatMoney } from '../../lib/timeFormat';
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
+import CatalogDistributorDrawer from './CatalogDistributorDrawer';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { ecExpressStatus } from '../../lib/api/distributors';
 import {
   listCatalog, getCatalogItem, getBundleEconomics, archiveCatalogItem, updateCatalogItem,
   computeMargin, formatMargin, marginTone,
@@ -38,6 +40,10 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort>({ key: 'name', dir: 'asc' });
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [distributorOpen, setDistributorOpen] = useState(false);
+  // TD SYNNEX EC Express import is only offered when the integration is set up;
+  // mirrors the quote editor's ecActive gate (configured && enabled).
+  const [ecActive, setEcActive] = useState(false);
   const [editItem, setEditItem] = useState<CatalogItem | null>(null);
   const [archivingId, setArchivingId] = useState<string | null>(null);
   // Archive is a soft-delete that pulls the item from active pickers — guard it
@@ -72,6 +78,20 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
   }, []);
 
   useEffect(() => { void load(view); }, [load, view, reloadKey]);
+
+  // Surface the distributor-import entry only when EC Express is connected.
+  // Best-effort: any failure leaves it hidden (optional capability, not core).
+  useEffect(() => {
+    if (!canWrite) return;
+    void (async () => {
+      try {
+        const res = await ecExpressStatus();
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
+        setEcActive(Boolean(body?.data?.configured && body?.data?.enabled));
+      } catch { /* leave hidden */ }
+    })();
+  }, [canWrite]);
 
   const openCreate = () => { setEditItem(null); setDrawerOpen(true); };
   const openEdit = (it: CatalogItem) => { setEditItem(it); setDrawerOpen(true); };
@@ -246,6 +266,17 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
             </button>
           ))}
         </div>
+
+        {canWrite && ecActive && (
+          <button
+            type="button"
+            onClick={() => setDistributorOpen(true)}
+            className="inline-flex h-9 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+            data-testid="catalog-import-distributor"
+          >
+            Import from TD SYNNEX
+          </button>
+        )}
 
         {canWrite && (
           <button
@@ -451,6 +482,12 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
         allItems={items}
         onClose={() => setDrawerOpen(false)}
         onSaved={() => void load(view)}
+      />
+
+      <CatalogDistributorDrawer
+        open={distributorOpen}
+        onClose={() => setDistributorOpen(false)}
+        onImported={() => void load('active')}
       />
 
       <ConfirmDialog
