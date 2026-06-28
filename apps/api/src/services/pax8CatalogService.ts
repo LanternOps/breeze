@@ -3,7 +3,7 @@ import { db } from '../db';
 import { pax8Integrations, pax8ProductMappings } from '../db/schema/pax8';
 import { catalogItems } from '../db/schema/catalog';
 import { createPax8ClientForIntegration } from './pax8SyncService';
-import { createCatalogItem, type CatalogActor } from './catalogService';
+import { createCatalogItem, CatalogServiceError, type CatalogActor } from './catalogService';
 import type { Pax8ProductRecord, Pax8ProductPriceRecord } from './pax8Client';
 import { getRedis } from './redis';
 import type { CreateCatalogItemInput } from '@breeze/shared';
@@ -145,7 +145,21 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
     },
   };
 
-  const created = await createCatalogItem(payload, actor);
+  let created: typeof catalogItems.$inferSelect;
+  try {
+    created = await createCatalogItem(payload, actor);
+  } catch (err) {
+    const sku = payload.sku;
+    if (err instanceof CatalogServiceError && err.code === 'DUPLICATE_SKU' && sku) {
+      const [existing] = await db.select().from(catalogItems)
+        .where(and(eq(catalogItems.partnerId, integration.partnerId), eq(catalogItems.sku, sku)))
+        .limit(1);
+      if (!existing) throw err;
+      created = existing;
+    } else {
+      throw err;
+    }
+  }
 
   // Dedup + linkage so subscription pricing-sync can later reconcile this product.
   await db

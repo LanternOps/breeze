@@ -13,6 +13,7 @@ vi.mock('./catalogService', async (orig) => ({ ...(await orig<typeof import('./c
 vi.mock('./redis', () => ({ getRedis: mocks.getRedis }));
 
 import { searchPax8Products, importPax8CatalogItem, getPax8CatalogStatus, getPax8ProductPricing, Pax8CatalogError } from './pax8CatalogService';
+import { CatalogServiceError } from './catalogService';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
 const integration = { id: 'int-1', partnerId: 'p1', isActive: true };
@@ -52,6 +53,18 @@ describe('searchPax8Products', () => {
 });
 
 describe('importPax8CatalogItem', () => {
+  it('is idempotent on DUPLICATE_SKU: resolves existing item and still upserts mapping', async () => {
+    mocks.db.select
+      .mockReturnValueOnce(selectChain([integration]))   // getActiveIntegration
+      .mockReturnValueOnce(selectChain([{ id: 'existing-1', name: 'Microsoft 365 Business Premium' }])); // fallback lookup
+    mocks.createCatalogItem.mockRejectedValueOnce(new CatalogServiceError('dup', 409, 'DUPLICATE_SKU'));
+    mocks.db.insert.mockReturnValueOnce(insertChain());
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw: {} };
+    const item = await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22 } }, actor);
+    expect(item.id).toBe('existing-1');
+    expect(mocks.db.insert).toHaveBeenCalled();
+  });
+
   it('creates a recurring software catalog item and upserts the product mapping', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([integration]));
     mocks.createCatalogItem.mockResolvedValue({ id: 'item-1', name: 'Microsoft 365 Business Premium' });

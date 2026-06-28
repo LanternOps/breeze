@@ -47,7 +47,7 @@ export default function Pax8CatalogDrawer({ open, onClose, onImported }: Props) 
               raw: product.raw,
             },
             item: {
-              name: product.name,
+              name: product.name.slice(0, 255),
               sku: product.vendorSku,
               description: product.shortDescription,
               unitPrice: sellPrice,

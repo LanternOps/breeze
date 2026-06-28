@@ -569,7 +569,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               partnerBuyRate: term.partnerBuyRate, currency: term.currencyCode, raw: product.raw,
             },
             item: {
-              name: product.name, sku: product.vendorSku, description: product.shortDescription,
+              name: product.name.slice(0, 255), sku: product.vendorSku, description: product.shortDescription,
               unitPrice: sellPrice, costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
             },
           }),
