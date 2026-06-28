@@ -74,6 +74,10 @@ export interface QuoteLine {
   sourceType: QuoteLineSourceType;
   catalogItemId: string | null;
   parentLineId: string | null;
+  /** Internal-only economics/identifiers (builder view); never on the customer doc. */
+  unitCost: string | null;
+  sku: string | null;
+  partNumber: string | null;
   name: string | null;
   description: string | null;
   quantity: string;

@@ -72,6 +72,9 @@ type LineUpdate = Partial<{
   unitPrice: number;
   taxable: boolean;
   recurrence: QuoteLineRecurrence;
+  unitCost: number | null;
+  sku: string | null;
+  partNumber: string | null;
 }>;
 
 interface Props {

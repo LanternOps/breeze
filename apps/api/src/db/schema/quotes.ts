@@ -98,6 +98,10 @@ export const quoteLines = pgTable('quote_lines', {
   recurrence: quoteLineRecurrenceEnum('recurrence').notNull().default('one_time'),
   termMonths: integer('term_months'),
   billingFrequency: varchar('billing_frequency', { length: 20 }),
+  // Internal builder economics — never serialized to the customer document.
+  unitCost: numeric('unit_cost', { precision: 12, scale: 2 }),
+  sku: varchar('sku', { length: 100 }),
+  partNumber: varchar('part_number', { length: 100 }),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
