@@ -1367,6 +1367,29 @@ describe('discovery routes', () => {
         }));
       });
 
+      it('rejects when the asset is in a site outside the caller allowlist', async () => {
+        // Site-scope is app-layer-only (RLS does not defend it), so this guard is
+        // the sole backstop — mirror the POST link route's site-denial coverage.
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetOnly({
+          id: ASSET_IN,
+          orgId: ORG,
+          siteId: SITE_OUT,
+          linkedDeviceId: DEVICE_ID,
+          linkSource: 'manual'
+        });
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
       it('returns 403 for an auto-linked asset', async () => {
         setSiteRestrictedAuth([SITE_IN]);
         mockAssetOnly({

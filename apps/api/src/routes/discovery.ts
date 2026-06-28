@@ -1297,21 +1297,27 @@ discoveryRoutes.delete(
     }
 
     const previousDeviceId = existing.linkedDeviceId;
+    // Scope the write to the same conditions as the read (id + org) so read- and
+    // write-scope match. A 0-row result here means the row vanished or was
+    // re-scoped between the select and update — treat it as not-found and
+    // audit nothing, rather than recording a misleading "unlink" success.
     const [updated] = await db.update(discoveredAssets)
       .set({
         linkedDeviceId: null,
         linkSource: null,
         updatedAt: new Date()
       })
-      .where(eq(discoveredAssets.id, assetId))
+      .where(and(...conditions))
       .returning();
 
+    if (!updated) return c.json({ error: 'Asset not found' }, 404);
+
     writeRouteAudit(c, {
-      orgId: updated?.orgId ?? orgResult.orgId,
+      orgId: updated.orgId,
       action: 'discovery.asset.unlink',
       resourceType: 'discovered_asset',
-      resourceId: updated?.id ?? assetId,
-      resourceName: updated?.hostname ?? updated?.ipAddress ?? undefined,
+      resourceId: updated.id,
+      resourceName: updated.hostname ?? updated.ipAddress ?? undefined,
       details: { previousLinkedDeviceId: previousDeviceId }
     });
 

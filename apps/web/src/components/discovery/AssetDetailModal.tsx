@@ -5,9 +5,10 @@ import { typeConfig, approvalStatusConfig } from './DiscoveredAssetList';
 import AssetMonitoringSection from './AssetMonitoringSection';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '../../lib/apiError';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
-import type { DiscoveredAssetLinkSource } from './networkTypes';
+import { isManualLink, type DiscoveredAssetLinkSource } from './networkTypes';
 
 export type AssetDetail = DiscoveredAsset & {
   openPorts?: OpenPortEntry[];
@@ -150,8 +151,10 @@ export default function AssetDetailModal({
     }
   };
 
-  // Only manually-created links may be removed; auto-linked assets keep their
-  // MAC/IP match. Mirrors handleLink's inline success/error messaging.
+  // The Unlink button only renders for manual links (see render guard below) and
+  // the server independently rejects non-manual unlinks; this handler guards only
+  // that a link exists. Mirrors handleLink's inline success/error messaging, but
+  // surfaces the server's actual error text (e.g. a stale modal hitting 403/404).
   const handleUnlink = async () => {
     if (!asset?.linkedDeviceId) return;
     if (typeof window !== 'undefined' && !window.confirm('Unlink this device?')) {
@@ -167,7 +170,8 @@ export default function AssetDetailModal({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to unlink asset');
+        const body = await response.json().catch(() => null);
+        throw new Error(extractApiError(body, 'Failed to unlink asset'));
       }
 
       setSelectedDevice('');
@@ -525,7 +529,7 @@ export default function AssetDetailModal({
                 >
                   {linking ? 'Linking...' : 'Link asset'}
                 </button>
-                {asset.linkedDeviceId && asset.linkSource === 'manual' && (
+                {asset.linkedDeviceId && isManualLink(asset.linkSource) && (
                   <button
                     type="button"
                     data-testid="asset-modal-unlink"

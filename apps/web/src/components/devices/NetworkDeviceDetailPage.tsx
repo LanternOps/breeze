@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Globe, ExternalLink, Wifi, WifiOff } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
+import { isManualLink } from '../discovery/networkTypes';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -157,8 +158,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
   const [unlinking, setUnlinking] = useState(false);
 
-  // Only manually-created links can be removed here; auto-linked assets keep
-  // their match. runAction surfaces success/failure via toast.
+  // The Unlink button only renders for manual links (see render guard below) and
+  // the server independently rejects non-manual unlinks; this handler guards only
+  // that a link exists. runAction surfaces success/failure via toast.
   const handleUnlink = useCallback(async () => {
     if (!asset?.linkedDeviceId) return;
     if (typeof window !== 'undefined' && !window.confirm('Unlink this device?')) return;
@@ -428,7 +430,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       >
                         {asset.linkedDeviceName || 'View managed device'}
                       </a>
-                      {asset.linkSource === 'manual' && (
+                      {isManualLink(asset.linkSource) && (
                         <button
                           type="button"
                           data-testid="network-detail-unlink"

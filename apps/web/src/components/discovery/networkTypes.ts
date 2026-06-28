@@ -54,6 +54,16 @@ export type DeviceOption = {
 
 export type DiscoveredAssetLinkSource = 'manual' | 'auto';
 
+// A discovered asset can only be unlinked when it was linked manually. Auto
+// (MAC/IP-matched) and unknown (NULL, pre-dates link_source) links are not
+// unlinkable — the discovery worker would just recreate an auto link. The
+// server enforces this authoritatively; the UI uses this to gate the button.
+export function isManualLink(
+  source: DiscoveredAssetLinkSource | null | undefined
+): boolean {
+  return source === 'manual';
+}
+
 export const eventTypeConfig: Record<NetworkEventType, { label: string; color: string }> = {
   new_device: { label: 'New Device', color: 'bg-success/15 text-success border-success/30' },
   device_disappeared: { label: 'Disappeared', color: 'bg-warning/15 text-warning border-warning/30' },
