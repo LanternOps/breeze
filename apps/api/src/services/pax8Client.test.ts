@@ -206,3 +206,53 @@ describe('Pax8Client', () => {
     ]);
   });
 });
+
+function clientWithFetch(fetchImpl: (url: string) => Response) {
+  return new Pax8Client({
+    credentials: { clientId: 'id', clientSecret: 'secret', accessToken: 'tok', accessTokenExpiresAt: new Date(Date.now() + 3_600_000) },
+    fetch: async (url: string) => fetchImpl(url),
+  });
+}
+
+describe('Pax8Client.listProducts', () => {
+  it('normalizes products from a paged content envelope', async () => {
+    const client = clientWithFetch((url) => {
+      if (url.includes('/products')) {
+        return jsonResponse({
+          content: [
+            { id: 'p1', name: 'Microsoft 365 Business Premium', vendor: { name: 'Microsoft' }, vendorSku: 'CFQ7' },
+            { productId: 'p2', productName: 'Acronis Backup', vendorName: 'Acronis', sku: 'ACR-1' },
+          ],
+          last: true,
+          page: 0,
+        });
+      }
+      return jsonResponse({});
+    });
+    const rows = await client.listProducts({ limit: 10 });
+    expect(rows).toEqual([
+      { pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', shortDescription: null, raw: expect.any(Object) },
+      { pax8ProductId: 'p2', name: 'Acronis Backup', vendorName: 'Acronis', vendorSku: 'ACR-1', shortDescription: null, raw: expect.any(Object) },
+    ]);
+  });
+});
+
+describe('Pax8Client.getProductPricing', () => {
+  it('normalizes the cost + suggested retail per term', async () => {
+    const client = clientWithFetch((url) => {
+      if (url.includes('/pricing')) {
+        return jsonResponse({
+          content: [
+            { commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: 18.5, suggestedRetailPrice: 22, currencyCode: 'USD' },
+            { commitmentTerm: 'Monthly', billingTerm: 'Monthly', partnerBuyRate: '20', suggestedRetailPrice: '25.00', currency: 'USD' },
+          ],
+          last: true,
+        });
+      }
+      return jsonResponse({});
+    });
+    const rows = await client.getProductPricing('p1');
+    expect(rows[0]).toEqual({ commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', suggestedRetailPrice: '22.00', currencyCode: 'USD', raw: expect.any(Object) });
+    expect(rows[1]).toMatchObject({ commitmentTerm: 'Monthly', partnerBuyRate: '20.00', suggestedRetailPrice: '25.00', currencyCode: 'USD' });
+  });
+});

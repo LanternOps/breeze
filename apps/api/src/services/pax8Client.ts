@@ -35,6 +35,24 @@ export interface Pax8SubscriptionRecord {
   raw: JsonRecord;
 }
 
+export interface Pax8ProductRecord {
+  pax8ProductId: string;
+  name: string;
+  vendorName: string | null;
+  vendorSku: string | null;
+  shortDescription: string | null;
+  raw: JsonRecord;
+}
+
+export interface Pax8ProductPriceRecord {
+  commitmentTerm: string | null;
+  billingTerm: string | null;
+  partnerBuyRate: string | null;        // OUR cost
+  suggestedRetailPrice: string | null;  // end-customer list price
+  currencyCode: string | null;
+  raw: JsonRecord;
+}
+
 export interface Pax8ClientCredentials {
   clientId: string;
   clientSecret: string;
@@ -188,6 +206,36 @@ function normalizeSubscription(value: unknown): Pax8SubscriptionRecord | null {
   };
 }
 
+function normalizeProduct(value: unknown): Pax8ProductRecord | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const id = firstString(record, ['id', 'productId', 'product_id']);
+  const name = firstString(record, ['name', 'productName', 'product_name']);
+  if (!id || !name) return null;
+  const vendor = nestedRecord(record, 'vendor');
+  return {
+    pax8ProductId: id,
+    name,
+    vendorName: firstString(record, ['vendorName', 'vendor_name']) ?? (vendor ? firstString(vendor, ['name', 'vendorName']) : null),
+    vendorSku: firstString(record, ['vendorSku', 'vendor_sku', 'vendorSkuId', 'sku', 'skuId']),
+    shortDescription: firstString(record, ['shortDescription', 'short_description', 'description']),
+    raw: record,
+  };
+}
+
+function normalizeProductPrice(value: unknown): Pax8ProductPriceRecord | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  return {
+    commitmentTerm: firstString(record, ['commitmentTerm', 'commitment_term', 'term']),
+    billingTerm: firstString(record, ['billingTerm', 'billing_term', 'period', 'billingPeriod']),
+    partnerBuyRate: normalizeMoney(record.partnerBuyRate ?? record.buyRate ?? record.cost ?? record.unitCost ?? null),
+    suggestedRetailPrice: normalizeMoney(record.suggestedRetailPrice ?? record.msrp ?? record.retailPrice ?? record.listPrice ?? record.price ?? null),
+    currencyCode: firstString(record, ['currencyCode', 'currency']),
+    raw: record,
+  };
+}
+
 export class Pax8Client {
   private accessToken: string | null;
   private accessTokenExpiresAt: Date | null;
@@ -222,11 +270,23 @@ export class Pax8Client {
     return rows.map(normalizeSubscription).filter((row): row is Pax8SubscriptionRecord => row !== null);
   }
 
-  private async fetchPaged(path: string, limit?: number): Promise<unknown[]> {
+  async listProducts(opts: { limit?: number; vendorName?: string } = {}): Promise<Pax8ProductRecord[]> {
+    const query: Record<string, string | number | boolean | undefined> = {};
+    if (opts.vendorName) query.vendorName = opts.vendorName;
+    const rows = await this.fetchPaged('/products', opts.limit, query);
+    return rows.map(normalizeProduct).filter((row): row is Pax8ProductRecord => row !== null);
+  }
+
+  async getProductPricing(productId: string): Promise<Pax8ProductPriceRecord[]> {
+    const payload = await this.requestJson(`/products/${encodeURIComponent(productId)}/pricing`);
+    return extractArray(payload).map(normalizeProductPrice).filter((row): row is Pax8ProductPriceRecord => row !== null);
+  }
+
+  private async fetchPaged(path: string, limit?: number, extraQuery: Record<string, string | number | boolean | undefined> = {}): Promise<unknown[]> {
     const all: unknown[] = [];
     let page = 0;
     while (page < MAX_PAGES) {
-      const payload = await this.requestJson(path, { page, size: Math.min(limit ?? DEFAULT_PAGE_SIZE, DEFAULT_PAGE_SIZE) });
+      const payload = await this.requestJson(path, { ...extraQuery, page, size: Math.min(limit ?? DEFAULT_PAGE_SIZE, DEFAULT_PAGE_SIZE) });
       const rows = extractArray(payload);
       all.push(...rows);
       if (limit && all.length >= limit) return all.slice(0, limit);
