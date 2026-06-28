@@ -1,0 +1,105 @@
+import { sql } from 'drizzle-orm';
+import {
+  pgTable,
+  uuid,
+  varchar,
+  text,
+  timestamp,
+  boolean,
+  integer,
+  bigint,
+  jsonb,
+  inet,
+  index,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
+import { organizations, partners, sites } from './orgs';
+import { users } from './users';
+import { discoveredAssets } from './discovery';
+
+export const unifiIntegrations = pgTable('unifi_integrations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  baseUrl: text('base_url').notNull().default('https://api.ui.com'),
+  apiKeyEncrypted: text('api_key_encrypted').notNull(),
+  accountLabel: text('account_label'),
+  isActive: boolean('is_active').notNull().default(true),
+  status: varchar('status', { length: 20 }).notNull().default('connected'),
+  lastSyncAt: timestamp('last_sync_at'),
+  lastSyncStatus: varchar('last_sync_status', { length: 20 }),
+  lastSyncError: text('last_sync_error'),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  partnerActiveIdx: uniqueIndex('unifi_integrations_partner_active_idx')
+    .on(table.partnerId)
+    .where(sql`${table.isActive}`),
+}));
+
+export const unifiSiteMappings = pgTable('unifi_site_mappings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id').notNull().references(() => unifiIntegrations.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  unifiHostId: text('unifi_host_id').notNull(),
+  unifiSiteId: text('unifi_site_id').notNull(),
+  unifiHostName: text('unifi_host_name'),
+  unifiSiteName: text('unifi_site_name'),
+  wanMetrics: jsonb('wan_metrics'),
+  wanMetricsAt: timestamp('wan_metrics_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  uniqueSiteIdx: uniqueIndex('unifi_site_mappings_unique_site_idx')
+    .on(table.integrationId, table.unifiHostId, table.unifiSiteId),
+}));
+
+export const unifiDevices = pgTable('unifi_devices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  integrationId: uuid('integration_id').notNull().references(() => unifiIntegrations.id, { onDelete: 'cascade' }),
+  mappingId: uuid('mapping_id').notNull().references(() => unifiSiteMappings.id, { onDelete: 'cascade' }),
+  discoveredAssetId: uuid('discovered_asset_id').references(() => discoveredAssets.id),
+  unifiDeviceId: text('unifi_device_id').notNull(),
+  mac: text('mac'),
+  name: text('name'),
+  model: text('model'),
+  deviceType: varchar('device_type', { length: 40 }),
+  ipAddress: inet('ip_address'),
+  firmwareVersion: text('firmware_version'),
+  firmwareUpdatable: boolean('firmware_updatable'),
+  adoptionState: varchar('adoption_state', { length: 30 }),
+  uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+  isStale: boolean('is_stale').notNull().default(false),
+  lastSeenAt: timestamp('last_seen_at'),
+  raw: jsonb('raw').notNull(),
+  firstSyncedAt: timestamp('first_synced_at').defaultNow().notNull(),
+  lastSyncedAt: timestamp('last_synced_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  integrationDeviceIdx: uniqueIndex('unifi_devices_integration_device_idx')
+    .on(table.integrationId, table.unifiDeviceId),
+  orgMacIdx: index('unifi_devices_org_mac_idx').on(table.orgId, table.mac),
+}));
+
+export const unifiSyncRuns = pgTable('unifi_sync_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id').notNull().references(() => unifiIntegrations.id, { onDelete: 'cascade' }),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  trigger: varchar('trigger', { length: 16 }).notNull(),
+  status: varchar('status', { length: 16 }).notNull(),
+  startedAt: timestamp('started_at').defaultNow().notNull(),
+  finishedAt: timestamp('finished_at'),
+  hostsSeen: integer('hosts_seen').notNull().default(0),
+  devicesCreated: integer('devices_created').notNull().default(0),
+  devicesUpdated: integer('devices_updated').notNull().default(0),
+  devicesUnchanged: integer('devices_unchanged').notNull().default(0),
+  devicesRemoved: integer('devices_removed').notNull().default(0),
+  error: text('error'),
+}, (table) => ({
+  integrationStartedIdx: index('unifi_sync_runs_integration_started_idx')
+    .on(table.integrationId, table.startedAt),
+}));

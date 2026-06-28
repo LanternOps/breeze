@@ -19,6 +19,7 @@ export * from './sso';
 export * from './accessReviews';
 export * from './patches';
 export * from './integrations';
+export * from './unifi';
 export * from './portal';
 export * from './emailInbound';
 export * from './analytics';
