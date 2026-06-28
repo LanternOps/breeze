@@ -874,8 +874,10 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               .where(eq(discoveredAssets.id, upsertedAssetId));
             autoLinkedDeviceId = match.deviceId;
 
-            // Propagate asset type to linked device (discovery > auto, but not > manual)
-            if (assetData.assetType && assetData.assetType !== 'unknown') {
+            // Propagate asset type to linked device (discovery > auto, but not > manual).
+            // Skip propagation when the asset type was manually overridden so the
+            // scan's classification doesn't silently diverge from the user's choice.
+            if (assetData.assetType && assetData.assetType !== 'unknown' && existing?.typeSource !== 'manual') {
               const [target] = await db
                 .select({ deviceRoleSource: devices.deviceRoleSource })
                 .from(devices)

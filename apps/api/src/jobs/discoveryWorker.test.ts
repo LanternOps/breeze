@@ -72,6 +72,11 @@ vi.mock('../services/networkBaseline', () => ({
   buildEventFingerprint: vi.fn(() => 'fingerprint')
 }));
 
+vi.mock('./networkBaselineWorker', () => ({
+  enqueueBaselineComparison: vi.fn(async () => 'enqueued'),
+  getNetworkBaselineQueue: vi.fn()
+}));
+
 import { db } from '../db';
 import { buildApprovalDecision } from '../services/assetApproval';
 import type { DiscoveredHostResult } from './discoveryWorker';
@@ -220,6 +225,34 @@ describe('processResults — type_source', () => {
     expect(capturedInsertValues).not.toBeNull();
     expect(capturedInsertValues!.typeSource).toBe('auto');
     expect(capturedInsertValues!.detectedAssetType).toBe('server');
+  });
+
+  it('does not propagate device role when asset type is a manual override', async () => {
+    let deviceRoleUpdated = false;
+
+    selectQueue = [
+      ...baseSelectQueue(),
+      [{ id: 'asset-1', typeSource: 'manual' }], // [6] existing — manual typeSource
+      [{ linkedDeviceId: null }],                  // [7] not yet linked
+      [{ deviceId: 'device-1' }],                  // [8] auto-link match found
+      [{ deviceRoleSource: 'auto' }],              // [9] target device (consumed if propagation fires)
+    ];
+
+    vi.mocked(mockDb.update).mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      chain.set = (args: Record<string, unknown>) => {
+        if ('deviceRole' in args) deviceRoleUpdated = true;
+        return chain;
+      };
+      chain.where = () => Promise.resolve([]);
+      return chain;
+    });
+
+    await processResults(makeData([
+      { ip: '192.168.1.53', assetType: 'workstation', methods: [] },
+    ]));
+
+    expect(deviceRoleUpdated).toBe(false);
   });
 });
 
