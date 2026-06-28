@@ -24,6 +24,13 @@ import {
   REGION_ENDPOINTS,
   type EcRegion,
 } from '../../services/tdSynnexEcExpress';
+import {
+  getPax8CatalogStatus,
+  searchPax8Products,
+  getPax8ProductPricing,
+  importPax8CatalogItem,
+  Pax8CatalogError,
+} from '../../services/pax8CatalogService';
 
 export const catalogDistributorRoutes = new Hono();
 
@@ -295,4 +302,65 @@ catalogDistributorRoutes.post('/distributors/td-synnex-ec/import', scopes, write
     const data = await importEcExpressCatalogItem({ product: body.product, item: body.item, aiCleanup: body.aiCleanup }, catalogActorFrom(c));
     return c.json({ data });
   } catch (err) { return handleEcError(c, err); }
+});
+
+// ─── Pax8 product catalog ─────────────────────────────────────────────────────
+
+const pax8SearchSchema = z.object({
+  q: z.string().min(2).max(200),
+  vendor: z.string().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+const pax8PricingSchema = z.object({ productId: z.string().min(1).max(64) });
+
+const pax8ProductSchema = z.object({
+  source: z.literal('pax8'),
+  pax8ProductId: z.string().min(1).max(64),
+  name: z.string().min(1).max(500),
+  vendorName: z.string().max(255).nullable(),
+  vendorSku: z.string().max(255).nullable(),
+  commitmentTerm: z.string().max(120).nullable(),
+  billingTerm: z.string().max(120).nullable(),
+  partnerBuyRate: z.string().regex(/^-?\d+\.\d{2}$/).max(30).nullable(),
+  currency: z.string().max(10).nullable(),
+  raw: z.record(z.string(), z.unknown()).refine(
+    (v) => JSON.stringify(v).length <= 200_000,
+    { message: 'raw product payload is too large' },
+  ),
+});
+
+const pax8ImportSchema = z.object({
+  product: pax8ProductSchema,
+  item: z.object({
+    name: z.string().min(1).max(255),
+    sku: z.string().max(100).nullable().optional(),
+    description: z.string().max(10_000).nullable().optional(),
+    unitPrice: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01),
+    costBasis: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01).nullable().optional(),
+    taxable: z.boolean().optional(),
+  }),
+});
+
+function handlePax8Error(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  if (err instanceof Pax8CatalogError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  console.error('[pax8-catalog] unexpected error', err);
+  throw err;
+}
+
+catalogDistributorRoutes.get('/distributors/pax8/status', scopes, readPerm, async (c) => {
+  try { return c.json({ data: await getPax8CatalogStatus(catalogActorFrom(c)) }); } catch (err) { return handlePax8Error(c, err); }
+});
+
+catalogDistributorRoutes.get('/distributors/pax8/search', scopes, readPerm, zValidator('query', pax8SearchSchema), async (c) => {
+  try { return c.json({ data: await searchPax8Products(c.req.valid('query'), catalogActorFrom(c)) }); } catch (err) { return handlePax8Error(c, err); }
+});
+
+catalogDistributorRoutes.get('/distributors/pax8/pricing', scopes, readPerm, zValidator('query', pax8PricingSchema), async (c) => {
+  try { return c.json({ data: await getPax8ProductPricing(c.req.valid('query').productId, catalogActorFrom(c)) }); } catch (err) { return handlePax8Error(c, err); }
+});
+
+catalogDistributorRoutes.post('/distributors/pax8/import', scopes, writePerm, requireMfa(), zValidator('json', pax8ImportSchema), async (c) => {
+  try { return c.json({ data: await importPax8CatalogItem(c.req.valid('json'), catalogActorFrom(c)) }); } catch (err) { return handlePax8Error(c, err); }
 });
