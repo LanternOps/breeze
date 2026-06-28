@@ -143,9 +143,9 @@ export default function PartnerBillingSettings() {
   return (
     <div className="space-y-6" data-testid="partner-billing-settings">
       <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Invoice defaults</h2>
+        <h2 className="text-lg font-semibold">Billing defaults</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Currency, tax, numbering, and terms applied to new invoices across your customers.
+          Currency, tax, numbering, and terms applied to new quotes and invoices across your customers.
         </p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
