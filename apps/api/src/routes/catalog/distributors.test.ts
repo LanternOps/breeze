@@ -91,11 +91,9 @@ vi.mock('../../services/tdSynnexEcExpress', () => ({
 
 import { catalogDistributorRoutes } from './distributors';
 
-const fakeAuth = { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: null };
-
 function app() {
   const a = new Hono();
-  a.use('*', async (c, next) => { c.set('auth', fakeAuth); await next(); });
+  a.use('*', async (c: any, next: any) => { c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: 'partner', accessibleOrgIds: null }); await next(); });
   a.route('/', catalogDistributorRoutes);
   return a;
 }
