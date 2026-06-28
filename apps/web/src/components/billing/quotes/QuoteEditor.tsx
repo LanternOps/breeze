@@ -18,7 +18,7 @@ import {
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import type { QuoteBlockInput } from '@breeze/shared';
-import { computeQuoteTotals, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
+import { computeQuoteTotals, computeLineTotal, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
@@ -1478,37 +1478,31 @@ function EditableLineRow({
   const qtyDirty = Number(qty) !== Number(line.quantity);
   const priceDirty = Number(price) !== Number(line.unitPrice);
 
-  // While qty/price are mid-edit, the row's Total and Tax cells must reflect the
-  // local values, not the server's stale `lineTotal` — otherwise the row visibly
-  // disagrees with itself (new qty, old total) until the debounced refresh lands.
-  // When the row isn't dirty we defer to the authoritative server total so any
-  // server-side normalization (e.g. clamped qty) still wins.
-  // Empty fields (mid-retype) aren't optimism inputs — Number('') is 0, which would
-  // flash Total/Tax to $0.00 while the user is clearing a field. Fall back to the
-  // server total until both fields hold a value.
+  // Effective qty/price for the optimistic Total/Tax and the rail draft. A blank
+  // or non-positive qty / negative price isn't an optimism input — it would flash
+  // the line to $0 while the user is mid-retype (and `commitQty` rejects qty ≤ 0
+  // anyway), so fall back to the persisted value until the field holds a real one.
   const qtyNum = Number(qty);
   const priceNum = Number(price);
-  const displayTotal =
-    (qtyDirty || priceDirty) && qty.trim() !== '' && price.trim() !== ''
-    && Number.isFinite(qtyNum) && Number.isFinite(priceNum) && qtyNum >= 0 && priceNum >= 0
-      ? qtyNum * priceNum
-      : Number(line.lineTotal);
-  const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
-
-  // Report this row's effective values to the parent so the rail "Live totals"
-  // recompute matches the per-row optimistic Total/Tax. Mirror displayTotal's
-  // fallback: when a field is empty/invalid, use the persisted value (so a
-  // mid-clear field never zeroes the rail). Emit null once everything matches the
-  // persisted line, so the rail reverts to the authoritative server figures.
-  const qtyValid = qty.trim() !== '' && Number.isFinite(qtyNum) && qtyNum >= 0;
+  const qtyValid = qty.trim() !== '' && Number.isFinite(qtyNum) && qtyNum > 0;
   const priceValid = price.trim() !== '' && Number.isFinite(priceNum) && priceNum >= 0;
   const effQty = qtyValid ? qty : line.quantity;
   const effPrice = priceValid ? price : line.unitPrice;
-  const diverged =
-    Number(effQty) !== Number(line.quantity)
-    || Number(effPrice) !== Number(line.unitPrice)
-    || taxable !== line.taxable
-    || rec !== line.recurrence;
+  const totalDiverged = Number(effQty) !== Number(line.quantity) || Number(effPrice) !== Number(line.unitPrice);
+
+  // The row's Total/Tax use the SAME shared cents math as the rail
+  // (computeLineTotal — round-half-up at the cent boundary), so a sub-cent unit
+  // price can't make the row Total and the rail contribution disagree by a cent
+  // while typing. When qty/price are unchanged we defer to the authoritative
+  // persisted lineTotal so server normalization still wins on settle.
+  const displayTotal = totalDiverged ? computeLineTotal(effQty, effPrice) : line.lineTotal;
+  const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
+
+  // Report this row's effective values to the parent so the rail "Live totals"
+  // recompute uses the same inputs. Emit null once nothing diverges, so the rail
+  // reverts to the authoritative server figures; cleanup on unmount avoids a
+  // phantom draft skewing the rail after a delete.
+  const diverged = totalDiverged || taxable !== line.taxable || rec !== line.recurrence;
   useEffect(() => {
     onDraft(line.id, diverged
       ? { quantity: String(effQty), unitPrice: String(effPrice), taxable, customerVisible: line.customerVisible, recurrence: rec }
@@ -1616,7 +1610,7 @@ function EditableLineRow({
         </label>
       </td>
       <td className="px-2 py-2 text-right tabular-nums">
-        {formatMoney(displayTotal, currency)}
+        <span data-testid={`quote-line-total-${line.id}`}>{formatMoney(displayTotal, currency)}</span>
         {saved && <span className="ml-1 text-xs font-medium text-success" data-testid={`quote-line-saved-${line.id}`}>Saved</span>}
         <SrSaved show={saved} />
       </td>

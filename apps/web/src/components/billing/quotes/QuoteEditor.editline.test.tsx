@@ -215,6 +215,21 @@ describe('QuoteEditor — inline line editing', () => {
     expect(updateLineMock).not.toHaveBeenCalled();
   });
 
+  it('row Total uses the shared cents math and agrees with the rail (sub-cent price)', async () => {
+    // 3 × 0.335 = 1.005 — naive float formatting can drift a cent from the
+    // server's round-half-up-at-the-cent-boundary. The row Total and the rail
+    // (both via the shared computeLineTotal) must land on the same $1.01.
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('quote-line-qty-line-1'), { target: { value: '3' } });
+    fireEvent.change(screen.getByTestId('quote-line-price-line-1'), { target: { value: '0.335' } });
+
+    await waitFor(() => expect(screen.getByTestId('quote-line-total-line-1')).toHaveTextContent('$1.01'));
+    // The fixture line is monthly, so the rail's monthly figure mirrors it exactly.
+    expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$1.01');
+  });
+
   it('keeps in-progress keystrokes when a stale refresh lands (no clobber)', async () => {
     // "edit qty→5, blur, type 7": a refresh confirming 5 must not wipe the 7 the
     // user has already typed into the still-focused field.
