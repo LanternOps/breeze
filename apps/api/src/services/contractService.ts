@@ -228,6 +228,22 @@ export async function addContractLineToContract(contractId: string, input: Contr
   return row!;
 }
 
+export async function updateContractLine(contractId: string, lineId: string, input: ContractLineInput, actor: ContractActor) {
+  const c = await getOwnedContractOr404(contractId, actor);
+  assertEditable(c);
+  // Full replace of the line's billing fields (mapping mirrors the insert path).
+  // sortOrder is preserved unless the caller supplies one.
+  const [row] = await db.update(contractLines).set({
+    lineType: input.lineType, description: input.description,
+    catalogItemId: input.catalogItemId ?? null, unitPrice: input.unitPrice,
+    manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+    siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
+    taxable: input.taxable, ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+  }).where(and(eq(contractLines.id, lineId), eq(contractLines.contractId, contractId))).returning();
+  if (!row) throw new ContractServiceError('Contract line not found', 404, 'CONTRACT_NOT_FOUND');
+  return row;
+}
+
 export async function removeContractLine(contractId: string, lineId: string, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
   assertEditable(c);

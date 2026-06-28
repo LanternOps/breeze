@@ -30,6 +30,7 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
     createContract: vi.fn(),
     updateContract: vi.fn(),
     addContractLine: vi.fn(),
+    updateContractLine: vi.fn(),
     removeContractLine: vi.fn(),
     contractTransition: vi.fn(),
     getContractEstimate: vi.fn(),
@@ -99,6 +100,34 @@ describe('ContractEditor (create)', () => {
     await waitFor(() => expect(api.createContract).toHaveBeenCalled());
     expect((api.createContract as any).mock.calls[0][0].lines).toEqual([
       { lineType: 'flat', description: 'Workstation mgmt', unitPrice: '40.00', taxable: false },
+    ]);
+  });
+
+  it('edits a staged line in place before create (no separate API call)', async () => {
+    render(<ContractEditor />);
+    const orgInput = await screen.findByTestId('contract-form-org-input');
+    fireEvent.focus(orgInput);
+    fireEvent.change(orgInput, { target: { value: 'Acme' } });
+    fireEvent.click(await screen.findByTestId('contract-form-org-option-org-1'));
+    fireEvent.change(screen.getByTestId('contract-form-name'), { target: { value: 'Acme MSA' } });
+
+    // Stage, then edit the line in place via the same form.
+    fireEvent.change(screen.getByTestId('contract-line-desc'), { target: { value: 'Workstation mgmt' } });
+    fireEvent.change(screen.getByTestId('contract-line-price'), { target: { value: '40.00' } });
+    fireEvent.click(screen.getByTestId('add-line-btn'));
+    expect(await screen.findByText('Workstation mgmt')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('line-edit-0'));
+    expect(screen.getByTestId('contract-line-form-title')).toHaveTextContent('Edit line');
+    fireEvent.change(screen.getByTestId('contract-line-price'), { target: { value: '55.00' } });
+    fireEvent.click(screen.getByTestId('add-line-btn')); // now "Save line"
+
+    fireEvent.click(screen.getByTestId('save-contract-btn'));
+    await waitFor(() => expect(api.createContract).toHaveBeenCalled());
+    // Staged edit is local — no PATCH — and the new price is in the create payload.
+    expect(api.updateContractLine).not.toHaveBeenCalled();
+    expect((api.createContract as any).mock.calls[0][0].lines).toEqual([
+      { lineType: 'flat', description: 'Workstation mgmt', unitPrice: '55.00', taxable: false },
     ]);
   });
 });

@@ -47,10 +47,12 @@ export default function SearchableSelect({
 
   const selected = useMemo(() => options.find((o) => o.id === value) ?? null, [options, value]);
 
-  const results = useMemo(() => {
+  const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return options.filter((o) => !q || o.name.toLowerCase().includes(q)).slice(0, maxResults);
-  }, [options, query, maxResults]);
+    return options.filter((o) => !q || o.name.toLowerCase().includes(q));
+  }, [options, query]);
+  const results = useMemo(() => matches.slice(0, maxResults), [matches, maxResults]);
+  const truncated = matches.length > results.length;
 
   useEffect(() => { setActive(0); }, [query, open]);
 
@@ -119,6 +121,15 @@ export default function SearchableSelect({
               </button>
             </li>
           ))}
+          {truncated && (
+            <li
+              className="border-t px-3 py-1.5 text-[11px] text-muted-foreground"
+              role="presentation"
+              data-testid={`${testId}-truncated`}
+            >
+              Showing {results.length} of {matches.length} — keep typing to narrow.
+            </li>
+          )}
         </ul>
       )}
       {open && query.trim() !== '' && results.length === 0 && (

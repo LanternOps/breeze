@@ -7,6 +7,7 @@ import {
   createContract,
   updateContract,
   addContractLine,
+  updateContractLine,
   removeContractLine,
   contractTransition,
   getContractEstimate,
@@ -69,7 +70,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   // Which mutation is in flight, so the active button (not all of them) shows a
   // spinner + verb. null = idle; `busy` is derived for the existing disable
   // guards so every in-flight path still blocks concurrent mutations.
-  const [pending, setPending] = useState<null | 'create' | 'save' | 'addLine' | 'removeLine' | 'activate'>(null);
+  const [pending, setPending] = useState<null | 'create' | 'save' | 'addLine' | 'editLine' | 'removeLine' | 'activate'>(null);
   const busy = pending !== null;
 
   // Confirmation gates for the two irreversible money-moments: removing a
@@ -111,6 +112,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [lineTaxable, setLineTaxable] = useState(false);
   const [lineSiteId, setLineSiteId] = useState('');
   const [lineCatalogId, setLineCatalogId] = useState('');
+  // Set while editing an existing line in place; the add-line form becomes the
+  // editor (Save line / Cancel) instead of adding a new row.
+  const [editingLineId, setEditingLineId] = useState<string | null>(null);
 
   // Lines staged locally in create mode (no contract id yet); committed
   // atomically with the contract on save. Edit mode reads persisted lines.
@@ -165,7 +169,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   useEffect(() => { if (!isCreate) void loadEstimate(); }, [isCreate, loadEstimate]);
 
   const intervalIsValid = intervalMonths >= 1 && intervalMonths <= 60;
-  const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalIsValid;
+  // ISO yyyy-mm-dd compares lexicographically === chronologically.
+  const dateRangeValid = !endDate || endDate > startDate;
+  const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalIsValid && dateRangeValid;
 
   // First unmet requirement, surfaced under the disabled save button so the user
   // never has to guess why it's greyed out.
@@ -177,7 +183,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         ? 'Set a start date to save.'
         : !intervalIsValid
           ? 'Enter a billing interval of 1–60 months.'
-          : null;
+          : !dateRangeValid
+            ? 'End date must be after the start date.'
+            : null;
 
   // ---- live "Estimated this period" ----------------------------------------
   // flat/manual contribute qty×price; per_device/per_seat are resolved by the
@@ -230,6 +238,77 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const removeDraftLine = useCallback((id: string) => {
     setDraftLines((prev) => prev.filter((l) => l.id !== id));
   }, []);
+
+  const resetLineForm = useCallback(() => {
+    setLineType('flat'); setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
+    setLineTaxable(false); setLineSiteId(''); setLineCatalogId('');
+  }, []);
+
+  // Load an existing line into the add-line form, turning it into an editor.
+  const startEditLine = useCallback((l: LineView) => {
+    setLineType(l.lineType);
+    setLineDesc(l.description);
+    setLinePrice(l.unitPrice);
+    setLineQty(l.manualQuantity ?? '1');
+    setLineSiteId(l.siteId ?? '');
+    setLineCatalogId(l.catalogItemId ?? '');
+    setLineTaxable(l.taxable);
+    setEditingLineId(l.id);
+  }, []);
+
+  const cancelEditLine = useCallback(() => {
+    resetLineForm();
+    setEditingLineId(null);
+  }, [resetLineForm]);
+
+  // The current add-line form values as a LineView body (sans id).
+  const currentLineFields = useCallback((): Omit<LineView, 'id'> => ({
+    lineType,
+    description: lineDesc.trim(),
+    unitPrice: linePrice,
+    manualQuantity: lineType === 'manual' ? lineQty : null,
+    siteId: lineType === 'per_device' ? (lineSiteId || null) : null,
+    catalogItemId: lineCatalogId || null,
+    taxable: lineTaxable,
+  }), [lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable]);
+
+  // The same values shaped for the line API (omit absent optionals).
+  const currentLineInput = useCallback(() => ({
+    lineType,
+    description: lineDesc.trim(),
+    unitPrice: linePrice,
+    taxable: lineTaxable,
+    ...(lineType === 'manual' ? { manualQuantity: lineQty } : {}),
+    ...(lineType === 'per_device' && lineSiteId ? { siteId: lineSiteId } : {}),
+    ...(lineCatalogId ? { catalogItemId: lineCatalogId } : {}),
+  }), [lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable]);
+
+  // Save an in-place edit: local for staged (create) lines, PATCH for persisted.
+  const saveEditLine = useCallback(async () => {
+    if (!editingLineId || !lineDesc.trim()) return;
+    if (isCreate) {
+      const fields = currentLineFields();
+      setDraftLines((prev) => prev.map((dl) => dl.id === editingLineId ? { id: dl.id, ...fields } : dl));
+      cancelEditLine();
+      return;
+    }
+    if (busy || !contract) return;
+    setPending('editLine');
+    try {
+      await runAction({
+        request: () => updateContractLine(contract.id, editingLineId, currentLineInput()),
+        errorFallback: 'Could not update the line.',
+        successMessage: 'Line updated',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      cancelEditLine();
+      refresh();
+    } catch (err) {
+      handleActionError(err, 'Could not update the line.');
+    } finally {
+      setPending(null);
+    }
+  }, [editingLineId, lineDesc, isCreate, busy, contract, currentLineFields, currentLineInput, cancelEditLine, refresh]);
 
   /** Map staged lines to the contractLineInputSchema shape (omit absent
    *  optionals rather than sending null, which the string schema rejects). */
@@ -607,13 +686,23 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           </td>
                           <td className="px-3 py-2 text-right">
                             {can('contracts', 'write') && (
-                              <button
-                                type="button" onClick={() => isCreate ? removeDraftLine(l.id) : setRemoveTarget(l)} disabled={busy}
-                                data-testid={`line-remove-${idx}`}
-                                className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                              >
-                                Remove
-                              </button>
+                              <div className="flex justify-end gap-1">
+                                <button
+                                  type="button" onClick={() => startEditLine(l)} disabled={busy}
+                                  data-testid={`line-edit-${idx}`}
+                                  aria-current={editingLineId === l.id ? 'true' : undefined}
+                                  className={`rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50 ${editingLineId === l.id ? 'border-primary text-primary' : ''}`}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button" onClick={() => isCreate ? removeDraftLine(l.id) : setRemoveTarget(l)} disabled={busy}
+                                  data-testid={`line-remove-${idx}`}
+                                  className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                                >
+                                  Remove
+                                </button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -623,9 +712,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 </table>
               </div>
 
-              {/* Add line */}
+              {/* Add / edit line */}
               <div className="rounded-lg border bg-card p-4 shadow-sm" data-testid="contract-add-line">
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground" data-testid="contract-line-form-title">
+                  {editingLineId ? 'Edit line' : 'Add a line'}
+                </h4>
+                {/* What's being billed */}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
                     Line type
                     <select
@@ -648,41 +741,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </label>
-                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
-                    Unit price
-                    <input
-                      type="number" min="0" step="0.01" value={linePrice}
-                      onChange={(e) => setLinePrice(e.target.value)}
-                      data-testid="contract-line-price"
-                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                    />
-                  </label>
-                  {lineType === 'manual' && (
-                    <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
-                      Quantity
-                      <input
-                        type="number" min="0" step="0.01" value={lineQty}
-                        onChange={(e) => setLineQty(e.target.value)}
-                        data-testid="contract-line-qty"
-                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                    </label>
-                  )}
-                  {lineType === 'per_device' && (
-                    <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
-                      Site (optional — scopes the device count)
-                      <select
-                        value={lineSiteId} onChange={(e) => setLineSiteId(e.target.value)}
-                        data-testid="contract-line-site"
-                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      >
-                        <option value="">All sites</option>
-                        {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                      </select>
-                    </label>
-                  )}
                   {catalogItems.length > 0 && (
-                    <div className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    <div className="flex flex-col gap-1 text-xs font-medium text-foreground/85 sm:col-span-2">
                       Link catalog item (optional)
                       {lineCatalogId ? (
                         <div className="flex flex-col gap-1" data-testid="contract-line-catalog-picked">
@@ -720,7 +780,41 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       )}
                     </div>
                   )}
-                  <label className="flex items-center gap-2 text-sm">
+                  {/* How much it costs */}
+                  <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                    Unit price
+                    <input
+                      type="number" min="0" step="0.01" value={linePrice}
+                      onChange={(e) => setLinePrice(e.target.value)}
+                      data-testid="contract-line-price"
+                      className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                  {lineType === 'manual' && (
+                    <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                      Quantity
+                      <input
+                        type="number" min="0" step="0.01" value={lineQty}
+                        onChange={(e) => setLineQty(e.target.value)}
+                        data-testid="contract-line-qty"
+                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                  )}
+                  {lineType === 'per_device' && (
+                    <label className="flex flex-col gap-1 text-xs font-medium text-foreground/85">
+                      Site (optional — scopes the device count)
+                      <select
+                        value={lineSiteId} onChange={(e) => setLineSiteId(e.target.value)}
+                        data-testid="contract-line-site"
+                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        <option value="">All sites</option>
+                        {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <label className="flex items-center gap-2 text-sm sm:col-span-2">
                     <input
                       type="checkbox" checked={lineTaxable} onChange={(e) => setLineTaxable(e.target.checked)}
                       data-testid="contract-line-taxable"
@@ -728,21 +822,36 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     Taxable
                   </label>
                 </div>
-                <div className="mt-3 flex items-center justify-between">
+                <div className="mt-3 flex items-center justify-between gap-2">
                   <span className="text-xs text-muted-foreground">
                     {newLineEstimate === null
                       ? 'Quantity resolved automatically at billing time.'
                       : `Line total: ${formatMoney(newLineEstimate, contract?.currencyCode)}`}
                   </span>
                   {can('contracts', 'write') && (
-                    <button
-                      type="button" onClick={() => isCreate ? addDraftLine() : void addLine()} disabled={busy || !lineDesc.trim()}
-                      data-testid="add-line-btn"
-                      className="inline-flex h-9 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
-                    >
-                      {pending === 'addLine' && <Spinner />}
-                      {pending === 'addLine' ? 'Adding…' : 'Add line'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {editingLineId && (
+                        <button
+                          type="button" onClick={cancelEditLine} disabled={busy}
+                          data-testid="cancel-line-btn"
+                          className="inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => editingLineId ? void saveEditLine() : (isCreate ? addDraftLine() : void addLine())}
+                        disabled={busy || !lineDesc.trim()}
+                        data-testid="add-line-btn"
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                      >
+                        {(pending === 'addLine' || pending === 'editLine') && <Spinner />}
+                        {editingLineId
+                          ? (pending === 'editLine' ? 'Saving…' : 'Save line')
+                          : (pending === 'addLine' ? 'Adding…' : 'Add line')}
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -754,7 +863,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           <div className="rounded-lg border border-primary/30 bg-primary/[0.03] p-4 shadow-sm" data-testid="contract-estimate">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Estimated this period</h3>
             {isCreate && lines.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Add a line below to see the estimated total.</p>
+              <p className="text-sm text-muted-foreground">Add a line to see the estimated total.</p>
             ) : (
               <>
                 <p className="text-2xl font-semibold tabular-nums" data-testid="contract-estimate-total">
@@ -768,6 +877,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 {liveEstimate && liveEstimate.lines.some((l) => l.live) && (
                   <p className="mt-1 text-xs text-muted-foreground">
                     Includes live device / seat counts as of today.
+                  </p>
+                )}
+                {!liveEstimate && !estimateFailed && estimate.hasAuto && (
+                  <p className="mt-1 text-xs text-muted-foreground" data-testid="contract-estimate-auto-note">
+                    Per-device / seat lines bill on live counts and aren&rsquo;t in this total.
                   </p>
                 )}
                 {!liveEstimate && estimateFailed && (

@@ -146,6 +146,14 @@ export function addContractLine(id: string, body: unknown): Promise<Response> {
   });
 }
 
+export function updateContractLine(id: string, lineId: string, body: unknown): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
 export function removeContractLine(id: string, lineId: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, { method: 'DELETE' });
 }

@@ -8,6 +8,7 @@ vi.mock('../../services/contractService', () => ({
   updateContract: vi.fn(),
   deleteDraftContract: vi.fn(),
   addContractLineToContract: vi.fn(),
+  updateContractLine: vi.fn(),
   removeContractLine: vi.fn(),
   activateContract: vi.fn(),
   pauseContract: vi.fn(),
@@ -209,6 +210,29 @@ describe('contract line routes', () => {
     });
     expect(res.status).toBe(400);
     expect(svc.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /:id/lines/:lineId updates a line in place', async () => {
+    (svc.updateContractLine as any).mockResolvedValue({ id: LINE_ID, unitPrice: '175.00' });
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'flat', description: 'Monthly fee', unitPrice: '175.00', taxable: true })
+    });
+    expect(res.status).toBe(200);
+    expect(svc.updateContractLine).toHaveBeenCalledWith(
+      CONTRACT_ID, LINE_ID, expect.objectContaining({ unitPrice: '175.00' }), expect.anything(),
+    );
+  });
+
+  it('PATCH /:id/lines/:lineId rejects an invalid body (missing description → 400, no service call)', async () => {
+    const res = await app().request(`/${CONTRACT_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lineType: 'flat', unitPrice: '100.00', taxable: false })
+    });
+    expect(res.status).toBe(400);
+    expect(svc.updateContractLine).not.toHaveBeenCalled();
   });
 
   it('DELETE /:id/lines/:lineId removes a line', async () => {

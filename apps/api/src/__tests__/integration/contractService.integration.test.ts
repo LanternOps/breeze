@@ -19,7 +19,7 @@ import { eq, and } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, sites, devices, users, organizationUsers, roles, contracts, contractBillingPeriods, contractLines, invoiceLines, invoices } from '../../db/schema';
 import {
-  createContract, getContract, addContractLineToContract, updateContract, listContracts,
+  createContract, getContract, addContractLineToContract, updateContractLine, updateContract, listContracts,
   activateContract, pauseContract, resumeContract, cancelContract, generateDueInvoice,
   type ContractActorT
 } from '../../services/contractService';
@@ -70,6 +70,28 @@ describe('contractService CRUD', () => {
     expect(got.lines.every((l) => l.orgId === orgId)).toBe(true);
     expect(got.lines.map((l) => l.sortOrder)).toEqual([0, 1]);
     expect(got.lines.find((l) => l.lineType === 'manual')!.manualQuantity).toBe('2');
+  });
+
+  it('updates a line in place (price + type change), preserving sortOrder', async () => {
+    const { actor, orgId } = await seedOrg();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'EditLine', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01',
+      lines: [{ lineType: 'flat', description: 'Base fee', unitPrice: '500.00', taxable: false }],
+    }, actor));
+    const before = await withSystemDbAccessContext(() => getContract(c.id, actor));
+    const lineId = before.lines[0]!.id;
+    await withSystemDbAccessContext(() => updateContractLine(c.id, lineId, {
+      lineType: 'manual', description: 'Base fee (revised)', unitPrice: '650.00', manualQuantity: '3', taxable: true,
+    }, actor));
+    const after = await withSystemDbAccessContext(() => getContract(c.id, actor));
+    expect(after.lines).toHaveLength(1);
+    const l = after.lines[0]!;
+    expect(l.id).toBe(lineId);
+    expect(l.lineType).toBe('manual');
+    expect(l.unitPrice).toBe('650.00');
+    expect(l.manualQuantity).toBe('3');
+    expect(l.taxable).toBe(true);
+    expect(l.sortOrder).toBe(before.lines[0]!.sortOrder);
   });
 
   it('adds flat + per_device lines to a draft', async () => {

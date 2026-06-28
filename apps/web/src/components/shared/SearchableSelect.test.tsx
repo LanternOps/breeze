@@ -44,6 +44,14 @@ describe('SearchableSelect', () => {
     expect(onChange).toHaveBeenCalledWith('org-2');
   });
 
+  it('shows a "Showing N of M" hint when matches exceed the cap', () => {
+    const many: SelectOption[] = Array.from({ length: 12 }, (_, i) => ({ id: `o-${i}`, name: `Org ${i}` }));
+    const onChange = vi.fn();
+    render(<SearchableSelect options={many} value="" onChange={onChange} testId="ss" maxResults={8} />);
+    fireEvent.focus(screen.getByTestId('ss-input'));
+    expect(screen.getByTestId('ss-truncated')).toHaveTextContent('Showing 8 of 12');
+  });
+
   it('shows a no-matches hint when the query matches nothing', () => {
     const { input } = setup();
     fireEvent.focus(input);

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { contractLineInputSchema } from '@breeze/shared';
-import { addContractLineToContract, removeContractLine } from '../../services/contractService';
+import { addContractLineToContract, updateContractLine, removeContractLine } from '../../services/contractService';
 import { contractActorFrom, handleContractError } from './contracts';
 
 export const contractLineRoutes = new Hono();
@@ -15,6 +15,10 @@ const lineParam = z.object({ id: z.string().guid(), lineId: z.string().guid() })
 
 contractLineRoutes.post('/:id/lines', scopes, writePerm, zValidator('param', idParam), zValidator('json', contractLineInputSchema), async (c) => {
   try { return c.json({ data: await addContractLineToContract(c.req.valid('param').id, c.req.valid('json'), contractActorFrom(c)) }); }
+  catch (err) { return handleContractError(c, err); }
+});
+contractLineRoutes.patch('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), zValidator('json', contractLineInputSchema), async (c) => {
+  try { const p = c.req.valid('param'); return c.json({ data: await updateContractLine(p.id, p.lineId, c.req.valid('json'), contractActorFrom(c)) }); }
   catch (err) { return handleContractError(c, err); }
 });
 contractLineRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), async (c) => {
