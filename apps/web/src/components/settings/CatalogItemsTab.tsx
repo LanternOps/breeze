@@ -7,8 +7,9 @@ import { usePermissions } from '../../lib/permissions';
 import { formatMoney } from '../../lib/timeFormat';
 import CatalogItemEditorDrawer from './CatalogItemEditorDrawer';
 import CatalogDistributorDrawer from './CatalogDistributorDrawer';
+import Pax8CatalogDrawer from './Pax8CatalogDrawer';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
-import { ecExpressStatus } from '../../lib/api/distributors';
+import { ecExpressStatus, pax8Status } from '../../lib/api/distributors';
 import {
   listCatalog, getCatalogItem, getBundleEconomics, archiveCatalogItem, updateCatalogItem,
   computeMargin, formatMargin, marginTone,
@@ -44,6 +45,8 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
   // TD SYNNEX EC Express import is only offered when the integration is set up;
   // mirrors the quote editor's ecActive gate (configured && enabled).
   const [ecActive, setEcActive] = useState(false);
+  const [pax8Open, setPax8Open] = useState(false);
+  const [pax8Active, setPax8Active] = useState(false);
   const [editItem, setEditItem] = useState<CatalogItem | null>(null);
   const [archivingId, setArchivingId] = useState<string | null>(null);
   // Archive is a soft-delete that pulls the item from active pickers — guard it
@@ -89,6 +92,19 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
         if (!res.ok) return;
         const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
         setEcActive(Boolean(body?.data?.configured && body?.data?.enabled));
+      } catch { /* leave hidden */ }
+    })();
+  }, [canWrite]);
+
+  // Surface the Pax8 import entry only when the Pax8 integration is connected.
+  useEffect(() => {
+    if (!canWrite) return;
+    void (async () => {
+      try {
+        const res = await pax8Status();
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
+        setPax8Active(Boolean(body?.data?.configured && body?.data?.enabled));
       } catch { /* leave hidden */ }
     })();
   }, [canWrite]);
@@ -275,6 +291,17 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
             data-testid="catalog-import-distributor"
           >
             Import from TD SYNNEX
+          </button>
+        )}
+
+        {canWrite && pax8Active && (
+          <button
+            type="button"
+            onClick={() => setPax8Open(true)}
+            className="inline-flex h-9 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+            data-testid="catalog-import-pax8"
+          >
+            Import from Pax8
           </button>
         )}
 
@@ -487,6 +514,12 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
       <CatalogDistributorDrawer
         open={distributorOpen}
         onClose={() => setDistributorOpen(false)}
+        onImported={() => void load('active')}
+      />
+
+      <Pax8CatalogDrawer
+        open={pax8Open}
+        onClose={() => setPax8Open(false)}
         onImported={() => void load('active')}
       />
 
