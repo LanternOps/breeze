@@ -75,8 +75,17 @@ export const updateQuoteSchema = z.object({
   billToName: z.string().max(255).nullable().optional(),
 });
 
-export const reorderBlocksSchema = z.object({ blockIds: z.array(z.string().guid()).min(1) });
-export const reorderLinesSchema = z.object({ lineIds: z.array(z.string().guid()).min(1) });
+// A reorder payload must be a clean permutation of the existing ids, so the id
+// list has to be unique — without this, a duplicated id (e.g. [A, A] for blocks
+// [A, B]) passes a length+membership check, renumbers A twice, never touches B,
+// and corrupts sort_order. Uniqueness is enforced here so both routes are
+// covered; the service re-checks as defense in depth.
+const uniqueReorderIds = z
+  .array(z.string().guid())
+  .min(1)
+  .refine((ids) => new Set(ids).size === ids.length, { message: 'ids must be unique' });
+export const reorderBlocksSchema = z.object({ blockIds: uniqueReorderIds });
+export const reorderLinesSchema = z.object({ lineIds: uniqueReorderIds });
 export type ReorderLinesInput = z.infer<typeof reorderLinesSchema>;
 export type ReorderBlocksInput = z.infer<typeof reorderBlocksSchema>;
 

@@ -8,11 +8,14 @@
 // first. These helpers are intentionally self-contained (no invoice-status / DB
 // coupling) so the module is safe to import into the browser bundle.
 
-/** Money string/number → integer cents (round-half-to-even via Math.round on
- *  the ×100 product). Null/empty → 0. */
+/** Money string/number → integer cents (round-half-up — `Math.round` ties toward
+ *  +∞ — on the ×100 product). Null/empty/non-finite → 0, so a stray NaN can't
+ *  propagate to a literal "NaN" on the totals rail (this module is browser-safe
+ *  and shared, so it can't assume every caller pre-validates). */
 export function toCents(v: string | number | null | undefined): number {
   if (v === null || v === undefined || v === '') return 0;
-  return Math.round(Number(v) * 100);
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 100) : 0;
 }
 
 /** Integer cents → 2-decimal money string. */

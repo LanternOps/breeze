@@ -125,4 +125,40 @@ describe('QuoteEditor — reorder', () => {
     fireEvent.click(screen.getByTestId('quote-line-move-down-l-1'));
     await waitFor(() => expect(reorderLinesMock).toHaveBeenCalledWith('q-1', 'blk-1', { lineIds: ['l-2', 'l-1'] }));
   });
+
+  it('accumulates rapid reorder clicks into a single PATCH with the final order', async () => {
+    // Three blocks so the first can be moved down twice. Two rapid clicks should
+    // stack on the optimistic order and coalesce into ONE PATCH carrying the final
+    // id list — not two competing requests (the central novel reorder behavior).
+    const thirdBlock: QuoteDetailData['blocks'][number] = {
+      id: 'blk-3', quoteId: 'q-1', orgId: 'org-1', blockType: 'heading',
+      content: { text: 'Footer', level: 2 }, sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
+    };
+    const threeBlocks: QuoteDetailData = { ...detail, blocks: [tableBlock, headingBlock, thirdBlock] };
+    render(<QuoteEditor detail={threeBlocks} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1')); // [blk-2, blk-1, blk-3]
+    fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1')); // [blk-2, blk-3, blk-1]
+
+    await waitFor(() => expect(reorderBlocksMock).toHaveBeenCalledTimes(1));
+    expect(reorderBlocksMock).toHaveBeenCalledWith('q-1', { blockIds: ['blk-2', 'blk-3', 'blk-1'] });
+  });
+
+  it('reverts the optimistic order and toasts when the reorder PATCH fails', async () => {
+    // A failed reorder must not leave the UI showing an order that never persisted.
+    reorderBlocksMock.mockResolvedValue(
+      { ok: false, status: 500, statusText: 'err', json: vi.fn().mockResolvedValue({ error: 'boom' }) } as unknown as Response,
+    );
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    // blk-1 starts first (move-up disabled). Move it down (optimistically enables move-up).
+    fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1'));
+    await waitFor(() => expect(reorderBlocksMock).toHaveBeenCalledTimes(1));
+
+    // Failure is surfaced and the optimistic order reverts (blk-1 back to first).
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(screen.getByTestId('quote-block-move-up-blk-1')).toBeDisabled());
+  });
 });

@@ -75,10 +75,10 @@ interface Props {
   onChanged: () => void;
 }
 
-// A quiet, transient "Saved" cue used consistently for every blur-to-save field
-// in the editor (terms, tax, block content, line fields). Returns the on-flag
-// and a trigger; clears its timer on unmount so a late fire can't setState a
-// gone node.
+// A quiet, transient "Saved" cue for the right-rail blur-to-save fields (terms,
+// tax). BlockCard and EditableLineRow replicate this same pattern inline rather
+// than calling the hook. Returns the on-flag and a trigger; clears its timer on
+// unmount so a late fire can't setState a gone node.
 function useSavedFlash(): [boolean, () => void] {
   const [on, setOn] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -255,9 +255,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved]);
 
   // Persist the tax rate as a fraction. Empty clears it (null); otherwise the
-  // percent is clamped to 0–100 (fraction 0–1, matching updateQuoteSchema) and an
-  // out-of-range/non-numeric entry resets to the persisted value rather than
-  // saving garbage. The server recomputes taxTotal/total, so refresh() re-pulls.
+  // percent is validated against 0–100 (fraction 0–1, matching updateQuoteSchema).
+  // An out-of-range/non-numeric entry is kept in the field with an inline error
+  // rather than saved or silently reverted. The server recomputes taxTotal/total,
+  // so refresh() re-pulls.
   const saveTaxRate = useCallback(async () => {
     if (!taxDirty) return;
     const trimmed = taxPct.trim();
@@ -366,7 +367,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   // The effective tax rate the rail should reflect: the committed server rate
   // normally, but the live tax-field value while it's mid-edit (and valid). An
   // out-of-range/non-numeric entry isn't applied — it falls back to the committed
-  // rate, matching saveTaxRate's own clamp — so the rail never previews garbage.
+  // rate, matching saveTaxRate's own rejection of out-of-range values — so the
+  // rail never previews garbage.
   const committedRate = quote.taxRate ? parseFloat(quote.taxRate) : null;
   const effectiveRate = useMemo<number | null>(() => {
     if (!taxDirty) return committedRate;
@@ -1008,10 +1010,12 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           const block = pendingRemove;
           if (!block) return;
           // Keep the dialog open and awaiting (so isLoading shows "Processing…")
-          // until the delete resolves, then close and move focus to a stable
-          // anchor — the triggering Remove button is gone with the block.
+          // until the delete resolves. On failure (already toasted by runAction)
+          // leave the dialog open so the user can retry or cancel — don't close as
+          // if it worked while the block is still there. On success, close and move
+          // focus to a stable anchor — the triggering Remove button is gone.
           void (async () => {
-            await removeBlock(block);
+            if (!(await removeBlock(block))) return;
             setPendingRemove(null);
             blocksColRef.current?.focus();
           })();
@@ -1035,8 +1039,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         onConfirm={() => {
           const line = pendingLineRemove;
           if (!line) return;
+          // Leave the dialog open on failure (already toasted) so the user can
+          // retry; only close + restore focus once the line is actually gone.
           void (async () => {
-            await deleteLine(line.id);
+            if (!(await deleteLine(line.id))) return;
             setPendingLineRemove(null);
             blocksColRef.current?.focus();
           })();
@@ -1457,7 +1463,7 @@ function EditableLineRow({
   // formatted decimal ('10.00'), so a value comparison both (a) fails to re-adopt
   // a server-normalized value — leaving the row stuck amber-dirty showing a wrong
   // optimistic total when the server rounds — and (b) is fragile across formats.
-  // The flag is set on keystroke and cleared once a commit settles, so:
+  // The flag is set on keystroke and cleared when a commit is initiated (on blur), so:
   //   • a quiet/leading-edge refresh landing mid-type keeps the user's keystrokes
   //     ("edit qty→5, blur, type 7" never loses the 7), and
   //   • after the user stops editing, the next prop adopts the server's canonical

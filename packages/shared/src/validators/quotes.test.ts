@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createQuoteSchema, quoteLineInputSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   acceptQuoteSchema, declineQuoteSchema,
-  updateQuoteSchema,
+  updateQuoteSchema, reorderBlocksSchema, reorderLinesSchema,
 } from './quotes';
 
 describe('quote validators', () => {
@@ -48,6 +48,27 @@ describe('declineQuoteSchema', () => {
   });
 });
 
+
+describe('reorder schemas', () => {
+  const A = '11111111-1111-1111-1111-111111111111';
+  const B = '22222222-2222-2222-2222-222222222222';
+  it('accepts a non-empty list of unique guids', () => {
+    expect(reorderBlocksSchema.safeParse({ blockIds: [A, B] }).success).toBe(true);
+    expect(reorderLinesSchema.safeParse({ lineIds: [A, B] }).success).toBe(true);
+  });
+  it('rejects an empty list', () => {
+    expect(reorderBlocksSchema.safeParse({ blockIds: [] }).success).toBe(false);
+  });
+  it('rejects duplicate ids (would corrupt sort_order)', () => {
+    // [A, A] for blocks [A, B] would otherwise pass a length+membership check,
+    // renumber A twice, and orphan B's sort_order.
+    expect(reorderBlocksSchema.safeParse({ blockIds: [A, A] }).success).toBe(false);
+    expect(reorderLinesSchema.safeParse({ lineIds: [A, A] }).success).toBe(false);
+  });
+  it('rejects non-guid ids', () => {
+    expect(reorderBlocksSchema.safeParse({ blockIds: ['not-a-guid'] }).success).toBe(false);
+  });
+});
 
 describe('quote T&C field', () => {
   it('create accepts termsAndConditions', () => {

@@ -28,7 +28,6 @@ const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIO
 const idParam = z.object({ id: z.string().guid() });
 const lineParam = z.object({ id: z.string().guid(), lineId: z.string().guid() });
 const blockParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
-const blockLineReorderParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
 
 export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
   const auth = c.get('auth') as AuthContext;
@@ -77,7 +76,7 @@ quoteCrudRoutes.patch('/:id/blocks/:blockId', scopes, writePerm, zValidator('par
   try { const p = c.req.valid('param'); return c.json({ data: await updateBlock(p.id, p.blockId, c.req.valid('json'), quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
-quoteCrudRoutes.patch('/:id/blocks/:blockId/lines/reorder', scopes, writePerm, zValidator('param', blockLineReorderParam), zValidator('json', reorderLinesSchema), async (c) => {
+quoteCrudRoutes.patch('/:id/blocks/:blockId/lines/reorder', scopes, writePerm, zValidator('param', blockParam), zValidator('json', reorderLinesSchema), async (c) => {
   try { const { id, blockId } = c.req.valid('param'); await reorderLines(id, blockId, c.req.valid('json').lineIds, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
   catch (err) { return handleServiceError(c, err); }
 });
