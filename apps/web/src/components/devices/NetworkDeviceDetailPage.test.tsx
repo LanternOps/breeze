@@ -357,6 +357,35 @@ describe('NetworkDeviceDetailPage', () => {
     expect(body).toEqual({ resetTypeToAuto: true });
   });
 
+  it('disables the type select while a change is in flight, then re-enables it', async () => {
+    let resolvePatch!: (value: Response) => void;
+    const patchPromise = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+
+    fetchWithAuthMock
+      // initial load
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
+      // PATCH — stays pending until we resolve it
+      .mockReturnValueOnce(patchPromise as unknown as Promise<Response>)
+      // reload after the change
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    const select = screen.getByTestId('network-asset-type-select') as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+
+    fireEvent.change(select, { target: { value: 'router' } });
+
+    await waitFor(() => expect(select.disabled).toBe(true));
+
+    resolvePatch(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
+
+    await waitFor(() => expect(select.disabled).toBe(false));
+  });
+
   it('points the "Manage in Discovery" link at the discovery asset deep-link', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
 

@@ -158,6 +158,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   };
 
   const [unlinking, setUnlinking] = useState(false);
+  const [typeSaving, setTypeSaving] = useState(false);
 
   // The Unlink button only renders for manual links (see render guard below) and
   // the server independently rejects non-manual unlinks; this handler guards only
@@ -188,6 +189,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const changeType = useCallback(
     async (next: DiscoveredAssetType | 'reset') => {
       if (!asset) return;
+      setTypeSaving(true);
       try {
         await runAction({
           request: () =>
@@ -204,6 +206,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         await fetchAsset();
       } catch {
         // runAction already toasted the failure; leave the current type in place.
+      } finally {
+        setTypeSaving(false);
       }
     },
     [asset, fetchAsset],
@@ -352,8 +356,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                   <div className="mt-1 flex items-center gap-2">
                     <select
                       data-testid="network-asset-type-select"
-                      className="rounded-md border bg-background px-2 py-1 text-sm"
+                      className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60"
                       value={asset.type}
+                      disabled={typeSaving}
                       onChange={(e) => void changeType(e.target.value as DiscoveredAssetType)}
                     >
                       {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((t) => (
@@ -364,7 +369,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       <button
                         type="button"
                         data-testid="network-asset-type-reset"
-                        className="text-xs text-muted-foreground underline hover:text-foreground"
+                        className="text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-60"
+                        disabled={typeSaving}
                         onClick={() => void changeType('reset')}
                       >
                         Reset to auto-detected
