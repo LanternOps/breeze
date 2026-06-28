@@ -19,7 +19,7 @@ A 2026-06-27 research pass into the UniFi API surface found three other surfaces
 
 **Goals**
 - One **partner-level** UniFi cloud connection: paste a Site Manager API key, validate it, store it encrypted.
-- **Map** UniFi hosts/sites to Breeze organizations so each console's devices route to the right customer.
+- **Map** UniFi hosts/sites to Breeze **sites** (org derived from the site) so each console's devices route to the right customer location — and so synced devices have the `site_id` that `discovered_assets` requires.
 - **Sync** device inventory (model, MAC, type, firmware + upgrade-available, uptime, adoption state) and latest WAN/ISP metrics into dedicated UniFi tables at full fidelity.
 - **Link** synced UniFi devices into the existing `discovered_assets` network model (by org + MAC) so the unified network view and existing AI tools see them, without duplicating or clobbering agent-discovered rows.
 - **Record** every sync run in a ledger (`unifi_sync_runs`) — counts of created/updated/unchanged/removed per run — for an audit trail and a "what did the last sync change" view.
@@ -63,12 +63,13 @@ updated_at        timestamptz NOT NULL DEFAULT now()
 - Unique partial index: `(partner_id) WHERE is_active` — at most one active cloud connection per partner (Site Manager keys are account-wide; one per MSP is the model).
 - Policies: `breeze_has_partner_access(partner_id)` for SELECT/INSERT/UPDATE/DELETE (flat partner check, never tree traversal). Add to `PARTNER_TENANT_TABLES` in `rls-coverage.integration.test.ts`.
 
-#### `unifi_site_mappings` — UniFi site → Breeze org (RLS shape 1, direct org_id)
+#### `unifi_site_mappings` — UniFi site → Breeze site (RLS shape 1, direct org_id)
 
 ```
 id              uuid PK
 integration_id  uuid NOT NULL REFERENCES unifi_integrations(id) ON DELETE CASCADE
-org_id          uuid NOT NULL REFERENCES organizations(id)
+org_id          uuid NOT NULL REFERENCES organizations(id)   -- denormalized from site, for RLS + device routing
+site_id         uuid NOT NULL REFERENCES sites(id)           -- the Breeze site UniFi gear lands on
 unifi_host_id   text NOT NULL                 -- console (UniFi OS host) id from /v1/hosts
 unifi_site_id   text NOT NULL                 -- site id from /v1/sites
 unifi_host_name text                          -- denormalized for display
@@ -79,14 +80,16 @@ created_at      timestamptz NOT NULL DEFAULT now()
 updated_at      timestamptz NOT NULL DEFAULT now()
 ```
 
-- Unique index: `(integration_id, unifi_host_id, unifi_site_id)` — a UniFi site maps to exactly one org.
-- Policy: `breeze_has_org_access(org_id)` (FOR ALL). Partner admins reach these through org membership. Unmapped sites are simply not synced. Add to auto-discovered direct-`org_id` set (shape 1 needs no allowlist entry).
+- Unique index: `(integration_id, unifi_host_id, unifi_site_id)` — a UniFi site maps to exactly one Breeze site.
+- `org_id` is denormalized from `site_id` (a site belongs to one org) so the table is direct-`org_id` (shape 1) and device routing has the org without a join. The route layer derives `org_id` from the chosen `site_id` on write.
+- Policy: `breeze_has_org_access(org_id)` (FOR ALL). Partner admins reach these through org membership. Unmapped sites are simply not synced. Direct-`org_id` (shape 1) needs no allowlist entry.
 
 #### `unifi_devices` — synced inventory at full fidelity (RLS shape 1, direct org_id)
 
 ```
 id                 uuid PK
 org_id             uuid NOT NULL REFERENCES organizations(id)
+site_id            uuid NOT NULL REFERENCES sites(id)        -- from the mapping; needed for discovered_assets insert
 integration_id     uuid NOT NULL REFERENCES unifi_integrations(id) ON DELETE CASCADE
 mapping_id         uuid NOT NULL REFERENCES unifi_site_mappings(id) ON DELETE CASCADE
 discovered_asset_id uuid REFERENCES discovered_assets(id)   -- link into the generic network model
@@ -172,7 +175,7 @@ All mutating web handlers go through `runAction` on the web side (per the web mu
 
 Mounted on the existing Integrations page (parallel to `QuickbooksIntegration.tsx`). States:
 1. **Disconnected:** API-key input + "how to generate a Site Manager key at unifi.ui.com" help text → POST `/unifi/connect`.
-2. **Connected — mapping:** table of discovered hosts/sites, each with an org selector → PUT `/unifi/mappings`. Self-hosted / non-UniFi-OS consoles shown as unsupported.
+2. **Connected — mapping:** table of discovered hosts/sites, each with a Breeze **site** selector (grouped by org) → PUT `/unifi/mappings`. The route derives `org_id` from the chosen site. Self-hosted / non-UniFi-OS consoles shown as unsupported.
 3. **Connected — synced:** last sync time/status, "Sync now" button, and a collapsible **sync-run history** table (the ledger) showing per-run created/updated/removed counts. Disconnect button.
 
 ### Data flow
@@ -186,17 +189,18 @@ unifiClient ── listHosts/listSites/listDevices/getIspMetrics
 unifiSyncService (withSystemDbAccessContext)
         ├─ upsert unifi_devices (full raw + typed subset)
         ├─ update unifi_site_mappings.wan_metrics
-        ├─ reconcile → discovered_assets (by org_id + mac)
-        │     • match existing asset → enrich (set source, link discovered_asset_id)
-        │     • no match → create asset (source='unifi', asset_type from device_type)
-        │     • never clobber an agent-owned asset's identity; only enrich
+        ├─ reconcile → discovered_assets (mapped site_id + org_id)
+        │     • match existing by (org_id, mac_address); else by (org_id, ip_address) [the unique key]
+        │     • match → enrich (manufacturer/model/hostname/asset_type/is_online/ip) + link discovered_asset_id
+        │     • no match → insert (org_id, site_id, ip, mac, asset_type) via onConflict (org_id, ip) do update
+        │     • never clobber an agent-owned asset's identity beyond enrichment; only unlink on disappearance
         └─ write unifi_sync_runs ledger row (counts, status)
         ▼
 Existing network view + aiToolsNetwork see UniFi gear via discovered_assets
 Drill-down reads unifi_devices for UniFi-specific fields
 ```
 
-The reconciliation adds an idempotent `'unifi'` value to the `discovered_assets` source/provenance column (verify exact column name during implementation; add the enum value in the migration if it's an enum). Matching is on `(org_id, mac)`. If an agent scan already discovered the same MAC, we **enrich** that row (link + source flag + better name/model from UniFi) rather than create a duplicate — UniFi is authoritative for identity on a MAC it owns, but we do not delete agent-discovered assets when a UniFi device disappears (we only unlink).
+`discovered_assets` has **no `source`/provenance column** and its unique key is `(org_id, ip_address)` (mac is nullable, not unique). So the link of record is **`unifi_devices.discovered_asset_id`** — a discovered asset "is from UniFi" iff a `unifi_devices` row references it; no enum or schema change to `discovered_assets` is needed (the new nullable `discovered_asset_id` FK lives on `unifi_devices`, not the reverse). Reconciliation matches an existing asset first by `(org_id, mac_address)` (the stable identifier) and falls back to the `(org_id, ip_address)` unique key; on a match it **enriches** (UniFi is authoritative for `manufacturer='Ubiquiti'`, `model`, `hostname`, `asset_type`, `is_online`, `ip_address`) and stamps the link. Net-new gear is inserted with the mapped `site_id`/`org_id` using `onConflictDoUpdate` on `(org_id, ip_address)` to absorb a race with agent discovery. When a UniFi device disappears we only **unlink** (`discovered_asset_id = NULL`, device marked stale) — we never delete an agent-discovered asset.
 
 ## Error handling
 
