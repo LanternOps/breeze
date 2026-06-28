@@ -36,4 +36,28 @@ describe('Pax8ProductLookup', () => {
     expect(term.partnerBuyRate).toBe('18.50');
     expect(sell).toBe(22);
   });
+
+  it('term switch re-defaults sell price', async () => {
+    pax8Pricing.mockResolvedValue(ok([
+      { commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', suggestedRetailPrice: '22.00', currencyCode: 'USD' },
+      { commitmentTerm: 'Monthly', billingTerm: 'Monthly', partnerBuyRate: '20.00', suggestedRetailPrice: '30.00', currencyCode: 'USD' },
+    ]));
+    render(<Pax8ProductLookup blockId="b1" busy={false} onImportAdd={() => {}} />);
+    fireEvent.change(screen.getByTestId('pax8-product-search-b1'), { target: { value: 'micro' } });
+    fireEvent.click(screen.getByTestId('pax8-product-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('pax8-product-result-p1'));
+    const select = screen.getByTestId('pax8-product-term-p1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '1' } });
+    const price = screen.getByTestId('pax8-product-price-p1') as HTMLInputElement;
+    expect(price.value).toBe('30.00');
+  });
+
+  it('pricing failure keeps the product visible', async () => {
+    pax8Pricing.mockRejectedValue(new Error('boom'));
+    render(<Pax8ProductLookup blockId="b1" busy={false} onImportAdd={() => {}} />);
+    fireEvent.change(screen.getByTestId('pax8-product-search-b1'), { target: { value: 'micro' } });
+    fireEvent.click(screen.getByTestId('pax8-product-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('pax8-product-result-p1'));
+    expect(screen.queryByTestId('pax8-product-error-b1')).not.toBeInTheDocument();
+  });
 });

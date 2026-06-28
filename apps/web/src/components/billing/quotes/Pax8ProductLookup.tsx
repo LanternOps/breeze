@@ -25,13 +25,17 @@ export default function Pax8ProductLookup({ blockId, busy, onImportAdd }: Props)
 
   const loadPricing = async (productId: string) => {
     if (pricing[productId]) return;
-    const res = await pax8Pricing(productId);
-    const body = (await res.json().catch(() => null)) as { data?: Pax8PriceOption[] } | null;
-    const options = body?.data ?? [];
-    setPricing((s) => ({ ...s, [productId]: options }));
-    setTermIndex((s) => ({ ...s, [productId]: 0 }));
-    const first = options[0];
-    if (first) setPrices((s) => ({ ...s, [productId]: first.suggestedRetailPrice ?? first.partnerBuyRate ?? '' }));
+    try {
+      const res = await pax8Pricing(productId);
+      const body = (await res.json().catch(() => null)) as { data?: Pax8PriceOption[] } | null;
+      const options = body?.data ?? [];
+      setPricing((s) => ({ ...s, [productId]: options }));
+      setTermIndex((s) => ({ ...s, [productId]: 0 }));
+      const first = options[0];
+      if (first) setPrices((s) => ({ ...s, [productId]: first.suggestedRetailPrice ?? first.partnerBuyRate ?? '' }));
+    } catch {
+      setPricing((s) => ({ ...s, [productId]: [] }));
+    }
   };
 
   const search = async () => {
