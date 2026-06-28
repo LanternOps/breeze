@@ -15,6 +15,14 @@ import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { DeviceFilterToolbar } from './DeviceFilterToolbar';
 import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
 import { decodeFilterFromHash, writeFilterToHash, isFiltersV2Enabled } from './filterUrl';
+import { DeviceClassSegment } from './DeviceClassSegment';
+import {
+  filterDevicesByClass,
+  countDevicesByClass,
+  readDeviceClassFromHash,
+  writeDeviceClassToHash,
+  type DeviceClassFilter,
+} from './deviceClassFilter';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
@@ -88,6 +96,18 @@ export default function DevicesPage() {
     if (typeof window === 'undefined') return null;
     return decodeFilterFromHash(window.location.hash);
   });
+  // [ All | Agent | Network ] class segment (#1424). Seeded from the hash so a
+  // chosen class is shareable; a pure client-side narrowing of the merged list.
+  // Only meaningful when the network arm is enabled (otherwise the list is
+  // agent-only and the segment is hidden).
+  const [deviceClassFilter, setDeviceClassFilter] = useState<DeviceClassFilter>(() => {
+    if (typeof window === 'undefined') return 'all';
+    return readDeviceClassFromHash(window.location.hash);
+  });
+  const handleDeviceClassChange = useCallback((next: DeviceClassFilter) => {
+    setDeviceClassFilter(next);
+    writeDeviceClassToHash(next);
+  }, []);
   // Inline ("instant") client-side filters — shared between DeviceFilterToolbar
   // (the controls) and DeviceList (the filtering) so each dimension has a single
   // source of truth. This is the hybrid model's client half; the group above is
@@ -182,12 +202,24 @@ export default function DevicesPage() {
         : c.value === 'decommissioned';
     });
   }, [advancedFilter]);
+  // Per-segment counts come from the full merged fleet so each segment shows its
+  // true total regardless of which one is active. Gated to the network arm; with
+  // the flag off the segment isn't rendered and these go unused.
+  const deviceClassCounts = useMemo(() => countDevicesByClass(devices), [devices]);
+  // Narrow the merged list by the chosen class before either view consumes it,
+  // so the list and grid stay in lockstep.
+  const classFilteredDevices = useMemo(
+    () => filterDevicesByClass(devices, deviceClassFilter),
+    [devices, deviceClassFilter]
+  );
   const gridDevices = useMemo(
     () => {
-      const base = includeDecommissioned ? devices : devices.filter(d => d.status !== 'decommissioned');
+      const base = includeDecommissioned
+        ? classFilteredDevices
+        : classFilteredDevices.filter(d => d.status !== 'decommissioned');
       return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
     },
-    [devices, advancedFilterIds, includeDecommissioned]
+    [classFilteredDevices, advancedFilterIds, includeDecommissioned]
   );
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
@@ -956,6 +988,17 @@ export default function DevicesPage() {
         />
       )}
 
+      {/* Class segment (#1424) — only meaningful when the merged list carries
+          both arms; hidden entirely in the agent-only (flag-off) view. Applies
+          to both the list and grid (both consume classFilteredDevices). */}
+      {ENABLE_NETWORK_DEVICES_IN_LIST && (
+        <DeviceClassSegment
+          value={deviceClassFilter}
+          counts={deviceClassCounts}
+          onChange={handleDeviceClassChange}
+        />
+      )}
+
       {bulkProgress && (
         <div className="rounded-md border bg-muted/20 px-4 py-3">
           <ProgressBar
@@ -990,7 +1033,7 @@ export default function DevicesPage() {
         </div>
       ) : viewMode === 'list' ? (
         <DeviceList
-          devices={devices}
+          devices={classFilteredDevices}
           orgs={orgs}
           sites={sites}
           groups={deviceGroups}

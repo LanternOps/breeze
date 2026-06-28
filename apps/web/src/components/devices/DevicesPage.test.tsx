@@ -529,6 +529,75 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
   });
 });
 
+// #1424 slice 2 (follow-up): the [ All | Agent | Network ] class segment
+// narrows the merged list by deviceClass. Pure client-side filter over the
+// already-merged set; only shown when the network arm is enabled.
+describe('DevicesPage — device class segment filter (#1424)', () => {
+  const NET_3 = '66666666-6666-6666-6666-666666666666';
+
+  function rawNetworkDevice(id: string, hostname: string) {
+    return {
+      id,
+      deviceClass: 'network',
+      assetType: 'printer',
+      hostname,
+      status: 'online',
+      lastSeenAt: new Date().toISOString(),
+      orgId: 'org-1',
+      siteId: 'site-1',
+      tags: [],
+    };
+  }
+
+  beforeEach(() => {
+    // Reset the hash so a prior test's segment choice doesn't seed this mount.
+    history.replaceState(null, '', '/devices');
+  });
+
+  async function renderMixedFleet() {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null); // no advanced filter
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [rawNetworkDevice(NET_3, 'Lobby Printer')],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    // 3 agent + 1 network = 4 rows in the merged "All" view.
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('4'));
+    return list;
+  }
+
+  it('shows per-segment counts (All / Agent / Network)', async () => {
+    await renderMixedFleet();
+    expect(screen.getByTestId('device-class-segment-all')).toHaveTextContent('4');
+    expect(screen.getByTestId('device-class-segment-agent')).toHaveTextContent('3');
+    expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('1');
+  });
+
+  it('narrows the list to network rows when the Network segment is chosen', async () => {
+    const list = await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('device-class-segment-network'));
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('1'));
+  });
+
+  it('narrows the list to agent rows when the Agent segment is chosen', async () => {
+    const list = await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('device-class-segment-agent'));
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('3'));
+  });
+
+  it('hides the segment entirely when the network arm is disabled', async () => {
+    flagState.ENABLE_NETWORK_DEVICES_IN_LIST = false;
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(screen.queryByTestId('device-class-segment')).toBeNull();
+  });
+});
+
 // #1424 slice 2: selecting a row routes by deviceClass — network-discovered
 // assets open the new native Devices detail page (/devices/network/:id) instead
 // of bouncing out to Discovery; agent rows keep the /devices/:id route.
