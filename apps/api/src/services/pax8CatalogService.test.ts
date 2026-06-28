@@ -12,7 +12,7 @@ vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: mocks.crea
 vi.mock('./catalogService', async (orig) => ({ ...(await orig<typeof import('./catalogService')>()), createCatalogItem: mocks.createCatalogItem }));
 vi.mock('./redis', () => ({ getRedis: mocks.getRedis }));
 
-import { searchPax8Products, importPax8CatalogItem, getPax8CatalogStatus, Pax8CatalogError } from './pax8CatalogService';
+import { searchPax8Products, importPax8CatalogItem, getPax8CatalogStatus, getPax8ProductPricing, Pax8CatalogError } from './pax8CatalogService';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
 const integration = { id: 'int-1', partnerId: 'p1', isActive: true };
@@ -70,5 +70,24 @@ describe('getPax8CatalogStatus', () => {
   it('reports configured + enabled from the active integration', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([integration]));
     expect(await getPax8CatalogStatus(actor)).toEqual({ configured: true, enabled: true });
+  });
+});
+
+describe('getPax8ProductPricing', () => {
+  it('returns pricing array for a product from the Pax8 client', async () => {
+    const pricingRecord = { sku: 'CFQ7', price: 22.5, currency: 'USD', term: 'Monthly', minimumQuantity: 1 };
+    mocks.db.select.mockReturnValueOnce(selectChain([integration]));
+    mocks.createPax8ClientForIntegration.mockResolvedValue({
+      integration,
+      client: { getProductPricing: vi.fn().mockResolvedValue([pricingRecord]) },
+    });
+    const res = await getPax8ProductPricing('p1', actor);
+    expect(res).toHaveLength(1);
+    expect(res[0]).toEqual(pricingRecord);
+  });
+
+  it('throws Pax8CatalogError when no active integration', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([]));
+    await expect(getPax8ProductPricing('p1', actor)).rejects.toBeInstanceOf(Pax8CatalogError);
   });
 });

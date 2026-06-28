@@ -104,7 +104,9 @@ export interface Pax8ImportInput {
 }
 
 // Pax8 billing terms map onto the catalog's billing_frequency enum. The schema
-// only allows 'monthly' | 'annual'; quarterly falls back to monthly.
+// only allows 'monthly' | 'annual'; quarterly falls back to monthly as the
+// conservative default (shorter commitment, avoids over-committing). The raw
+// billingTerm is preserved in attributes.pax8.billingTerm for future quarterly support.
 function mapBillingFrequency(billingTerm: string | null): 'monthly' | 'annual' {
   const t = (billingTerm ?? '').toLowerCase();
   if (t.includes('year') || t.includes('annual')) return 'annual';
