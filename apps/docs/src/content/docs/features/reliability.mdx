@@ -71,6 +71,8 @@ The five sub-scores are combined using the weighted factors in the table above. 
 
 <Aside type="note">
   Scores shift after the v0.85.0 agent update. Once agents in your fleet are promoted to v0.85.0, existing device scores will visibly change as the improved algorithm takes effect. This is expected behavior — not device degradation. If you have alert rules or thresholds based on reliability scores, re-baseline them after your fleet has updated and settled.
+
+  As of v0.86.0, the same classification cleanup applies to macOS and Linux devices, and runs **server-side** — so those scores shift when your server is upgraded to v0.86.0, regardless of agent version (the server also cleans historical data and data from devices still on older agents). The v0.85.0 Windows improvement, by contrast, takes effect as agents are promoted.
 </Aside>
 
 ### Trend Direction
@@ -179,6 +181,8 @@ Hardware errors are further classified by severity:
     - **Service failures**: launchd messages containing "exited" or "failed"
     - **System crashes**: Critical-level system events containing "shutdown"
     - **Hardware errors**: Messages with "i/o error" or "memory" keywords
+
+    **v0.86.0 classification improvements**: Breeze now filters macOS reliability data server-side. Non-hardware system-log noise (IOKit plugin chatter, App Store activity, and similar routine messages) no longer inflates the hardware-error count, and routine per-application crash reports are weighted far below a kernel panic. Expect macOS scores to rise after the server is upgraded to v0.86.0 — this applies even to devices still on older agents, because the cleanup runs on the server.
   </TabItem>
   <TabItem label="Linux">
     The Linux collector reads from journald/syslog. Detected signals include:
@@ -188,6 +192,8 @@ Hardware errors are further classified by severity:
     - **Service failures**: systemd messages containing "failed" or "failure"
     - **Process hangs**: Messages containing "hang", "not responding", or "blocked for more than"
     - **Hardware errors**: Messages with "i/o error", "edac", or "mce" keywords
+
+    **v0.86.0 classification improvements**: Breeze now filters Linux reliability data server-side. Routine kernel chatter (USB and ACPI messages, and similar non-fault log noise) no longer inflates the hardware-error count, and routine per-application crash reports are weighted far below a kernel panic. Expect Linux scores to rise after the server is upgraded to v0.86.0 — this applies even to devices still on older agents, because the cleanup runs on the server.
   </TabItem>
 </Tabs>
 

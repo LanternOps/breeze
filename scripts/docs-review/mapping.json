@@ -1137,9 +1137,21 @@
       ]
     },
     {
+      "pattern": "agent/internal/collectors/reliability*.go",
+      "docs": [
+        "features/reliability.mdx"
+      ]
+    },
+    {
       "pattern": "apps/web/src/components/devices/DeviceReliabilityPanel.tsx",
       "docs": [
         "features/reliability.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceEffectiveConfigTab.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
       ]
     },
     {
