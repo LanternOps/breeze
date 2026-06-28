@@ -20,10 +20,11 @@ import {
 import type { QuoteBlockInput } from '@breeze/shared';
 import { computeQuoteTotals, computeLineTotal, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
-import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus } from '../../../lib/api/distributors';
+import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
 import DistributorLookup from './DistributorLookup';
+import Pax8ProductLookup from './Pax8ProductLookup';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { UnsavedBadge, RecurringBillingNote } from '../billingUi';
 import {
@@ -185,6 +186,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [ecActive, setEcActive] = useState(false);
+  const [pax8Active, setPax8Active] = useState(false);
   const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
   const [termsDirty, setTermsDirty] = useState(false);
   // Tax rate is stored as a fraction ('0.07'); the input edits it as a percent ('7').
@@ -313,6 +315,18 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   }, [canCatalogWrite]);
 
   useEffect(() => { void loadEcStatus(); }, [loadEcStatus]);
+
+  const loadPax8Status = useCallback(async () => {
+    if (!canCatalogWrite) { setPax8Active(false); return; }
+    try {
+      const res = await pax8Status();
+      if (!res.ok) return;
+      const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
+      setPax8Active(Boolean(body?.data?.configured && body?.data?.enabled));
+    } catch { /* leave hidden */ }
+  }, [canCatalogWrite]);
+
+  useEffect(() => { void loadPax8Status(); }, [loadPax8Status]);
 
   // Optimistic order overrides so a reorder reflects instantly instead of waiting
   // for the round-trip + (coalesced) refetch. Each is cleared the moment fresh
@@ -541,6 +555,33 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
     return (body?.data ?? []).find((i) => i.sku === sku) ?? null;
   }, [catalog]);
+
+  const importAndAddPax8 = useCallback((blockId: string, product: Pax8Product, term: Pax8PriceOption, sellPrice: number) =>
+    runScoped(`add-line:${blockId}`, async () => {
+      let item = product.vendorSku ? await resolveCatalogBySku(product.vendorSku) : null;
+      if (!item) {
+        item = await runAction<CatalogItem>({
+          request: () => pax8Import({
+            product: {
+              source: 'pax8', pax8ProductId: product.pax8ProductId, name: product.name,
+              vendorName: product.vendorName, vendorSku: product.vendorSku,
+              commitmentTerm: term.commitmentTerm, billingTerm: term.billingTerm,
+              partnerBuyRate: term.partnerBuyRate, currency: term.currencyCode, raw: product.raw,
+            },
+            item: {
+              name: product.name, sku: product.vendorSku, description: product.shortDescription,
+              unitPrice: sellPrice, costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
+            },
+          }),
+          errorFallback: 'Could not import the Pax8 product.',
+          onUnauthorized: UNAUTHORIZED,
+          parseSuccess: (d) => (d as { data: CatalogItem }).data,
+        });
+      }
+      await doAddCatalog(blockId, item);
+      void loadCatalog();
+    }, 'Could not add the Pax8 product.'),
+  [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped]);
 
   const importAndAddDistributor = useCallback((blockId: string, product: EcProduct, sellPrice: number) =>
     runScoped(`add-line:${blockId}`, async () => {
@@ -786,10 +827,12 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 isPending={isPending}
                 canWrite={canWrite}
                 ecActive={ecActive}
+                pax8Active={pax8Active}
                 isFirst={idx === 0}
                 isLast={idx === sortedBlocks.length - 1}
                 onAddCatalog={addCatalog}
                 onImportAddDistributor={importAndAddDistributor}
+                onImportAddPax8={importAndAddPax8}
                 onAddManual={addManual}
                 onEditLine={editLine}
                 onEditBlock={editBlock}
@@ -1072,7 +1115,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, ecActive, isFirst, isLast, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
+  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, ecActive, pax8Active, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -1083,10 +1126,12 @@ function BlockCard({
   isPending: (key: string) => boolean;
   canWrite: boolean;
   ecActive: boolean;
+  pax8Active: boolean;
   isFirst: boolean;
   isLast: boolean;
   onAddCatalog: (blockId: string, item: CatalogItem) => void;
   onImportAddDistributor: (blockId: string, product: EcProduct, sellPrice: number) => void;
+  onImportAddPax8: (blockId: string, product: Pax8Product, term: Pax8PriceOption, sellPrice: number) => void;
   onAddManual: (
     blockId: string,
     form: { name: string; description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
@@ -1104,7 +1149,7 @@ function BlockCard({
   const blockBusy = isPending(`block:${block.id}`);
   const addLineBusy = isPending(`add-line:${block.id}`);
 
-  const [mode, setMode] = useState<'catalog' | 'manual' | 'distributor'>('catalog');
+  const [mode, setMode] = useState<'catalog' | 'manual' | 'distributor' | 'pax8'>('catalog');
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
   const [qty, setQty] = useState('1');
@@ -1327,7 +1372,7 @@ function BlockCard({
             {canWrite && (
             <div className="rounded-md border bg-background/40 p-3" data-testid={`quote-block-add-line-${block.id}`}>
               <div className="mb-2 flex gap-2">
-                {(['catalog', 'manual', ...(ecActive ? ['distributor'] as const : [])] as const).map((m) => (
+                {(['catalog', 'manual', ...(ecActive ? ['distributor'] as const : []), ...(pax8Active ? ['pax8'] as const : [])] as const).map((m) => (
                   <button
                     key={m}
                     type="button"
@@ -1338,7 +1383,7 @@ function BlockCard({
                       mode === m ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
                     }`}
                   >
-                    {m === 'catalog' ? 'Catalog item' : m === 'manual' ? 'Manual line' : 'Search distributor'}
+                    {m === 'catalog' ? 'Catalog item' : m === 'manual' ? 'Manual line' : m === 'distributor' ? 'Search distributor' : 'Search Pax8'}
                   </button>
                 ))}
               </div>
@@ -1348,6 +1393,12 @@ function BlockCard({
                   blockId={block.id}
                   busy={addLineBusy}
                   onImportAdd={(product, sellPrice) => onImportAddDistributor(block.id, product, sellPrice)}
+                />
+              ) : mode === 'pax8' ? (
+                <Pax8ProductLookup
+                  blockId={block.id}
+                  busy={addLineBusy}
+                  onImportAdd={(product, term, sellPrice) => onImportAddPax8(block.id, product, term, sellPrice)}
                 />
               ) : mode === 'catalog' ? (
                 catalog.length === 0 ? (
