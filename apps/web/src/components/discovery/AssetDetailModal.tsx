@@ -248,6 +248,7 @@ export default function AssetDetailModal({
     try {
       setSaving(true);
       setSaveError(undefined);
+      setSaveSuccess(false);
       const response = await fetchWithAuth(`/discovery/assets/${asset.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ resetTypeToAuto: true })
@@ -557,6 +558,7 @@ export default function AssetDetailModal({
               </p>
               <div className="mt-3 flex items-center gap-3">
                 <select
+                  data-testid="asset-modal-link-select"
                   value={selectedDevice}
                   onChange={event => setSelectedDevice(event.target.value)}
                   className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"

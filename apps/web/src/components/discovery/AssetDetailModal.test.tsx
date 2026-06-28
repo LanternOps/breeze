@@ -63,8 +63,7 @@ describe('AssetDetailModal — link to managed device', () => {
       <AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} onLinked={onLinked} />
     );
 
-    // combobox[0] is the Asset Type select; combobox[1] is the managed-device link select.
-    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'dev-1' } });
+    fireEvent.change(screen.getByTestId('asset-modal-link-select'), { target: { value: 'dev-1' } });
     fireEvent.click(screen.getByRole('button', { name: 'Link asset' }));
 
     await waitFor(() => {
@@ -98,8 +97,7 @@ describe('AssetDetailModal — link to managed device', () => {
   it('surfaces an error and shows no success message when the link request fails', async () => {
     render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
 
-    // combobox[0] is the Asset Type select; combobox[1] is the managed-device link select.
-    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'dev-2' } });
+    fireEvent.change(screen.getByTestId('asset-modal-link-select'), { target: { value: 'dev-2' } });
     // Override only the link call to fail; mount fetch already resolved.
     fetchMock.mockResolvedValueOnce(makeResponse({}, false));
     fireEvent.click(screen.getByRole('button', { name: 'Link asset' }));
