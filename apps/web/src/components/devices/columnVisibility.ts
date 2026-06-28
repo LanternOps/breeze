@@ -203,9 +203,9 @@ export function readColumnOrder(): ColumnId[] {
   return readColumns().map((c) => c.id);
 }
 
-// Clears any saved preference and returns the catalog defaults: every column
-// in catalog order at its default visibility. Returns the fresh ordered list
-// so callers can sync React state without a second read.
+// Overwrites any saved preference with the catalog defaults: every column in
+// catalog order at its default visibility. Returns the fresh ordered list so
+// callers can sync React state without a second read.
 export function resetColumns(): StoredColumn[] {
   const cols = defaultColumns();
   writeColumns(cols);

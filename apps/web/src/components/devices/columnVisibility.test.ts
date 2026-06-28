@@ -6,6 +6,7 @@ import {
   isValidColumnId,
   readColumnOrder,
   readColumnVisibility,
+  resetColumns,
   writeColumnOrder,
   writeColumnVisibility,
 } from './columnVisibility';
@@ -218,6 +219,42 @@ describe('columnVisibility', () => {
         throw new DOMException('QuotaExceededError', 'QuotaExceededError');
       });
       expect(() => writeColumnOrder(['hostname'])).not.toThrow();
+    });
+  });
+
+  describe('resetColumns', () => {
+    it('overwrites a customized order + visibility back to catalog defaults', () => {
+      // Customize both hats: reversed order and a single visible column.
+      writeColumnOrder([...COLUMN_IDS].reverse());
+      writeColumnVisibility(['hostname']);
+
+      resetColumns();
+
+      // Persisted state round-trips to canonical order and default visibility.
+      expect(readColumnOrder()).toEqual([...COLUMN_IDS]);
+      const vis = readColumnVisibility();
+      expect(new Set(vis)).toEqual(new Set(DEFAULT_VISIBLE_COLUMNS));
+      expect(vis.size).toBe(DEFAULT_VISIBLE_COLUMNS.length);
+    });
+
+    it('returns the fresh ordered list so callers can sync without a re-read', () => {
+      writeColumnVisibility(['status']);
+      const cols = resetColumns();
+      // Return value is the contract the DeviceList handler syncs state from,
+      // so it must match what was persisted: full catalog in order, default vis.
+      expect(cols.map((c) => c.id)).toEqual([...COLUMN_IDS]);
+      const visibleIds = cols.filter((c) => c.visible).map((c) => c.id);
+      expect(new Set(visibleIds)).toEqual(new Set(DEFAULT_VISIBLE_COLUMNS));
+    });
+
+    it('still returns defaults when setItem throws (Safari private / quota)', () => {
+      vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+        throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      });
+      const cols = resetColumns();
+      expect(cols.map((c) => c.id)).toEqual([...COLUMN_IDS]);
+      const visibleIds = cols.filter((c) => c.visible).map((c) => c.id);
+      expect(new Set(visibleIds)).toEqual(new Set(DEFAULT_VISIBLE_COLUMNS));
     });
   });
 
