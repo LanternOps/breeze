@@ -53,7 +53,7 @@ export default function AuthPage({ next }: AuthPageProps) {
             data-testid="tab-signin"
             onClick={() => handleTabChange('signin')}
             className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition ${
-              tab === 'signin' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              tab === 'signin' ? 'bg-background shadow-xs' : 'text-muted-foreground hover:text-foreground'
             }`}
           >
             Sign in
@@ -65,7 +65,7 @@ export default function AuthPage({ next }: AuthPageProps) {
             data-testid="tab-signup"
             onClick={() => handleTabChange('signup')}
             className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition ${
-              tab === 'signup' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              tab === 'signup' ? 'bg-background shadow-xs' : 'text-muted-foreground hover:text-foreground'
             }`}
           >
             Create account

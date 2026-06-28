@@ -697,7 +697,7 @@ export default function AutomationForm({
                       <div className="space-y-2">
                         <label className="text-xs font-medium text-muted-foreground">Software</label>
                         <select
-                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.catalogId`)}
                         >
                           <option value="">Select software...</option>

@@ -342,7 +342,7 @@ export default function TimesheetPage() {
       {selected.size > 0 && (
         <div
           data-testid="timesheet-bulk-bar"
-          className="flex items-center gap-3 rounded-md border bg-background px-3 py-2 shadow-sm"
+          className="flex items-center gap-3 rounded-md border bg-background px-3 py-2 shadow-xs"
         >
           <span className="text-sm font-medium tabular-nums">{selected.size} selected</span>
           <button

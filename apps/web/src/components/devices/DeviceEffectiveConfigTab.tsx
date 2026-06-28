@@ -181,7 +181,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-sm">
+      <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p className="mt-3 text-sm text-muted-foreground">Loading effective configuration...</p>
@@ -214,7 +214,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
     : false;
   if (!data || !hasRealFeatures) {
     return (
-      <div className="rounded-lg border bg-card p-8 text-center shadow-sm">
+      <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <Layers className="mx-auto h-10 w-10 text-muted-foreground/50" />
         <h3 className="mt-4 font-semibold">No Configuration Policies</h3>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -282,7 +282,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
             const settings = summarizeSettings(feature.inlineSettings);
 
             return (
-              <div key={ft} className="rounded-lg border bg-card p-5 shadow-sm">
+              <div key={ft} className="rounded-lg border bg-card p-5 shadow-xs">
                 <div className="flex items-start gap-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Icon className="h-5 w-5" />
@@ -326,7 +326,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
       {/* Not-enforced baseline features — collapsed into one compact strip so the
           page highlights what's actually applied instead of a wall of grey cards. */}
       {baselineTypes.length > 0 && (
-        <div className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center gap-2">
             <h4 className="text-sm font-semibold text-muted-foreground">Not enforced</h4>
             <span className="text-xs text-muted-foreground">— using Breeze Defaults</span>
@@ -351,7 +351,7 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
       {/* Inheritance chain — real assigned policies only (the synthetic
           "Breeze Defaults" node is excluded; see assignedChain above). */}
       {assignedChain.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h4 className="font-semibold mb-3">Inheritance Chain</h4>
           <p className="text-xs text-muted-foreground mb-4">
             Policies are resolved using closest-wins priority. More specific assignments (device level)
