@@ -53,6 +53,7 @@ export type DeviceOption = {
 };
 
 export type DiscoveredAssetLinkSource = 'manual' | 'auto';
+export type DiscoveredAssetTypeSource = 'manual' | 'auto';
 
 // A discovered asset can only be unlinked when it was linked manually. Auto
 // (MAC/IP-matched) and unknown (NULL, pre-dates link_source) links are not
@@ -85,6 +86,13 @@ function asBoolean(value: unknown): boolean | null {
 
 export function parseDiscoveredAssetLinkSource(value: unknown): DiscoveredAssetLinkSource | null {
   return value === 'manual' || value === 'auto' ? value : null;
+}
+
+// Unlike linkSource (nullable), typeSource always resolves to a concrete value:
+// legacy/unrecognized payloads default to 'auto' (which hides the
+// "Reset to auto-detected" control).
+export function parseDiscoveredAssetTypeSource(value: unknown): DiscoveredAssetTypeSource {
+  return value === 'manual' ? 'manual' : 'auto';
 }
 
 function asInteger(value: unknown): number | null {

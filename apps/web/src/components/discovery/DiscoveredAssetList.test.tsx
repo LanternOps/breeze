@@ -61,3 +61,13 @@ it('mapAsset falls back to unknown for an unrecognized detectedAssetType', () =>
   const mapped = mapAsset({ id: 'a3', assetType: 'server', detectedAssetType: 'martian-device' } as any);
   expect(mapped.detectedType).toBe('unknown');
 });
+
+it('mapAsset defends an invalid typeSource string to auto', () => {
+  const mapped = mapAsset({ id: 'a4', assetType: 'server', typeSource: 'garbage' } as any);
+  expect(mapped.typeSource).toBe('auto');
+});
+
+it('mapAsset preserves a manual typeSource', () => {
+  const mapped = mapAsset({ id: 'a5', assetType: 'server', typeSource: 'manual' } as any);
+  expect(mapped.typeSource).toBe('manual');
+});

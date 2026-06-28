@@ -4,7 +4,16 @@ import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
-import { parseDiscoveredAssetLinkSource, type DiscoveredAssetLinkSource } from './networkTypes';
+import {
+  parseDiscoveredAssetLinkSource,
+  parseDiscoveredAssetTypeSource,
+  type DiscoveredAssetLinkSource,
+  type DiscoveredAssetTypeSource,
+} from './networkTypes';
+
+// Re-exported so existing consumers importing it from './DiscoveredAssetList'
+// keep working; the canonical declaration now lives in ./networkTypes.
+export type { DiscoveredAssetTypeSource };
 
 export type DiscoveredAssetApprovalStatus = 'pending' | 'approved' | 'dismissed';
 export type DiscoveredAssetType =
@@ -20,8 +29,6 @@ export type DiscoveredAssetType =
   | 'camera'
   | 'nas'
   | 'unknown';
-
-export type DiscoveredAssetTypeSource = 'manual' | 'auto';
 
 export type OpenPortEntry = { port: number; service: string };
 
@@ -169,7 +176,9 @@ export function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     responseTimeMs: asset.responseTimeMs ?? null,
     linkedDeviceId: asset.linkedDeviceId,
     linkSource: parseDiscoveredAssetLinkSource(asset.linkSource),
-    typeSource: asset.typeSource ?? 'auto',
+    // Legacy assets without provenance (or an invalid value) read as 'auto',
+    // which hides the "Reset to auto-detected" control.
+    typeSource: parseDiscoveredAssetTypeSource(asset.typeSource),
     detectedType: asset.detectedAssetType
       ? (assetTypeMap[asset.detectedAssetType.toLowerCase()] ?? 'unknown')
       : null,
