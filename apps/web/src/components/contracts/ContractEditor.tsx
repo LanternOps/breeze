@@ -18,6 +18,7 @@ import {
 } from '../../lib/api/contracts';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import CatalogDistributorDrawer from '../settings/CatalogDistributorDrawer';
+import ContractPax8Drawer from './ContractPax8Drawer';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 import { ecExpressStatus } from '../../lib/api/distributors';
 import { formatMoney } from '../billing/invoiceTypes';
@@ -99,6 +100,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   // (best-effort status check; stays hidden on any failure).
   const [ecActive, setEcActive] = useState(false);
   const [distributorOpen, setDistributorOpen] = useState(false);
+  // Pax8 link entry — available once the partner's Pax8 integration is set up.
+  const [pax8IntegrationId, setPax8IntegrationId] = useState<string | null>(null);
+  const [pax8Open, setPax8Open] = useState(false);
 
   const lines: ContractLine[] = detail?.lines ?? [];
 
@@ -156,6 +160,21 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         if (!res.ok) return;
         const body = (await res.json().catch(() => null)) as { data?: { configured?: boolean; enabled?: boolean } } | null;
         setEcActive(Boolean(body?.data?.configured && body?.data?.enabled));
+      } catch { /* leave hidden */ }
+    })();
+  }, [can]);
+
+  // Pax8 link entry is offered only when the integration exists. The GET returns
+  // the integration row (or null/404 when unconfigured); best-effort, stays hidden
+  // on failure.
+  useEffect(() => {
+    if (!can('contracts', 'write')) return;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/pax8/integration');
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as { data?: { id?: string } | null } | null;
+        if (body?.data?.id) setPax8IntegrationId(body.data.id);
       } catch { /* leave hidden */ }
     })();
   }, [can]);
@@ -553,17 +572,31 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
 
               {/* Add line */}
               <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-add-line">
-                {ecActive && can('contracts', 'write') && (
-                  <div className="mb-3 flex items-center justify-between gap-2 border-b pb-3">
-                    <span className="text-xs text-muted-foreground">Pulling in hardware? Import it from your distributor and it pre-fills a line.</span>
-                    <button
-                      type="button"
-                      onClick={() => setDistributorOpen(true)}
-                      className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
-                      data-testid="contract-import-distributor"
-                    >
-                      Import from TD SYNNEX
-                    </button>
+                {can('contracts', 'write') && (ecActive || (pax8IntegrationId && orgId)) && (
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b pb-3">
+                    <span className="text-xs text-muted-foreground">Add from an integration — it pre-fills a line.</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {pax8IntegrationId && orgId && (
+                        <button
+                          type="button"
+                          onClick={() => setPax8Open(true)}
+                          className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
+                          data-testid="contract-link-pax8"
+                        >
+                          Link Pax8 subscription
+                        </button>
+                      )}
+                      {ecActive && (
+                        <button
+                          type="button"
+                          onClick={() => setDistributorOpen(true)}
+                          className="inline-flex h-8 shrink-0 items-center rounded-md border px-3 text-xs font-medium transition hover:bg-muted"
+                          data-testid="contract-import-distributor"
+                        >
+                          Import from TD SYNNEX
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -752,6 +785,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         onClose={() => setDistributorOpen(false)}
         onImported={onDistributorImported}
       />
+
+      {pax8IntegrationId && orgId && (
+        <ContractPax8Drawer
+          open={pax8Open}
+          orgId={orgId}
+          integrationId={pax8IntegrationId}
+          onClose={() => setPax8Open(false)}
+          onLinked={refresh}
+        />
+      )}
     </div>
   );
 }
