@@ -278,6 +278,85 @@ describe('NetworkDeviceDetailPage', () => {
     expect(vi.mocked(navigateTo)).toHaveBeenCalledWith('/devices');
   });
 
+  it('changing the type Select issues a PATCH with the chosen assetType', async () => {
+    fetchWithAuthMock
+      // initial load (type=workstation)
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
+      // PATCH response
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }))
+      // reload after the change
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    const select = screen.getByTestId('network-asset-type-select') as HTMLSelectElement;
+    expect(select.value).toBe('workstation');
+
+    fireEvent.change(select, { target: { value: 'router' } });
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/discovery/assets/${ASSET_ID}`,
+        expect.objectContaining({ method: 'PATCH' }),
+      ),
+    );
+
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeTruthy();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body).toEqual({ assetType: 'router' });
+  });
+
+  it('shows a reset-to-auto control only when typeSource is manual', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, typeSource: 'manual', detectedAssetType: 'workstation' } }),
+    );
+
+    const { unmount } = render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    expect(screen.getByTestId('network-asset-type-reset')).toBeTruthy();
+
+    unmount();
+    vi.clearAllMocks();
+
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, typeSource: 'auto' } }),
+    );
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    expect(screen.queryByTestId('network-asset-type-reset')).toBeNull();
+  });
+
+  it('resets the type to auto-detected via PATCH when the reset control is clicked', async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(
+        makeJsonResponse({ data: { ...baseAsset, typeSource: 'manual', detectedAssetType: 'workstation' } }),
+      )
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, typeSource: 'auto' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, typeSource: 'auto' } }));
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    fireEvent.click(screen.getByTestId('network-asset-type-reset'));
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/discovery/assets/${ASSET_ID}`,
+        expect.objectContaining({ method: 'PATCH' }),
+      ),
+    );
+
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body).toEqual({ resetTypeToAuto: true });
+  });
+
   it('points the "Manage in Discovery" link at the discovery asset deep-link', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
 

@@ -12,6 +12,7 @@ import {
   approvalStatusConfig,
   type ApiDiscoveryAsset,
   type DiscoveredAsset,
+  type DiscoveredAssetType,
 } from '../discovery/DiscoveredAssetList';
 
 type NetworkDeviceDetailPageProps = {
@@ -179,6 +180,35 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     }
   }, [asset, fetchAsset]);
 
+  // Manual override of the scan-detected device type. `reset` restores the
+  // auto-detected classification; any other value pins the type as a manual
+  // override (server stamps type_source='manual'). runAction surfaces the
+  // outcome via toast; we refetch on success so the badge/select reflect the
+  // server's canonical state.
+  const changeType = useCallback(
+    async (next: DiscoveredAssetType | 'reset') => {
+      if (!asset) return;
+      try {
+        await runAction({
+          request: () =>
+            fetchWithAuth(`/discovery/assets/${asset.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify(
+                next === 'reset' ? { resetTypeToAuto: true } : { assetType: next },
+              ),
+            }),
+          successMessage: next === 'reset' ? 'Type reset to auto-detected' : 'Device type updated',
+          errorFallback:
+            next === 'reset' ? 'Failed to reset device type.' : 'Failed to update device type.',
+        });
+        await fetchAsset();
+      } catch {
+        // runAction already toasted the failure; leave the current type in place.
+      }
+    },
+    [asset, fetchAsset],
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12" data-testid="network-device-detail-loading">
@@ -317,7 +347,36 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 <Field label="MAC Address" value={<span className="font-mono">{asset.mac}</span>} />
                 <Field label="Manufacturer" value={asset.manufacturer} />
                 <Field label="Model" value={extras.model || '—'} />
-                <Field label="Asset Type" value={typeMeta.label} />
+                <div>
+                  <div className="text-xs font-medium text-muted-foreground">Asset Type</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <select
+                      data-testid="network-asset-type-select"
+                      className="rounded-md border bg-background px-2 py-1 text-sm"
+                      value={asset.type}
+                      onChange={(e) => void changeType(e.target.value as DiscoveredAssetType)}
+                    >
+                      {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((t) => (
+                        <option key={t} value={t}>{typeConfig[t].label}</option>
+                      ))}
+                    </select>
+                    {asset.typeSource === 'manual' && (
+                      <button
+                        type="button"
+                        data-testid="network-asset-type-reset"
+                        className="text-xs text-muted-foreground underline hover:text-foreground"
+                        onClick={() => void changeType('reset')}
+                      >
+                        Reset to auto-detected
+                      </button>
+                    )}
+                  </div>
+                  {asset.typeSource === 'manual' && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Manually set{asset.detectedType ? ` · scan detected ${typeConfig[asset.detectedType].label}` : ''}
+                    </p>
+                  )}
+                </div>
                 {extras.netbiosName && <Field label="NetBIOS Name" value={extras.netbiosName} />}
               </dl>
               {tags.length > 0 && (
