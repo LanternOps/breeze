@@ -201,6 +201,20 @@ describe('QuoteEditor — inline line editing', () => {
     expect(screen.getByTestId('quote-line-tax-line-1')).toBeInTheDocument();
   });
 
+  it('recomputes the right-rail totals optimistically while a line qty is mid-edit', async () => {
+    // The fixture line is a $50/mo recurring line, so the rail shows $50.00
+    // monthly. Bumping qty to 3 must move the rail to $150.00 immediately —
+    // before any blur/save/refresh — so the rail no longer lags the row.
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$50.00');
+
+    fireEvent.change(screen.getByTestId('quote-line-qty-line-1'), { target: { value: '3' } });
+    await waitFor(() => expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$150.00'));
+    // No PATCH yet — this is pure pre-commit optimism.
+    expect(updateLineMock).not.toHaveBeenCalled();
+  });
+
   it('keeps in-progress keystrokes when a stale refresh lands (no clobber)', async () => {
     // "edit qty→5, blur, type 7": a refresh confirming 5 must not wipe the 7 the
     // user has already typed into the still-focused field.

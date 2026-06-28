@@ -18,6 +18,7 @@ import {
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import type { QuoteBlockInput } from '@breeze/shared';
+import { computeQuoteTotals, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
@@ -331,6 +332,56 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     if (blockReorderTimer.current) clearTimeout(blockReorderTimer.current);
     Object.values(lineReorderTimers.current).forEach(clearTimeout);
   }, []);
+
+  // Optimistic line drafts so the right-rail "Live totals" can recompute from
+  // in-progress edits instead of lagging behind the per-row optimistic totals.
+  // Each EditableLineRow reports its effective values while they diverge from the
+  // persisted line (and null once settled); the rail recomputes via the SAME
+  // computeQuoteTotals the server uses, so it can never settle to a different
+  // figure than the next GET returns.
+  const [lineDrafts, setLineDrafts] = useState<Record<string, QuoteLineForMath>>({});
+  const setLineDraft = useCallback((id: string, draft: QuoteLineForMath | null) => {
+    setLineDrafts((m) => {
+      if (!draft) {
+        if (!(id in m)) return m;
+        const n = { ...m }; delete n[id]; return n;
+      }
+      const prev = m[id];
+      if (prev && prev.quantity === draft.quantity && prev.unitPrice === draft.unitPrice
+        && prev.taxable === draft.taxable && prev.recurrence === draft.recurrence) return m;
+      return { ...m, [id]: draft };
+    });
+  }, []);
+  // Drop drafts for lines that no longer exist (removed) so a stale draft can't
+  // skew the rail after a delete.
+  useEffect(() => {
+    setLineDrafts((m) => {
+      const live = new Set(lines.map((l) => l.id));
+      const stale = Object.keys(m).filter((id) => !live.has(id));
+      if (stale.length === 0) return m;
+      const n = { ...m }; stale.forEach((id) => delete n[id]); return n;
+    });
+  }, [lines]);
+
+  // The figures the rail renders: optimistic recompute when any line is mid-edit,
+  // otherwise the authoritative server values verbatim.
+  const optimisticTotals = useMemo<QuoteTotals | null>(() => {
+    if (Object.keys(lineDrafts).length === 0) return null;
+    const merged: QuoteLineForMath[] = lines.map((l) => {
+      const d = lineDrafts[l.id];
+      return d ?? {
+        quantity: l.quantity, unitPrice: l.unitPrice, taxable: l.taxable,
+        customerVisible: l.customerVisible, recurrence: l.recurrence,
+      };
+    });
+    return computeQuoteTotals(merged, quote.taxRate ? parseFloat(quote.taxRate) : null);
+  }, [lineDrafts, lines, quote.taxRate]);
+  const railOneTime = optimisticTotals?.oneTimeTotal ?? quote.oneTimeTotal;
+  const railMonthly = optimisticTotals?.monthlyRecurringTotal ?? quote.monthlyRecurringTotal;
+  const railAnnual = optimisticTotals?.annualRecurringTotal ?? quote.annualRecurringTotal;
+  const railTax = optimisticTotals?.taxTotal ?? quote.taxTotal;
+  const railTotal = optimisticTotals?.total ?? quote.total;
+  const railDue = optimisticTotals?.dueOnAcceptanceTotal ?? quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
 
   // Apply an optimistic id ordering over a base list, but only if it's a clean
   // permutation (same membership) — otherwise fall back to the server order.
@@ -676,8 +727,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     }, 250);
   }, [linesForBlock, quote.id, refresh]);
 
-  const hasRecurring =
-    Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
+  const hasRecurring = Number(railMonthly) > 0 || Number(railAnnual) > 0;
 
   return (
     <div className="space-y-6" data-testid="quote-editor">
@@ -721,6 +771,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 onMoveLine={(line, dir) => moveLine(block.id, line, dir)}
                 onRemoveLine={setPendingLineRemove}
                 onRemoveBlock={setPendingRemove}
+                onLineDraft={setLineDraft}
               />
             ))
           )}
@@ -827,29 +878,29 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 recurring line (which doesn't move "due on acceptance") still tells
                 a screen-reader user the totals recomputed. */}
             <p className="sr-only" role="status" data-testid="quote-totals-sr">
-              {`Totals updated. One-time ${formatMoney(quote.oneTimeTotal, currency)}, `
-                + `monthly recurring ${formatMoney(quote.monthlyRecurringTotal, currency)}, `
-                + `annual recurring ${formatMoney(quote.annualRecurringTotal, currency)}`
-                + (Number(quote.taxTotal) > 0 ? `, tax ${formatMoney(quote.taxTotal, currency)}` : '')
-                + `, due on acceptance ${formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}.`}
+              {`Totals updated. One-time ${formatMoney(railOneTime, currency)}, `
+                + `monthly recurring ${formatMoney(railMonthly, currency)}, `
+                + `annual recurring ${formatMoney(railAnnual, currency)}`
+                + (Number(railTax) > 0 ? `, tax ${formatMoney(railTax, currency)}` : '')
+                + `, due on acceptance ${formatMoney(railDue, currency)}.`}
             </p>
             <dl className="space-y-2 text-sm tabular-nums">
               <div className="flex items-baseline justify-between">
                 <dt className="text-muted-foreground">One-time</dt>
-                <dd data-testid="quote-total-onetime">{formatMoney(quote.oneTimeTotal, currency)}</dd>
+                <dd data-testid="quote-total-onetime">{formatMoney(railOneTime, currency)}</dd>
               </div>
               <div className="flex items-baseline justify-between">
                 <dt className="text-muted-foreground">Monthly recurring</dt>
-                <dd data-testid="quote-total-monthly">{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd>
+                <dd data-testid="quote-total-monthly">{formatMoney(railMonthly, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd>
               </div>
               <div className="flex items-baseline justify-between">
                 <dt className="text-muted-foreground">Annual recurring</dt>
-                <dd data-testid="quote-total-annual">{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd>
+                <dd data-testid="quote-total-annual">{formatMoney(railAnnual, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd>
               </div>
-              {Number(quote.taxTotal) > 0 && (
+              {Number(railTax) > 0 && (
                 <div className="flex items-baseline justify-between">
                   <dt className="text-muted-foreground">Tax</dt>
-                  <dd>{formatMoney(quote.taxTotal, currency)}</dd>
+                  <dd>{formatMoney(railTax, currency)}</dd>
                 </div>
               )}
             </dl>
@@ -898,14 +949,14 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums"
                 data-testid="quote-total-due-on-acceptance"
               >
-                {formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}
+                {formatMoney(railDue, currency)}
               </span>
             </div>
             {hasRecurring && (
               <>
                 <div className="mt-2 flex items-baseline justify-between text-sm tabular-nums">
                   <span className="text-muted-foreground">First-period total (incl. recurring)</span>
-                  <span className="font-medium" data-testid="quote-total-first-period">{formatMoney(quote.total, currency)}</span>
+                  <span className="font-medium" data-testid="quote-total-first-period">{formatMoney(railTotal, currency)}</span>
                 </div>
                 <RecurringBillingNote className="mt-2" testId="quote-totals-recurring-hint" />
               </>
@@ -991,7 +1042,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, ecActive, isFirst, isLast, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock,
+  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, ecActive, isFirst, isLast, onAddCatalog, onImportAddDistributor, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -1016,6 +1067,7 @@ function BlockCard({
   onMoveLine: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemoveLine: (line: QuoteLine) => void;
   onRemoveBlock: (block: QuoteBlock) => void;
+  onLineDraft: (lineId: string, draft: QuoteLineForMath | null) => void;
 }) {
   // Pending state scoped to this block: editing/removing this block, or adding a
   // line to it, never disables anything in a sibling block.
@@ -1207,6 +1259,7 @@ function BlockCard({
                         onEdit={onEditLine}
                         onMove={onMoveLine}
                         onRemove={onRemoveLine}
+                        onDraft={onLineDraft}
                       />
                     ) : (
                       <tr key={l.id} className="border-t" data-testid={`quote-line-${l.id}`}>
@@ -1361,7 +1414,7 @@ function BlockCard({
 // state to the incoming prop so server-side normalization (e.g. recomputed
 // totals, clamped quantity) wins.
 function EditableLineRow({
-  line, currency, taxRate, busy, isFirst, isLast, onEdit, onMove, onRemove,
+  line, currency, taxRate, busy, isFirst, isLast, onEdit, onMove, onRemove, onDraft,
 }: {
   line: QuoteLine;
   currency: string;
@@ -1372,6 +1425,7 @@ function EditableLineRow({
   onEdit: (lineId: string, body: LineUpdate) => Promise<boolean>;
   onMove: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemove: (line: QuoteLine) => void;
+  onDraft: (lineId: string, draft: QuoteLineForMath | null) => void;
 }) {
   const [desc, setDesc] = useState(line.description);
   const [qty, setQty] = useState(line.quantity);
@@ -1440,6 +1494,29 @@ function EditableLineRow({
       ? qtyNum * priceNum
       : Number(line.lineTotal);
   const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
+
+  // Report this row's effective values to the parent so the rail "Live totals"
+  // recompute matches the per-row optimistic Total/Tax. Mirror displayTotal's
+  // fallback: when a field is empty/invalid, use the persisted value (so a
+  // mid-clear field never zeroes the rail). Emit null once everything matches the
+  // persisted line, so the rail reverts to the authoritative server figures.
+  const qtyValid = qty.trim() !== '' && Number.isFinite(qtyNum) && qtyNum >= 0;
+  const priceValid = price.trim() !== '' && Number.isFinite(priceNum) && priceNum >= 0;
+  const effQty = qtyValid ? qty : line.quantity;
+  const effPrice = priceValid ? price : line.unitPrice;
+  const diverged =
+    Number(effQty) !== Number(line.quantity)
+    || Number(effPrice) !== Number(line.unitPrice)
+    || taxable !== line.taxable
+    || rec !== line.recurrence;
+  useEffect(() => {
+    onDraft(line.id, diverged
+      ? { quantity: String(effQty), unitPrice: String(effPrice), taxable, customerVisible: line.customerVisible, recurrence: rec }
+      : null);
+  }, [onDraft, line.id, line.customerVisible, diverged, effQty, effPrice, taxable, rec]);
+  // Clear this row's draft when it unmounts (e.g. removed) so the rail doesn't
+  // keep a phantom override.
+  useEffect(() => () => onDraft(line.id, null), [onDraft, line.id]);
 
   const commitDesc = () => {
     const next = desc.trim();
