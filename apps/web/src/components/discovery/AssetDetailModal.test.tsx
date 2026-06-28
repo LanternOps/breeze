@@ -381,6 +381,51 @@ describe('AssetDetailModal — editable device type (#1424)', () => {
   });
 });
 
+describe('AssetDetailModal — server error surfaced on save/reset (#1424)', () => {
+  const manualAsset: AssetDetail = {
+    ...asset,
+    type: 'switch',
+    typeSource: 'manual',
+    detectedType: 'workstation',
+  };
+
+  const failPatchWith = (body: unknown) => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/discovery/assets/asset-1' && init?.method === 'PATCH') {
+        return Promise.resolve(makeResponse(body, false));
+      }
+      return Promise.resolve(makeResponse());
+    });
+  };
+
+  it('surfaces the server error message when saving fails', async () => {
+    failPatchWith({ error: 'Asset not found' });
+    render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Asset not found')).toBeInTheDocument();
+  });
+
+  it('surfaces the server error message when resetting type fails', async () => {
+    failPatchWith({ error: 'Asset not found' });
+    render(<AssetDetailModal open asset={manualAsset} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('asset-modal-type-reset'));
+
+    expect(await screen.findByText('Asset not found')).toBeInTheDocument();
+  });
+
+  it('falls back to the generic message when the error body has no error field', async () => {
+    failPatchWith({});
+    render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Failed to save asset info')).toBeInTheDocument();
+  });
+});
+
 describe('AssetDetailModal — SNMP data card', () => {
   it('renders collected SNMP fields with friendly labels (#1731)', () => {
     const snmpAsset: AssetDetail = {
