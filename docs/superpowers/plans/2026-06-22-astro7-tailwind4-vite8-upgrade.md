@@ -408,13 +408,21 @@ pnpm --filter @breeze/web astro check && pnpm --filter @breeze/web build
 ```
 Expected risk: the Rust compiler errors on unclosed/non-void tags the old Go compiler silently accepted. Fix each flagged template (add closing tags, correct nesting). It will NOT auto-correct invalid markup — fix at the source. Re-run until both build clean.
 
-- [ ] **Step 2: Check `compressHTML` whitespace default change**
+- [x] **Step 2: Check `compressHTML` whitespace default change** — DONE
 
 Astro 7 changes `compressHTML` default `true` → `'jsx'` (strips whitespace between inline elements by JSX rules). Neither config sets it. Visually inspect inline-element spacing on text-heavy pages; if spaces collapse, either add explicit `{" "}` at the specific sites or set `compressHTML: true` in both configs to restore prior behavior. Prefer the targeted fix unless many sites are affected.
 
-- [ ] **Step 3: Verify the web Vite proxy + SSR externals still work under Vite 8**
+> **Result:** Confirmed the default is `"jsx"` in the installed Astro 7.0.3 (`@astrojs/compiler-rs` `compact` option). Differential-compiled at-risk inline patterns through the actual Rust compiler under `'jsx'` vs `true`: plain prose wraps (`word\nword`) collapse to a **single space** (safe — the common case), but text-then-inline-element across lines (`Text:\n<code>…`) collapses to **no space**. Scanned all 173 `.astro` files (web + portal); only **one** genuine rendered-text regression: `apps/web/src/pages/500.astro` ("Reference ID:" + `<code>`). Applied the targeted fix (`{' '}`), verified it re-emits a render-time space. All other scanner hits were false positives (JS frontmatter array literals, multi-line JSX attributes). Web build re-run with the fix passes.
+
+- [x] **Step 3: Verify the web Vite proxy + SSR externals still work under Vite 8** — DONE
 
 Run web in dev, confirm the `/api` and `^/s/` proxies still forward (Vite 8 keeps `server.proxy`), and that `@novnc/novnc` (ssr.external) and `@tanstack/react-query` (ssr.noExternal) still load. Confirm Sentry source-map upload config still builds.
+
+> **Result (Vite 8.0.16 / Astro 7.0.3 / @astrojs/node 11):**
+> - **Proxy: PASS.** Forwarding verified against a local echo server with the real config — `/api/ping` → `/api/v1/ping` (rewrite applied), `/api/v1/already` (no double-rewrite), `/s/abc` (as-is). Confirmed three ways: pure Vite 8 `createServer`, a minimal Astro 7 config, and the **real full `astro.config.mjs`** dev server. (A first run 404'd, but it was a transient first-boot/`optimizeDeps` race — not reproducible on a clean boot; systematic bisect proved no config element breaks the proxy.)
+> - **SSR externals: PASS.** Web prod build succeeds; `@novnc/novnc` stays client-only (no bare SSR import — `external` working), `@tanstack/react-query` not left as a bare SSR import (`noExternal` working — though note it's currently imported nowhere in `src`, so the directive is inert dead config from the initial scaffold). Built `entry.mjs` boots and renders `/login` → HTTP 200 with no module-resolution errors.
+> - **Sentry: builds.** With a DSN set, the integration loads and the build completes; `sourceMapsUploadOptions` is not deprecated. ⚠️ New deprecation: `@sentry/astro` 10.62.0 warns that passing `dsn`/`environment`/`release` inline to the integration is deprecated (move to `sentry.client/server.config.ts` in a future major). Non-blocking now.
+> - Portal also builds clean under Astro 7 + Vite 8 (no proxy there — served behind Caddy).
 
 - [ ] **Step 4: Run full web test suite**
 
