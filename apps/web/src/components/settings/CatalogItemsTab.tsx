@@ -333,13 +333,22 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                   const isOpen = !!exp;
                   return (
                     <FragmentRow key={it.id}>
-                      <tr className="border-t transition hover:bg-muted/40" data-testid={`catalog-item-row-${it.id}`}>
+                      <tr
+                        className="cursor-pointer border-t transition hover:bg-muted/40"
+                        data-testid={`catalog-item-row-${it.id}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openEdit(it)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEdit(it); }
+                        }}
+                      >
                         <td className="px-3 py-3 font-medium">
                           <span className="flex items-center gap-1.5">
                             {it.isBundle ? (
                               <button
                                 type="button"
-                                onClick={() => toggleExpand(it)}
+                                onClick={(e) => { e.stopPropagation(); toggleExpand(it); }}
                                 aria-expanded={isOpen}
                                 aria-label={isOpen ? 'Collapse bundle' : 'Expand bundle'}
                                 className="-ml-1 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -371,7 +380,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                         <td className={`px-3 py-3 text-right tabular-nums ${marginTone(margin)}`} data-testid={`catalog-margin-${it.id}`}>
                           {formatMargin(margin)}
                         </td>
-                        <td className="px-3 py-3 text-right">
+                        <td className="px-3 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                           <RowActions
                             item={it}
                             view={view}
