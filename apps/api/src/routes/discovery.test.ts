@@ -1540,4 +1540,162 @@ describe('discovery routes', () => {
       });
     });
   });
+
+  describe('PATCH /assets/:id type override', () => {
+    const ASSET_ID = '00000000-0000-0000-0000-000000000010';
+    const ORG = '00000000-0000-0000-0000-000000000000';
+
+    it('sets assetType and marks typeSource=manual', async () => {
+      let capturedSetPayload: any;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn((payload) => {
+          capturedSetPayload = payload;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG,
+                assetType: 'router',
+                typeSource: 'manual',
+                detectedAssetType: null,
+                hostname: null,
+                label: null,
+                ipAddress: '10.0.0.1',
+              }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ assetType: 'router' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedSetPayload).toMatchObject({ assetType: 'router', typeSource: 'manual' });
+      const body = await res.json();
+      expect(body.assetType).toBe('router');
+      expect(body.typeSource).toBe('manual');
+    });
+
+    it('rejects an invalid assetType value', async () => {
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ assetType: 'gateway' })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects assetType and resetTypeToAuto together', async () => {
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ assetType: 'router', resetTypeToAuto: true })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('resetTypeToAuto restores detectedAssetType and sets typeSource=auto', async () => {
+      // DB resolves coalesce(detected_asset_type, asset_type) to 'workstation'
+      let capturedSetPayload: any;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn((payload) => {
+          capturedSetPayload = payload;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG,
+                assetType: 'workstation',
+                typeSource: 'auto',
+                detectedAssetType: 'workstation',
+                hostname: null,
+                label: null,
+                ipAddress: '10.0.0.1',
+              }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ resetTypeToAuto: true })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedSetPayload).toMatchObject({ typeSource: 'auto' });
+      expect(capturedSetPayload.assetType).toBeDefined();
+      const body = await res.json();
+      expect(body.assetType).toBe('workstation');
+      expect(body.typeSource).toBe('auto');
+    });
+
+    it('GET /assets/:id returns typeSource and detectedAssetType', async () => {
+      const now = new Date();
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            leftJoin: () => ({
+              leftJoin: () => ({
+                where: () => ({ limit: () => Promise.resolve([{
+                  asset: {
+                    id: ASSET_ID,
+                    orgId: ORG,
+                    siteId: '00000000-0000-0000-0000-000000000001',
+                    assetType: 'router',
+                    approvalStatus: 'approved',
+                    isOnline: true,
+                    hostname: null,
+                    label: null,
+                    ipAddress: '10.0.0.1',
+                    macAddress: null,
+                    manufacturer: null,
+                    model: null,
+                    openPorts: [],
+                    osFingerprint: null,
+                    snmpData: null,
+                    responseTimeMs: null,
+                    linkedDeviceId: null,
+                    linkSource: null,
+                    typeSource: 'manual',
+                    detectedAssetType: 'workstation',
+                    discoveryMethods: [],
+                    notes: null,
+                    tags: [],
+                    firstSeenAt: now,
+                    lastSeenAt: now,
+                    createdAt: now,
+                    updatedAt: now,
+                  },
+                  snmpMonitoringEnabled: false,
+                  networkMonitoringEnabled: false,
+                  linkedDeviceHostname: null,
+                  linkedDeviceDisplayName: null,
+                  profileId: null,
+                  profileName: null,
+                  profileSubnets: null,
+                }]) }),
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.typeSource).toBe('manual');
+      expect(body.data.detectedAssetType).toBe('workstation');
+    });
+  });
 });

@@ -336,8 +336,16 @@ const bulkDismissSchema = z.object({
 const updateAssetSchema = z.object({
   label: z.string().max(255).optional(),
   notes: z.string().nullish(),
-  tags: z.string().array().optional()
-});
+  tags: z.string().array().optional(),
+  assetType: z.enum([
+    'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
+    'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
+  ]).optional(),
+  resetTypeToAuto: z.boolean().optional()
+}).refine(
+  (v) => !(v.assetType !== undefined && v.resetTypeToAuto === true),
+  { message: 'assetType and resetTypeToAuto are mutually exclusive' }
+);
 
 // --- Routes ---
 
@@ -948,6 +956,8 @@ discoveryRoutes.get(
           linkedDeviceId: a.linkedDeviceId,
           linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
           linkSource: a.linkSource,
+          typeSource: a.typeSource,
+          detectedAssetType: a.detectedAssetType,
           snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
           networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
           monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
@@ -1048,6 +1058,8 @@ discoveryRoutes.get(
         linkedDeviceId: a.linkedDeviceId,
         linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
         linkSource: a.linkSource,
+        typeSource: a.typeSource,
+        detectedAssetType: a.detectedAssetType,
         snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
         networkMonitoringEnabled: Boolean(row.networkMonitoringEnabled),
         monitoringEnabled: Boolean(row.snmpMonitoringEnabled) || Boolean(row.networkMonitoringEnabled),
@@ -1151,6 +1163,16 @@ discoveryRoutes.patch(
     if (updates.label !== undefined) setValues.label = updates.label;
     if (updates.notes !== undefined) setValues.notes = updates.notes;
     if (updates.tags !== undefined) setValues.tags = updates.tags;
+    if (updates.assetType !== undefined) {
+      setValues.assetType = updates.assetType;
+      setValues.typeSource = 'manual';
+    }
+    if (updates.resetTypeToAuto) {
+      // Restore the scan's last classification; fall back to current type if
+      // the asset was never auto-classified (detectedAssetType still null).
+      setValues.assetType = sql`coalesce(${discoveredAssets.detectedAssetType}, ${discoveredAssets.assetType})`;
+      setValues.typeSource = 'auto';
+    }
 
     const [updated] = await db.update(discoveredAssets)
       .set(setValues)
