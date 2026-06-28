@@ -47,6 +47,11 @@ export const discoveredAssetLinkSourceEnum = pgEnum('discovered_asset_link_sourc
   'auto'
 ]);
 
+export const discoveredAssetTypeSourceEnum = pgEnum('discovered_asset_type_source', [
+  'manual',
+  'auto'
+]);
+
 export const discoveryJobStatusEnum = pgEnum('discovery_job_status', [
   'scheduled',
   'running',
@@ -133,6 +138,8 @@ export const discoveredAssets = pgTable('discovered_assets', {
   responseTimeMs: real('response_time_ms'),
   linkedDeviceId: uuid('linked_device_id').references(() => devices.id),
   linkSource: discoveredAssetLinkSourceEnum('link_source'),
+  typeSource: discoveredAssetTypeSourceEnum('type_source').notNull().default('auto'),
+  detectedAssetType: discoveredAssetTypeEnum('detected_asset_type'),
   firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at'),
   lastJobId: uuid('last_job_id').references(() => discoveryJobs.id),
