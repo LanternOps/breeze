@@ -612,7 +612,7 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 /**
  * Process discovery results — upsert discovered assets
  */
-async function processResults(data: ProcessResultsJobData): Promise<{
+export async function processResults(data: ProcessResultsJobData): Promise<{
   newAssets: number;
   updatedAssets: number;
   durationMs: number;
@@ -772,7 +772,7 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     try {
     // Check if asset already exists (by org + IP)
     const [existing] = await db
-      .select({ id: discoveredAssets.id })
+      .select({ id: discoveredAssets.id, typeSource: discoveredAssets.typeSource })
       .from(discoveredAssets)
       .where(
         and(
@@ -817,9 +817,18 @@ async function processResults(data: ProcessResultsJobData): Promise<{
     let autoLinkedDeviceId: string | null = null;
 
     if (existing) {
+      // Always record what the scan thinks; only overwrite the user-facing
+      // asset_type when the type was NOT set manually.
+      const updateSet: Record<string, unknown> = {
+        ...assetData,
+        detectedAssetType: resolvedAssetType
+      };
+      if (existing.typeSource === 'manual') {
+        delete updateSet.assetType; // preserve the user's manual override
+      }
       await db
         .update(discoveredAssets)
-        .set(assetData)
+        .set(updateSet)
         .where(eq(discoveredAssets.id, existing.id));
       upsertedAssetId = existing.id;
       updatedCount++;
@@ -835,7 +844,9 @@ async function processResults(data: ProcessResultsJobData): Promise<{
       const [inserted] = await db.insert(discoveredAssets).values({
         orgId: data.orgId,
         siteId: data.siteId,
-        ...assetData
+        ...assetData,
+        detectedAssetType: resolvedAssetType,
+        typeSource: 'auto'
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
       newCount++;
