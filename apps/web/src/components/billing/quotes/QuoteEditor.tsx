@@ -363,10 +363,25 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     });
   }, [lines]);
 
-  // The figures the rail renders: optimistic recompute when any line is mid-edit,
-  // otherwise the authoritative server values verbatim.
+  // The effective tax rate the rail should reflect: the committed server rate
+  // normally, but the live tax-field value while it's mid-edit (and valid). An
+  // out-of-range/non-numeric entry isn't applied — it falls back to the committed
+  // rate, matching saveTaxRate's own clamp — so the rail never previews garbage.
+  const committedRate = quote.taxRate ? parseFloat(quote.taxRate) : null;
+  const effectiveRate = useMemo<number | null>(() => {
+    if (!taxDirty) return committedRate;
+    const trimmed = taxPct.trim();
+    if (trimmed === '') return null;
+    const pct = Number(trimmed);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return committedRate;
+    return Number((pct / 100).toFixed(5));
+  }, [taxDirty, taxPct, committedRate]);
+  const rateChanged = effectiveRate !== committedRate;
+
+  // The figures the rail renders: optimistic recompute when any line is mid-edit
+  // OR the tax rate is mid-edit, otherwise the authoritative server values.
   const optimisticTotals = useMemo<QuoteTotals | null>(() => {
-    if (Object.keys(lineDrafts).length === 0) return null;
+    if (Object.keys(lineDrafts).length === 0 && !rateChanged) return null;
     const merged: QuoteLineForMath[] = lines.map((l) => {
       const d = lineDrafts[l.id];
       return d ?? {
@@ -374,8 +389,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         customerVisible: l.customerVisible, recurrence: l.recurrence,
       };
     });
-    return computeQuoteTotals(merged, quote.taxRate ? parseFloat(quote.taxRate) : null);
-  }, [lineDrafts, lines, quote.taxRate]);
+    return computeQuoteTotals(merged, effectiveRate);
+  }, [lineDrafts, lines, effectiveRate, rateChanged]);
   const railOneTime = optimisticTotals?.oneTimeTotal ?? quote.oneTimeTotal;
   const railMonthly = optimisticTotals?.monthlyRecurringTotal ?? quote.monthlyRecurringTotal;
   const railAnnual = optimisticTotals?.annualRecurringTotal ?? quote.annualRecurringTotal;
@@ -1521,13 +1536,25 @@ function EditableLineRow({
   const commitQty = () => {
     const n = Number(qty);
     qtyEdited.current = false;
-    if (!Number.isFinite(n) || n <= 0 || n === Number(line.quantity)) { setQty(line.quantity); return; }
+    if (n === Number(line.quantity)) { setQty(line.quantity); return; } // unchanged — silent
+    // A rejected entry no longer snaps back silently: tell the user why (parity
+    // with the tax field and the manual-add path) before reverting.
+    if (!Number.isFinite(n) || n <= 0) {
+      handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+      setQty(line.quantity);
+      return;
+    }
     void edit({ quantity: n });
   };
   const commitPrice = () => {
     const n = Number(price);
     priceEdited.current = false;
-    if (!Number.isFinite(n) || n < 0 || n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; }
+    if (n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; } // unchanged — silent
+    if (!Number.isFinite(n) || n < 0) {
+      handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+      setPrice(line.unitPrice);
+      return;
+    }
     void edit({ unitPrice: n });
   };
 

@@ -230,6 +230,43 @@ describe('QuoteEditor — inline line editing', () => {
     expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$1.01');
   });
 
+  it('reflects a tax-rate edit optimistically in the rail (due on acceptance)', async () => {
+    // A $100 one-time taxable line, no rate yet. Typing a 10% rate must move the
+    // rail's "due on acceptance" to $110 immediately — before blur/save/refresh.
+    const taxableOneTime: QuoteDetailData = {
+      ...detail,
+      quote: {
+        ...detail.quote, taxRate: null, oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',
+        subtotal: '100.00', total: '100.00', dueOnAcceptanceTotal: '100.00',
+      },
+      lines: [{ ...line, recurrence: 'one_time', taxable: true, unitPrice: '100.00', quantity: '1.00', lineTotal: '100.00' }],
+    };
+    render(<QuoteEditor detail={taxableOneTime} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$100.00');
+
+    fireEvent.change(screen.getByTestId('quote-tax-rate'), { target: { value: '10' } });
+    await waitFor(() =>
+      expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$110.00'),
+    );
+  });
+
+  it('surfaces a cue (and reverts) when an invalid quantity is committed', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
+    fireEvent.change(qtyEl, { target: { value: '0' } });
+    fireEvent.blur(qtyEl);
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+    // No PATCH for the rejected value, and the field snaps back to the persisted qty.
+    expect(updateLineMock).not.toHaveBeenCalled();
+    expect(qtyEl.value).toBe('1.00');
+  });
+
   it('keeps in-progress keystrokes when a stale refresh lands (no clobber)', async () => {
     // "edit qty→5, blur, type 7": a refresh confirming 5 must not wipe the 7 the
     // user has already typed into the still-focused field.
