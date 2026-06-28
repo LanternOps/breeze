@@ -1,8 +1,9 @@
 import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks } from '../db/schema/quotes';
+import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
-import { computeLineTotal } from './invoiceMath';
+import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
 import { computeQuoteTotals, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import type {
@@ -87,14 +88,41 @@ async function nextLineSortOrder(quoteId: string): Promise<number> {
 // CRUD
 // ---------------------------------------------------------------------------
 
+/**
+ * Effective tax rate stamped onto a new quote, mirroring invoices'
+ * `resolveEffectiveTaxRate` precedence: a tax-exempt customer wins (0), then the
+ * org's own rate, then the partner's `default_tax_rate` (the "Invoice defaults →
+ * Default tax rate" setting). Read in a SYSTEM context because the partner-axis
+ * `partners` row is invisible to org-scoped request contexts — unlike invoices,
+ * a quote has no later "issue" step to stamp the partner default, so the rate
+ * must be resolved up front to show tax in the editor. Returns null (not an
+ * all-zero fraction) when there is no tax, keeping a no-tax quote visually clean.
+ */
+async function resolveQuoteTaxRate(orgId: string, partnerId: string): Promise<string | null> {
+  const rate = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [org] = await db.select({ taxExempt: organizations.taxExempt, taxRate: organizations.taxRate })
+      .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    const [partner] = await db.select({ defaultTaxRate: partners.defaultTaxRate })
+      .from(partners).where(eq(partners.id, partnerId)).limit(1);
+    return resolveEffectiveTaxRate({
+      taxExempt: org?.taxExempt ?? false,
+      orgRate: org?.taxRate ?? null,
+      partnerRate: partner?.defaultTaxRate ?? null,
+    });
+  }));
+  return Number(rate) > 0 ? rate : null;
+}
+
 export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   const partnerId = resolvePartner(actor);
   assertOrg(actor, input.orgId);
+  const taxRate = await resolveQuoteTaxRate(input.orgId, partnerId);
   const [row] = await db.insert(quotes).values({
     partnerId,
     orgId: input.orgId,
     siteId: input.siteId ?? null,
     currencyCode: input.currencyCode,
+    taxRate,
     expiryDate: input.expiryDate ?? null,
     introNotes: input.introNotes ?? null,
     terms: input.terms ?? null,

@@ -1,6 +1,7 @@
 // apps/web/src/components/billing/quotes/DistributorLookup.tsx
 import { useState } from 'react';
 import { ecExpressLookup, sellPriceDefault, type EcProduct } from '../../../lib/api/distributors';
+import { computeMarginBreakdown, formatMarginSummary } from '../../settings/marginMath';
 
 function toMoney(value: string): number | null {
   if (!value.trim()) return null;
@@ -76,6 +77,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
       {products.map((p) => {
         const priceVal = prices[p.synnexSku] ?? '';
         const parsed = toMoney(priceVal);
+        const margin = computeMarginBreakdown(p.cost ?? null, parsed);
         return (
           <div key={p.synnexSku} data-testid={`quote-distributor-result-${p.synnexSku}`} className="rounded-md border bg-background/40 p-3 text-sm">
             <div className="font-medium">{p.name}</div>
@@ -104,6 +106,14 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
                 Import &amp; add
               </button>
             </div>
+            {margin && (
+              <p
+                className={`mt-1.5 text-xs tabular-nums ${margin.profit < 0 ? 'text-destructive' : 'text-muted-foreground'}`}
+                data-testid={`quote-distributor-margin-${p.synnexSku}`}
+              >
+                {formatMarginSummary(margin, p.currency ?? 'USD')}
+              </p>
+            )}
           </div>
         );
       })}

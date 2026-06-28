@@ -72,6 +72,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
 
   const [itemType, setItemType] = useState<CatalogItemType>('service');
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [sku, setSku] = useState('');
   const [unitPrice, setUnitPrice] = useState('');
   const [costBasis, setCostBasis] = useState('');
@@ -123,6 +124,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     if (item) {
       setItemType(item.itemType);
       setName(item.name);
+      setDescription(item.description ?? '');
       setSku(item.sku ?? '');
       setUnitPrice(item.unitPrice);
       setCostBasis(item.costBasis ?? '');
@@ -162,6 +164,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     } else {
       setItemType('service');
       setName('');
+      setDescription('');
       setSku('');
       setUnitPrice('');
       setCostBasis('');
@@ -374,6 +377,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     const body = {
       itemType,
       name: name.trim(),
+      description: description.trim() || null,
       sku: sku.trim() || null,
       unitPrice: priceNum,
       costBasis: costBasis.trim() ? Number(costBasis) : null,
@@ -417,13 +421,14 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     } finally {
       setSaving(false);
     }
-  }, [saving, name, priceValid, isBundle, detailLoadFailed, components, itemType, sku, priceNum, costBasis, enrichment, effectiveId, editId, onSaved, onClose]);
+  }, [saving, name, description, priceValid, isBundle, detailLoadFailed, components, itemType, sku, priceNum, costBasis, enrichment, effectiveId, editId, onSaved, onClose]);
 
   // Auto-fill a NEW item from the web: fill the fields this form actually edits
   // (name + type) and stash provenance. Price is never auto-set — the button shows
   // a guidance hint and the user enters the real price.
   const applyEnrichment = useCallback((result: EnrichResult) => {
     setName(result.draft.name);
+    if (result.draft.description) setDescription(result.draft.description);
     setItemType(result.draft.itemType);
     setEnrichment(result.provenance);
   }, []);
@@ -507,6 +512,19 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               className={fieldCls}
               placeholder="e.g. Managed Workstation"
               data-testid="catalog-form-name"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-description-input">Description <span className="font-normal opacity-70">(optional)</span></label>
+            <textarea
+              id="catalog-form-description-input"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              className={`${fieldCls} resize-y`}
+              placeholder="Customer-facing details shown on quotes and invoices."
+              data-testid="catalog-form-description"
             />
           </div>
 
