@@ -1382,27 +1382,23 @@ function EditableLineRow({
   const [rec, setRec] = useState(line.recurrence);
   const [taxable, setTaxable] = useState(line.taxable);
 
-  // Resync the typed fields from the server only when the user hasn't diverged
-  // from what we last showed — mirroring the block-draft guard. A quiet refresh
-  // (now leading-edge, so it can land while a fast typer is still in the field)
-  // must not overwrite an in-progress edit: if the local value no longer matches
-  // the prop we last synced, the user has typed since — keep their text. Without
-  // this, "edit qty→5, blur, type 7" loses the 7 when the GET for 5 returns.
-  const lastDesc = useRef(line.description);
-  const lastQty = useRef(line.quantity);
-  const lastPrice = useRef(line.unitPrice);
-  useEffect(() => {
-    setDesc((cur) => (cur === lastDesc.current ? line.description : cur));
-    lastDesc.current = line.description;
-  }, [line.description]);
-  useEffect(() => {
-    setQty((cur) => (cur === lastQty.current ? line.quantity : cur));
-    lastQty.current = line.quantity;
-  }, [line.quantity]);
-  useEffect(() => {
-    setPrice((cur) => (cur === lastPrice.current ? line.unitPrice : cur));
-    lastPrice.current = line.unitPrice;
-  }, [line.unitPrice]);
+  // Resync the typed fields from the server, but never over an edit in progress.
+  // We track "has the user typed since the last commit?" rather than comparing
+  // values: local state holds a raw string ('9.999') while the prop is a
+  // formatted decimal ('10.00'), so a value comparison both (a) fails to re-adopt
+  // a server-normalized value — leaving the row stuck amber-dirty showing a wrong
+  // optimistic total when the server rounds — and (b) is fragile across formats.
+  // The flag is set on keystroke and cleared once a commit settles, so:
+  //   • a quiet/leading-edge refresh landing mid-type keeps the user's keystrokes
+  //     ("edit qty→5, blur, type 7" never loses the 7), and
+  //   • after the user stops editing, the next prop adopts the server's canonical
+  //     value (e.g. 9.999 → 10.00), clearing the dirty ring and the optimism.
+  const descEdited = useRef(false);
+  const qtyEdited = useRef(false);
+  const priceEdited = useRef(false);
+  useEffect(() => { if (!descEdited.current) setDesc(line.description); }, [line.description]);
+  useEffect(() => { if (!qtyEdited.current) setQty(line.quantity); }, [line.quantity]);
+  useEffect(() => { if (!priceEdited.current) setPrice(line.unitPrice); }, [line.unitPrice]);
   // recurrence/taxable are committed on change (the PATCH resolves before the
   // refresh GET fires), so a stale resync can't race them — a plain resync wins.
   useEffect(() => { setRec(line.recurrence); }, [line.recurrence]);
@@ -1433,26 +1429,33 @@ function EditableLineRow({
   // disagrees with itself (new qty, old total) until the debounced refresh lands.
   // When the row isn't dirty we defer to the authoritative server total so any
   // server-side normalization (e.g. clamped qty) still wins.
+  // Empty fields (mid-retype) aren't optimism inputs — Number('') is 0, which would
+  // flash Total/Tax to $0.00 while the user is clearing a field. Fall back to the
+  // server total until both fields hold a value.
   const qtyNum = Number(qty);
   const priceNum = Number(price);
   const displayTotal =
-    (qtyDirty || priceDirty) && Number.isFinite(qtyNum) && Number.isFinite(priceNum) && qtyNum >= 0 && priceNum >= 0
+    (qtyDirty || priceDirty) && qty.trim() !== '' && price.trim() !== ''
+    && Number.isFinite(qtyNum) && Number.isFinite(priceNum) && qtyNum >= 0 && priceNum >= 0
       ? qtyNum * priceNum
       : Number(line.lineTotal);
   const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
 
   const commitDesc = () => {
     const next = desc.trim();
+    descEdited.current = false; // committing — let the server value re-adopt next
     if (!next || next === line.description) { setDesc(line.description); return; }
     void edit({ description: next });
   };
   const commitQty = () => {
     const n = Number(qty);
+    qtyEdited.current = false;
     if (!Number.isFinite(n) || n <= 0 || n === Number(line.quantity)) { setQty(line.quantity); return; }
     void edit({ quantity: n });
   };
   const commitPrice = () => {
     const n = Number(price);
+    priceEdited.current = false;
     if (!Number.isFinite(n) || n < 0 || n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; }
     void edit({ unitPrice: n });
   };
@@ -1465,7 +1468,7 @@ function EditableLineRow({
           <textarea
             value={desc}
             aria-label="Line description"
-            onChange={(e) => setDesc(e.target.value)}
+            onChange={(e) => { setDesc(e.target.value); descEdited.current = true; }}
             onBlur={commitDesc}
             rows={2}
             disabled={busy}
@@ -1479,7 +1482,7 @@ function EditableLineRow({
           type="number" min="0" step="0.01"
           value={qty}
           aria-label="Quantity"
-          onChange={(e) => setQty(e.target.value)}
+          onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
           onBlur={commitQty}
           disabled={busy}
           data-testid={`quote-line-qty-${line.id}`}
@@ -1491,7 +1494,7 @@ function EditableLineRow({
           type="number" min="0" step="0.01"
           value={price}
           aria-label="Unit price"
-          onChange={(e) => setPrice(e.target.value)}
+          onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
           onBlur={commitPrice}
           disabled={busy}
           data-testid={`quote-line-price-${line.id}`}

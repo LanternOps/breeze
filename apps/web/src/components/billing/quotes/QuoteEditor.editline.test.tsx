@@ -174,4 +174,53 @@ describe('QuoteEditor — inline line editing', () => {
     const manualDesc = screen.getByTestId('quote-manual-desc-blk-1');
     expect(manualDesc.tagName).toBe('TEXTAREA');
   });
+
+  it('re-adopts a server-normalized value after commit (no stuck-dirty row)', async () => {
+    // Enter a sub-cent price the server will round (9.999 → 10.00). Once the user
+    // stops editing, the refreshed prop must re-adopt the canonical server value
+    // rather than leaving the field/total pinned to the raw entry.
+    const { rerender } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const priceEl = screen.getByTestId('quote-line-price-line-1') as HTMLInputElement;
+    fireEvent.change(priceEl, { target: { value: '9.999' } });
+    fireEvent.blur(priceEl);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { unitPrice: 9.999 }));
+
+    // The parent re-pulls; the server normalized the price to 10.00.
+    const normalized: QuoteDetailData = {
+      ...detail,
+      lines: [{ ...line, unitPrice: '10.00', lineTotal: '10.00' }],
+    };
+    rerender(<QuoteEditor detail={normalized} onChanged={vi.fn()} />);
+
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('10.00'),
+    );
+    // Row total reflects the authoritative server value, not the raw 9.999 entry.
+    expect(screen.getByTestId('quote-line-tax-line-1')).toBeInTheDocument();
+  });
+
+  it('keeps in-progress keystrokes when a stale refresh lands (no clobber)', async () => {
+    // "edit qty→5, blur, type 7": a refresh confirming 5 must not wipe the 7 the
+    // user has already typed into the still-focused field.
+    const { rerender } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
+    fireEvent.change(qtyEl, { target: { value: '5' } });
+    fireEvent.blur(qtyEl);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { quantity: 5 }));
+
+    // User immediately types 7 before the refresh GET (confirming 5) lands.
+    fireEvent.change(qtyEl, { target: { value: '7' } });
+    const confirmedFive: QuoteDetailData = {
+      ...detail,
+      lines: [{ ...line, quantity: '5.00', lineTotal: '250.00' }],
+    };
+    rerender(<QuoteEditor detail={confirmedFive} onChanged={vi.fn()} />);
+
+    // The 7 survives — the stale-but-changed prop did not clobber the edit.
+    expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('7');
+  });
 });
