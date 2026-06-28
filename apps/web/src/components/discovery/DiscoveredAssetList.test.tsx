@@ -51,7 +51,13 @@ it('mapAsset carries typeSource and detectedType through', () => {
   expect(mapped.detectedType).toBe('workstation');
 });
 
-it('mapAsset defaults typeSource to auto when absent', () => {
+it('mapAsset defaults typeSource to auto and detectedType to null when absent', () => {
   const mapped = mapAsset({ id: 'a2', assetType: 'server' } as any);
   expect(mapped.typeSource).toBe('auto');
+  expect(mapped.detectedType).toBe(null);
+});
+
+it('mapAsset falls back to unknown for an unrecognized detectedAssetType', () => {
+  const mapped = mapAsset({ id: 'a3', assetType: 'server', detectedAssetType: 'martian-device' } as any);
+  expect(mapped.detectedType).toBe('unknown');
 });
