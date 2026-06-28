@@ -73,8 +73,9 @@ vi.mock('../services/networkBaseline', () => ({
 }));
 
 import { db } from '../db';
+import { buildApprovalDecision } from '../services/assetApproval';
 
-const { cleanupSpeculativeTopologyLinks, processResults } = await import('./discoveryWorker') as any;
+const { cleanupSpeculativeTopologyLinks, processResults } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
 
 // Helper: build a chainable Drizzle-like mock that resolves to resolveValue
 // when awaited directly (thenable) or via .limit() / .returning().
@@ -116,6 +117,8 @@ describe('processResults — type_source', () => {
     capturedInsertValues = null;
     selectQueue = [];
     selectCallIndex = 0;
+
+    vi.mocked(buildApprovalDecision).mockReturnValue({ approvalStatus: 'pending', shouldAlert: false });
 
     vi.mocked(mockDb.select).mockImplementation(() =>
       makeSelectChain(selectQueue[selectCallIndex++] ?? [])
