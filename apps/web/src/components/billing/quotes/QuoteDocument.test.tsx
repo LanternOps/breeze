@@ -74,6 +74,40 @@ describe('QuoteDocument', () => {
     expect(screen.getByTestId('quote-document-number')).toHaveTextContent('Draft');
     expect(screen.getByTestId('quote-document-wordmark')).toHaveTextContent('Lantern IT'); // no logoUrl → wordmark
   });
+
+  it('never renders internal cost/markup/net on the customer document', () => {
+    const detail = makeDetail({
+      lines: [
+        {
+          id: 'l-3',
+          quoteId: 'q-1',
+          blockId: 'b-1',
+          orgId: 'org-1',
+          sourceType: 'manual',
+          catalogItemId: null,
+          parentLineId: null,
+          unitCost: '100.00',
+          sku: 'SKU-1',
+          partNumber: 'PN-001',
+          name: null,
+          description: 'Test Product',
+          quantity: '1',
+          unitPrice: '130.00',
+          taxable: false,
+          customerVisible: true,
+          lineTotal: '130.00',
+          recurrence: 'one_time',
+          termMonths: null,
+          billingFrequency: null,
+          sortOrder: 0,
+          createdAt: '2026-06-01T00:00:00Z',
+        },
+      ],
+    });
+    const { container } = render(<QuoteDocument detail={detail} customerName="Acme" />);
+    expect(container.textContent).not.toMatch(/markup/i);
+    expect(container.textContent).not.toContain('100.00'); // the cost value
+  });
 });
 
 describe('QuoteDocumentPreview', () => {
