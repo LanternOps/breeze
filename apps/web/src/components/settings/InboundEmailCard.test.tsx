@@ -24,6 +24,7 @@ function jsonRes(body: unknown, ok = true, status = 200) {
 interface CfgShape {
   enabled: boolean;
   address: string;
+  inboundLocalPart: string | null;
   addressOverride: string | null;
   defaultTriageOrgId: string | null;
   autoresponderEnabled: boolean;
@@ -37,6 +38,7 @@ interface CfgShape {
 const CFG: CfgShape = {
   enabled: false,
   address: 'acme@tickets.example.com',
+  inboundLocalPart: null,
   addressOverride: null,
   defaultTriageOrgId: null,
   autoresponderEnabled: true,
@@ -80,7 +82,7 @@ describe('InboundEmailCard', () => {
     ]);
     render(<InboundEmailCard />);
     expect(await screen.findByTestId('inbound-email-card')).toBeTruthy();
-    expect((screen.getByTestId('inbound-address') as HTMLInputElement).value).toBe('acme@tickets.example.com');
+    expect((screen.getByTestId('inbound-localpart') as HTMLInputElement).value).toBe('acme');
     expect(screen.getByTestId('inbound-row-r-1')).toBeTruthy();
   });
 
