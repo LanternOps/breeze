@@ -5,9 +5,10 @@ import { desc, eq } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { db } from '../../db';
-import { unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
+import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient } from '../../services/unifi/unifiClient';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection } from '../../services/unifi/unifiConnectionService';
+import { listCollectors, upsertCollector, deleteCollector } from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
 
 export const unifiRoutes = new Hono();
@@ -49,6 +50,15 @@ const mappingsSchema = z.object({
     unifiSiteName: z.string().optional(),
     siteId: z.string().guid(),
   })),
+});
+
+const collectorSchema = z.object({
+  unifiHostId: z.string().min(1),
+  siteId: z.string().guid(),
+  collectorDeviceId: z.string().guid(),
+  controllerUrl: z.string().url().max(300),
+  apiKey: z.string().min(1),
+  pollIntervalSeconds: z.number().int().min(15).max(3600).optional(),
 });
 
 unifiRoutes.use('*', authMiddleware);
@@ -201,6 +211,69 @@ unifiRoutes.get('/mappings', partnerScopes, readPerm, async (c) => {
     updatedAt: unifiSiteMappings.updatedAt,
   }).from(unifiSiteMappings).where(eq(unifiSiteMappings.integrationId, conn.id));
   return c.json({ mappings });
+});
+
+// GET /unifi/collectors — configured collectors + status
+unifiRoutes.get('/collectors', partnerScopes, readPerm, async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const conn = await getConnection(db, partner.partnerId);
+  if (!conn) return c.json({ collectors: [] });
+  const collectors = await listCollectors(db, conn.id);
+  return c.json({ collectors });
+});
+
+// PUT /unifi/collectors — upsert a console's collector
+unifiRoutes.put('/collectors', partnerScopes, writePerm, requireMfa(), zValidator('json', collectorSchema), async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const conn = await getConnection(db, partner.partnerId);
+  if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
+  const body = c.req.valid('json');
+  const [site] = await db.select({ id: sites.id, orgId: sites.orgId }).from(sites).where(eq(sites.id, body.siteId)).limit(1);
+  if (!site) return c.json({ success: false, message: `Unknown Breeze site: ${body.siteId}` }, 400);
+  if (!auth.canAccessOrg(site.orgId)) return c.json({ success: false, message: 'Access to target organization denied' }, 403);
+  const [dev] = await db.select({ id: devices.id, orgId: devices.orgId }).from(devices).where(eq(devices.id, body.collectorDeviceId)).limit(1);
+  if (!dev) return c.json({ success: false, message: 'Unknown collector agent' }, 400);
+  if (dev.orgId !== site.orgId) return c.json({ success: false, message: 'Collector agent must belong to the site\'s organization' }, 400);
+  const collector = await upsertCollector(db, {
+    integrationId: conn.id,
+    orgId: site.orgId,
+    siteId: site.id,
+    unifiHostId: body.unifiHostId,
+    collectorDeviceId: body.collectorDeviceId,
+    controllerUrl: body.controllerUrl,
+    apiKey: body.apiKey,
+    pollIntervalSeconds: body.pollIntervalSeconds,
+    createdBy: auth.user.id,
+  });
+  return c.json({ success: true, collectorId: collector.id });
+});
+
+// DELETE /unifi/collectors/:hostId — remove a console's collector
+unifiRoutes.delete('/collectors/:hostId', partnerScopes, writePerm, requireMfa(), async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const conn = await getConnection(db, partner.partnerId);
+  if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
+  const ok = await deleteCollector(db, conn.id, c.req.param('hostId'));
+  return c.json({ success: ok });
+});
+
+// GET /unifi/telemetry?siteId= — devices (with poe_ports) + clients for a mapped site
+unifiRoutes.get('/telemetry', partnerScopes, readPerm, async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const siteId = c.req.query('siteId');
+  if (!siteId) return c.json({ error: 'siteId is required' }, 400);
+  // Org-axis RLS additionally constrains rows to orgs the caller can access.
+  const devicesOut = await db.select().from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.siteId, siteId));
+  const clientsOut = await db.select().from(unifiClients).where(eq(unifiClients.siteId, siteId));
+  return c.json({ devices: devicesOut, clients: clientsOut });
 });
 
 // POST /unifi/sync — manual sync trigger

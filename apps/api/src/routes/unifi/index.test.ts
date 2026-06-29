@@ -4,6 +4,7 @@ const PARTNER_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const SITE_ID = '33333333-3333-3333-3333-333333333333';
 const CONN_ID = '44444444-4444-4444-4444-444444444444';
+const DEVICE_ID = '66666666-6666-6666-6666-666666666666';
 
 const { authState } = vi.hoisted(() => {
   const authState = {
@@ -60,9 +61,27 @@ vi.mock('../../db/schema', () => ({
     integrationId: 'unifi_sync_runs.integration_id',
     startedAt: 'unifi_sync_runs.started_at',
   },
+  unifiCollectors: {
+    id: 'unifi_collectors.id',
+    integrationId: 'unifi_collectors.integration_id',
+    orgId: 'unifi_collectors.org_id',
+    siteId: 'unifi_collectors.site_id',
+    unifiHostId: 'unifi_collectors.unifi_host_id',
+    collectorDeviceId: 'unifi_collectors.collector_device_id',
+  },
+  unifiDeviceTelemetry: {
+    siteId: 'unifi_device_telemetry.site_id',
+  },
+  unifiClients: {
+    siteId: 'unifi_clients.site_id',
+  },
   sites: {
     id: 'sites.id',
     orgId: 'sites.org_id',
+  },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.org_id',
   },
 }));
 
@@ -72,6 +91,12 @@ vi.mock('../../services/unifi/unifiConnectionService', () => ({
   upsertConnection: vi.fn(),
   deleteConnection: vi.fn(),
   markStatus: vi.fn(),
+}));
+
+vi.mock('../../services/unifi/unifiCollectorService', () => ({
+  listCollectors: vi.fn(),
+  upsertCollector: vi.fn(),
+  deleteCollector: vi.fn(),
 }));
 
 vi.mock('../../services/unifi/unifiClient', () => ({
@@ -87,6 +112,7 @@ vi.mock('../../jobs/unifiWorker', () => ({
 
 import { unifiRoutes } from './index';
 import * as svc from '../../services/unifi/unifiConnectionService';
+import * as collectorSvc from '../../services/unifi/unifiCollectorService';
 import { db } from '../../db';
 
 describe('unifi routes', () => {
@@ -101,6 +127,9 @@ describe('unifi routes', () => {
     vi.mocked(svc.getDecryptedApiKey).mockReset();
     vi.mocked(svc.upsertConnection).mockReset();
     vi.mocked(svc.deleteConnection).mockReset();
+    vi.mocked(collectorSvc.listCollectors).mockReset();
+    vi.mocked(collectorSvc.upsertCollector).mockReset();
+    vi.mocked(collectorSvc.deleteCollector).mockReset();
     authState.scope = 'partner';
     authState.partnerId = PARTNER_ID;
   });
@@ -425,6 +454,92 @@ describe('unifi routes', () => {
     const res = await unifiRoutes.request('/mappings', { method: 'GET' });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ mappings: mockMappings });
+  });
+
+  it('GET /collectors returns [] when not connected', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue(null);
+    const res = await unifiRoutes.request('/collectors', { method: 'GET' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ collectors: [] });
+  });
+
+  it('PUT /collectors derives org from site, enforces canAccessOrg, and upserts', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    // site lookup -> { id, orgId }
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]),
+        })),
+      })),
+    } as any);
+    // device lookup -> { id, orgId } belongs to same org
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => [{ id: DEVICE_ID, orgId: ORG_ID }]),
+        })),
+      })),
+    } as any);
+    vi.mocked(collectorSvc.upsertCollector).mockResolvedValue({ id: 'c1' } as any);
+    const res = await unifiRoutes.request('/collectors', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        unifiHostId: 'h1',
+        siteId: SITE_ID,
+        collectorDeviceId: DEVICE_ID,
+        controllerUrl: 'https://10.0.0.1',
+        apiKey: 'K',
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(collectorSvc.upsertCollector).toHaveBeenCalled();
+  });
+
+  it('PUT /collectors returns 403 when canAccessOrg is false', async () => {
+    const { authMiddleware } = await import('../../middleware/auth');
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner',
+        partnerId: PARTNER_ID,
+        orgId: null,
+        canAccessOrg: vi.fn(() => false),
+        user: { id: 'u1' },
+      });
+      return next();
+    });
+    vi.mocked(svc.getConnection).mockResolvedValue({ id: CONN_ID } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]),
+        })),
+      })),
+    } as any);
+    const res = await unifiRoutes.request('/collectors', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        unifiHostId: 'h1',
+        siteId: SITE_ID,
+        collectorDeviceId: DEVICE_ID,
+        controllerUrl: 'https://10.0.0.1',
+        apiKey: 'K',
+      }),
+    });
+    expect(res.status).toBe(403);
+    expect(collectorSvc.upsertCollector).not.toHaveBeenCalled();
   });
 
   // GET /sync-runs — happy path
