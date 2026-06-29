@@ -7,6 +7,7 @@ import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
+import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -188,6 +189,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Also listed in ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap).
   ['s1_integrations', 'partner_id'],
   ['s1_org_mappings', 'partner_id'],
+  // UniFi Network integration (Phase 1): one integration per partner (MSP
+  // holds the UniFi API key); sync_runs are per-integration, keyed by
+  // partner_id for fast filtering. unifi_site_mappings and unifi_devices
+  // are direct org_id (Shape 1) and are auto-discovered — not listed here.
+  ['unifi_integrations', 'partner_id'],
+  ['unifi_sync_runs', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -2204,4 +2211,191 @@ describe('ml_feedback_events RLS forge (shape 1, org-axis)', () => {
     );
     expect(visible).toHaveLength(0);
   });
+});
+
+// ===========================================================================
+// unifi_integrations — partner-axis forge test (Shape 3)
+//
+// unifi_integrations is partner-scoped: each MSP partner holds its own UniFi
+// API credential. The policy uses breeze_has_partner_access(partner_id).
+// This block proves Postgres rejects a cross-partner INSERT under breeze_app:
+// partner B's context cannot forge a row with partner_id = partner A.
+// Self-contained (no TRUNCATE dependency): fixtures seeded via
+// withSystemDbAccessContext and torn down in afterAll.
+// ===========================================================================
+describe('unifi_integrations RLS — cross-partner forge enforcement (Shape 3)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+
+  let partnerAId = '';
+  let partnerBId = '';
+
+  // Partner-scoped context: grants access to exactly one partner and no orgs,
+  // so no other policy can accidentally green-light the forged row.
+  function partnerContext(partnerId: string) {
+    return {
+      scope: 'partner' as const,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [partnerId],
+      userId: null,
+    };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const [a, b] = await db
+        .insert(partners)
+        .values([
+          {
+            name: `RLS UniFi Partner A ${runSuffix}`,
+            slug: `rls-unifi-a-${runSuffix}`,
+            type: 'msp',
+            plan: 'pro',
+            status: 'active',
+          },
+          {
+            name: `RLS UniFi Partner B ${runSuffix}`,
+            slug: `rls-unifi-b-${runSuffix}`,
+            type: 'msp',
+            plan: 'pro',
+            status: 'active',
+          },
+        ])
+        .returning({ id: partners.id });
+      if (!a || !b) throw new Error('failed to seed partners for unifi_integrations forge test');
+      partnerAId = a.id;
+      partnerBId = b.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      if (partnerAId) {
+        await db.delete(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partnerAId));
+        await db.delete(partners).where(eq(partners.id, partnerAId));
+      }
+      if (partnerBId) {
+        await db.delete(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partnerBId));
+        await db.delete(partners).where(eq(partners.id, partnerBId));
+      }
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'partner B INSERT into unifi_integrations with partner_id=A is rejected by RLS',
+    async () => {
+      await ensureFixtures();
+      let caught: unknown;
+      try {
+        await withDbAccessContext(partnerContext(partnerBId), async () =>
+          db.insert(unifiIntegrations).values({
+            partnerId: partnerAId, // forging partner A while in partner B's context
+            apiKeyEncrypted: 'rls-forge-not-a-real-key',
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/row-level security/i);
+    },
+  );
+});
+
+// ===========================================================================
+// unifi_devices — org-axis forge test (Shape 1)
+//
+// unifi_devices carries a direct org_id column (Shape 1, auto-discovered).
+// Its policy uses breeze_has_org_access(org_id). This block proves Postgres
+// rejects a cross-org INSERT under breeze_app: org B's context cannot forge
+// a row with org_id = org A. The RLS WITH CHECK on org_id fires before FK
+// evaluation, so referenced integration/mapping/site ids need not exist.
+// Self-contained: fixtures seeded via withSystemDbAccessContext, torn down
+// in afterAll.
+// ===========================================================================
+describe('unifi_devices RLS — cross-org forge enforcement (Shape 1)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+
+  let partnerId = '';
+  let orgAId = '';
+  let orgBId = '';
+
+  function orgContext(orgId: string) {
+    return {
+      scope: 'organization' as const,
+      orgId,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: [],
+      userId: null,
+    };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS UniFi Devices Partner ${runSuffix}`,
+          slug: `rls-unifi-dev-${runSuffix}`,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for unifi_devices forge test');
+      partnerId = partner.id;
+
+      const [orgA, orgB] = await db
+        .insert(organizations)
+        .values([
+          { partnerId: partner.id, name: 'RLS UniFi Devices Org A', slug: `rls-unifi-dev-a-${runSuffix}` },
+          { partnerId: partner.id, name: 'RLS UniFi Devices Org B', slug: `rls-unifi-dev-b-${runSuffix}` },
+        ])
+        .returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for unifi_devices forge test');
+      orgAId = orgA.id;
+      orgBId = orgB.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      if (orgAId) await db.delete(organizations).where(eq(organizations.id, orgAId));
+      if (orgBId) await db.delete(organizations).where(eq(organizations.id, orgBId));
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'org B INSERT into unifi_devices with org_id=A is rejected by RLS',
+    async () => {
+      await ensureFixtures();
+      // Phantom UUIDs: RLS WITH CHECK on org_id fires before FK evaluation,
+      // so these do not need to reference real rows.
+      const phantomId = '00000000-0000-0000-0000-000000000001';
+      let caught: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgBId), async () =>
+          db.insert(unifiDevices).values({
+            orgId: orgAId, // forging org A while in org B's context
+            siteId: phantomId,
+            integrationId: phantomId,
+            mappingId: phantomId,
+            unifiDeviceId: 'forge-device',
+            raw: {},
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/row-level security/i);
+    },
+  );
 });
