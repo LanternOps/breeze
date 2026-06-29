@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -124,6 +124,11 @@ export default function UnifiIntegration() {
   const [telemetrySite, setTelemetrySite] = useState<string>('');
   const [telemetry, setTelemetry] = useState<{ devices: TelemetryDevice[]; clients: TelemetryClient[] } | null>(null);
   const [telemetryLoading, setTelemetryLoading] = useState(false);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
+  // Monotonic id so a slow telemetry request can't overwrite a newer one's result.
+  const telemetryReqId = useRef(0);
+  // Surfaced when the connected-panel detail fetches (sites/orgs/mappings/etc.) fail.
+  const [detailsError, setDetailsError] = useState<string | null>(null);
 
   const onUnauthorized = useCallback(() => {
     navigateTo(loginPathWithNext());
@@ -132,9 +137,11 @@ export default function UnifiIntegration() {
   // Breeze sites grouped by organization, for the <optgroup> picker.
   const sitesByOrg = useMemo(() => {
     const orgName = new Map(orgs.map((o) => [o.id, o.name]));
-    const groups = new Map<string, { name: string; sites: BreezeSiteOption[] }>();
+    // Key the group by orgId, not name — two orgs can share a display name in an
+    // MSP fleet, which would collide as duplicate React <optgroup> keys.
+    const groups = new Map<string, { id: string; name: string; sites: BreezeSiteOption[] }>();
     for (const s of breezeSites) {
-      const group = groups.get(s.orgId) ?? { name: orgName.get(s.orgId) ?? 'Organization', sites: [] };
+      const group = groups.get(s.orgId) ?? { id: s.orgId, name: orgName.get(s.orgId) ?? 'Organization', sites: [] };
       group.sites.push(s);
       groups.set(s.orgId, group);
     }
@@ -202,56 +209,69 @@ export default function UnifiIntegration() {
   }, [onUnauthorized]);
 
   const loadDetails = useCallback(async () => {
-    const [sitesRes, orgsRes, mappingsRes, runsRes, collectorsRes, devicesRes] = await Promise.all([
-      fetchWithAuth('/orgs/sites?limit=500'),
-      fetchWithAuth('/orgs/organizations?limit=500'),
-      fetchWithAuth('/unifi/mappings'),
-      fetchWithAuth('/unifi/sync-runs'),
-      fetchWithAuth('/unifi/collectors'),
-      fetchWithAuth('/devices?limit=500'),
-    ]);
-    if ([sitesRes, orgsRes, mappingsRes, runsRes, collectorsRes, devicesRes].some((r) => r.status === 401)) {
-      onUnauthorized();
-      return;
+    setDetailsError(null);
+    try {
+      const [sitesRes, orgsRes, mappingsRes, runsRes, collectorsRes, devicesRes] = await Promise.all([
+        fetchWithAuth('/orgs/sites?limit=500'),
+        fetchWithAuth('/orgs/organizations?limit=500'),
+        fetchWithAuth('/unifi/mappings'),
+        fetchWithAuth('/unifi/sync-runs'),
+        fetchWithAuth('/unifi/collectors'),
+        fetchWithAuth('/devices?limit=500'),
+      ]);
+      if ([sitesRes, orgsRes, mappingsRes, runsRes, collectorsRes, devicesRes].some((r) => r.status === 401)) {
+        onUnauthorized();
+        return;
+      }
+      // Track per-section failures so a non-401 error doesn't leave a picker
+      // mysteriously empty with no explanation.
+      const failed: string[] = [];
+      const sitesJson = await sitesRes.json().catch(() => ({}));
+      if (sitesRes.ok) setBreezeSites((sitesJson as { data?: BreezeSiteOption[] }).data ?? []); else failed.push('sites');
+      const orgsJson = await orgsRes.json().catch(() => ({}));
+      if (orgsRes.ok) setOrgs((orgsJson as { data?: OrgOption[] }).data ?? []); else failed.push('organizations');
+      const mappingsJson = await mappingsRes.json().catch(() => ({}));
+      if (mappingsRes.ok) {
+        const saved = (mappingsJson as { mappings?: SavedMapping[] }).mappings ?? [];
+        // Seed the picker selections from what's already persisted.
+        setSelection(Object.fromEntries(saved.map((m) => [mapKey(m.unifiHostId, m.unifiSiteId), m.siteId])));
+      } else failed.push('mappings');
+      const runsJson = await runsRes.json().catch(() => ({}));
+      if (runsRes.ok) setSyncRuns((runsJson as { runs?: SyncRun[] }).runs ?? []); else failed.push('sync history');
+      const collectorsJson = await collectorsRes.json().catch(() => ({}));
+      if (collectorsRes.ok) {
+        const list = (collectorsJson as { collectors?: UnifiCollector[] }).collectors ?? [];
+        setCollectors(Object.fromEntries(list.map((col) => [col.unifiHostId, col])));
+        // Pre-fill each host's draft from its saved collector (key stays blank — never echoed back).
+        setCollectorDrafts((prev) => {
+          const next = { ...prev };
+          for (const col of list) {
+            next[col.unifiHostId] = {
+              siteId: col.siteId,
+              collectorDeviceId: col.collectorDeviceId,
+              controllerUrl: col.controllerUrl,
+              apiKey: next[col.unifiHostId]?.apiKey ?? '',
+            };
+          }
+          return next;
+        });
+      } else failed.push('collectors');
+      const devicesJson = await devicesRes.json().catch(() => ({}));
+      if (devicesRes.ok) {
+        const list = (devicesJson as { data?: AgentDevice[]; devices?: AgentDevice[] }).data
+          ?? (devicesJson as { devices?: AgentDevice[] }).devices
+          ?? (Array.isArray(devicesJson) ? (devicesJson as AgentDevice[]) : []);
+        setAgents(list);
+      } else failed.push('agent devices');
+      if (failed.length > 0) {
+        setDetailsError(`Some UniFi configuration data failed to load (${failed.join(', ')}). Refresh to retry.`);
+      }
+      await loadHosts();
+    } catch {
+      // A rejected fetch (network drop, CORS) would otherwise be an unhandled
+      // promise that silently leaves every picker empty.
+      setDetailsError('Could not load UniFi configuration data. Check your connection and refresh.');
     }
-    const sitesJson = await sitesRes.json().catch(() => ({}));
-    if (sitesRes.ok) setBreezeSites((sitesJson as { data?: BreezeSiteOption[] }).data ?? []);
-    const orgsJson = await orgsRes.json().catch(() => ({}));
-    if (orgsRes.ok) setOrgs((orgsJson as { data?: OrgOption[] }).data ?? []);
-    const mappingsJson = await mappingsRes.json().catch(() => ({}));
-    if (mappingsRes.ok) {
-      const saved = (mappingsJson as { mappings?: SavedMapping[] }).mappings ?? [];
-      // Seed the picker selections from what's already persisted.
-      setSelection(Object.fromEntries(saved.map((m) => [mapKey(m.unifiHostId, m.unifiSiteId), m.siteId])));
-    }
-    const runsJson = await runsRes.json().catch(() => ({}));
-    if (runsRes.ok) setSyncRuns((runsJson as { runs?: SyncRun[] }).runs ?? []);
-    const collectorsJson = await collectorsRes.json().catch(() => ({}));
-    if (collectorsRes.ok) {
-      const list = (collectorsJson as { collectors?: UnifiCollector[] }).collectors ?? [];
-      setCollectors(Object.fromEntries(list.map((col) => [col.unifiHostId, col])));
-      // Pre-fill each host's draft from its saved collector (key stays blank — never echoed back).
-      setCollectorDrafts((prev) => {
-        const next = { ...prev };
-        for (const col of list) {
-          next[col.unifiHostId] = {
-            siteId: col.siteId,
-            collectorDeviceId: col.collectorDeviceId,
-            controllerUrl: col.controllerUrl,
-            apiKey: next[col.unifiHostId]?.apiKey ?? '',
-          };
-        }
-        return next;
-      });
-    }
-    const devicesJson = await devicesRes.json().catch(() => ({}));
-    if (devicesRes.ok) {
-      const list = (devicesJson as { data?: AgentDevice[]; devices?: AgentDevice[] }).data
-        ?? (devicesJson as { devices?: AgentDevice[] }).devices
-        ?? (Array.isArray(devicesJson) ? (devicesJson as AgentDevice[]) : []);
-      setAgents(list);
-    }
-    await loadHosts();
   }, [onUnauthorized, loadHosts]);
 
   // Load mapping/history detail once the connection status resolves to connected.
@@ -330,10 +350,13 @@ export default function UnifiIntegration() {
   const handleLoadTelemetry = useCallback(async (siteId: string) => {
     setTelemetrySite(siteId);
     setTelemetry(null);
+    setTelemetryError(null);
     if (!siteId) return;
+    const reqId = ++telemetryReqId.current;
     setTelemetryLoading(true);
     try {
       const res = await fetchWithAuth(`/unifi/telemetry?siteId=${encodeURIComponent(siteId)}`);
+      if (reqId !== telemetryReqId.current) return; // superseded by a newer site selection
       if (res.status === 401) return onUnauthorized();
       const json = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -341,9 +364,15 @@ export default function UnifiIntegration() {
           devices: (json as { devices?: TelemetryDevice[] }).devices ?? [],
           clients: (json as { clients?: TelemetryClient[] }).clients ?? [],
         });
+      } else {
+        // Surface 403/404/500 instead of rendering an empty panel that reads as
+        // "no data" — the backend computes a precise message we'd otherwise drop.
+        setTelemetryError((json as { error?: string }).error ?? `Failed to load telemetry (${res.status}).`);
       }
+    } catch {
+      if (reqId === telemetryReqId.current) setTelemetryError('Could not reach the server to load telemetry.');
     } finally {
-      setTelemetryLoading(false);
+      if (reqId === telemetryReqId.current) setTelemetryLoading(false);
     }
   }, [onUnauthorized]);
 
@@ -475,6 +504,12 @@ export default function UnifiIntegration() {
       {loadError && (
         <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="unifi-load-error">
           {loadError}
+        </p>
+      )}
+
+      {detailsError && (
+        <p className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="unifi-details-error">
+          <AlertTriangle className="h-4 w-4 shrink-0" /> {detailsError}
         </p>
       )}
 
@@ -642,7 +677,7 @@ export default function UnifiIntegration() {
                               >
                                 <option value="">— Not mapped —</option>
                                 {sitesByOrg.map((group) => (
-                                  <optgroup key={group.name} label={group.name}>
+                                  <optgroup key={group.id} label={group.name}>
                                     {group.sites.map((site) => (
                                       <option key={site.id} value={site.id}>{site.name}</option>
                                     ))}
@@ -716,7 +751,7 @@ export default function UnifiIntegration() {
                       >
                         <option value="">— Select site —</option>
                         {sitesByOrg.map((group) => (
-                          <optgroup key={group.name} label={group.name}>
+                          <optgroup key={group.id} label={group.name}>
                             {group.sites.map((site) => (
                               <option key={site.id} value={site.id}>{site.name}</option>
                             ))}
@@ -794,7 +829,7 @@ export default function UnifiIntegration() {
             >
               <option value="">— Select site —</option>
               {sitesByOrg.map((group) => (
-                <optgroup key={group.name} label={group.name}>
+                <optgroup key={group.id} label={group.name}>
                   {group.sites.map((site) => (
                     <option key={site.id} value={site.id}>{site.name}</option>
                   ))}
@@ -806,6 +841,10 @@ export default function UnifiIntegration() {
           {telemetryLoading ? (
             <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground" data-testid="unifi-telemetry-loading">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading telemetry…
+            </div>
+          ) : telemetryError ? (
+            <div className="mt-4 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive" data-testid="unifi-telemetry-error">
+              <AlertTriangle className="h-4 w-4 shrink-0" /> {telemetryError}
             </div>
           ) : telemetry ? (
             <div className="mt-4 space-y-6">
