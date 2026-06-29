@@ -104,7 +104,10 @@ export function deleteBlock(id: string, blockId: string): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/blocks/${blockId}`, { method: 'DELETE' });
 }
 
-export function addManualLine(id: string, body: QuoteLineInput): Promise<Response> {
+export function addManualLine(
+  id: string,
+  body: QuoteLineInput & { unitCost?: number | null; sku?: string | null; partNumber?: string | null },
+): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/lines`, {
     method: 'POST',
     headers: JSON_HEADERS,
@@ -112,10 +115,10 @@ export function addManualLine(id: string, body: QuoteLineInput): Promise<Respons
   });
 }
 
-/** Body shape matches `catalogQuoteLineSchema` (catalogItemId + quantity, optional blockId). */
+/** Body shape matches `catalogQuoteLineSchema` (catalogItemId + quantity, optional blockId + partNumber). */
 export function addCatalogLine(
   id: string,
-  body: { catalogItemId: string; quantity: number; blockId?: string },
+  body: { catalogItemId: string; quantity: number; blockId?: string; partNumber?: string },
 ): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/lines/catalog`, {
     method: 'POST',
@@ -124,7 +127,11 @@ export function addCatalogLine(
   });
 }
 
-export function updateLine(id: string, lineId: string, body: unknown): Promise<Response> {
+export function updateLine(
+  id: string,
+  lineId: string,
+  body: { unitCost?: number | null; sku?: string | null; partNumber?: string | null } & Record<string, unknown>,
+): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/lines/${lineId}`, {
     method: 'PATCH',
     headers: JSON_HEADERS,
