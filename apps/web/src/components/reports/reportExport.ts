@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import type { PostureSummary } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
 
@@ -7,6 +8,9 @@ import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/li
 // './reportExport' keep working; the canonical definitions now live in
 // lib/csvExport (jsPDF-free so non-report exporters don't bundle a PDF library).
 export { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula };
+// PostureSummary is single-sourced in @breeze/shared (also consumed by the API
+// generator that produces it); re-export so existing local importers still work.
+export type { PostureSummary } from '@breeze/shared';
 
 /** Convert an unknown cell value to a display string. */
 function cellToString(value: unknown): string {
@@ -40,56 +44,6 @@ export function downloadBlob(blob: Blob, filename: string): void {
 export function getBrowserTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
-
-/**
- * Summary payload for the Security & Compliance Posture report. Every field is
- * optional so a partial/legacy snapshot still renders without throwing.
- */
-export type PostureSummary = {
-  org?: { id?: string; name?: string };
-  generatedAt?: string;
-  deviceCount?: number;
-  controls?: {
-    // pct fields are number | null — null means "not assessed", rendered as N/A
-    // (never 0%, which would read as a measured failure on an insurance doc).
-    edrCoveragePct?: number | null;
-    anyAvCoveragePct?: number | null;
-    unprotectedCount?: number;
-    encryptionPct?: number | null;
-    firewallPct?: number | null;
-    patchCurrentPct?: number | null;
-    patchUnknownCount?: number;
-    passwordComplexityPct?: number | null;
-    passwordUnknownCount?: number;
-    localAdminExposurePct?: number | null;
-    localAdminUnknownCount?: number;
-    avDefinitionsCurrentPct?: number | null;
-    cisAvgPassRate?: number | null;
-    cisIncluded?: boolean;
-    cisAssessedCount?: number;
-    identityProviderConnected?: boolean;
-    backupConfigured?: boolean;
-    backupEncrypted?: boolean | null;
-    dnsFilteringActive?: boolean;
-    dnsFilteringSyncStatus?: string | null;
-  };
-  privilegedAccess?: {
-    uacInterceptionEnabled?: boolean;
-    activePamRules?: number;
-    elevationsInWindow?: number;
-    elevationsApproved?: number;
-    elevationsDenied?: number;
-    mfaStepUpEnforced?: boolean;
-  };
-  securityProducts?: Array<{
-    product: string;
-    category: string;
-    active: boolean;
-    lastSyncStatus?: string | null;
-    deviceCoverage?: number | null;
-  }>;
-  postureScore?: number | null;
-};
 
 /**
  * Export report rows as CSV, Excel (TSV with .xls extension), or PDF.

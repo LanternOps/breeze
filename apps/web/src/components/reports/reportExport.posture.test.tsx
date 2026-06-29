@@ -27,9 +27,9 @@ vi.mock('jspdf', () => {
 
 vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
 
-import { exportReport } from './reportExport';
+import { exportReport, type PostureSummary } from './reportExport';
 
-const summary = {
+const summary: PostureSummary = {
   org: { id: 'o1', name: 'Acme Co' },
   generatedAt: '2026-06-29T00:00:00Z',
   deviceCount: 3,
@@ -103,7 +103,7 @@ describe('exportReport — security_compliance_posture PDF', () => {
   });
 
   it('shows CIS coverage and degraded DNS sync when present', () => {
-    const s = {
+    const s: PostureSummary = {
       ...summary,
       controls: {
         ...summary.controls,

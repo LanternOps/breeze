@@ -28,9 +28,9 @@ const ORG = '00000000-0000-0000-0000-000000000001';
  * 16 authenticator_policies (only if org has partnerId)   17 latest org posture snapshot
  * 18 cis_baseline_results (only if includeCis)   19 device_patches scanned-set (any status)
  */
-function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}) {
+function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}, opts: { noPartner?: boolean } = {}) {
   const seq: any[][] = [
-    /* 1 organizations */      [{ id: ORG, name: 'Acme Co', partnerId: 'p1' }],
+    /* 1 organizations */      [{ id: ORG, name: 'Acme Co', partnerId: opts.noPartner ? null : 'p1' }],
     /* 2 devices */            [
       { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ' },
       { id: 'dev-2', hostname: 'pc-2', osType: 'macos', siteName: 'HQ' },
@@ -58,6 +58,9 @@ function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}) {
   for (const [i, rows] of Object.entries(over)) {
     if (rows) seq[Number(i) - 1] = rows;
   }
+  // No-partner orgs skip the authenticator_policies query (#16), so drop that slot
+  // to keep the remaining queries aligned with the generator's actual call order.
+  if (opts.noPartner) seq.splice(15, 1);
   const m = vi.mocked(db.select);
   m.mockReset();
   // Fill any sparse holes (e.g. overriding #19 without #18) with [] so every
@@ -187,6 +190,59 @@ describe('generateSecurityCompliancePostureReport', () => {
     const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
     expect(c.cisAvgPassRate).toBe(90);
     expect(c.cisAssessedCount).toBe(1); // 1 of 3 devices scanned — coverage is visible
+  });
+
+  it('counts native-AV-only toward anyAv but not EDR, and SentinelOne as managed', async () => {
+    mockGeneratorQueries({
+      2: [
+        { id: 'a', hostname: 'pc-a', osType: 'windows', siteName: 'S' },
+        { id: 'n', hostname: 'pc-n', osType: 'windows', siteName: 'S' }
+      ],
+      3: [
+        { deviceId: 'a', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } },
+        { deviceId: 'n', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } }
+      ],
+      4: [{ deviceId: 'a' }], // SentinelOne manages pc-a
+      5: [] // no Huntress
+    });
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const c = (r.summary as any).controls;
+    expect(c.edrCoveragePct).toBe(50); // only pc-a is managed
+    expect(c.anyAvCoveragePct).toBe(100); // pc-a managed + pc-n native RTP-on
+    expect(c.unprotectedCount).toBe(0);
+    const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
+    expect(byHost['pc-a'].protectionManaged).toBe(true);
+    expect(byHost['pc-a'].protection).toMatch(/SentinelOne/);
+    expect(byHost['pc-n'].protectionManaged).toBe(false);
+    expect(byHost['pc-n'].protection).toMatch(/Defender \(RTP on\)/);
+    expect((r.summary as any).securityProducts.map((p: any) => p.product)).toContain('SentinelOne');
+  });
+
+  it('excludes provider "other" and real-provider-with-RTP-off from protection', async () => {
+    mockGeneratorQueries({
+      2: [
+        { id: 'o', hostname: 'pc-o', osType: 'windows', siteName: 'S' },
+        { id: 'f', hostname: 'pc-f', osType: 'windows', siteName: 'S' }
+      ],
+      3: [
+        { deviceId: 'o', provider: 'other', realTimeProtection: true, definitionsDate: null, encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'f', provider: 'crowdstrike', realTimeProtection: false, definitionsDate: new Date(), encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null }
+      ],
+      4: [],
+      5: []
+    });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    expect(c.anyAvCoveragePct).toBe(0); // 'other'+RTP-on and real+RTP-off both excluded
+    expect(c.unprotectedCount).toBe(2);
+  });
+
+  it('handles a no-partner org (authenticator query skipped → MFA step-up false)', async () => {
+    mockGeneratorQueries({}, { noPartner: true });
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    // The skipped authenticator query must not misalign downstream results.
+    expect((r.summary as any).privilegedAccess.mfaStepUpEnforced).toBe(false);
+    expect((r.summary as any).postureScore).toBe(82); // posture query still aligned
+    expect((r.summary as any).controls.edrCoveragePct).toBe(33); // unchanged from base fixture
   });
 
   it('lists active security products', async () => {

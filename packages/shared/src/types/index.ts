@@ -683,3 +683,9 @@ export * from './ai';
 // ============================================
 
 export * from './billing-enums';
+
+// ============================================
+// Security & Compliance Posture Report
+// ============================================
+
+export * from './postureReport';

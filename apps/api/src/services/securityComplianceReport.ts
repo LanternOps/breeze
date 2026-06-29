@@ -25,6 +25,7 @@ import {
   vulnerabilities
 } from '../db/schema';
 import { securityCompliancePostureConfigSchema } from '../routes/reports/schemas';
+import type { PostureSummary, PostureProduct } from '@breeze/shared';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { resolveSiteAllowedDeviceIds, type ReportResult } from './reportGenerationService';
 
@@ -137,7 +138,7 @@ function emptySummary(
     },
     securityProducts: [],
     postureScore: null
-  };
+  } satisfies PostureSummary;
 }
 
 function prettyDnsProvider(p: string): string {
@@ -471,7 +472,7 @@ export async function generateSecurityCompliancePostureReport(
   const dnsSyncStatus = dns?.lastSyncStatus ?? null;
   const dnsActive = Boolean(dns) && dnsSyncStatus !== 'error';
 
-  const securityProducts: Array<{ product: string; category: string; active: boolean; lastSyncStatus: string | null; deviceCoverage: number | null }> = [];
+  const securityProducts: PostureProduct[] = [];
   if (huntressDevices.size > 0) securityProducts.push({ product: 'Huntress', category: 'mdr', active: true, lastSyncStatus: null, deviceCoverage: huntressDevices.size });
   if (s1Devices.size > 0) securityProducts.push({ product: 'SentinelOne', category: 'edr', active: true, lastSyncStatus: null, deviceCoverage: s1Devices.size });
   if (dns) securityProducts.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus, deviceCoverage: null });
@@ -480,11 +481,7 @@ export async function generateSecurityCompliancePostureReport(
   if (m365) securityProducts.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null, deviceCoverage: null });
   if (google) securityProducts.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null, deviceCoverage: null });
 
-  return {
-    rows,
-    rowCount: rows.length,
-    generatedAt,
-    summary: {
+  const summary = {
       org: { id: orgRow?.id ?? orgId, name: orgRow?.name ?? 'Unknown' },
       generatedAt,
       deviceCount,
@@ -522,6 +519,7 @@ export async function generateSecurityCompliancePostureReport(
       },
       securityProducts,
       postureScore: postureRow?.overallScore ?? null
-    }
-  };
+  } satisfies PostureSummary;
+
+  return { rows, rowCount: rows.length, generatedAt, summary };
 }
