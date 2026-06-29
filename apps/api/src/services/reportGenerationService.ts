@@ -17,7 +17,8 @@ export type ReportType =
   | 'alert_summary'
   | 'compliance'
   | 'performance'
-  | 'executive_summary';
+  | 'executive_summary'
+  | 'security_compliance_posture';
 
 export type ReportResult = {
   rows?: unknown[];
@@ -26,7 +27,7 @@ export type ReportResult = {
   generatedAt?: string;
 };
 
-async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
+export async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
   if (!perms?.allowedSiteIds) return null;
   const orgDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
@@ -66,6 +67,11 @@ export async function siteScopeRequestAllowed(
   const filters = filtersFor(config);
   const siteIds = asStringArray(filters.siteIds);
   if (siteIds?.some((siteId) => !canAccessSite(perms, siteId))) {
+    return false;
+  }
+
+  const postureSiteIds = asStringArray(config.sites);
+  if (postureSiteIds?.some((siteId) => !canAccessSite(perms, siteId))) {
     return false;
   }
 
@@ -453,6 +459,10 @@ export async function generateReport(
       return generatePerformanceReport(orgId, config, perms);
     case 'executive_summary':
       return generateExecutiveSummaryReport(orgId, config, perms);
+    case 'security_compliance_posture': {
+      const { generateSecurityCompliancePostureReport } = await import('./securityComplianceReport');
+      return generateSecurityCompliancePostureReport(orgId, config, perms);
+    }
     default:
       throw new Error(`Invalid report type: ${type}`);
   }

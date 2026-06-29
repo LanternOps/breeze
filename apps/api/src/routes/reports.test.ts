@@ -9,6 +9,15 @@ const permissionState = vi.hoisted(() => ({
 
 vi.mock('../services', () => ({}));
 
+vi.mock('../services/securityComplianceReport', () => ({
+  generateSecurityCompliancePostureReport: vi.fn(async () => ({
+    rows: [],
+    rowCount: 0,
+    summary: {},
+    generatedAt: 'x'
+  }))
+}));
+
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: any[]) => ({ op: 'and', conditions }),
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
@@ -168,6 +177,8 @@ vi.mock('../services/permissions', () => ({
 
 import { db } from '../db';
 import { reportRoutes } from './reports';
+import { generateReport } from '../services/reportGenerationService';
+import { generateSecurityCompliancePostureReport } from '../services/securityComplianceReport';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const SITE_ALLOWED = '22222222-2222-2222-2222-222222222222';
@@ -442,6 +453,18 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
     expect(completedSet).toBeDefined();
     expect(completedSet.result).toBeDefined();
     expect(completedSet.outputUrl).toBe('/api/reports/runs/run-1/download');
+  });
+});
+
+describe('generateReport dispatch — security_compliance_posture', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('routes to the posture generator', async () => {
+    await generateReport('security_compliance_posture', 'org-1', {}, undefined);
+
+    expect(generateSecurityCompliancePostureReport).toHaveBeenCalledWith('org-1', {}, undefined);
   });
 });
 

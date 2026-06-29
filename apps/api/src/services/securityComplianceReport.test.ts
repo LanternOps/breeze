@@ -1,0 +1,125 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../db', () => ({ db: { select: vi.fn() } }));
+vi.mock('./reportGenerationService', () => ({
+  resolveSiteAllowedDeviceIds: vi.fn(async () => null)
+}));
+
+import { db } from '../db';
+import { generateSecurityCompliancePostureReport } from './securityComplianceReport';
+
+/** Thenable that resolves to `rows` and supports any drizzle chain method. */
+function selectChain(rows: any) {
+  const p: any = Promise.resolve(rows);
+  for (const m of ['from', 'where', 'innerJoin', 'leftJoin', 'orderBy', 'groupBy', 'limit']) {
+    p[m] = () => p;
+  }
+  return p;
+}
+
+const ORG = '00000000-0000-0000-0000-000000000001';
+
+/**
+ * The generator issues selects in this fixed order:
+ *  1 organizations   2 devices   3 security_status   4 s1_agents
+ *  5 huntress_agents   6 device_patches+severity   7 device_vulns
+ *  8 dns_filter   9 backup_configs   10 c2c_connections   11 m365
+ * 12 google   13 pam_org_config   14 pam_rules   15 elevation_requests
+ * 16 authenticator_policies (only if org has partnerId)   17 latest org posture snapshot
+ */
+function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}) {
+  const seq: any[][] = [
+    /* 1 organizations */      [{ id: ORG, name: 'Acme Co', partnerId: 'p1' }],
+    /* 2 devices */            [
+      { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ' },
+      { id: 'dev-2', hostname: 'pc-2', osType: 'macos', siteName: 'HQ' },
+      { id: 'dev-3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote' }
+    ],
+    /* 3 security_status */    [
+      { deviceId: 'dev-1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } },
+      { deviceId: 'dev-2', provider: 'other', realTimeProtection: false, definitionsDate: null, encryptionStatus: 'unencrypted', firewallEnabled: false, passwordPolicySummary: { minLength: 4 }, localAdminSummary: { adminCount: 5 } }
+    ],
+    /* 4 s1_agents */          [],
+    /* 5 huntress_agents */    [{ deviceId: 'dev-1' }],
+    /* 6 device_patches */     [{ deviceId: 'dev-2', severity: 'critical' }],
+    /* 7 device_vulns */       [{ deviceId: 'dev-1', severity: 'high' }],
+    /* 8 dns_filter */         [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'success' }],
+    /* 9 backup_configs */     [{ isActive: true, provider: 's3', encryption: true }],
+    /* 10 c2c */               [],
+    /* 11 m365 */              [{ status: 'active' }],
+    /* 12 google */            [],
+    /* 13 pam_org_config */    [{ uacInterceptionEnabled: true }],
+    /* 14 pam_rules */         [{ id: 'r1' }, { id: 'r2' }],
+    /* 15 elevation_requests*/ [{ approvedAt: new Date(), deniedByUserId: null }, { approvedAt: null, deniedByUserId: 'u1' }],
+    /* 16 authenticator */     [{ requireEnrollment: true, enforceFrom: new Date(Date.now() - 86400000) }],
+    /* 17 posture snapshot */  [{ overallScore: 82 }]
+  ];
+  for (const [i, rows] of Object.entries(over)) {
+    if (rows) seq[Number(i) - 1] = rows;
+  }
+  const m = vi.mocked(db.select);
+  m.mockReset();
+  for (const rows of seq) m.mockReturnValueOnce(selectChain(rows));
+  m.mockReturnValue(selectChain([]));
+}
+
+describe('generateSecurityCompliancePostureReport', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('merges managed EDR with native AV and flags unprotected devices', async () => {
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, { sites: [] });
+
+    const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
+    expect(byHost['pc-1'].protectionManaged).toBe(true);
+    expect(byHost['pc-1'].protection).toMatch(/Huntress/i);
+    expect(byHost['pc-2'].protectionManaged).toBe(false);
+
+    expect((r.summary as any).controls.edrCoveragePct).toBe(33);
+    expect((r.summary as any).controls.unprotectedCount).toBe(2);
+  });
+
+  it('computes control percentages from security_status', async () => {
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const c = (r.summary as any).controls;
+    expect(c.encryptionPct).toBe(50);
+    expect(c.firewallPct).toBe(50);
+    expect(c.passwordComplexityPct).toBe(50);
+  });
+
+  it('summarizes privileged access from PAM tables', async () => {
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const p = (r.summary as any).privilegedAccess;
+    expect(p.uacInterceptionEnabled).toBe(true);
+    expect(p.activePamRules).toBe(2);
+    expect(p.elevationsApproved).toBe(1);
+    expect(p.elevationsDenied).toBe(1);
+    expect(p.mfaStepUpEnforced).toBe(true);
+  });
+
+  it('renders CIS as null (not 0) when no baseline scans exist', async () => {
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    expect((r.summary as any).controls.cisAvgPassRate).toBeNull();
+  });
+
+  it('lists active security products', async () => {
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const names = (r.summary as any).securityProducts.map((p: any) => p.product.toLowerCase());
+    expect(names).toContain('huntress');
+    expect(names.join(' ')).toMatch(/umbrella|dns/);
+  });
+
+  it('returns empty rows but a valid summary when no devices in scope', async () => {
+    const svc = await import('./reportGenerationService');
+    vi.mocked(svc.resolveSiteAllowedDeviceIds).mockResolvedValueOnce([]);
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    expect(r.rows).toEqual([]);
+    expect((r.summary as any).deviceCount).toBe(0);
+    expect((r.summary as any).controls.edrCoveragePct).toBe(0);
+  });
+});

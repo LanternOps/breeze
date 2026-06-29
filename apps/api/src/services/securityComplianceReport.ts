@@ -1,0 +1,412 @@
+import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { db } from '../db';
+import {
+  authenticatorPolicies,
+  backupConfigs,
+  c2cConnections,
+  devicePatches,
+  deviceVulnerabilities,
+  devices,
+  dnsFilterIntegrations,
+  elevationRequests,
+  googleWorkspaceConnections,
+  huntressAgents,
+  m365Connections,
+  organizations,
+  pamOrgConfig,
+  pamRules,
+  patches,
+  s1Agents,
+  securityPostureOrgSnapshots,
+  securityStatus,
+  sites,
+  vulnerabilities
+} from '../db/schema';
+import { securityCompliancePostureConfigSchema } from '../routes/reports/schemas';
+import { canAccessSite, type UserPermissions } from './permissions';
+import { resolveSiteAllowedDeviceIds, type ReportResult } from './reportGenerationService';
+
+const pct = (num: number, denom: number): number =>
+  denom === 0 ? 0 : Math.round((num / denom) * 100);
+
+const daysAgo = (d: Date | null): number | null =>
+  d ? Math.floor((Date.now() - new Date(d).getTime()) / 86400000) : null;
+
+const isString = (value: unknown): value is string => typeof value === 'string';
+
+/** Build a human label for a device's detected protection products. */
+function protectionLabel(opts: {
+  managed: string[];
+  nativeProvider: string | null;
+  rtp: boolean | null;
+}): string {
+  const parts = [...opts.managed];
+  if (opts.nativeProvider && opts.nativeProvider !== 'other') {
+    parts.push(prettyProvider(opts.nativeProvider));
+  }
+  if (parts.length === 0) return 'None detected';
+  const rtp = opts.rtp === true ? ' (RTP on)' : opts.rtp === false ? ' (RTP off)' : '';
+  return parts.join(' + ') + rtp;
+}
+
+function prettyProvider(p: string): string {
+  const map: Record<string, string> = {
+    windows_defender: 'Defender',
+    sentinelone: 'SentinelOne',
+    crowdstrike: 'CrowdStrike',
+    bitdefender: 'Bitdefender',
+    sophos: 'Sophos',
+    malwarebytes: 'Malwarebytes',
+    eset: 'ESET',
+    kaspersky: 'Kaspersky'
+  };
+  return map[p] ?? p;
+}
+
+function passwordComplexityPass(summary: unknown, minLength: number): boolean {
+  if (!summary || typeof summary !== 'object') return false;
+  const s = summary as Record<string, unknown>;
+  const len = typeof s.minLength === 'number' ? s.minLength : 0;
+  const lockout =
+    typeof s.lockoutThreshold === 'number' ? s.lockoutThreshold > 0 : Boolean(s.lockoutEnabled);
+  return len >= minLength && lockout;
+}
+
+function localAdminCount(summary: unknown): number | null {
+  if (!summary || typeof summary !== 'object') return null;
+  const s = summary as Record<string, unknown>;
+  return typeof s.adminCount === 'number' ? s.adminCount : null;
+}
+
+function emptySummary(orgRow: { id: string; name: string } | undefined, generatedAt: string) {
+  return {
+    org: { id: orgRow?.id ?? '', name: orgRow?.name ?? 'Unknown' },
+    generatedAt,
+    deviceCount: 0,
+    controls: {
+      edrCoveragePct: 0,
+      anyAvCoveragePct: 0,
+      unprotectedCount: 0,
+      encryptionPct: 0,
+      firewallPct: 0,
+      patchCurrentPct: 0,
+      passwordComplexityPct: 0,
+      localAdminExposurePct: 0,
+      cisAvgPassRate: null,
+      mfaIdentityConnected: false,
+      backupConfigured: false,
+      backupEncrypted: null,
+      dnsFilteringActive: false
+    },
+    privilegedAccess: {
+      uacInterceptionEnabled: false,
+      activePamRules: 0,
+      elevationsInWindow: 0,
+      elevationsApproved: 0,
+      elevationsDenied: 0,
+      mfaStepUpEnforced: false
+    },
+    securityProducts: [],
+    postureScore: null
+  };
+}
+
+function prettyDnsProvider(p: string): string {
+  const map: Record<string, string> = {
+    umbrella: 'Cisco Umbrella',
+    cloudflare: 'Cloudflare Gateway',
+    dnsfilter: 'DNSFilter',
+    pihole: 'Pi-hole',
+    opendns: 'OpenDNS',
+    quad9: 'Quad9',
+    adguard_home: 'AdGuard Home'
+  };
+  return map[p] ?? `DNS filtering (${p})`;
+}
+
+export async function generateSecurityCompliancePostureReport(
+  orgId: string,
+  rawConfig: Record<string, unknown>,
+  perms?: UserPermissions
+): Promise<ReportResult> {
+  const cfg = securityCompliancePostureConfigSchema.parse(rawConfig ?? {});
+  const generatedAt = new Date().toISOString();
+
+  if (perms?.allowedSiteIds && cfg.sites.some((siteId) => !canAccessSite(perms, siteId))) {
+    throw new Error('Requested site is outside the caller scope');
+  }
+
+  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+
+  const [orgRow] = await db
+    .select({ id: organizations.id, name: organizations.name, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (allowedDeviceIds?.length === 0) {
+    return {
+      rows: [],
+      rowCount: 0,
+      generatedAt,
+      summary: emptySummary(orgRow, generatedAt)
+    };
+  }
+
+  const deviceConditions = [eq(devices.orgId, orgId)];
+  if (cfg.sites.length > 0) {
+    deviceConditions.push(inArray(devices.siteId, cfg.sites));
+  }
+  if (allowedDeviceIds) {
+    deviceConditions.push(inArray(devices.id, allowedDeviceIds));
+  }
+
+  const deviceRows = await db
+    .select({
+      id: devices.id,
+      hostname: devices.hostname,
+      osType: devices.osType,
+      siteName: sites.name
+    })
+    .from(devices)
+    .leftJoin(sites, eq(devices.siteId, sites.id))
+    .where(and(...deviceConditions));
+
+  const deviceIds = deviceRows.map((d) => d.id);
+  if (deviceIds.length === 0) {
+    return {
+      rows: [],
+      rowCount: 0,
+      generatedAt,
+      summary: emptySummary(orgRow, generatedAt)
+    };
+  }
+
+  const ssRows = await db
+    .select({
+      deviceId: securityStatus.deviceId,
+      provider: securityStatus.provider,
+      realTimeProtection: securityStatus.realTimeProtection,
+      definitionsDate: securityStatus.definitionsDate,
+      encryptionStatus: securityStatus.encryptionStatus,
+      firewallEnabled: securityStatus.firewallEnabled,
+      passwordPolicySummary: securityStatus.passwordPolicySummary,
+      localAdminSummary: securityStatus.localAdminSummary
+    })
+    .from(securityStatus)
+    .where(and(eq(securityStatus.orgId, orgId), inArray(securityStatus.deviceId, deviceIds)));
+  const ssByDevice = new Map(ssRows.map((r) => [r.deviceId, r]));
+
+  const s1Rows = await db
+    .select({ deviceId: s1Agents.deviceId })
+    .from(s1Agents)
+    .where(and(eq(s1Agents.orgId, orgId), inArray(s1Agents.deviceId, deviceIds)));
+  const huntressRows = await db
+    .select({ deviceId: huntressAgents.deviceId })
+    .from(huntressAgents)
+    .where(and(eq(huntressAgents.orgId, orgId), inArray(huntressAgents.deviceId, deviceIds)));
+  const s1Devices = new Set(s1Rows.map((r) => r.deviceId).filter(isString));
+  const huntressDevices = new Set(huntressRows.map((r) => r.deviceId).filter(isString));
+
+  const patchRows = await db
+    .select({ deviceId: devicePatches.deviceId, severity: patches.severity })
+    .from(devicePatches)
+    .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+    .where(
+      and(
+        eq(devicePatches.orgId, orgId),
+        inArray(devicePatches.deviceId, deviceIds),
+        eq(devicePatches.status, 'pending')
+      )
+    );
+  const pendingByDevice = new Map<string, { total: number; critical: number }>();
+  for (const p of patchRows) {
+    const e = pendingByDevice.get(p.deviceId) ?? { total: 0, critical: 0 };
+    e.total += 1;
+    if (p.severity === 'critical') e.critical += 1;
+    pendingByDevice.set(p.deviceId, e);
+  }
+
+  const vulnRows = await db
+    .select({ deviceId: deviceVulnerabilities.deviceId, severity: vulnerabilities.severity })
+    .from(deviceVulnerabilities)
+    .innerJoin(vulnerabilities, eq(deviceVulnerabilities.vulnerabilityId, vulnerabilities.id))
+    .where(
+      and(
+        eq(deviceVulnerabilities.orgId, orgId),
+        inArray(deviceVulnerabilities.deviceId, deviceIds),
+        eq(deviceVulnerabilities.status, 'open')
+      )
+    );
+  const vulnByDevice = new Map<string, { critical: number; high: number }>();
+  for (const v of vulnRows) {
+    const e = vulnByDevice.get(v.deviceId) ?? { critical: 0, high: 0 };
+    if (v.severity === 'critical') e.critical += 1;
+    else if (v.severity === 'high') e.high += 1;
+    vulnByDevice.set(v.deviceId, e);
+  }
+
+  const [dns] = await db
+    .select({ isActive: dnsFilterIntegrations.isActive, provider: dnsFilterIntegrations.provider, lastSyncStatus: dnsFilterIntegrations.lastSyncStatus })
+    .from(dnsFilterIntegrations)
+    .where(and(eq(dnsFilterIntegrations.orgId, orgId), eq(dnsFilterIntegrations.isActive, true)))
+    .limit(1);
+  const [backup] = await db
+    .select({ isActive: backupConfigs.isActive, provider: backupConfigs.provider, encryption: backupConfigs.encryption })
+    .from(backupConfigs)
+    .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isActive, true)))
+    .limit(1);
+  const [c2c] = await db
+    .select({ status: c2cConnections.status, provider: c2cConnections.provider })
+    .from(c2cConnections)
+    .where(and(eq(c2cConnections.orgId, orgId), eq(c2cConnections.status, 'active')))
+    .limit(1);
+  const [m365] = await db
+    .select({ status: m365Connections.status })
+    .from(m365Connections)
+    .where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.status, 'active')))
+    .limit(1);
+  const [google] = await db
+    .select({ status: googleWorkspaceConnections.status })
+    .from(googleWorkspaceConnections)
+    .where(and(eq(googleWorkspaceConnections.orgId, orgId), eq(googleWorkspaceConnections.status, 'active')))
+    .limit(1);
+
+  const [pamCfg] = await db
+    .select({ uacInterceptionEnabled: pamOrgConfig.uacInterceptionEnabled })
+    .from(pamOrgConfig)
+    .where(eq(pamOrgConfig.orgId, orgId))
+    .limit(1);
+  const pamRuleRows = await db
+    .select({ id: pamRules.id })
+    .from(pamRules)
+    .where(and(eq(pamRules.orgId, orgId), eq(pamRules.enabled, true)));
+  const windowStart = new Date(Date.now() - cfg.windowDays * 86400000);
+  const elevationRows = await db
+    .select({ approvedAt: elevationRequests.approvedAt, deniedByUserId: elevationRequests.deniedByUserId })
+    .from(elevationRequests)
+    .where(and(eq(elevationRequests.orgId, orgId), gte(elevationRequests.requestedAt, windowStart)));
+  const elevationsApproved = elevationRows.filter((e) => e.approvedAt != null).length;
+  const elevationsDenied = elevationRows.filter((e) => e.deniedByUserId != null).length;
+
+  let mfaStepUpEnforced = false;
+  if (orgRow?.partnerId) {
+    const [authPol] = await db
+      .select({ requireEnrollment: authenticatorPolicies.requireEnrollment, enforceFrom: authenticatorPolicies.enforceFrom })
+      .from(authenticatorPolicies)
+      .where(eq(authenticatorPolicies.partnerId, orgRow.partnerId))
+      .limit(1);
+    mfaStepUpEnforced =
+      Boolean(authPol?.requireEnrollment) &&
+      (!authPol?.enforceFrom || new Date(authPol.enforceFrom).getTime() <= Date.now());
+  }
+
+  const [postureRow] = await db
+    .select({ overallScore: securityPostureOrgSnapshots.overallScore })
+    .from(securityPostureOrgSnapshots)
+    .where(eq(securityPostureOrgSnapshots.orgId, orgId))
+    .orderBy(desc(securityPostureOrgSnapshots.capturedAt))
+    .limit(1);
+
+  let reporting = 0;
+  let managedEdr = 0;
+  let anyAv = 0;
+  let unprotected = 0;
+  let encrypted = 0;
+  let firewall = 0;
+  let pwPass = 0;
+  let adminFlagged = 0;
+  let patchCurrent = 0;
+
+  const rows = deviceRows.map((d) => {
+    const ss = ssByDevice.get(d.id);
+    const managed: string[] = [];
+    if (huntressDevices.has(d.id)) managed.push('Huntress');
+    if (s1Devices.has(d.id)) managed.push('SentinelOne');
+    const isManaged = managed.length > 0;
+    const rtp = ss?.realTimeProtection ?? null;
+    const hasNativeAv = Boolean(ss && ss.provider && ss.provider !== 'other' && rtp === true);
+    const protectedDevice = isManaged || hasNativeAv;
+
+    if (ss) reporting += 1;
+    if (isManaged) managedEdr += 1;
+    if (isManaged || hasNativeAv) anyAv += 1;
+    if (!protectedDevice) unprotected += 1;
+
+    const enc = ss?.encryptionStatus ?? 'unknown';
+    if (ss && enc === 'encrypted') encrypted += 1;
+    if (ss && ss.firewallEnabled === true) firewall += 1;
+    if (ss && passwordComplexityPass(ss.passwordPolicySummary, cfg.minPasswordLength)) pwPass += 1;
+    const admins = ss ? localAdminCount(ss.localAdminSummary) : null;
+    if (admins != null && admins > cfg.maxLocalAdmins) adminFlagged += 1;
+
+    const pend = pendingByDevice.get(d.id) ?? { total: 0, critical: 0 };
+    if (ss && pend.critical === 0) patchCurrent += 1;
+    const vuln = vulnByDevice.get(d.id) ?? { critical: 0, high: 0 };
+
+    return {
+      hostname: d.hostname,
+      site: d.siteName ?? null,
+      os: d.osType ?? '',
+      protection: ss || isManaged ? protectionLabel({ managed, nativeProvider: ss?.provider ?? null, rtp }) : 'No data',
+      protectionManaged: isManaged,
+      realTimeProtection: rtp,
+      avDefinitionsAgeDays: ss ? daysAgo(ss.definitionsDate) : null,
+      encryption: ss ? enc : 'no data',
+      firewall: ss ? ss.firewallEnabled : null,
+      localAdmins: admins,
+      pendingPatches: pend.total,
+      criticalPatches: pend.critical,
+      openVulnCritical: vuln.critical,
+      openVulnHigh: vuln.high,
+      cisPassRate: null,
+      posture: null
+    };
+  });
+
+  const deviceCount = deviceRows.length;
+  const securityProducts: Array<{ product: string; category: string; active: boolean; lastSyncStatus: string | null; deviceCoverage: number | null }> = [];
+  if (huntressDevices.size > 0) securityProducts.push({ product: 'Huntress', category: 'mdr', active: true, lastSyncStatus: null, deviceCoverage: huntressDevices.size });
+  if (s1Devices.size > 0) securityProducts.push({ product: 'SentinelOne', category: 'edr', active: true, lastSyncStatus: null, deviceCoverage: s1Devices.size });
+  if (dns) securityProducts.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: true, lastSyncStatus: dns.lastSyncStatus ?? null, deviceCoverage: null });
+  if (backup) securityProducts.push({ product: `Backup (${backup.provider})`, category: 'backup', active: true, lastSyncStatus: null, deviceCoverage: null });
+  if (c2c) securityProducts.push({ product: `SaaS backup (${c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null, deviceCoverage: null });
+  if (m365) securityProducts.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null, deviceCoverage: null });
+  if (google) securityProducts.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null, deviceCoverage: null });
+
+  return {
+    rows,
+    rowCount: rows.length,
+    generatedAt,
+    summary: {
+      org: { id: orgRow?.id ?? orgId, name: orgRow?.name ?? 'Unknown' },
+      generatedAt,
+      deviceCount,
+      controls: {
+        edrCoveragePct: pct(managedEdr, deviceCount),
+        anyAvCoveragePct: pct(anyAv, deviceCount),
+        unprotectedCount: unprotected,
+        encryptionPct: pct(encrypted, reporting),
+        firewallPct: pct(firewall, reporting),
+        patchCurrentPct: pct(patchCurrent, reporting),
+        passwordComplexityPct: pct(pwPass, reporting),
+        localAdminExposurePct: pct(adminFlagged, reporting),
+        cisAvgPassRate: null,
+        mfaIdentityConnected: Boolean(m365 || google),
+        backupConfigured: Boolean(backup || c2c),
+        backupEncrypted: backup ? Boolean(backup.encryption) : null,
+        dnsFilteringActive: Boolean(dns)
+      },
+      privilegedAccess: {
+        uacInterceptionEnabled: Boolean(pamCfg?.uacInterceptionEnabled),
+        activePamRules: pamRuleRows.length,
+        elevationsInWindow: elevationRows.length,
+        elevationsApproved,
+        elevationsDenied,
+        mfaStepUpEnforced
+      },
+      securityProducts,
+      postureScore: postureRow?.overallScore ?? null
+    }
+  };
+}

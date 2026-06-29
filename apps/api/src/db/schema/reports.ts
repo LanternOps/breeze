@@ -8,7 +8,8 @@ export const reportTypeEnum = pgEnum('report_type', [
   'alert_summary',
   'compliance',
   'performance',
-  'executive_summary'
+  'executive_summary',
+  'security_compliance_posture'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [
