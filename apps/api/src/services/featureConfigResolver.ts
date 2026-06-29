@@ -881,6 +881,187 @@ export async function resolveDeviceIdsForSoftwarePolicy(
 }
 
 // ============================================
+// Vulnerability scanning gate (BE-16 correlation)
+// ============================================
+
+/**
+ * Resolve whether per-device vulnerability correlation is enabled for a device,
+ * via the config-policy hierarchy ("closest wins"). Reads the winning
+ * `vulnerability` feature link's `inlineSettings.enabled`.
+ *
+ * DEFAULT DISABLED: no `vulnerability` policy anywhere in the hierarchy → false,
+ * and a closer assignment with `enabled:false` correctly overrides a broader
+ * `enabled:true` (e.g. a device- or group-level opt-out under an org-wide opt-in).
+ * Pattern B inline toggle — there is no normalized table; the flag lives in the
+ * feature link's JSONB `inlineSettings`.
+ */
+export async function resolveVulnerabilityEnabledForDevice(deviceId: string): Promise<boolean> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return false;
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy)
+      )
+    )
+    .innerJoin(
+      configPolicyFeatureLinks,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyFeatureLinks.featureType, 'vulnerability')
+      )
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt
+    );
+
+  if (rows.length === 0) return false;
+
+  const winner = sortByHierarchy(rows)[0]!;
+  const settings = winner.inlineSettings as { enabled?: unknown } | null;
+  return settings?.enabled === true;
+}
+
+/**
+ * Batch resolver: every device for which vulnerability correlation is enabled,
+ * grouped by orgId. Drives the daily `vuln-correlate` job so correlation only
+ * touches opted-in devices.
+ *
+ * Mirrors {@link resolveDeviceIdsForSoftwarePolicy}: gather candidate devices
+ * from every active config policy that carries a `vulnerability` feature link,
+ * then verify each candidate's WINNING vulnerability link is enabled (closest-
+ * wins, so a device/group-level `enabled:false` suppresses a broader opt-in).
+ * Returns an empty map when nothing is enabled.
+ *
+ * Run inside `withSystemDbAccessContext` (config-policy tables are RLS-scoped).
+ */
+export async function resolveAllVulnerabilityEnabledDevices(): Promise<Map<string, string[]>> {
+  // 1. Active config policies that carry a vulnerability feature link.
+  const links = await db
+    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active')
+      )
+    )
+    .where(eq(configPolicyFeatureLinks.featureType, 'vulnerability'));
+
+  if (links.length === 0) return new Map();
+
+  const configPolicyIds = [...new Set(links.map((l) => l.configPolicyId))];
+
+  // 2. Assignments for those policies → candidate device IDs.
+  const assignments = await db
+    .select({ level: configPolicyAssignments.level, targetId: configPolicyAssignments.targetId })
+    .from(configPolicyAssignments)
+    .where(inArray(configPolicyAssignments.configPolicyId, configPolicyIds));
+
+  if (assignments.length === 0) return new Map();
+
+  const candidateDeviceIds = new Set<string>();
+  for (const assignment of assignments) {
+    let ids: string[];
+    switch (assignment.level) {
+      case 'device':
+        ids = [assignment.targetId];
+        break;
+      case 'device_group': {
+        const rows = await db
+          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, assignment.targetId));
+        ids = rows.map((r) => r.deviceId);
+        break;
+      }
+      case 'site': {
+        const rows = await db.select({ id: devices.id }).from(devices).where(eq(devices.siteId, assignment.targetId));
+        ids = rows.map((r) => r.id);
+        break;
+      }
+      case 'organization': {
+        const rows = await db.select({ id: devices.id }).from(devices).where(eq(devices.orgId, assignment.targetId));
+        ids = rows.map((r) => r.id);
+        break;
+      }
+      case 'partner': {
+        const orgs = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, assignment.targetId));
+        if (orgs.length === 0) {
+          ids = [];
+          break;
+        }
+        const rows = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(inArray(devices.orgId, orgs.map((o) => o.id)));
+        ids = rows.map((r) => r.id);
+        break;
+      }
+      default:
+        ids = [];
+    }
+    for (const id of ids) candidateDeviceIds.add(id);
+  }
+
+  if (candidateDeviceIds.size === 0) return new Map();
+
+  // 3. Verify each candidate (closest-wins) — batched to bound parallel queries.
+  const candidates = [...candidateDeviceIds];
+  const enabledIds: string[] = [];
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+    const batch = candidates.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (deviceId) => ({
+        deviceId,
+        enabled: await resolveVulnerabilityEnabledForDevice(deviceId),
+      }))
+    );
+    for (const { deviceId, enabled } of results) {
+      if (enabled) enabledIds.push(deviceId);
+    }
+  }
+
+  if (enabledIds.length === 0) return new Map();
+
+  // 4. Group enabled devices by org.
+  const orgRows = await db
+    .select({ id: devices.id, orgId: devices.orgId })
+    .from(devices)
+    .where(inArray(devices.id, enabledIds));
+
+  const byOrg = new Map<string, string[]>();
+  for (const row of orgRows) {
+    const list = byOrg.get(row.orgId) ?? [];
+    list.push(row.id);
+    byOrg.set(row.orgId, list);
+  }
+  return byOrg;
+}
+
+// ============================================
 // Batch Scan Helpers (for workers)
 // ============================================
 

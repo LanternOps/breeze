@@ -550,6 +550,7 @@ Inline settings shapes by feature type:
 - warranty: { enabled: true, warnDays: 90, criticalDays: 30 }
 - helper: { enabled: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" }
 - pam: inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.
+- vulnerability: inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.
 
 For link-only types, set featurePolicyId instead of inlineSettings:
 - software_policy: featurePolicyId → existing software policy UUID
@@ -568,7 +569,7 @@ For link-only types, set featurePolicyId instead of inlineSettings:
               'patch', 'alert_rule', 'backup', 'security', 'monitoring',
               'maintenance', 'compliance', 'automation', 'event_log',
               'software_policy', 'sensitive_data', 'peripheral_control',
-              'warranty', 'helper', 'remote_access', 'pam',
+              'warranty', 'helper', 'remote_access', 'pam', 'vulnerability',
             ],
             description: 'Feature type (required for add)',
           },

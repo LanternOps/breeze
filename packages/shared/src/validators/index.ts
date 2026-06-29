@@ -488,7 +488,7 @@ export const updateConfigPolicySchema = z.object({
 });
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'vulnerability']),
   featurePolicyId: z.string().guid().optional(),
   inlineSettings: z.record(z.string(), z.unknown()).optional(),
 }).refine(

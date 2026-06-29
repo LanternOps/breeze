@@ -12,6 +12,7 @@ import {
   HardDrive,
   Shield,
   ShieldCheck,
+  ShieldAlert,
   KeyRound,
   ScrollText,
   ScanSearch,
@@ -45,6 +46,7 @@ import WarrantyTab from './featureTabs/WarrantyTab';
 import HelperTab from './featureTabs/HelperTab';
 import RemoteAccessTab from './featureTabs/RemoteAccessTab';
 import PamTab from './featureTabs/PamTab';
+import VulnerabilityTab from './featureTabs/VulnerabilityTab';
 import ComplianceStatusTab from './ComplianceStatusTab';
 
 type Tab = 'overview' | FeatureType | 'assignments' | 'compliance_status';
@@ -83,9 +85,10 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   helper: <LifeBuoy className="h-4 w-4" />,
   remote_access: <Monitor className="h-4 w-4" />,
   pam: <KeyRound className="h-4 w-4" />,
+  vulnerability: <ShieldAlert className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam'];
+const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'vulnerability'];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -301,6 +304,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       case 'helper': return <HelperTab {...props} />;
       case 'remote_access': return <RemoteAccessTab {...props} />;
       case 'pam': return <PamTab {...props} />;
+      case 'vulnerability': return <VulnerabilityTab {...props} />;
     }
   };
 

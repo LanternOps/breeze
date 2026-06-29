@@ -75,6 +75,7 @@ const NOT_ENFORCED: Record<Exclude<ConfigFeatureType, 'remote_access' | 'pam'>, 
   warranty:          { label: 'Warranty',           behavior: 'Not enforced — no warranty alerts apply.' },
   helper:            { label: 'Breeze Assist',      behavior: 'Not enforced — Breeze Assist uses its built-in defaults.' },
   onedrive_helper:   { label: 'OneDrive Helper',    behavior: 'Not enforced — no OneDrive helper config applies.' },
+  vulnerability:     { label: 'Vulnerability Scanning', behavior: 'Not enforced — vulnerability correlation does not run for these devices.' },
 };
 
 export function getPolicyBaselineDefaults(): BaselineEntry[] {

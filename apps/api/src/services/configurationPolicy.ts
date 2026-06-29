@@ -64,6 +64,17 @@ export const pamInlineSettingsSchema = z
   })
   .strict();
 
+// Vulnerability scanning is a single opt-in toggle (BE-16 correlation gating).
+// `enabled` defaults to false so an absent/empty settings object means "off" —
+// the per-device gate (resolveVulnerabilityEnabledForDevice) and the daily
+// correlation job both treat no-policy / enabled:false as disabled. .strict()
+// rejects unknown keys, matching pam/patch posture.
+export const vulnerabilityInlineSettingsSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .strict();
+
 // ============================================
 // Types
 // ============================================
@@ -541,6 +552,7 @@ async function decomposeInlineSettings(
     case 'warranty':
     case 'helper':
     case 'pam':
+    case 'vulnerability':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -597,6 +609,7 @@ async function deleteNormalizedRows(
     case 'warranty':
     case 'helper':
     case 'pam':
+    case 'vulnerability':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -874,6 +887,7 @@ async function assembleInlineSettings(
     case 'warranty':
     case 'helper':
     case 'pam':
+    case 'vulnerability':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -894,6 +908,10 @@ export async function addFeatureLink(
 ) {
   if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
     pamInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'vulnerability' && inlineSettings !== undefined && inlineSettings !== null) {
+    vulnerabilityInlineSettingsSchema.parse(inlineSettings);
   }
 
   return db.transaction(async (tx) => {
@@ -944,6 +962,10 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'pam' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       pamInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      vulnerabilityInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
@@ -1502,8 +1524,13 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  if (featureType === 'monitoring' || featureType === 'event_log' || featureType === 'onedrive_helper') {
-    // Monitoring, event_log, and onedrive_helper have no policy table — requires inlineSettings
+  if (
+    featureType === 'monitoring' ||
+    featureType === 'event_log' ||
+    featureType === 'onedrive_helper' ||
+    featureType === 'vulnerability'
+  ) {
+    // Monitoring, event_log, onedrive_helper, vulnerability have no policy table — requires inlineSettings
     if (featurePolicyId) {
       return { valid: false, error: `${featureType} feature type does not support featurePolicyId; use inlineSettings instead` };
     }

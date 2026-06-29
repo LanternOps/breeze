@@ -59,9 +59,12 @@ vi.mock('../services/vulnerabilityRemediation', () => ({
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../middleware/platformAdmin', () => ({ platformAdminMiddleware: (_c: any, next: any) => next() }));
 vi.mock('../middleware/userRateLimit', () => ({ userRateLimit: () => (_c: any, next: any) => next() }));
-vi.mock('../jobs/vulnerabilityJobs', () => ({ enqueueVulnSourceSync: vi.fn(async () => 'job-1') }));
+vi.mock('../jobs/vulnerabilityJobs', () => ({
+  enqueueVulnSourceSync: vi.fn(async () => 'job-1'),
+  enqueueVulnCorrelation: vi.fn(async () => 'job-2'),
+}));
 
-import { vulnerabilityRoutes } from './vulnerabilities';
+import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './vulnerabilities';
 
 const ID = '11111111-1111-1111-8111-111111111111';
 
@@ -187,5 +190,39 @@ describe('vulnerability fleet GET / — site-axis narrowing', () => {
     expect(res.status).toBe(200);
     // Only one db.select call: the deviceVulnerabilities query, no site-device lookup.
     expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+import { enqueueVulnCorrelation } from '../jobs/vulnerabilityJobs';
+import { writeRouteAudit } from '../services/auditEvents';
+
+describe('POST /vulnerabilities/sync/correlate (admin manual trigger)', () => {
+  function syncApp() {
+    const a = new Hono();
+    // Mounted deeper than the main router, exactly as in index.ts.
+    a.route('/vulnerabilities/sync', vulnerabilitySyncRoutes);
+    return a;
+  }
+
+  beforeEach(() => {
+    vi.mocked(enqueueVulnCorrelation).mockClear();
+    vi.mocked(writeRouteAudit).mockClear();
+  });
+
+  it('enqueues a correlation job and writes the manual_correlate audit', async () => {
+    const res = await syncApp().request('/vulnerabilities/sync/correlate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enqueued: true, jobId: 'job-2' });
+    expect(vi.mocked(enqueueVulnCorrelation)).toHaveBeenCalledTimes(1);
+    // The audit action string is load-bearing (forensic trail) — assert it exactly.
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'vulnerability.manual_correlate', resourceType: 'vulnerability_source' }),
+    );
   });
 });
