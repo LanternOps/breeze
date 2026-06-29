@@ -18,7 +18,7 @@ import {
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import type { QuoteBlockInput } from '@breeze/shared';
-import { computeQuoteTotals, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
+import { computeQuoteTotals, computeQuoteProfit, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath, type QuoteProfit, type QuoteTotals } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
@@ -420,6 +420,25 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const railTax = optimisticTotals?.taxTotal ?? quote.taxTotal;
   const railTotal = optimisticTotals?.total ?? quote.total;
   const railDue = optimisticTotals?.dueOnAcceptanceTotal ?? quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
+
+  // Internal net-profit summary for the rail's "Margin (internal)" block. Built
+  // over the SAME merged line set as the totals: draft-or-persisted values plus
+  // each line's cost (draft cost from a cost-only edit, else the persisted cost).
+  // computeQuoteProfit does the cents math — pass it the raw read-model strings.
+  const profit = useMemo<QuoteProfit>(
+    () => computeQuoteProfit(lines.map((l) => {
+      const d = lineDrafts[l.id];
+      return {
+        quantity: d?.quantity ?? l.quantity,
+        unitPrice: d?.unitPrice ?? l.unitPrice,
+        taxable: d?.taxable ?? l.taxable,
+        customerVisible: l.customerVisible,
+        recurrence: d?.recurrence ?? l.recurrence,
+        unitCost: d?.unitCost ?? l.unitCost,
+      };
+    })),
+    [lines, lineDrafts],
+  );
 
   // Apply an optimistic id ordering over a base list, but only if it's a clean
   // permutation (same membership) — otherwise fall back to the server order.
@@ -980,6 +999,22 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 </div>
               )}
             </dl>
+            {canWrite && (
+              <div className="mt-3 rounded-md bg-muted/40 p-2 text-sm" data-testid="quote-margin">
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">Margin (internal)</div>
+                <dl className="space-y-1 tabular-nums">
+                  <div className="flex justify-between"><dt className="text-muted-foreground">Cost</dt><dd data-testid="quote-margin-cost">{formatMoney(profit.totalCost, currency)}</dd></div>
+                  <div className="flex justify-between"><dt className="text-muted-foreground">Net (one-time)</dt><dd data-testid="quote-margin-net-onetime">{formatMoney(profit.oneTimeNet, currency)}</dd></div>
+                  {Number(profit.monthlyRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Net (monthly)</dt><dd data-testid="quote-margin-net-monthly">{formatMoney(profit.monthlyRecurringNet, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>}
+                  {Number(profit.annualRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Net (annual)</dt><dd data-testid="quote-margin-net-annual">{formatMoney(profit.annualRecurringNet, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>}
+                </dl>
+                {profit.linesMissingCost > 0 && (
+                  <p className="mt-1 text-xs text-warning" data-testid="quote-margin-missing-cost">
+                    {profit.linesMissingCost} line{profit.linesMissingCost === 1 ? '' : 's'} without a cost — net is partial.
+                  </p>
+                )}
+              </div>
+            )}
             {canWrite && (
               <div className="mt-2 border-t pt-2">
                 <div className="flex items-center justify-between gap-2">

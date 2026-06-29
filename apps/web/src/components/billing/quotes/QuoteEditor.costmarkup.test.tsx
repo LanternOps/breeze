@@ -113,4 +113,26 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     expect(screen.getByTestId('quote-line-net-A')).toHaveTextContent('$60.00');
     expect(screen.getByTestId('quote-line-net-B')).toHaveTextContent('—');
   });
+
+  it('rail shows net profit by cadence and flags lines missing cost', async () => {
+    const detail: QuoteDetailData = {
+      quote: baseQuote,
+      blocks: [block],
+      lines: [
+        // one-time: cost 100 / price 130 → net 30
+        { ...baseLine, id: 'A', recurrence: 'one_time', unitCost: '100.00', unitPrice: '130.00', quantity: '1.00', lineTotal: '130.00' },
+        // monthly: cost 25 / price 40 → net 15
+        { ...baseLine, id: 'B', recurrence: 'monthly', unitCost: '25.00', unitPrice: '40.00', quantity: '1.00', lineTotal: '40.00' },
+        // no cost → excluded from net, counted in linesMissingCost
+        { ...baseLine, id: 'C', recurrence: 'one_time', unitCost: null, unitPrice: '130.00', quantity: '1.00', lineTotal: '130.00' },
+      ],
+    };
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    expect(screen.getByTestId('quote-margin-cost')).toHaveTextContent('$125.00');
+    expect(screen.getByTestId('quote-margin-net-onetime')).toHaveTextContent('$30.00');
+    expect(screen.getByTestId('quote-margin-net-monthly')).toHaveTextContent('$15.00');
+    expect(screen.getByTestId('quote-margin-missing-cost')).toBeInTheDocument();
+  });
 });
