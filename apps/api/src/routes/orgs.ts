@@ -261,6 +261,18 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   const auth = c.get('auth');
   const data = c.req.valid('json');
 
+  const clash = await db
+    .select({ id: partners.id })
+    .from(partners)
+    .where(and(
+      or(eq(partners.inboundLocalPart, data.slug), eq(partners.slug, data.slug)),
+      isNull(partners.deletedAt)
+    ))
+    .limit(1);
+  if (clash[0]) {
+    return c.json({ error: 'That partner identifier is already in use' }, 409);
+  }
+
   const [partner] = await db.transaction(async (tx) => {
     const [newPartner] = await tx
       .insert(partners)
@@ -707,6 +719,21 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
 
   if (Object.keys(data).length === 0) {
     return c.json({ error: 'No updates provided' }, 400);
+  }
+
+  if (data.slug !== undefined) {
+    const clash = await db
+      .select({ id: partners.id })
+      .from(partners)
+      .where(and(
+        or(eq(partners.inboundLocalPart, data.slug), eq(partners.slug, data.slug)),
+        ne(partners.id, id),
+        isNull(partners.deletedAt)
+      ))
+      .limit(1);
+    if (clash[0]) {
+      return c.json({ error: 'That partner identifier is already in use' }, 409);
+    }
   }
 
   if (updates.settings !== undefined) {

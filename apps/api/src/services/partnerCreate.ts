@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   partners,
@@ -249,7 +249,7 @@ async function resolveUniqueSlug(tx: { select: any }, name: string): Promise<str
     const existing = await tx
       .select({ id: partners.id })
       .from(partners)
-      .where(eq(partners.slug, slug))
+      .where(or(eq(partners.slug, slug), eq(partners.inboundLocalPart, slug)))
       .limit(1);
 
     if (!existing || existing.length === 0) return slug;

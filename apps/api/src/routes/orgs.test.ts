@@ -247,8 +247,38 @@ describe('org routes', () => {
   });
 
   describe('POST /orgs/partners', () => {
+    it("returns 409 when the new slug collides with an existing partner's inbound local part", async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'other-partner' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Partner',
+          slug: 'support'
+        })
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
     it('should create a partner and seed system ticket statuses', async () => {
       const partner = { id: 'partner-1', name: 'Partner' };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
       vi.mocked(db.transaction).mockImplementation(async (fn: (tx: any) => any) => {
         const tx = {
           insert: vi.fn(() => ({
@@ -341,6 +371,26 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+    });
+
+    it("returns 409 when the updated slug collides with another partner's inbound local part", async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'other-partner' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'support' })
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'That partner identifier is already in use' });
+      expect(db.update).not.toHaveBeenCalled();
     });
 
     // #1318: a system-scoped wholesale settings write must mirror
