@@ -50,5 +50,6 @@ export const reportRuns = pgTable('report_runs', {
   outputUrl: text('output_url'),
   errorMessage: text('error_message'),
   rowCount: integer('row_count'),
+  result: jsonb('result'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
