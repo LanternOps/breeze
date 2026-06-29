@@ -4,8 +4,38 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
+
+// The controller-facing client must refuse redirects: it sends the secret
+// X-API-KEY on every request, and Go does NOT strip custom headers on a
+// cross-host redirect. A controller that 3xx-redirects to an attacker host
+// would otherwise both leak the key and turn the agent into an SSRF relay.
+func TestDefaultHTTPClientRefusesRedirectsAndDoesNotLeakKey(t *testing.T) {
+	var evilHits int32
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&evilHits, 1)
+		if r.Header.Get("X-API-KEY") != "" {
+			t.Errorf("X-API-KEY leaked to redirect target")
+		}
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer evil.Close()
+
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer controller.Close()
+
+	c := NewAPIClient(controller.URL, "secret", DefaultHTTPClient())
+	if _, err := c.Poll(context.Background()); err == nil {
+		t.Fatalf("expected an error when the controller redirects, got nil")
+	}
+	if n := atomic.LoadInt32(&evilHits); n != 0 {
+		t.Fatalf("agent followed redirect to attacker host (%d hits) — key/SSRF exposure", n)
+	}
+}
 
 func TestPollParsesDevicesAndClients(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

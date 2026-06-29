@@ -145,34 +145,42 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 }
 
 // StartCollectorLoop periodically fetches this agent's collector configs from
-// GET /agents/:id/unifi-collectors and runs each due collector. It exits when ctx is done.
-func StartCollectorLoop(ctx context.Context, deps CollectorDeps) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	lastRun := map[string]time.Time{}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			configs, err := fetchConfigs(ctx, deps)
-			if err != nil {
-				deps.logf("[unifi] fetch configs: %v", err)
-				continue
-			}
-			now := time.Now()
-			for _, cfg := range configs {
-				interval := time.Duration(maxInt(cfg.PollIntervalSeconds, 15)) * time.Second
-				if last, ok := lastRun[cfg.CollectorID]; ok && now.Sub(last) < interval {
+// GET /agents/:id/unifi-collectors and runs each due collector. It spawns its
+// own goroutine and returns a channel that closes once the loop has exited
+// (after ctx is cancelled), so shutdownAgent can wait for a clean teardown
+// instead of leaking the loop across in-process restarts.
+func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		lastRun := map[string]time.Time{}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				configs, err := fetchConfigs(ctx, deps)
+				if err != nil {
+					deps.logf("[unifi] fetch configs: %v", err)
 					continue
 				}
-				lastRun[cfg.CollectorID] = now
-				if err := RunOnce(ctx, deps, cfg, nil); err != nil {
-					deps.logf("[unifi] collector %s: %v", cfg.CollectorID, err)
+				now := time.Now()
+				for _, cfg := range configs {
+					interval := time.Duration(maxInt(cfg.PollIntervalSeconds, 15)) * time.Second
+					if last, ok := lastRun[cfg.CollectorID]; ok && now.Sub(last) < interval {
+						continue
+					}
+					lastRun[cfg.CollectorID] = now
+					if err := RunOnce(ctx, deps, cfg, nil); err != nil {
+						deps.logf("[unifi] collector %s: %v", cfg.CollectorID, err)
+					}
 				}
 			}
 		}
-	}
+	}()
+	return done
 }
 
 func fetchConfigs(ctx context.Context, deps CollectorDeps) ([]CollectorConfig, error) {

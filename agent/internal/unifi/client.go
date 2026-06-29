@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const apiBase = "/proxy/network/integration/v1"
@@ -86,7 +87,17 @@ func NewAPIClient(controllerURL, apiKey string, httpClient *http.Client) *APICli
 // tls.Config.VerifyConnection, falling back to skip only when no fingerprint is set.
 func DefaultHTTPClient() *http.Client {
 	// nolint:gosec // G402: self-signed LAN controller; target fixed by config. See note above.
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	return &http.Client{
+		// Bound every poll: a controller that accepts the TCP connection but
+		// never responds must not wedge the (sequential) collector loop forever.
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		// Refuse redirects. We send the secret X-API-KEY on every request and Go
+		// does NOT strip custom headers on a cross-host hop, so following a 3xx to
+		// an attacker-controlled Location would leak the key and make the agent an
+		// SSRF relay. The integration API never legitimately redirects.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 type envelope struct {
@@ -107,12 +118,17 @@ func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int,
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, rerr := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, resp.StatusCode, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, resp.StatusCode, fmt.Errorf("unifi api %s: status %d", path, resp.StatusCode)
+	}
+	if rerr != nil {
+		// A read error on a 2xx is the real root cause; surfacing it here avoids
+		// the misleading "bad json" we'd otherwise hit on the truncated body.
+		return nil, resp.StatusCode, fmt.Errorf("unifi api %s: read body: %w", path, rerr)
 	}
 	var env envelope
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -150,51 +166,77 @@ func (c *APIClient) Poll(ctx context.Context) (Snapshot, error) {
 	}
 
 	var firstErr error
+	var errCount int
 	note := func(e error) {
-		if e != nil && firstErr == nil {
-			firstErr = e
+		if e != nil {
+			errCount++
+			if firstErr == nil {
+				firstErr = e
+			}
 		}
 	}
 	for _, s := range sites {
-		devData, _, derr := c.get(ctx, fmt.Sprintf("%s/sites/%s/devices", apiBase, s.ID))
-		if derr != nil {
+		devData, devStatus, derr := c.get(ctx, fmt.Sprintf("%s/sites/%s/devices", apiBase, s.ID))
+		switch {
+		case derr != nil:
 			note(fmt.Errorf("site %s devices: %w", s.ID, derr))
-		} else {
+		case devStatus == http.StatusNotFound:
+			note(fmt.Errorf("site %s devices: not found (404)", s.ID))
+		default:
 			var devs []Device
 			if uerr := json.Unmarshal(devData, &devs); uerr != nil {
 				note(fmt.Errorf("site %s decode devices: %w", s.ID, uerr))
 			} else {
+				raws := rawElems(devData)
 				for i := range devs {
 					devs[i].SiteID = s.ID
-					devs[i].Raw = rawOf(devData, i)
+					devs[i].Raw = rawAt(raws, i)
 				}
 				snap.Devices = append(snap.Devices, devs...)
 			}
 		}
 
-		cliData, _, cerr := c.get(ctx, fmt.Sprintf("%s/sites/%s/clients", apiBase, s.ID))
-		if cerr != nil {
+		cliData, cliStatus, cerr := c.get(ctx, fmt.Sprintf("%s/sites/%s/clients", apiBase, s.ID))
+		switch {
+		case cerr != nil:
 			note(fmt.Errorf("site %s clients: %w", s.ID, cerr))
-		} else {
+		case cliStatus == http.StatusNotFound:
+			note(fmt.Errorf("site %s clients: not found (404)", s.ID))
+		default:
 			var clis []Client
 			if uerr := json.Unmarshal(cliData, &clis); uerr != nil {
 				note(fmt.Errorf("site %s decode clients: %w", s.ID, uerr))
 			} else {
+				raws := rawElems(cliData)
 				for i := range clis {
 					clis[i].SiteID = s.ID
-					clis[i].Raw = rawOf(cliData, i)
+					clis[i].Raw = rawAt(raws, i)
 				}
 				snap.Clients = append(snap.Clients, clis...)
 			}
 		}
 	}
+	// When several sites fail at once, report the count alongside the first
+	// message so a multi-site outage isn't surfaced as a single-site blip.
+	if errCount > 1 {
+		return snap, fmt.Errorf("%d site fetch errors; first: %w", errCount, firstErr)
+	}
 	return snap, firstErr
 }
 
-// rawOf returns the raw JSON element at index i of a JSON array, or null.
-func rawOf(arr json.RawMessage, i int) json.RawMessage {
+// rawElems unmarshals a JSON array into its raw elements once (callers index
+// into the result), avoiding the O(n²) re-parse of the whole array per element.
+func rawElems(arr json.RawMessage) []json.RawMessage {
 	var elems []json.RawMessage
-	if err := json.Unmarshal(arr, &elems); err != nil || i >= len(elems) {
+	if err := json.Unmarshal(arr, &elems); err != nil {
+		return nil
+	}
+	return elems
+}
+
+// rawAt returns the raw element at index i, or JSON null when out of range.
+func rawAt(elems []json.RawMessage, i int) json.RawMessage {
+	if i < 0 || i >= len(elems) {
 		return json.RawMessage("null")
 	}
 	return elems[i]

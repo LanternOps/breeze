@@ -377,6 +377,13 @@ type agentComponents struct {
 	// supervisorDone closes after the supervisor goroutine has fully
 	// exited. nil when supervisorCancel is nil.
 	supervisorDone <-chan struct{}
+
+	// unifiCancel cancels the UniFi deep-telemetry collector loop. nil when
+	// the collector was not started (no ServerURL/AgentID).
+	unifiCancel context.CancelFunc
+	// unifiDone closes after the collector loop goroutine has fully exited.
+	// nil when unifiCancel is nil.
+	unifiDone <-chan struct{}
 }
 
 // shutdownAgent gracefully stops all agent components.
@@ -401,6 +408,18 @@ func shutdownAgent(comps *agentComponents) {
 		if comps.etwluaDone != nil {
 			runWithTimeout("etwlua stop", 2*time.Second, func() {
 				<-comps.etwluaDone
+			})
+		}
+	}
+
+	// Stop the UniFi collector loop so its in-flight controller/API HTTP work
+	// is cancelled rather than abandoned, and the loop doesn't outlive the
+	// agent's token across an in-process restart.
+	if comps.unifiCancel != nil {
+		comps.unifiCancel()
+		if comps.unifiDone != nil {
+			runWithTimeout("unifi collector stop", 2*time.Second, func() {
+				<-comps.unifiDone
 			})
 		}
 	}
@@ -688,12 +707,24 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// on-site UniFi controller's local Network Integration API and uploads
 	// per-device PoE/health + client telemetry. Runs for the agent process
 	// lifetime and no-ops until the server assigns collectors to this device.
+	var unifiCancel context.CancelFunc
+	var unifiDone <-chan struct{}
 	if cfg.ServerURL != "" && cfg.AgentID != "" {
-		go unifi.StartCollectorLoop(context.Background(), unifi.CollectorDeps{
+		var unifiCtx context.Context
+		// Scope the loop to a cancellable context registered in agentComponents
+		// so shutdownAgent stops it. context.Background() here would never cancel:
+		// on self-update/config-reload the orphaned loop keeps polling with a
+		// zeroed token and spins auth-failure logs (same class as ETW PR #959).
+		unifiCtx, unifiCancel = context.WithCancel(context.Background())
+		unifiDone = unifi.StartCollectorLoop(unifiCtx, unifi.CollectorDeps{
 			APIBaseURL: cfg.ServerURL,
 			AgentID:    cfg.AgentID,
 			HTTP:       newUnifiAPIClient(secureToken, tlsCfg),
-			Logf:       func(format string, args ...any) { log.Debug(fmt.Sprintf(format, args...)) },
+			// Loop failures here are config-fetch / telemetry-upload errors —
+			// operationally significant and, unlike poll errors, never surface
+			// via the ingest worker. Log at Warn so the log shipper (MinLevel
+			// warn) actually delivers them; Debug was invisible in the field.
+			Logf: func(format string, args ...any) { log.Warn(fmt.Sprintf(format, args...)) },
 		})
 	}
 
@@ -746,6 +777,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		etwluaDone:       etwluaDone,
 		supervisorCancel: supervisorCancel,
 		supervisorDone:   supervisorDone,
+		unifiCancel:      unifiCancel,
+		unifiDone:        unifiDone,
 	}, nil
 }
 
