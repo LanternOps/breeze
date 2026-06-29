@@ -154,7 +154,14 @@ export async function importQuickbooksCustomers(
             billingAddressCity: customer.billAddr?.city ?? null,
             billingAddressRegion: customer.billAddr?.region ?? null,
             billingAddressPostalCode: customer.billAddr?.postalCode ?? null,
-            billingAddressCountry: customer.billAddr?.country ?? null,
+            // billing_address_country is char(2). QBO's BillAddr.Country is
+            // free-form ("United States", "USA", …); writing a >2-char value
+            // would throw and silently drop the whole customer. Only persist a
+            // genuine 2-letter code here — the full country is still preserved
+            // in the site address JSONB (siteAddressFrom) which has no length cap.
+            billingAddressCountry: customer.billAddr?.country?.length === 2
+              ? customer.billAddr.country.toUpperCase()
+              : null,
             accountingProvider: PROVIDER,
             accountingExternalId: customerId,
           }).returning();

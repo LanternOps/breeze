@@ -32,6 +32,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pay\/?$/ },
+  // QuickBooks customer import — both routes page the QBO query API (a
+  // multi-second, up-to-1000-per-page outbound call) inside the handler; the
+  // import service manages its own short withSystemDbAccessContext blocks
+  // around each DB op, so we must NOT pin a request transaction across the call.
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/import\/?$/ },
 ];
 
 /**

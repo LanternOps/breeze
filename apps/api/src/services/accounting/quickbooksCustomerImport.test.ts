@@ -147,6 +147,25 @@ describe('importQuickbooksCustomers', () => {
     expect(valuesSpy.mock.calls[1]![0]).toMatchObject({ address: { addressLine1: '1 Bill St', city: 'Austin' } });
   });
 
+  it('nulls billingAddressCountry when QB Country is not a 2-char code (char(2) guard)', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { country: 'United States' } }]);
+    stubSelect([]);
+    stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
+    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    // Org column is char(2): the long country must NOT be written (would throw + drop the customer).
+    expect(valuesSpy.mock.calls[0]![0].billingAddressCountry).toBeNull();
+    // …but the full country is preserved on the site address JSONB (no length cap).
+    expect(valuesSpy.mock.calls[1]![0].address).toMatchObject({ country: 'United States' });
+  });
+
+  it('uppercases a genuine 2-char country code into billingAddressCountry', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { country: 'us' } }]);
+    stubSelect([]);
+    stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
+    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    expect(valuesSpy.mock.calls[0]![0].billingAddressCountry).toBe('US');
+  });
+
   it('skips customers already linked to an org', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubSelect([{ id: 'org-9', accountingExternalId: '1' }]);
