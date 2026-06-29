@@ -18,7 +18,7 @@ import {
   quoteImageUrl,
 } from '../../../lib/api/quotes';
 import type { QuoteBlockInput } from '@breeze/shared';
-import { computeQuoteTotals, computeLineTotal, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
+import { computeQuoteTotals, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, type QuoteLineForMath, type QuoteTotals } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
@@ -369,6 +369,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       }
       const prev = m[id];
       if (prev && prev.quantity === draft.quantity && prev.unitPrice === draft.unitPrice
+        && (prev.unitCost ?? null) === (draft.unitCost ?? null)
         && prev.taxable === draft.taxable && prev.recurrence === draft.recurrence) return m;
       return { ...m, [id]: draft };
     });
@@ -622,7 +623,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   const addManual = useCallback((
     blockId: string,
-    form: { name: string; description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
+    form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
   ) => {
     // A line needs at least a title (name) or a description (mirrors the API refine).
     if (!form.name.trim() && !form.description.trim()) return Promise.resolve(false);
@@ -649,6 +650,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           description: form.description.trim() || null,
           quantity: qtyNum,
           unitPrice: priceNum,
+          unitCost: form.cost.trim() === '' ? null : Number(form.cost) || null,
+          sku: form.sku.trim() || null,
+          partNumber: form.partNumber.trim() || null,
           taxable: form.taxable,
           customerVisible: true,
           recurrence: form.recurrence,
@@ -1137,7 +1141,7 @@ function BlockCard({
   onImportAddPax8: (blockId: string, product: Pax8Product, term: Pax8PriceOption, sellPrice: number) => void;
   onAddManual: (
     blockId: string,
-    form: { name: string; description: string; quantity: string; unitPrice: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
+    form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean },
   ) => Promise<boolean>;
   onEditLine: (lineId: string, body: LineUpdate) => Promise<boolean>;
   onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
@@ -1157,6 +1161,9 @@ function BlockCard({
   const [desc, setDesc] = useState('');
   const [qty, setQty] = useState('1');
   const [price, setPrice] = useState('0.00');
+  const [cost, setCost] = useState('');
+  const [sku, setSku] = useState('');
+  const [partNumber, setPartNumber] = useState('');
   const [taxable, setTaxable] = useState(false);
   const [recurrence, setRecurrence] = useState<QuoteLineRecurrence>('one_time');
   const [saveToCatalog, setSaveToCatalog] = useState(false);
@@ -1209,10 +1216,10 @@ function BlockCard({
   };
 
   const submitManual = async () => {
-    const ok = await onAddManual(block.id, { name, description: desc, quantity: qty, unitPrice: price, taxable, recurrence, saveToCatalog });
+    const ok = await onAddManual(block.id, { name, description: desc, quantity: qty, unitPrice: price, cost, sku, partNumber, taxable, recurrence, saveToCatalog });
     // Only clear the form on success, so a rejected add (e.g. qty 0) keeps the
     // user's input to correct rather than wiping it.
-    if (ok) { setName(''); setDesc(''); setQty('1'); setPrice('0.00'); setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); }
+    if (ok) { setName(''); setDesc(''); setQty('1'); setPrice('0.00'); setCost(''); setSku(''); setPartNumber(''); setTaxable(false); setRecurrence('one_time'); setSaveToCatalog(false); }
   };
 
   return (
@@ -1341,29 +1348,7 @@ function BlockCard({
                         onDraft={onLineDraft}
                       />
                     ) : (
-                      <tr key={l.id} className="border-t" data-testid={`quote-line-${l.id}`}>
-                        <td className="px-2 py-2">
-                          <div className="flex items-start gap-2">
-                            {l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
-                            <div>
-                              <div className="font-medium">{lineTitle(l)}</div>
-                              {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-2 py-2 text-right tabular-nums">{l.quantity}</td>
-                        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
-                        <td className="px-2 py-2">
-                          <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                            {formatRecurrence(l.recurrence)}
-                          </span>
-                        </td>
-                        <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">
-                          {lineTaxAmount(l.lineTotal, l.taxable, taxRate) === null ? '—' : formatMoney(lineTaxAmount(l.lineTotal, l.taxable, taxRate)!, currency)}
-                        </td>
-                        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
-                        <td className="px-2 py-2 text-right" />
-                      </tr>
+                      <ReadonlyLineRow key={l.id} line={l} currency={currency} taxRate={taxRate} />
                     ),
                   )
                 )}
@@ -1468,6 +1453,27 @@ function BlockCard({
                       <option value="annual">Annual</option>
                     </select>
                   </div>
+                  {/* Internal-only cost & identity fields (never shown to the customer). */}
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <input
+                      type="text" placeholder="SKU (optional)" aria-label="SKU" value={sku}
+                      onChange={(e) => setSku(e.target.value)}
+                      data-testid={`quote-manual-sku-${block.id}`}
+                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    />
+                    <input
+                      type="text" placeholder="Part # (optional)" aria-label="Part number" value={partNumber}
+                      onChange={(e) => setPartNumber(e.target.value)}
+                      data-testid={`quote-manual-partnumber-${block.id}`}
+                      className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    />
+                    <input
+                      type="number" min="0" step="0.01" placeholder="Internal cost (optional)" aria-label="Internal cost" value={cost}
+                      onChange={(e) => setCost(e.target.value)}
+                      data-testid={`quote-manual-cost-${block.id}`}
+                      className="h-9 rounded-md border bg-background px-3 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-3 text-xs">
                       <label className="flex items-center gap-1">
@@ -1497,6 +1503,61 @@ function BlockCard({
         )}
       </div>
     </div>
+  );
+}
+
+// ── A single read-only pricing-table line (no write permission) ───────────
+// Mirrors EditableLineRow's two-row shape — the customer-facing cells plus the
+// internal cost/markup/net band — but renders everything as plain text.
+function ReadonlyLineRow({ line: l, currency, taxRate }: { line: QuoteLine; currency: string; taxRate: string | null }) {
+  const mk = markupPct(l.unitPrice, l.unitCost);
+  const markupStr = mk === null ? '—' : `${String(Number(mk.toFixed(2)))}%`;
+  const netCents = l.unitCost === null
+    ? null
+    : toCents(computeLineTotal(l.quantity, l.unitPrice)) - toCents(computeLineTotal(l.quantity, l.unitCost));
+  const tax = lineTaxAmount(l.lineTotal, l.taxable, taxRate);
+  return (
+    <>
+      <tr className="border-t" data-testid={`quote-line-${l.id}`}>
+        <td className="px-2 py-2">
+          <div className="flex items-start gap-2">
+            {l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
+            <div>
+              <div className="font-medium">{lineTitle(l)}</div>
+              {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+            </div>
+          </div>
+        </td>
+        <td className="px-2 py-2 text-right tabular-nums">{l.quantity}</td>
+        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
+        <td className="px-2 py-2">
+          <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {formatRecurrence(l.recurrence)}
+          </span>
+        </td>
+        <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">
+          {tax === null ? '—' : formatMoney(tax, currency)}
+        </td>
+        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
+        <td className="px-2 py-2 text-right" />
+      </tr>
+      <tr className="border-0" data-testid={`quote-line-internal-${l.id}`}>
+        <td colSpan={7} className="px-2 pb-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-[hsl(220_12%_40%)] dark:text-muted-foreground">
+            <span className="font-medium uppercase tracking-wide">Internal</span>
+            <span data-testid={`quote-line-sku-${l.id}`}>SKU {l.sku || '—'}</span>
+            <span data-testid={`quote-line-partnumber-${l.id}`}>PN {l.partNumber || '—'}</span>
+            <span data-testid={`quote-line-cost-${l.id}`}>Cost {l.unitCost === null ? '—' : formatMoney(l.unitCost, currency)}</span>
+            <span data-testid={`quote-line-markup-${l.id}`}>Markup {markupStr}</span>
+            <span className="ml-auto">net{' '}
+              <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${l.id}`}>
+                {netCents === null ? '—' : formatMoney(fromCents(netCents), currency)}
+              </span>
+            </span>
+          </div>
+        </td>
+      </tr>
+    </>
   );
 }
 
@@ -1531,6 +1592,10 @@ function EditableLineRow({
   // refresh() round-trip lands, and revert if the save fails.
   const [rec, setRec] = useState(line.recurrence);
   const [taxable, setTaxable] = useState(line.taxable);
+  // Internal cost/identity fields (cost drives the markup/net strip below the row).
+  const [cost, setCost] = useState(line.unitCost ?? '');
+  const [sku, setSku] = useState(line.sku ?? '');
+  const [partNumber, setPartNumber] = useState(line.partNumber ?? '');
 
   // Resync the typed fields from the server, but never over an edit in progress.
   // We track "has the user typed since the last commit?" rather than comparing
@@ -1547,10 +1612,16 @@ function EditableLineRow({
   const descEdited = useRef(false);
   const qtyEdited = useRef(false);
   const priceEdited = useRef(false);
+  const costEdited = useRef(false);
+  const skuEdited = useRef(false);
+  const partEdited = useRef(false);
   useEffect(() => { if (!nameEdited.current) setName(line.name ?? ''); }, [line.name]);
   useEffect(() => { if (!descEdited.current) setDesc(line.description ?? ''); }, [line.description]);
   useEffect(() => { if (!qtyEdited.current) setQty(line.quantity); }, [line.quantity]);
   useEffect(() => { if (!priceEdited.current) setPrice(line.unitPrice); }, [line.unitPrice]);
+  useEffect(() => { if (!costEdited.current) setCost(line.unitCost ?? ''); }, [line.unitCost]);
+  useEffect(() => { if (!skuEdited.current) setSku(line.sku ?? ''); }, [line.sku]);
+  useEffect(() => { if (!partEdited.current) setPartNumber(line.partNumber ?? ''); }, [line.partNumber]);
   // recurrence/taxable are committed on change (the PATCH resolves before the
   // refresh GET fires), so a stale resync can't race them — a plain resync wins.
   useEffect(() => { setRec(line.recurrence); }, [line.recurrence]);
@@ -1597,16 +1668,28 @@ function EditableLineRow({
   const displayTotal = totalDiverged ? computeLineTotal(effQty, effPrice) : line.lineTotal;
   const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
 
+  // Markup is derived from price+cost (no separate state); the markup input is
+  // uncontrolled and re-seeded via key={markupStr} when price/cost change. Net is
+  // (price − cost) × qty in cents, shown as money; "—" when no cost is set.
+  const mk = markupPct(effPrice, cost);
+  const markupStr = mk === null ? '' : String(Number(mk.toFixed(2)));
+  const netCents = cost.trim() === ''
+    ? null
+    : toCents(computeLineTotal(effQty, effPrice)) - toCents(computeLineTotal(effQty, cost));
+  const costDirty = cost.trim() === '' ? line.unitCost !== null : Number(cost) !== Number(line.unitCost);
+  const skuDirty = sku.trim() !== (line.sku ?? '');
+  const partDirty = partNumber.trim() !== (line.partNumber ?? '');
+
   // Report this row's effective values to the parent so the rail "Live totals"
   // recompute uses the same inputs. Emit null once nothing diverges, so the rail
   // reverts to the authoritative server figures; cleanup on unmount avoids a
   // phantom draft skewing the rail after a delete.
-  const diverged = totalDiverged || taxable !== line.taxable || rec !== line.recurrence;
+  const diverged = totalDiverged || taxable !== line.taxable || rec !== line.recurrence || costDirty;
   useEffect(() => {
     onDraft(line.id, diverged
-      ? { quantity: String(effQty), unitPrice: String(effPrice), taxable, customerVisible: line.customerVisible, recurrence: rec }
+      ? { quantity: String(effQty), unitPrice: String(effPrice), unitCost: cost || null, taxable, customerVisible: line.customerVisible, recurrence: rec }
       : null);
-  }, [onDraft, line.id, line.customerVisible, diverged, effQty, effPrice, taxable, rec]);
+  }, [onDraft, line.id, line.customerVisible, diverged, effQty, effPrice, cost, taxable, rec]);
   // Clear this row's draft when it unmounts (e.g. removed) so the rail doesn't
   // keep a phantom override.
   useEffect(() => () => onDraft(line.id, null), [onDraft, line.id]);
@@ -1658,8 +1741,39 @@ function EditableLineRow({
     }
     void edit({ unitPrice: n });
   };
+  const commitCost = () => {
+    costEdited.current = false;
+    if (cost.trim() === '') { if (line.unitCost !== null) void edit({ unitCost: null }); return; }
+    const n = Number(cost);
+    if (!Number.isFinite(n) || n < 0) {
+      handleActionError(new Error('invalid cost'), 'Enter a cost of 0 or more.');
+      setCost(line.unitCost ?? '');
+      return;
+    }
+    if (n !== Number(line.unitCost)) void edit({ unitCost: n });
+  };
+  const commitSku = () => {
+    skuEdited.current = false;
+    const next = sku.trim();
+    if (next !== (line.sku ?? '')) void edit({ sku: next || null });
+  };
+  const commitPartNumber = () => {
+    partEdited.current = false;
+    const next = partNumber.trim();
+    if (next !== (line.partNumber ?? '')) void edit({ partNumber: next || null });
+  };
+  // Editing markup% commits a new unit price derived from cost: price = cost·(1+m).
+  const onMarkupCommit = (raw: string) => {
+    const m = Number(raw);
+    if (cost.trim() === '' || !Number.isFinite(m)) return; // need a cost base
+    const nextPrice = priceFromMarkup(cost, m);
+    setPrice(nextPrice);
+    priceEdited.current = false;
+    if (Number(nextPrice) !== Number(line.unitPrice)) void edit({ unitPrice: Number(nextPrice) });
+  };
 
   return (
+    <>
     <tr className="border-t align-top" data-testid={`quote-line-${line.id}`}>
       <td className="px-2 py-2">
         <div className="flex items-start gap-2">
@@ -1780,6 +1894,64 @@ function EditableLineRow({
         </div>
       </td>
     </tr>
+    {/* Internal-only cost/markup/net band — never shown to the customer. */}
+    <tr className="border-0" data-testid={`quote-line-internal-${line.id}`}>
+      <td colSpan={7} className="px-2 pb-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-[hsl(220_12%_40%)] dark:text-muted-foreground">
+          <span className="font-medium uppercase tracking-wide">Internal</span>
+          <label className="flex items-center gap-1">SKU
+            <input
+              type="text"
+              value={sku}
+              onChange={(e) => { setSku(e.target.value); skuEdited.current = true; }}
+              onBlur={commitSku}
+              disabled={busy}
+              data-testid={`quote-line-sku-${line.id}`}
+              className={`h-6 w-28 rounded border bg-background px-1 text-foreground ${skuDirty ? 'ring-1 ring-warning' : ''}`}
+            />
+          </label>
+          <label className="flex items-center gap-1">PN
+            <input
+              type="text"
+              value={partNumber}
+              onChange={(e) => { setPartNumber(e.target.value); partEdited.current = true; }}
+              onBlur={commitPartNumber}
+              disabled={busy}
+              data-testid={`quote-line-partnumber-${line.id}`}
+              className={`h-6 w-28 rounded border bg-background px-1 text-foreground ${partDirty ? 'ring-1 ring-warning' : ''}`}
+            />
+          </label>
+          <label className="flex items-center gap-1">Cost
+            <input
+              type="number" min="0" step="0.01"
+              value={cost}
+              onChange={(e) => { setCost(e.target.value); costEdited.current = true; }}
+              onBlur={commitCost}
+              disabled={busy}
+              data-testid={`quote-line-cost-${line.id}`}
+              className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground ${costDirty ? 'ring-1 ring-warning' : ''}`}
+            />
+          </label>
+          <label className="flex items-center gap-1">Markup
+            <input
+              type="number" step="0.1"
+              defaultValue={markupStr}
+              key={markupStr}
+              onBlur={(e) => onMarkupCommit(e.target.value)}
+              disabled={busy || cost.trim() === ''}
+              data-testid={`quote-line-markup-${line.id}`}
+              className="h-6 w-16 rounded border bg-background px-1 text-right tabular-nums text-foreground disabled:opacity-60"
+            />%
+          </label>
+          <span className="ml-auto">net{' '}
+            <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${line.id}`}>
+              {netCents === null ? '—' : formatMoney(fromCents(netCents), currency)}
+            </span>
+          </span>
+        </div>
+      </td>
+    </tr>
+    </>
   );
 }
 
