@@ -238,6 +238,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   const [copiedOrgId, setCopiedOrgId] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [savingName, setSavingName] = useState(false);
+  const [typeDraft, setTypeDraft] = useState<string>('customer');
+  const [savingType, setSavingType] = useState(false);
 
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
@@ -262,6 +264,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       const data = await response.json();
       setOrgDetails(data);
       setNameDraft(data.name ?? '');
+      setTypeDraft(data.type ?? 'customer');
 
       // Fetch effective settings to determine partner-locked fields
       const effRes = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}/effective-settings`);
@@ -333,6 +336,31 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       setSavingName(false);
     }
   }, [effectiveOrgId, nameDraft, orgDetails, fetchOrgDetails]);
+
+  const handleSaveType = useCallback(async () => {
+    if (!effectiveOrgId) return;
+    if (typeDraft === (orgDetails?.type ?? 'customer')) return;
+
+    try {
+      setSavingType(true);
+      setError(undefined);
+      const response = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ type: typeDraft })
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || body.message || 'Failed to save organization type');
+      }
+
+      await fetchOrgDetails();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save organization type');
+    } finally {
+      setSavingType(false);
+    }
+  }, [effectiveOrgId, typeDraft, orgDetails, fetchOrgDetails]);
 
   // Fallback display data — prefer fetched orgDetails; when accessed via URL prop the org
   // might not be in the store's organizations array, so fall back to a minimal object.
@@ -525,8 +553,26 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                 </div>
                 <div className="rounded-md border bg-muted/40 p-4">
                   <dt className="text-xs uppercase text-muted-foreground">Type</dt>
-                  <dd className="mt-2 text-base font-semibold capitalize">
-                    {orgDetails?.type || 'Customer'}
+                  <dd className="mt-2 flex items-center gap-2">
+                    <select
+                      data-testid="org-type-select"
+                      value={typeDraft}
+                      onChange={(e) => setTypeDraft(e.target.value)}
+                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary"
+                      aria-label="Organization type"
+                    >
+                      <option value="customer">Customer</option>
+                      <option value="internal">Internal</option>
+                    </select>
+                    <button
+                      type="button"
+                      data-testid="org-type-save"
+                      onClick={() => void handleSaveType()}
+                      disabled={savingType || typeDraft === (orgDetails?.type ?? 'customer')}
+                      className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {savingType ? 'Saving…' : 'Save'}
+                    </button>
                   </dd>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {orgDetails?.maxDevices ? `Max ${orgDetails.maxDevices} devices` : 'Unlimited devices'}

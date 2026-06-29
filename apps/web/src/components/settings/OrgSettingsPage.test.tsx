@@ -150,6 +150,30 @@ describe('OrgSettingsPage general tab — name editing', () => {
     });
   });
 
+  it('PATCHes the new organization type when the user edits and saves', async () => {
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({ ...orgDetails, type: 'internal' }));
+      return Promise.resolve(makeJsonResponse({ ...orgDetails, type: 'customer' }));
+    });
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const select = (await screen.findByTestId('org-type-select')) as HTMLSelectElement;
+    await userEvent.selectOptions(select, 'internal');
+    await userEvent.click(screen.getByTestId('org-type-save'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/orgs/organizations/org-1',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ type: 'internal' })
+        })
+      );
+    });
+  });
+
   it('disables save when the name is unchanged, empty, or whitespace-only', async () => {
     fetchWithAuthMock.mockImplementation((url: string) => {
       if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
