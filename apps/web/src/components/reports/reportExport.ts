@@ -59,6 +59,7 @@ export type PostureSummary = {
     passwordComplexityPct?: number;
     localAdminExposurePct?: number;
     cisAvgPassRate?: number | null;
+    cisIncluded?: boolean;
     mfaIdentityConnected?: boolean;
     backupConfigured?: boolean;
     backupEncrypted?: boolean | null;
@@ -209,8 +210,14 @@ function renderPostureCover(doc: jsPDF, summary: PostureSummary, generatedAt: st
     `MFA / identity connected: ${yesNo(c.mfaIdentityConnected)}`,
     `Backup configured: ${yesNo(c.backupConfigured)}${c.backupEncrypted ? ' (encrypted)' : ''}`,
     `DNS filtering active: ${yesNo(c.dnsFilteringActive)}`,
-    `Hardening (CIS): ${c.cisAvgPassRate == null ? 'Not yet assessed' : `${c.cisAvgPassRate}%`}`,
   ];
+  // CIS hardening line is omitted entirely when the section is toggled off;
+  // otherwise it shows the pass-rate, or "Not yet assessed" until scans run.
+  if (c.cisIncluded !== false) {
+    controlLines.push(
+      `Hardening (CIS): ${c.cisAvgPassRate == null ? 'Not yet assessed' : `${c.cisAvgPassRate}%`}`,
+    );
+  }
   for (const line of controlLines) {
     y += 5;
     doc.text(line, 18, y);

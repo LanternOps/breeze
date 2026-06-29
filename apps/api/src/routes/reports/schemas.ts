@@ -21,7 +21,10 @@ export const securityCompliancePostureConfigSchema = z.object({
   // local-admin exposure: a device is flagged if it has MORE than this many local admins.
   maxLocalAdmins: z.number().int().min(0).max(50).optional().default(2),
   // AV definitions older than this many days count as stale.
-  maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional().default(7)
+  maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional().default(7),
+  // Include the CIS hardening section. Defaults on; renders "Not yet assessed"
+  // until baseline scans exist, or is omitted entirely when set false.
+  includeCis: z.boolean().optional().default(true)
 });
 
 const securityCompliancePostureConfigFields = {
@@ -29,7 +32,8 @@ const securityCompliancePostureConfigFields = {
   windowDays: z.number().int().min(1).max(365).optional(),
   minPasswordLength: z.number().int().min(1).max(64).optional(),
   maxLocalAdmins: z.number().int().min(0).max(50).optional(),
-  maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional()
+  maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional(),
+  includeCis: z.boolean().optional()
 };
 
 export const listReportsSchema = z.object({

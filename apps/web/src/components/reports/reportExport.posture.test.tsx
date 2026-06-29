@@ -89,6 +89,17 @@ describe('exportReport — security_compliance_posture PDF', () => {
     expect(joined).toMatch(/Huntress/);
   });
 
+  it('omits the CIS hardening line when the section is toggled off', () => {
+    const off = { ...summary, controls: { ...summary.controls, cisIncluded: false } };
+    exportReport([{ hostname: 'pc-1' }], {
+      format: 'pdf',
+      reportType: 'security_compliance_posture',
+      timezone: 'UTC',
+      summary: off,
+    });
+    expect(textCalls.join('\n')).not.toContain('Hardening (CIS)');
+  });
+
   it('falls back to the plain table when no summary is supplied', () => {
     expect(() =>
       exportReport([{ hostname: 'pc-1' }], {

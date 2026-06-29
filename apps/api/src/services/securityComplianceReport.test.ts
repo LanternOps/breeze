@@ -103,6 +103,31 @@ describe('generateSecurityCompliancePostureReport', () => {
     mockGeneratorQueries();
     const r = await generateSecurityCompliancePostureReport(ORG, {});
     expect((r.summary as any).controls.cisAvgPassRate).toBeNull();
+    expect((r.summary as any).controls.cisIncluded).toBe(true);
+  });
+
+  it('aggregates CIS pass-rate per device when included and scans exist', async () => {
+    // CIS is query #18 (after posture); provide latest-scan rows per device.
+    mockGeneratorQueries({
+      18: [
+        { deviceId: 'dev-1', passedChecks: 80, totalChecks: 100 },
+        { deviceId: 'dev-2', passedChecks: 60, totalChecks: 100 }
+      ]
+    });
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    expect((r.summary as any).controls.cisIncluded).toBe(true);
+    expect((r.summary as any).controls.cisAvgPassRate).toBe(70); // (80 + 60) / 2
+    const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
+    expect(byHost['pc-1'].cisPassRate).toBe(80);
+    expect(byHost['pc-2'].cisPassRate).toBe(60);
+  });
+
+  it('omits CIS entirely when includeCis is false', async () => {
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, { includeCis: false });
+    expect((r.summary as any).controls.cisIncluded).toBe(false);
+    expect((r.summary as any).controls.cisAvgPassRate).toBeNull();
+    expect((r.rows as any[]).every((row) => row.cisPassRate === null)).toBe(true);
   });
 
   it('lists active security products', async () => {

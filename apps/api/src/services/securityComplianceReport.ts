@@ -11,6 +11,7 @@ import {
   elevationRequests,
   googleWorkspaceConnections,
   huntressAgents,
+  cisBaselineResults,
   m365Connections,
   organizations,
   pamOrgConfig,
@@ -78,7 +79,11 @@ function localAdminCount(summary: unknown): number | null {
   return typeof s.adminCount === 'number' ? s.adminCount : null;
 }
 
-function emptySummary(orgRow: { id: string; name: string } | undefined, generatedAt: string) {
+function emptySummary(
+  orgRow: { id: string; name: string } | undefined,
+  generatedAt: string,
+  includeCis = true
+) {
   return {
     org: { id: orgRow?.id ?? '', name: orgRow?.name ?? 'Unknown' },
     generatedAt,
@@ -93,6 +98,7 @@ function emptySummary(orgRow: { id: string; name: string } | undefined, generate
       passwordComplexityPct: 0,
       localAdminExposurePct: 0,
       cisAvgPassRate: null,
+      cisIncluded: includeCis,
       mfaIdentityConnected: false,
       backupConfigured: false,
       backupEncrypted: null,
@@ -149,7 +155,7 @@ export async function generateSecurityCompliancePostureReport(
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgRow, generatedAt)
+      summary: emptySummary(orgRow, generatedAt, cfg.includeCis)
     };
   }
 
@@ -178,7 +184,7 @@ export async function generateSecurityCompliancePostureReport(
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgRow, generatedAt)
+      summary: emptySummary(orgRow, generatedAt, cfg.includeCis)
     };
   }
 
@@ -308,6 +314,30 @@ export async function generateSecurityCompliancePostureReport(
     .orderBy(desc(securityPostureOrgSnapshots.capturedAt))
     .limit(1);
 
+  // CIS hardening pass-rate per device (latest scan), optional via config.includeCis.
+  // Uses the result's aggregate columns directly — no findings-jsonb parsing needed.
+  const cisByDevice = new Map<string, number>();
+  if (cfg.includeCis) {
+    const cisRows = await db
+      .select({
+        deviceId: cisBaselineResults.deviceId,
+        passedChecks: cisBaselineResults.passedChecks,
+        totalChecks: cisBaselineResults.totalChecks
+      })
+      .from(cisBaselineResults)
+      .where(and(eq(cisBaselineResults.orgId, orgId), inArray(cisBaselineResults.deviceId, deviceIds)))
+      .orderBy(desc(cisBaselineResults.checkedAt));
+    for (const r of cisRows) {
+      if (cisByDevice.has(r.deviceId)) continue; // desc order → first seen is the latest scan
+      cisByDevice.set(r.deviceId, r.totalChecks > 0 ? Math.round((r.passedChecks / r.totalChecks) * 100) : 0);
+    }
+  }
+  const cisValues = [...cisByDevice.values()];
+  const cisAvgPassRate =
+    cfg.includeCis && cisValues.length > 0
+      ? Math.round(cisValues.reduce((a, b) => a + b, 0) / cisValues.length)
+      : null;
+
   let reporting = 0;
   let managedEdr = 0;
   let anyAv = 0;
@@ -359,7 +389,7 @@ export async function generateSecurityCompliancePostureReport(
       criticalPatches: pend.critical,
       openVulnCritical: vuln.critical,
       openVulnHigh: vuln.high,
-      cisPassRate: null,
+      cisPassRate: cisByDevice.get(d.id) ?? null,
       posture: null
     };
   });
@@ -391,7 +421,8 @@ export async function generateSecurityCompliancePostureReport(
         patchCurrentPct: pct(patchCurrent, reporting),
         passwordComplexityPct: pct(pwPass, reporting),
         localAdminExposurePct: pct(adminFlagged, reporting),
-        cisAvgPassRate: null,
+        cisAvgPassRate,
+        cisIncluded: cfg.includeCis,
         mfaIdentityConnected: Boolean(m365 || google),
         backupConfigured: Boolean(backup || c2c),
         backupEncrypted: backup ? Boolean(backup.encryption) : null,
