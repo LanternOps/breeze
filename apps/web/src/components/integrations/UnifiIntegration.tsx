@@ -210,7 +210,7 @@ export default function UnifiIntegration() {
           <button
             type="button"
             onClick={() => void handleConnect()}
-            disabled={connecting}
+            disabled={connecting || !apiKey.trim()}
             className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             data-testid="unifi-connect"
           >

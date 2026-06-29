@@ -264,8 +264,15 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
       )}
       {activeTab === 'accounting' && !isOrgScoped && accountingSubTab === 'quickbooks' && <QuickbooksIntegration />}
       {activeTab === 'accounting' && !isOrgScoped && accountingSubTab === 'stripe' && <StripePaymentsIntegration />}
-      {/* UniFi gates partner-only inside the component (mirrors QuickbooksIntegration). */}
-      {activeTab === 'unifi' && <UnifiIntegration />}
+      {activeTab === 'unifi' && isOrgScoped && (
+        <p
+          className="py-12 text-center text-sm text-muted-foreground"
+          data-testid="unifi-org-scope"
+        >
+          The UniFi network integration is available to partner accounts only.
+        </p>
+      )}
+      {activeTab === 'unifi' && !isOrgScoped && <UnifiIntegration />}
     </div>
   );
 }
