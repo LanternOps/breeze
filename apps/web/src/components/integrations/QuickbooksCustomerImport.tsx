@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { useBulkSelection } from '../billing/bulk/useBulkSelection';
 
 interface AnnotatedCustomer {
@@ -15,7 +16,7 @@ interface AnnotatedCustomer {
 interface ImportSummary {
   imported: unknown[];
   skipped: unknown[];
-  errors: Array<{ customerId: string; error: string }>;
+  errors: Array<{ customerId: string; displayName?: string; error: string }>;
 }
 
 interface Props {
@@ -26,6 +27,7 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
   const [customers, setCustomers] = useState<AnnotatedCustomer[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [failures, setFailures] = useState<ImportSummary['errors']>([]);
   const selection = useBulkSelection();
 
   const importable = (customers ?? []).filter((c) => !c.alreadyImported);
@@ -33,6 +35,7 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
   async function load() {
     setLoading(true);
     selection.clear();
+    setFailures([]);
     try {
       const data = await runAction<{ data: AnnotatedCustomer[] }>({
         request: () => fetchWithAuth('/accounting/quickbooks/customers'),
@@ -52,24 +55,34 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
     if (customerIds.length === 0) return;
     setImporting(true);
     try {
-      await runAction<{ data: ImportSummary }>({
+      // The endpoint always returns HTTP 200 with a summary (partial success is
+      // a feature), so runAction can't tell a total failure from a win — we own
+      // the outcome toast here. No `successMessage`: it only emits green.
+      const res = await runAction<{ data: ImportSummary }>({
         request: () => fetchWithAuth('/accounting/quickbooks/customers/import', {
           method: 'POST',
           body: JSON.stringify({ customerIds }),
         }),
         errorFallback: 'Failed to import customers.',
-        successMessage: (res) => {
-          const s = res.data;
-          const parts = [`${s.imported.length} imported`];
-          if (s.skipped.length) parts.push(`${s.skipped.length} skipped`);
-          if (s.errors.length) parts.push(`${s.errors.length} failed`);
-          return parts.join(', ');
-        },
         onUnauthorized,
       });
-      await load(); // refresh so imported rows flip to "already imported"
+      const s = res.data;
+      const parts = [`${s.imported.length} imported`];
+      if (s.skipped.length) parts.push(`${s.skipped.length} skipped`);
+      if (s.errors.length) parts.push(`${s.errors.length} failed`);
+      const message = parts.join(', ');
+      if (s.imported.length === 0 && s.errors.length > 0) {
+        showToast({ type: 'error', message: `Import failed — ${message}.` });
+      } else if (s.errors.length > 0) {
+        showToast({ type: 'warning', message: `${message}.` });
+      } else {
+        showToast({ type: 'success', message: `${message}.` });
+      }
+      await load(); // refresh so imported rows flip to "already imported" (clears failures)
+      setFailures(s.errors); // re-set after the refresh so they stay visible
+
     } catch {
-      // already toasted
+      // runAction already toasted the request-level failure (non-200 / thrown).
     } finally {
       setImporting(false);
     }
@@ -158,6 +171,19 @@ export default function QuickbooksCustomerImport({ onUnauthorized }: Props) {
               {importing ? 'Importing…' : `Import ${selection.size} selected`}
             </button>
           </div>
+
+          {failures.length > 0 && (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3" data-testid="quickbooks-import-failures">
+              <p className="text-sm font-medium text-red-800">{failures.length} customer{failures.length === 1 ? '' : 's'} failed to import</p>
+              <ul className="mt-2 space-y-1 text-xs text-red-700">
+                {failures.map((f) => (
+                  <li key={f.customerId} data-testid={`quickbooks-import-failure-${f.customerId}`}>
+                    <span className="font-medium">{f.displayName ?? f.customerId}</span>: {f.error}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </>
       )}
     </div>

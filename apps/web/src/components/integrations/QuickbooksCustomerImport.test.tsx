@@ -58,4 +58,60 @@ describe('QuickbooksCustomerImport', () => {
     fireEvent.click(screen.getByTestId('quickbooks-import-load'));
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
   });
+
+  it('shows an ERROR toast and lists failures when every selected customer fails', async () => {
+    fetchWithAuthMock
+      .mockReturnValueOnce(jsonResponse({ data: [{ id: '1', displayName: 'Acme', alreadyImported: false, organizationId: null }] }))
+      .mockReturnValueOnce(jsonResponse({ data: { imported: [], skipped: [], errors: [{ customerId: '1', displayName: 'Acme', error: 'boom' }] } }))
+      .mockReturnValueOnce(jsonResponse({ data: [{ id: '1', displayName: 'Acme', alreadyImported: false, organizationId: null }] }));
+
+    render(<QuickbooksCustomerImport />);
+    fireEvent.click(screen.getByTestId('quickbooks-import-load'));
+    await waitFor(() => expect(screen.getByTestId('quickbooks-import-select-1')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quickbooks-import-select-1'));
+    fireEvent.click(screen.getByTestId('quickbooks-import-submit'));
+
+    // A total failure must NOT be a green success toast.
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    // The failed customer + reason are surfaced, not just a count.
+    await waitFor(() => expect(screen.getByTestId('quickbooks-import-failure-1')).toHaveTextContent('boom'));
+  });
+
+  it('shows a WARNING toast on partial failure', async () => {
+    fetchWithAuthMock
+      .mockReturnValueOnce(jsonResponse({ data: [
+        { id: '1', displayName: 'A', alreadyImported: false, organizationId: null },
+        { id: '2', displayName: 'B', alreadyImported: false, organizationId: null },
+      ] }))
+      .mockReturnValueOnce(jsonResponse({ data: { imported: [{ customerId: '1' }], skipped: [], errors: [{ customerId: '2', displayName: 'B', error: 'boom' }] } }))
+      .mockReturnValueOnce(jsonResponse({ data: [] }));
+
+    render(<QuickbooksCustomerImport />);
+    fireEvent.click(screen.getByTestId('quickbooks-import-load'));
+    await waitFor(() => expect(screen.getByTestId('quickbooks-import-select-all')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quickbooks-import-select-all'));
+    fireEvent.click(screen.getByTestId('quickbooks-import-submit'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
+  });
+
+  it('select-all toggles only importable rows, never the already-imported ones', async () => {
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ data: [
+      { id: '1', displayName: 'Importable', alreadyImported: false, organizationId: null },
+      { id: '2', displayName: 'Done', alreadyImported: true, organizationId: 'org-2' },
+    ] }));
+
+    render(<QuickbooksCustomerImport />);
+    fireEvent.click(screen.getByTestId('quickbooks-import-load'));
+    await waitFor(() => expect(screen.getByTestId('quickbooks-import-select-all')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quickbooks-import-select-all'));
+    expect(screen.getByTestId('quickbooks-import-select-1')).toBeChecked();
+    expect(screen.getByTestId('quickbooks-import-select-2')).not.toBeChecked();
+    expect(screen.getByTestId('quickbooks-import-select-2')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('quickbooks-import-select-all'));
+    expect(screen.getByTestId('quickbooks-import-select-1')).not.toBeChecked();
+  });
 });

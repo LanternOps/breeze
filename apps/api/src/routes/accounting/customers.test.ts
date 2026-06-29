@@ -55,6 +55,26 @@ describe('GET /accounting/:provider/customers', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ code: 'not_connected' });
   });
+
+  it('maps QbImportError(reauth_required) to 409', async () => {
+    listAnnotatedMock.mockRejectedValue(new QbImportError('reconnect', 'reauth_required', 409));
+    const res = await app().request('/accounting/quickbooks/customers');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'reauth_required' });
+  });
+
+  it('maps QbImportError(quickbooks_error) to 502', async () => {
+    listAnnotatedMock.mockRejectedValue(new QbImportError('upstream', 'quickbooks_error', 502));
+    const res = await app().request('/accounting/quickbooks/customers');
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ code: 'quickbooks_error' });
+  });
+
+  it('denies a partner-scoped caller targeting a different partnerId (403)', async () => {
+    const res = await app().request('/accounting/quickbooks/customers?partnerId=99999999-9999-4999-8999-999999999999');
+    expect(res.status).toBe(403);
+    expect(listAnnotatedMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /accounting/:provider/customers/import', () => {

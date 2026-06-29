@@ -45,7 +45,8 @@ const importCustomersSchema = z.object({
 });
 
 function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status as 400 | 404);
+  // QbImportError.status is a narrowed literal union (400|404|409|502), so no cast.
+  if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 
@@ -289,7 +290,8 @@ accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScop
     return handleImportError(c, err);
   }
 
-  // Audit each created org + site (the import itself ran in system context).
+  // Audit each created org (the site id is recorded in details). The import
+  // ran in system context, so the actor-bearing audit is written here.
   for (const item of summary.imported) {
     writeRouteAudit(c, {
       orgId: item.organizationId,

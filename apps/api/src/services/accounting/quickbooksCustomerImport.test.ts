@@ -7,13 +7,20 @@ const {
   getConnectionMock,
   getValidAccessTokenMock,
   listRemoteCustomersMock,
-} = vi.hoisted(() => ({
-  selectMock: vi.fn(),
-  insertMock: vi.fn(),
-  getConnectionMock: vi.fn(),
-  getValidAccessTokenMock: vi.fn(),
-  listRemoteCustomersMock: vi.fn(),
-}));
+  ReauthRequiredError,
+} = vi.hoisted(() => {
+  class ReauthRequiredError extends Error {
+    constructor(message = 'reauth') { super(message); this.name = 'ReauthRequiredError'; }
+  }
+  return {
+    selectMock: vi.fn(),
+    insertMock: vi.fn(),
+    getConnectionMock: vi.fn(),
+    getValidAccessTokenMock: vi.fn(),
+    listRemoteCustomersMock: vi.fn(),
+    ReauthRequiredError,
+  };
+});
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -26,11 +33,14 @@ vi.mock('./accountingConnectionService', () => ({
 
 vi.mock('./accountingTokens', () => ({
   getValidAccessToken: getValidAccessTokenMock,
+  ReauthRequiredError,
 }));
 
 vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({ listRemoteCustomers: listRemoteCustomersMock }),
 }));
+
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import {
   slugify, generateUniqueSlug, importQuickbooksCustomers,
@@ -209,5 +219,75 @@ describe('importQuickbooksCustomers', () => {
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', 'missing'] });
     expect(summary.errors).toContainEqual({ customerId: 'missing', error: 'Customer not found in QuickBooks' });
     expect(summary.imported).toHaveLength(1);
+  });
+
+  it('passes the freshly-resolved access token (not the stale conn token) to listRemoteCustomers', async () => {
+    getValidAccessTokenMock.mockResolvedValue('fresh-token');
+    listRemoteCustomersMock.mockResolvedValue([]);
+    stubSelect([]);
+    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: [] });
+    expect(listRemoteCustomersMock).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'fresh-token' }));
+  });
+
+  it('reserves slugs within the batch so two same-named new customers do not collide', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }, { id: '2', displayName: 'Acme' }]);
+    stubSelect([]);
+    stubInserts([[{ id: 'o1' }], [{ id: 's1' }], [{ id: 'o2' }], [{ id: 's2' }]]);
+    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', '2'] });
+    expect(valuesSpy.mock.calls[0]![0].slug).toBe('acme');   // first org
+    expect(valuesSpy.mock.calls[2]![0].slug).toBe('acme-2'); // second org (third values() call)
+  });
+
+  it('clamps over-long name + city to the column widths (lossless: full value stays in site JSONB)', async () => {
+    const longName = 'N'.repeat(300);
+    const longCity = 'C'.repeat(200);
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: longName, billAddr: { city: longCity } }]);
+    stubSelect([]);
+    stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
+    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    expect(valuesSpy.mock.calls[0]![0].name).toHaveLength(255);
+    expect(valuesSpy.mock.calls[0]![0].billingAddressCity).toHaveLength(120);
+  });
+
+  it('maps QB address region -> site address state key', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { region: 'TX', city: 'Austin' } }]);
+    stubSelect([]);
+    stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
+    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    expect(valuesSpy.mock.calls[1]![0].address).toMatchObject({ state: 'TX', city: 'Austin' });
+  });
+
+  it('reclassifies a concurrent unique-violation as skipped (honors the partial unique index)', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
+    // 1st select = loadExistingOrgs (none); 2nd select = catch re-query (winner org).
+    selectMock
+      .mockImplementationOnce(() => ({ from: () => ({ where: () => Promise.resolve([]) }) }))
+      .mockImplementationOnce(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'org-dup' }]) }) }) }));
+    const dupErr = Object.assign(new Error('dup'), { code: '23505' });
+    insertMock.mockImplementation(() => ({ values: () => ({ returning: () => Promise.reject(dupErr) }) }));
+    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([{ customerId: '1', displayName: 'Acme', organizationId: 'org-dup', reason: 'already_imported' }]);
+  });
+});
+
+describe('importQuickbooksCustomers — connection/QBO error mapping', () => {
+  it('throws QbImportError(reauth_required, 409) when the connection needs reauth', async () => {
+    getConnectionMock.mockResolvedValue({ ...connectedConn(), status: 'reauth_required' });
+    await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
+      .rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+  });
+
+  it('maps a ReauthRequiredError from getValidAccessToken to QbImportError(409)', async () => {
+    getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredError());
+    await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
+      .rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+  });
+
+  it('maps a QBO API failure to QbImportError(quickbooks_error, 502)', async () => {
+    getValidAccessTokenMock.mockResolvedValue('tok');
+    listRemoteCustomersMock.mockRejectedValue(new Error('QuickBooks customer query failed with 429'));
+    await expect(importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] }))
+      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
   });
 });

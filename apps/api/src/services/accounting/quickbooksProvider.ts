@@ -102,7 +102,7 @@ export class QuickbooksProvider implements AccountingProvider {
 
   // NOTE: assumes `conn.accessToken` is already a VALID token. Callers must
   // resolve it via getValidAccessToken(db, conn) first (which refreshes +
-  // persists rotation) — this method stays pure HTTP with no db dependency.
+  // persists rotation) — this method stays pure HTTP and issues no DB queries.
   async listRemoteCustomers(conn: AccountingConnection): Promise<RemoteCustomer[]> {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
