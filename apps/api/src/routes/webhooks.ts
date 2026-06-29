@@ -290,8 +290,10 @@ const webhookRetryParamSchema = z.object({ id: z.string().guid(), deliveryId: z.
 // same prefix. Hono flattens `.route()` mounts, so a `/webhooks/*` wildcard would
 // blanket those nested public paths with session auth and 401 them before their
 // HMAC/signature handlers run (issue #2053). Lead each route below with
-// `authMiddleware` per-route instead — same pattern as externalServices.ts and
-// invoices/settings.ts.
+// `authMiddleware` per-route instead — the inline-per-route pattern in
+// invoices/settings.ts. (externalServices.ts scopes auth the same anti-wildcard
+// way but via path-targeted `.use('/billing/portal', authMiddleware)` rather than
+// inline-leading, so it's the principle, not the exact form, to copy.)
 
 // GET /webhooks - List webhooks for org (paginated, filtered by status)
 webhookRoutes.get(

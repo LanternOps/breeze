@@ -57,6 +57,15 @@ vi.mock('../services/notificationSenders/webhookSender', () => ({
   validateWebhookUrlSafetyWithDns: vi.fn(async () => [])
 }));
 
+// --- Stripe webhook deps (the signature handler is reached past auth) ---
+vi.mock('../services/stripeWebhook', () => ({
+  verifyStripeEvent: vi.fn(() => { throw new Error('should not be reached without a signature'); }),
+  handleStripeEvent: vi.fn(async () => undefined)
+}));
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn()
+}));
+
 // db is mocked to avoid a real connection at import; the paths under test
 // (no Authorization header) short-circuit before any query runs.
 vi.mock('../db', () => ({
@@ -68,12 +77,16 @@ vi.mock('../db', () => ({
 
 import { webhookRoutes } from './webhooks';
 import { emailWebhookRoutes } from './tickets/emailWebhook';
+import { stripeWebhookRoutes } from './webhooks/stripe';
 
-// Reproduce the index.ts mount order: CRUD router first, public router second.
+// Reproduce the index.ts mount order: CRUD router first, then the public
+// signature-gated siblings — emailWebhookRoutes at /webhooks/tickets and
+// stripeWebhookRoutes back under /webhooks (index.ts:816,819,823).
 function buildApp() {
   const app = new Hono();
   app.route('/webhooks', webhookRoutes);
   app.route('/webhooks/tickets', emailWebhookRoutes);
+  app.route('/webhooks', stripeWebhookRoutes);
   return app;
 }
 
@@ -108,6 +121,21 @@ describe('webhooks mount-order regression (#2053)', () => {
     const res = await postInbound(buildApp());
     expect(res.status).toBe(202);
     expect(enqueueMock).toHaveBeenCalled();
+  });
+
+  it('Stripe Connect webhook reaches the signature handler, not session auth (no sig → 400)', async () => {
+    // The same `/webhooks/*` wildcard that broke inbound email also blanketed
+    // /webhooks/stripe/connect. With no stripe-signature header the handler
+    // returns 400 "Missing signature" — proof it ran past auth, not the
+    // authMiddleware 401.
+    const res = await buildApp().request('/webhooks/stripe/connect', {
+      method: 'POST',
+      body: '{}'
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('Missing signature');
+    expect(body.error).not.toBe('Missing or invalid authorization header');
   });
 
   it('webhookRoutes CRUD still requires session auth (no token → 401 auth header)', async () => {
