@@ -89,6 +89,17 @@ export default function TicketingSettingsTabs({ syncHash = true }: { syncHash?: 
     return () => window.removeEventListener('hashchange', onHashChange);
   }, [syncHash]);
 
+  // The M365 consent callback redirects back to `/settings/partner?ticketMailbox=...#ticketing`,
+  // which opens the Ticketing section but not this sub-tab group's Inbound sub-tab (where the
+  // mailbox card — and its redirect-status toast — lives). Force Inbound open when that param is
+  // present so the user lands on the card that owns the feedback. Runs regardless of `syncHash`.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !canManageInbound) return;
+    if (new URLSearchParams(window.location.search || '').has('ticketMailbox')) {
+      setActiveTab('inbound');
+    }
+  }, [canManageInbound]);
+
   return (
     <div className="space-y-6">
       <div role="tablist" className="flex gap-1 border-b" data-testid="ticketing-settings-tabs">

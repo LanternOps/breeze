@@ -114,7 +114,7 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
   if (q.error || !q.tenant || !isM365TenantId(q.tenant)) {
     await runOutsideDbContext(() => withSystemDbAccessContext(() =>
       setConnectionStatus(state.connectionId, state.partnerId, 'error', q.error_description ?? q.error ?? 'consent failed')));
-    return c.redirect('/integrations?ticketMailbox=error#ticket-mailbox');
+    return c.redirect('/settings/partner?ticketMailbox=error#ticketing');
   }
 
   try {
@@ -123,10 +123,10 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
     const probe = await probeMailbox(q.tenant, (await getConnAddress(state)) ?? '');
     await runOutsideDbContext(() => withSystemDbAccessContext(() =>
       setConnectionStatus(state.connectionId, state.partnerId, probe.ok ? 'connected' : 'error', probe.ok ? null : (probe.error ?? 'probe failed'))));
-    return c.redirect(probe.ok ? '/integrations?ticketMailbox=connected#ticket-mailbox' : '/integrations?ticketMailbox=needs_policy#ticket-mailbox');
+    return c.redirect(probe.ok ? '/settings/partner?ticketMailbox=connected#ticketing' : '/settings/partner?ticketMailbox=needs_policy#ticketing');
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), c);
-    return c.redirect('/integrations?ticketMailbox=error#ticket-mailbox');
+    return c.redirect('/settings/partner?ticketMailbox=error#ticketing');
   }
 });
 
