@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  History,
   Loader2,
   Plug,
   RefreshCw,
@@ -26,6 +27,43 @@ interface UnifiStatus {
   lastSyncError?: string | null;
 }
 
+// Live host+site list discovered from GET /unifi/hosts (calls UniFi directly).
+interface UnifiHostOption {
+  id: string;
+  name: string;
+  sites: Array<{ id: string; name: string }>;
+}
+// Breeze sites/orgs that a UniFi site can be mapped onto (from GET /orgs/*).
+interface BreezeSiteOption { id: string; name: string; orgId: string }
+interface OrgOption { id: string; name: string }
+// Currently-saved mappings (from GET /unifi/mappings).
+interface SavedMapping {
+  id: string;
+  orgId: string;
+  siteId: string;
+  unifiHostId: string;
+  unifiSiteId: string;
+  unifiHostName: string | null;
+  unifiSiteName: string | null;
+}
+// Sync-run ledger rows (from GET /unifi/sync-runs).
+interface SyncRun {
+  id: string;
+  trigger: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  hostsSeen: number;
+  devicesCreated: number;
+  devicesUpdated: number;
+  devicesUnchanged: number;
+  devicesRemoved: number;
+  error: string | null;
+}
+
+// Stable key for a discovered UniFi site within a host (host ids repeat across hosts otherwise).
+const mapKey = (hostId: string, unifiSiteId: string) => `${hostId}::${unifiSiteId}`;
+
 export default function UnifiIntegration() {
   const claims = getJwtClaims();
   const isOrgScoped = claims.scope === 'organization';
@@ -38,9 +76,31 @@ export default function UnifiIntegration() {
   const [syncing, setSyncing] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
+  // Site-mapping + sync-history state (only loaded once connected).
+  const [hosts, setHosts] = useState<UnifiHostOption[] | null>(null);
+  const [hostsLoading, setHostsLoading] = useState(false);
+  const [hostsError, setHostsError] = useState<string | null>(null);
+  const [breezeSites, setBreezeSites] = useState<BreezeSiteOption[]>([]);
+  const [orgs, setOrgs] = useState<OrgOption[]>([]);
+  const [selection, setSelection] = useState<Record<string, string>>({});
+  const [savingMappings, setSavingMappings] = useState(false);
+  const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
+
   const onUnauthorized = useCallback(() => {
     navigateTo(loginPathWithNext());
   }, []);
+
+  // Breeze sites grouped by organization, for the <optgroup> picker.
+  const sitesByOrg = useMemo(() => {
+    const orgName = new Map(orgs.map((o) => [o.id, o.name]));
+    const groups = new Map<string, { name: string; sites: BreezeSiteOption[] }>();
+    for (const s of breezeSites) {
+      const group = groups.get(s.orgId) ?? { name: orgName.get(s.orgId) ?? 'Organization', sites: [] };
+      group.sites.push(s);
+      groups.set(s.orgId, group);
+    }
+    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [breezeSites, orgs]);
 
   const fetchStatus = useCallback(async () => {
     const res = await fetchWithAuth('/unifi');
@@ -75,6 +135,89 @@ export default function UnifiIntegration() {
     }
     void load();
   }, [isOrgScoped, load]);
+
+  // GET /unifi/hosts is a LIVE call to UniFi — slow and able to fail (bad key → 502),
+  // so it carries its own loading/error state and never blocks the rest of the panel.
+  const loadHosts = useCallback(async () => {
+    setHostsLoading(true);
+    setHostsError(null);
+    try {
+      const res = await fetchWithAuth('/unifi/hosts');
+      if (res.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setHosts(null);
+        setHostsError((json as { message?: string }).message ?? `Could not load UniFi sites (${res.status}).`);
+        return;
+      }
+      setHosts((json as { hosts?: UnifiHostOption[] }).hosts ?? []);
+    } catch {
+      setHosts(null);
+      setHostsError('Could not reach UniFi to list sites.');
+    } finally {
+      setHostsLoading(false);
+    }
+  }, [onUnauthorized]);
+
+  const loadDetails = useCallback(async () => {
+    const [sitesRes, orgsRes, mappingsRes, runsRes] = await Promise.all([
+      fetchWithAuth('/orgs/sites?limit=500'),
+      fetchWithAuth('/orgs/organizations?limit=500'),
+      fetchWithAuth('/unifi/mappings'),
+      fetchWithAuth('/unifi/sync-runs'),
+    ]);
+    if ([sitesRes, orgsRes, mappingsRes, runsRes].some((r) => r.status === 401)) {
+      onUnauthorized();
+      return;
+    }
+    const sitesJson = await sitesRes.json().catch(() => ({}));
+    if (sitesRes.ok) setBreezeSites((sitesJson as { data?: BreezeSiteOption[] }).data ?? []);
+    const orgsJson = await orgsRes.json().catch(() => ({}));
+    if (orgsRes.ok) setOrgs((orgsJson as { data?: OrgOption[] }).data ?? []);
+    const mappingsJson = await mappingsRes.json().catch(() => ({}));
+    if (mappingsRes.ok) {
+      const saved = (mappingsJson as { mappings?: SavedMapping[] }).mappings ?? [];
+      // Seed the picker selections from what's already persisted.
+      setSelection(Object.fromEntries(saved.map((m) => [mapKey(m.unifiHostId, m.unifiSiteId), m.siteId])));
+    }
+    const runsJson = await runsRes.json().catch(() => ({}));
+    if (runsRes.ok) setSyncRuns((runsJson as { runs?: SyncRun[] }).runs ?? []);
+    await loadHosts();
+  }, [onUnauthorized, loadHosts]);
+
+  // Load mapping/history detail once the connection status resolves to connected.
+  useEffect(() => {
+    if (status?.connected === true) void loadDetails();
+  }, [status?.connected, loadDetails]);
+
+  const handleSaveMappings = useCallback(async () => {
+    if (!hosts) return;
+    const mappings = hosts.flatMap((h) =>
+      h.sites.flatMap((s) => {
+        const siteId = selection[mapKey(h.id, s.id)];
+        if (!siteId) return [];
+        return [{ unifiHostId: h.id, unifiSiteId: s.id, unifiHostName: h.name, unifiSiteName: s.name, siteId }];
+      }),
+    );
+    setSavingMappings(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/unifi/mappings', { method: 'PUT', body: JSON.stringify({ mappings }) }),
+        errorFallback: 'Failed to save site mappings.',
+        successMessage: 'Site mappings saved',
+        onUnauthorized,
+      });
+      await loadDetails();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) handleActionError(err, 'Failed to save site mappings.');
+    } finally {
+      setSavingMappings(false);
+    }
+  }, [hosts, selection, onUnauthorized, loadDetails]);
 
   const handleConnect = useCallback(async () => {
     const key = apiKey.trim();
@@ -114,13 +257,14 @@ export default function UnifiIntegration() {
         onUnauthorized,
       });
       await load();
+      await loadDetails();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) handleActionError(err, 'Failed to sync UniFi sites.');
     } finally {
       setSyncing(false);
     }
-  }, [load, onUnauthorized]);
+  }, [load, loadDetails, onUnauthorized]);
 
   const handleDisconnect = useCallback(async () => {
     setDisconnecting(true);
@@ -285,9 +429,6 @@ export default function UnifiIntegration() {
             </div>
           </dl>
 
-          {/* Site mapping + discovery history tables are scaffolded as a follow-up
-              (the /unifi/hosts endpoint and reconciliation UI land in a later task). */}
-
           <div className="flex items-center gap-3 border-t pt-4">
             <button
               type="button"
@@ -312,8 +453,170 @@ export default function UnifiIntegration() {
           </div>
         </div>
       )}
+
+      {isConnected && (
+        <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-mapping-card">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold">Site mapping</h2>
+            <button
+              type="button"
+              onClick={() => void loadHosts()}
+              disabled={hostsLoading}
+              className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+              data-testid="unifi-mapping-refresh"
+            >
+              <RefreshCw className={hostsLoading ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
+              Refresh
+            </button>
+          </div>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Map each discovered UniFi site to a Breeze site. Devices synced from that UniFi site are
+            reconciled into the chosen site&apos;s discovered assets.
+          </p>
+
+          {hostsLoading ? (
+            <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" data-testid="unifi-mapping-loading">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading UniFi sites…
+            </div>
+          ) : hostsError ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="unifi-mapping-error">
+              {hostsError}
+            </div>
+          ) : !hosts || hosts.length === 0 ? (
+            <p className="py-6 text-sm text-muted-foreground" data-testid="unifi-mapping-empty">
+              No UniFi hosts or sites were discovered for this account yet.
+            </p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y text-sm" data-testid="unifi-mapping-table">
+                  <thead>
+                    <tr className="text-left text-muted-foreground">
+                      <th className="px-3 py-2 font-medium">UniFi host</th>
+                      <th className="px-3 py-2 font-medium">UniFi site</th>
+                      <th className="px-3 py-2 font-medium">Breeze site</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {hosts.flatMap((h) =>
+                      h.sites.map((s) => {
+                        const key = mapKey(h.id, s.id);
+                        return (
+                          <tr key={key} data-testid="unifi-mapping-row">
+                            <td className="px-3 py-2 font-medium">{h.name}</td>
+                            <td className="px-3 py-2 text-muted-foreground">{s.name}</td>
+                            <td className="px-3 py-2">
+                              <select
+                                value={selection[key] ?? ''}
+                                onChange={(e) => setSelection((prev) => ({ ...prev, [key]: e.target.value }))}
+                                className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm"
+                                data-testid="unifi-mapping-select"
+                              >
+                                <option value="">— Not mapped —</option>
+                                {sitesByOrg.map((group) => (
+                                  <optgroup key={group.name} label={group.name}>
+                                    {group.sites.map((site) => (
+                                      <option key={site.id} value={site.id}>{site.name}</option>
+                                    ))}
+                                  </optgroup>
+                                ))}
+                              </select>
+                            </td>
+                          </tr>
+                        );
+                      }),
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-4 flex items-center gap-3 border-t pt-4">
+                <button
+                  type="button"
+                  onClick={() => void handleSaveMappings()}
+                  disabled={savingMappings}
+                  className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  data-testid="unifi-mapping-save"
+                >
+                  {savingMappings ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                  Save mappings
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {isConnected && (
+        <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-history-card">
+          <div className="flex items-center gap-2">
+            <History className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-lg font-semibold">Sync history</h2>
+          </div>
+          <p className="mb-4 text-sm text-muted-foreground">The most recent sync runs (newest first).</p>
+
+          {syncRuns.length === 0 ? (
+            <p className="py-6 text-sm text-muted-foreground" data-testid="unifi-history-empty">
+              No sync runs yet. Trigger a sync to populate device inventory.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y text-sm" data-testid="unifi-history-table">
+                <thead>
+                  <tr className="text-left text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Started</th>
+                    <th className="px-3 py-2 font-medium">Trigger</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium" title="Hosts seen">Hosts</th>
+                    <th className="px-3 py-2 font-medium" title="Devices created">New</th>
+                    <th className="px-3 py-2 font-medium" title="Devices updated">Upd</th>
+                    <th className="px-3 py-2 font-medium" title="Devices unchanged">Same</th>
+                    <th className="px-3 py-2 font-medium" title="Devices removed/stale">Gone</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {syncRuns.map((run) => (
+                    <tr key={run.id} data-testid="unifi-history-row">
+                      <td className="px-3 py-2 whitespace-nowrap">{formatDateTime(run.startedAt)}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{run.trigger}</td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${runStatusClasses(run.status)}`}
+                          title={run.error ?? undefined}
+                          data-testid="unifi-history-status"
+                        >
+                          {run.status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">{run.hostsSeen}</td>
+                      <td className="px-3 py-2 tabular-nums">{run.devicesCreated}</td>
+                      <td className="px-3 py-2 tabular-nums">{run.devicesUpdated}</td>
+                      <td className="px-3 py-2 tabular-nums">{run.devicesUnchanged}</td>
+                      <td className="px-3 py-2 tabular-nums">{run.devicesRemoved}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+// Sync-run status → badge colors (mirrors SyncRunResult.status: success | partial | failed,
+// plus the transient 'running' the worker writes at start).
+function runStatusClasses(status: string): string {
+  switch (status) {
+    case 'success':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'partial':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'failed':
+      return 'border-red-200 bg-red-50 text-red-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
 }
 
 function Header() {

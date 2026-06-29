@@ -38,7 +38,11 @@ export interface UnifiClient {
   getIspMetrics(siteId: string): Promise<UnifiIspMetrics | null>;
 }
 
-interface UnifiClientConfig { baseUrl: string; apiKey: string; fetchImpl?: typeof fetch }
+interface UnifiClientConfig { baseUrl: string; apiKey: string; fetchImpl?: typeof fetch; sleepImpl?: (ms: number) => Promise<void> }
+
+const MAX_RETRIES = 2;
+const MAX_RETRY_DELAY_MS = 30_000;
+const DEFAULT_RETRY_DELAY_MS = 1000;
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -46,13 +50,23 @@ const bool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null)
 
 export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
   const fetchImpl = cfg.fetchImpl ?? fetch;
+  const sleepImpl = cfg.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const base = cfg.baseUrl.replace(/\/+$/, '');
 
   async function get<T>(path: string): Promise<T> {
-    const res = await fetchImpl(`${base}${path}`, {
+    const fetchGet = () => fetchImpl(`${base}${path}`, {
       method: 'GET',
       headers: { 'X-API-KEY': cfg.apiKey, accept: 'application/json' },
     });
+    let res = await fetchGet();
+    for (let attempt = 0; res.status === 429 && attempt < MAX_RETRIES; attempt += 1) {
+      const retryAfter = res.headers.get('retry-after');
+      const retryDelayMs = retryAfter && /^\d+$/.test(retryAfter)
+        ? Number.parseInt(retryAfter, 10) * 1000
+        : DEFAULT_RETRY_DELAY_MS;
+      await sleepImpl(Math.min(retryDelayMs, MAX_RETRY_DELAY_MS));
+      res = await fetchGet();
+    }
     const body = (await res.json().catch(() => null)) as { data?: unknown; message?: string; meta?: { rc?: string; msg?: string } } | null;
     if (!res.ok) {
       throw new UnifiApiError(body?.message ?? body?.meta?.msg ?? `UniFi API ${res.status}`, res.status, body?.meta?.msg);

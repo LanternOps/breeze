@@ -180,6 +180,29 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   return c.json({ success: true });
 });
 
+// GET /unifi/mappings — currently-saved site mappings (DB read, not a live UniFi call)
+unifiRoutes.get('/mappings', partnerScopes, readPerm, async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const conn = await getConnection(db, partner.partnerId);
+  if (!conn) return c.json({ mappings: [] });
+  // Scoped by integration_id; org-axis RLS on unifi_site_mappings additionally
+  // limits rows to orgs this partner can access (all rows here qualify by construction).
+  const mappings = await db.select({
+    id: unifiSiteMappings.id,
+    orgId: unifiSiteMappings.orgId,
+    siteId: unifiSiteMappings.siteId,
+    unifiHostId: unifiSiteMappings.unifiHostId,
+    unifiSiteId: unifiSiteMappings.unifiSiteId,
+    unifiHostName: unifiSiteMappings.unifiHostName,
+    unifiSiteName: unifiSiteMappings.unifiSiteName,
+    wanMetricsAt: unifiSiteMappings.wanMetricsAt,
+    updatedAt: unifiSiteMappings.updatedAt,
+  }).from(unifiSiteMappings).where(eq(unifiSiteMappings.integrationId, conn.id));
+  return c.json({ mappings });
+});
+
 // POST /unifi/sync — manual sync trigger
 unifiRoutes.post('/sync', partnerScopes, writePerm, requireMfa(), async (c) => {
   const auth = c.get('auth');

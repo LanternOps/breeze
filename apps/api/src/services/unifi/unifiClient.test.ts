@@ -25,6 +25,38 @@ describe('unifiClient', () => {
     await expect(client.listHosts()).rejects.toMatchObject({ status: 401 });
   });
 
+  it('retries on 429 then succeeds', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'rate limited' }, 429, { 'retry-after': '2' }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'h1', name: 'Console 1' }] }));
+    const sleepImpl = vi.fn(async () => undefined);
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl, sleepImpl });
+    await expect(client.listHosts()).resolves.toEqual([{ id: 'h1', name: 'Console 1' }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleepImpl).toHaveBeenCalledTimes(1);
+    expect(sleepImpl).toHaveBeenCalledWith(2000);
+  });
+
+  it('gives up after bounded retries on persistent 429', async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ message: 'rate limited' }, 429)));
+    const sleepImpl = vi.fn(async () => undefined);
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl, sleepImpl });
+    await expect(client.listHosts()).rejects.toMatchObject({ name: 'UnifiApiError', status: 429 });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleepImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to default delay when Retry-After is absent', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'rate limited' }, 429))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'h1', name: 'Console 1' }] }));
+    const sleepImpl = vi.fn(async () => undefined);
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl, sleepImpl });
+    await expect(client.listHosts()).resolves.toEqual([{ id: 'h1', name: 'Console 1' }]);
+    expect(sleepImpl).toHaveBeenCalledTimes(1);
+    expect(sleepImpl).toHaveBeenCalledWith(1000);
+  });
+
   it('maps a raw device payload to UnifiDeviceDto and preserves raw', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{
       id: 'd1', mac: 'aa:bb', name: 'AP-1', model: 'U6-Pro', type: 'uap',

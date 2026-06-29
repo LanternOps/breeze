@@ -53,6 +53,8 @@ vi.mock('../../db/schema', () => ({
     unifiSiteId: 'unifi_site_mappings.unifi_site_id',
     unifiHostName: 'unifi_site_mappings.unifi_host_name',
     unifiSiteName: 'unifi_site_mappings.unifi_site_name',
+    wanMetricsAt: 'unifi_site_mappings.wan_metrics_at',
+    updatedAt: 'unifi_site_mappings.updated_at',
   },
   unifiSyncRuns: {
     integrationId: 'unifi_sync_runs.integration_id',
@@ -387,6 +389,42 @@ describe('unifi routes', () => {
     expect(res.status).toBe(403);
     await expect(res.json()).resolves.toMatchObject({ success: false });
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  // GET /mappings
+  it('GET /mappings returns empty array when not connected', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue(null);
+    const res = await unifiRoutes.request('/mappings', { method: 'GET' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ mappings: [] });
+  });
+
+  it('GET /mappings returns saved mappings when connected', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    const mockMappings = [{
+      id: 'map-1', orgId: ORG_ID, siteId: SITE_ID,
+      unifiHostId: 'host-1', unifiSiteId: 'usite-1',
+      unifiHostName: 'My Host', unifiSiteName: 'My Site',
+      wanMetricsAt: null, updatedAt: '2026-06-28T00:00:00.000Z',
+    }];
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => mockMappings),
+      })),
+    } as any);
+    const res = await unifiRoutes.request('/mappings', { method: 'GET' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ mappings: mockMappings });
   });
 
   // GET /sync-runs — happy path
