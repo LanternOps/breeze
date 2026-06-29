@@ -50,20 +50,28 @@ export type PostureSummary = {
   generatedAt?: string;
   deviceCount?: number;
   controls?: {
-    edrCoveragePct?: number;
-    anyAvCoveragePct?: number;
+    // pct fields are number | null — null means "not assessed", rendered as N/A
+    // (never 0%, which would read as a measured failure on an insurance doc).
+    edrCoveragePct?: number | null;
+    anyAvCoveragePct?: number | null;
     unprotectedCount?: number;
-    encryptionPct?: number;
-    firewallPct?: number;
-    patchCurrentPct?: number;
-    passwordComplexityPct?: number;
-    localAdminExposurePct?: number;
+    encryptionPct?: number | null;
+    firewallPct?: number | null;
+    patchCurrentPct?: number | null;
+    patchUnknownCount?: number;
+    passwordComplexityPct?: number | null;
+    passwordUnknownCount?: number;
+    localAdminExposurePct?: number | null;
+    localAdminUnknownCount?: number;
+    avDefinitionsCurrentPct?: number | null;
     cisAvgPassRate?: number | null;
     cisIncluded?: boolean;
-    mfaIdentityConnected?: boolean;
+    cisAssessedCount?: number;
+    identityProviderConnected?: boolean;
     backupConfigured?: boolean;
     backupEncrypted?: boolean | null;
     dnsFilteringActive?: boolean;
+    dnsFilteringSyncStatus?: string | null;
   };
   privilegedAccess?: {
     uacInterceptionEnabled?: boolean;
@@ -169,7 +177,9 @@ export function exportReport(
 }
 
 const yesNo = (v: boolean | undefined): string => (v ? 'Yes' : 'No');
-const pctText = (v: number | undefined): string => `${v ?? 0}%`;
+// null/undefined = control was not assessed → "N/A", never a misleading "0%".
+const pctText = (v: number | null | undefined): string => (v == null ? 'N/A — not assessed' : `${v}%`);
+const withUnknown = (n: number | undefined): string => (n && n > 0 ? ` (${n} unknown)` : '');
 
 /**
  * Render the posture scorecard cover (org header, control-coverage list,
@@ -198,25 +208,31 @@ function renderPostureCover(doc: jsPDF, summary: PostureSummary, generatedAt: st
   doc.setFontSize(12);
   doc.text('Control coverage', 14, y);
   doc.setFontSize(9);
+  const dnsStatus = c.dnsFilteringSyncStatus
+    ? ` (sync: ${c.dnsFilteringSyncStatus})`
+    : '';
   const controlLines = [
     `Managed EDR coverage: ${pctText(c.edrCoveragePct)}`,
     `Any AV + real-time protection: ${pctText(c.anyAvCoveragePct)}`,
     `Unprotected devices: ${c.unprotectedCount ?? 0}`,
+    `AV definitions current: ${pctText(c.avDefinitionsCurrentPct)}`,
     `Disk encryption: ${pctText(c.encryptionPct)}`,
     `Host firewall: ${pctText(c.firewallPct)}`,
-    `Patch current (no critical pending): ${pctText(c.patchCurrentPct)}`,
-    `Password complexity: ${pctText(c.passwordComplexityPct)}`,
-    `Local-admin exposure (over threshold): ${pctText(c.localAdminExposurePct)}`,
-    `MFA / identity connected: ${yesNo(c.mfaIdentityConnected)}`,
+    `Patch current (no critical pending): ${pctText(c.patchCurrentPct)}${withUnknown(c.patchUnknownCount)}`,
+    `Password complexity: ${pctText(c.passwordComplexityPct)}${withUnknown(c.passwordUnknownCount)}`,
+    `Local-admin exposure (over threshold): ${pctText(c.localAdminExposurePct)}${withUnknown(c.localAdminUnknownCount)}`,
+    `Identity provider connected (M365/Google): ${yesNo(c.identityProviderConnected)}`,
     `Backup configured: ${yesNo(c.backupConfigured)}${c.backupEncrypted ? ' (encrypted)' : ''}`,
-    `DNS filtering active: ${yesNo(c.dnsFilteringActive)}`,
+    `DNS filtering active: ${yesNo(c.dnsFilteringActive)}${dnsStatus}`,
   ];
   // CIS hardening line is omitted entirely when the section is toggled off;
-  // otherwise it shows the pass-rate, or "Not yet assessed" until scans run.
+  // otherwise it shows the pass-rate with coverage, or "Not yet assessed".
   if (c.cisIncluded !== false) {
-    controlLines.push(
-      `Hardening (CIS): ${c.cisAvgPassRate == null ? 'Not yet assessed' : `${c.cisAvgPassRate}%`}`,
-    );
+    const cisCoverage =
+      c.cisAvgPassRate == null
+        ? 'Not yet assessed'
+        : `${c.cisAvgPassRate}% across ${c.cisAssessedCount ?? 0}/${summary.deviceCount ?? 0} devices assessed`;
+    controlLines.push(`Hardening (CIS): ${cisCoverage}`);
   }
   for (const line of controlLines) {
     y += 5;
@@ -247,7 +263,9 @@ function renderPostureCover(doc: jsPDF, summary: PostureSummary, generatedAt: st
     for (const prod of products) {
       y += 5;
       const coverage = prod.deviceCoverage != null ? ` — ${prod.deviceCoverage} devices` : '';
-      doc.text(`${prod.product} (${prod.category})${coverage}`, 18, y);
+      const sync = prod.lastSyncStatus ? ` [sync: ${prod.lastSyncStatus}]` : '';
+      const degraded = prod.active === false ? ' — DEGRADED' : '';
+      doc.text(`${prod.product} (${prod.category})${coverage}${sync}${degraded}`, 18, y);
     }
   }
 

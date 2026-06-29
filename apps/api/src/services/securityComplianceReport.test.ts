@@ -26,6 +26,7 @@ const ORG = '00000000-0000-0000-0000-000000000001';
  *  8 dns_filter   9 backup_configs   10 c2c_connections   11 m365
  * 12 google   13 pam_org_config   14 pam_rules   15 elevation_requests
  * 16 authenticator_policies (only if org has partnerId)   17 latest org posture snapshot
+ * 18 cis_baseline_results (only if includeCis)   19 device_patches scanned-set (any status)
  */
 function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}) {
   const seq: any[][] = [
@@ -59,7 +60,9 @@ function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}) {
   }
   const m = vi.mocked(db.select);
   m.mockReset();
-  for (const rows of seq) m.mockReturnValueOnce(selectChain(rows));
+  // Fill any sparse holes (e.g. overriding #19 without #18) with [] so every
+  // queued query resolves to an iterable, not undefined.
+  for (let i = 0; i < seq.length; i++) m.mockReturnValueOnce(selectChain(seq[i] ?? []));
   m.mockReturnValue(selectChain([]));
 }
 
@@ -130,6 +133,62 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect((r.rows as any[]).every((row) => row.cisPassRate === null)).toBe(true);
   });
 
+  it('reports identity-connected (not MFA) and AV-definitions currency, with patch unknowns', async () => {
+    mockGeneratorQueries(); // patch-scanned (#19) defaults empty → nothing patch-assessed
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    // C2: the control says only what's proven — identity connected, NOT MFA enforced.
+    expect(c.identityProviderConnected).toBe(true);
+    expect(c.mfaIdentityConnected).toBeUndefined();
+    // H2: maxAvDefinitionsAgeDays now drives a real control (dev-1 defs are fresh).
+    expect(c.avDefinitionsCurrentPct).toBe(100);
+    // H1: no device_patches rows → patch currency is "not assessed", all unknown.
+    expect(c.patchCurrentPct).toBeNull();
+    expect(c.patchUnknownCount).toBe(3);
+    // H3: DNS sync status is surfaced.
+    expect(c.dnsFilteringSyncStatus).toBe('success');
+  });
+
+  it('computes patch currency only over patch-scanned devices (H1)', async () => {
+    // #6 pending = dev-2 critical; #19 scanned-set = dev-1 + dev-2 (dev-3 never scanned)
+    mockGeneratorQueries({ 19: [{ deviceId: 'dev-1' }, { deviceId: 'dev-2' }] });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    expect(c.patchCurrentPct).toBe(50); // dev-1 current, dev-2 has critical pending
+    expect(c.patchUnknownCount).toBe(1); // dev-3 unscanned
+  });
+
+  it('treats missing per-device data as explicit unknown, never pass/fail (C1/M1/M2)', async () => {
+    mockGeneratorQueries({
+      2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
+      3: [{ deviceId: 'd', provider: 'other', realTimeProtection: false, definitionsDate: null, encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null }],
+      4: [],
+      5: []
+    });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    // assessed denominators are 0 → null ("N/A"), and the unknowns are surfaced.
+    expect(c.localAdminExposurePct).toBeNull();
+    expect(c.localAdminUnknownCount).toBe(1);
+    expect(c.passwordComplexityPct).toBeNull();
+    expect(c.passwordUnknownCount).toBe(1);
+    expect(c.encryptionPct).toBeNull();
+    expect(c.firewallPct).toBeNull();
+  });
+
+  it('marks a failing-sync DNS integration as degraded, not active (H3)', async () => {
+    mockGeneratorQueries({ 8: [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'error' }] });
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
+    expect(summary.controls.dnsFilteringActive).toBe(false);
+    expect(summary.controls.dnsFilteringSyncStatus).toBe('error');
+    const dnsProduct = summary.securityProducts.find((p: any) => p.category === 'dns_filtering');
+    expect(dnsProduct.active).toBe(false);
+  });
+
+  it('reports CIS coverage (assessed count) alongside the average (H4)', async () => {
+    mockGeneratorQueries({ 18: [{ deviceId: 'dev-1', passedChecks: 90, totalChecks: 100 }] });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    expect(c.cisAvgPassRate).toBe(90);
+    expect(c.cisAssessedCount).toBe(1); // 1 of 3 devices scanned — coverage is visible
+  });
+
   it('lists active security products', async () => {
     mockGeneratorQueries();
     const r = await generateSecurityCompliancePostureReport(ORG, {});
@@ -145,6 +204,7 @@ describe('generateSecurityCompliancePostureReport', () => {
     const r = await generateSecurityCompliancePostureReport(ORG, {});
     expect(r.rows).toEqual([]);
     expect((r.summary as any).deviceCount).toBe(0);
-    expect((r.summary as any).controls.edrCoveragePct).toBe(0);
+    // No devices assessed → null ("N/A"), never a misleading 0%.
+    expect((r.summary as any).controls.edrCoveragePct).toBeNull();
   });
 });

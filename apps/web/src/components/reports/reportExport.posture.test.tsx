@@ -37,16 +37,22 @@ const summary = {
     edrCoveragePct: 67,
     anyAvCoveragePct: 67,
     unprotectedCount: 1,
+    avDefinitionsCurrentPct: 100,
     encryptionPct: 100,
     firewallPct: 100,
-    patchCurrentPct: 67,
+    patchCurrentPct: null, // not assessed → renders N/A
+    patchUnknownCount: 3,
     passwordComplexityPct: 50,
-    localAdminExposurePct: 0,
+    passwordUnknownCount: 1,
+    localAdminExposurePct: null,
+    localAdminUnknownCount: 2,
     cisAvgPassRate: null,
-    mfaIdentityConnected: true,
+    cisAssessedCount: 0,
+    identityProviderConnected: true,
     backupConfigured: true,
     backupEncrypted: true,
     dnsFilteringActive: true,
+    dnsFilteringSyncStatus: 'success',
   },
   privilegedAccess: {
     uacInterceptionEnabled: true,
@@ -87,6 +93,40 @@ describe('exportReport — security_compliance_posture PDF', () => {
     expect(joined).toContain('Not yet assessed'); // CIS null → not 0%
     expect(joined).toContain('Active PAM rules: 2');
     expect(joined).toMatch(/Huntress/);
+    // Honest labels & no-data handling from the review fixes:
+    expect(joined).toContain('Identity provider connected (M365/Google): Yes'); // C2: not "MFA"
+    expect(joined).not.toContain('MFA / identity connected');
+    expect(joined).toContain('Patch current (no critical pending): N/A — not assessed'); // M1: null → N/A
+    expect(joined).toContain('(3 unknown)'); // patch unknown surfaced
+    expect(joined).toContain('AV definitions current: 100%'); // H2: config-driven control live
+    expect(joined).toContain('Local-admin exposure (over threshold): N/A — not assessed (2 unknown)');
+  });
+
+  it('shows CIS coverage and degraded DNS sync when present', () => {
+    const s = {
+      ...summary,
+      controls: {
+        ...summary.controls,
+        cisIncluded: true,
+        cisAvgPassRate: 95,
+        cisAssessedCount: 2,
+        dnsFilteringActive: false,
+        dnsFilteringSyncStatus: 'error',
+      },
+      securityProducts: [
+        { product: 'Cisco Umbrella', category: 'dns_filtering', active: false, lastSyncStatus: 'error', deviceCoverage: null },
+      ],
+    };
+    exportReport([{ hostname: 'pc-1' }], {
+      format: 'pdf',
+      reportType: 'security_compliance_posture',
+      timezone: 'UTC',
+      summary: s,
+    });
+    const joined = textCalls.join('\n');
+    expect(joined).toContain('Hardening (CIS): 95% across 2/3 devices assessed'); // H4 coverage
+    expect(joined).toContain('DNS filtering active: No (sync: error)'); // H3 degraded
+    expect(joined).toContain('DEGRADED'); // product flagged
   });
 
   it('omits the CIS hardening line when the section is toggled off', () => {

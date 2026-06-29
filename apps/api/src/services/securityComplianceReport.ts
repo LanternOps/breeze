@@ -14,6 +14,7 @@ import {
   cisBaselineResults,
   m365Connections,
   organizations,
+  OUTSTANDING_DEVICE_PATCH_STATUSES,
   pamOrgConfig,
   pamRules,
   patches,
@@ -29,6 +30,14 @@ import { resolveSiteAllowedDeviceIds, type ReportResult } from './reportGenerati
 
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
+
+/**
+ * Percentage that returns null (not 0) when nothing was assessed, so the PDF can
+ * render "N/A — no data" instead of a misleading "0%". Critical for an insurance
+ * report: an unmeasured control must never read as a measured failure or pass.
+ */
+const pctOrNull = (num: number, denom: number): number | null =>
+  denom === 0 ? null : Math.round((num / denom) * 100);
 
 const daysAgo = (d: Date | null): number | null =>
   d ? Math.floor((Date.now() - new Date(d).getTime()) / 86400000) : null;
@@ -64,9 +73,17 @@ function prettyProvider(p: string): string {
   return map[p] ?? p;
 }
 
-function passwordComplexityPass(summary: unknown, minLength: number): boolean {
-  if (!summary || typeof summary !== 'object') return false;
+/**
+ * Tri-state password-policy evaluation: `null` when the device reported no usable
+ * policy object (unknown — exclude from the denominator), otherwise pass/fail.
+ * Never collapses "no data" into a fail.
+ */
+function passwordComplexityResult(summary: unknown, minLength: number): boolean | null {
+  if (!summary || typeof summary !== 'object') return null;
   const s = summary as Record<string, unknown>;
+  const hasLen = typeof s.minLength === 'number';
+  const hasLockout = typeof s.lockoutThreshold === 'number' || typeof s.lockoutEnabled === 'boolean';
+  if (!hasLen && !hasLockout) return null; // object present but no recognizable policy fields
   const len = typeof s.minLength === 'number' ? s.minLength : 0;
   const lockout =
     typeof s.lockoutThreshold === 'number' ? s.lockoutThreshold > 0 : Boolean(s.lockoutEnabled);
@@ -89,20 +106,26 @@ function emptySummary(
     generatedAt,
     deviceCount: 0,
     controls: {
-      edrCoveragePct: 0,
-      anyAvCoveragePct: 0,
+      edrCoveragePct: null,
+      anyAvCoveragePct: null,
       unprotectedCount: 0,
-      encryptionPct: 0,
-      firewallPct: 0,
-      patchCurrentPct: 0,
-      passwordComplexityPct: 0,
-      localAdminExposurePct: 0,
+      encryptionPct: null,
+      firewallPct: null,
+      patchCurrentPct: null,
+      patchUnknownCount: 0,
+      passwordComplexityPct: null,
+      passwordUnknownCount: 0,
+      localAdminExposurePct: null,
+      localAdminUnknownCount: 0,
+      avDefinitionsCurrentPct: null,
       cisAvgPassRate: null,
       cisIncluded: includeCis,
-      mfaIdentityConnected: false,
+      cisAssessedCount: 0,
+      identityProviderConnected: false,
       backupConfigured: false,
       backupEncrypted: null,
-      dnsFilteringActive: false
+      dnsFilteringActive: false,
+      dnsFilteringSyncStatus: null
     },
     privilegedAccess: {
       uacInterceptionEnabled: false,
@@ -222,7 +245,7 @@ export async function generateSecurityCompliancePostureReport(
       and(
         eq(devicePatches.orgId, orgId),
         inArray(devicePatches.deviceId, deviceIds),
-        eq(devicePatches.status, 'pending')
+        inArray(devicePatches.status, OUTSTANDING_DEVICE_PATCH_STATUSES)
       )
     );
   const pendingByDevice = new Map<string, { total: number; critical: number }>();
@@ -338,15 +361,34 @@ export async function generateSecurityCompliancePostureReport(
       ? Math.round(cisValues.reduce((a, b) => a + b, 0) / cisValues.length)
       : null;
 
-  let reporting = 0;
+  // Patch-assessed set: a device counts toward patch currency only if it has at
+  // least one device_patches row (any status). Absence of patch data is "unknown",
+  // never silently scored as "current". (db.select — selectDistinct isn't mocked.)
+  const patchRowDevices = await db
+    .select({ deviceId: devicePatches.deviceId })
+    .from(devicePatches)
+    .where(and(eq(devicePatches.orgId, orgId), inArray(devicePatches.deviceId, deviceIds)));
+  const patchScannedDevices = new Set(patchRowDevices.map((r) => r.deviceId));
+
+  let reporting = 0; // devices reporting a security_status row
   let managedEdr = 0;
   let anyAv = 0;
   let unprotected = 0;
+  // Each control tracks an "assessed" denominator separate from `reporting`, so a
+  // device that reported security_status but lacks data for a given control is an
+  // explicit unknown — never folded into pass or fail.
+  let encAssessed = 0;
   let encrypted = 0;
+  let fwAssessed = 0;
   let firewall = 0;
+  let pwAssessed = 0;
   let pwPass = 0;
+  let adminAssessed = 0;
   let adminFlagged = 0;
+  let patchScanned = 0;
   let patchCurrent = 0;
+  let avDefAssessed = 0;
+  let avDefCurrent = 0;
 
   const rows = deviceRows.map((d) => {
     const ss = ssByDevice.get(d.id);
@@ -364,14 +406,41 @@ export async function generateSecurityCompliancePostureReport(
     if (!protectedDevice) unprotected += 1;
 
     const enc = ss?.encryptionStatus ?? 'unknown';
-    if (ss && enc === 'encrypted') encrypted += 1;
-    if (ss && ss.firewallEnabled === true) firewall += 1;
-    if (ss && passwordComplexityPass(ss.passwordPolicySummary, cfg.minPasswordLength)) pwPass += 1;
+    if (ss && enc !== 'unknown') {
+      encAssessed += 1;
+      if (enc === 'encrypted') encrypted += 1;
+    }
+    if (ss && ss.firewallEnabled != null) {
+      fwAssessed += 1;
+      if (ss.firewallEnabled === true) firewall += 1;
+    }
+    if (ss) {
+      const pw = passwordComplexityResult(ss.passwordPolicySummary, cfg.minPasswordLength);
+      if (pw !== null) {
+        pwAssessed += 1;
+        if (pw) pwPass += 1;
+      }
+    }
     const admins = ss ? localAdminCount(ss.localAdminSummary) : null;
-    if (admins != null && admins > cfg.maxLocalAdmins) adminFlagged += 1;
+    if (ss && admins != null) {
+      adminAssessed += 1;
+      if (admins > cfg.maxLocalAdmins) adminFlagged += 1;
+    }
 
     const pend = pendingByDevice.get(d.id) ?? { total: 0, critical: 0 };
-    if (ss && pend.critical === 0) patchCurrent += 1;
+    if (patchScannedDevices.has(d.id)) {
+      patchScanned += 1;
+      if (pend.critical === 0) patchCurrent += 1;
+    }
+
+    // AV definitions currency honors cfg.maxAvDefinitionsAgeDays, over native-AV
+    // devices that report a definitions date (managed-EDR-only devices have none).
+    const avAge = ss ? daysAgo(ss.definitionsDate) : null;
+    if (hasNativeAv && avAge != null) {
+      avDefAssessed += 1;
+      if (avAge <= cfg.maxAvDefinitionsAgeDays) avDefCurrent += 1;
+    }
+
     const vuln = vulnByDevice.get(d.id) ?? { critical: 0, high: 0 };
 
     return {
@@ -381,10 +450,11 @@ export async function generateSecurityCompliancePostureReport(
       protection: ss || isManaged ? protectionLabel({ managed, nativeProvider: ss?.provider ?? null, rtp }) : 'No data',
       protectionManaged: isManaged,
       realTimeProtection: rtp,
-      avDefinitionsAgeDays: ss ? daysAgo(ss.definitionsDate) : null,
+      avDefinitionsAgeDays: avAge,
       encryption: ss ? enc : 'no data',
       firewall: ss ? ss.firewallEnabled : null,
       localAdmins: admins,
+      patchAssessed: patchScannedDevices.has(d.id),
       pendingPatches: pend.total,
       criticalPatches: pend.critical,
       openVulnCritical: vuln.critical,
@@ -395,10 +465,16 @@ export async function generateSecurityCompliancePostureReport(
   });
 
   const deviceCount = deviceRows.length;
+
+  // An integration that exists but is failing to sync is not "active" for the
+  // purpose of an attestation. Treat lastSyncStatus 'error' as degraded.
+  const dnsSyncStatus = dns?.lastSyncStatus ?? null;
+  const dnsActive = Boolean(dns) && dnsSyncStatus !== 'error';
+
   const securityProducts: Array<{ product: string; category: string; active: boolean; lastSyncStatus: string | null; deviceCoverage: number | null }> = [];
   if (huntressDevices.size > 0) securityProducts.push({ product: 'Huntress', category: 'mdr', active: true, lastSyncStatus: null, deviceCoverage: huntressDevices.size });
   if (s1Devices.size > 0) securityProducts.push({ product: 'SentinelOne', category: 'edr', active: true, lastSyncStatus: null, deviceCoverage: s1Devices.size });
-  if (dns) securityProducts.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: true, lastSyncStatus: dns.lastSyncStatus ?? null, deviceCoverage: null });
+  if (dns) securityProducts.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus, deviceCoverage: null });
   if (backup) securityProducts.push({ product: `Backup (${backup.provider})`, category: 'backup', active: true, lastSyncStatus: null, deviceCoverage: null });
   if (c2c) securityProducts.push({ product: `SaaS backup (${c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null, deviceCoverage: null });
   if (m365) securityProducts.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null, deviceCoverage: null });
@@ -413,20 +489,28 @@ export async function generateSecurityCompliancePostureReport(
       generatedAt,
       deviceCount,
       controls: {
-        edrCoveragePct: pct(managedEdr, deviceCount),
-        anyAvCoveragePct: pct(anyAv, deviceCount),
+        edrCoveragePct: pctOrNull(managedEdr, deviceCount),
+        anyAvCoveragePct: pctOrNull(anyAv, deviceCount),
         unprotectedCount: unprotected,
-        encryptionPct: pct(encrypted, reporting),
-        firewallPct: pct(firewall, reporting),
-        patchCurrentPct: pct(patchCurrent, reporting),
-        passwordComplexityPct: pct(pwPass, reporting),
-        localAdminExposurePct: pct(adminFlagged, reporting),
+        encryptionPct: pctOrNull(encrypted, encAssessed),
+        firewallPct: pctOrNull(firewall, fwAssessed),
+        patchCurrentPct: pctOrNull(patchCurrent, patchScanned),
+        patchUnknownCount: deviceCount - patchScanned,
+        passwordComplexityPct: pctOrNull(pwPass, pwAssessed),
+        passwordUnknownCount: reporting - pwAssessed,
+        localAdminExposurePct: pctOrNull(adminFlagged, adminAssessed),
+        localAdminUnknownCount: reporting - adminAssessed,
+        avDefinitionsCurrentPct: pctOrNull(avDefCurrent, avDefAssessed),
         cisAvgPassRate,
         cisIncluded: cfg.includeCis,
-        mfaIdentityConnected: Boolean(m365 || google),
+        cisAssessedCount: cisByDevice.size,
+        // Proves an identity provider is CONNECTED, not that MFA is enforced.
+        // Real MFA enforcement is privilegedAccess.mfaStepUpEnforced.
+        identityProviderConnected: Boolean(m365 || google),
         backupConfigured: Boolean(backup || c2c),
         backupEncrypted: backup ? Boolean(backup.encryption) : null,
-        dnsFilteringActive: Boolean(dns)
+        dnsFilteringActive: dnsActive,
+        dnsFilteringSyncStatus: dnsSyncStatus
       },
       privilegedAccess: {
         uacInterceptionEnabled: Boolean(pamCfg?.uacInterceptionEnabled),

@@ -88,7 +88,7 @@ type SecurityComplianceResult = {
       passwordComplexityPct: number; // % meeting a configurable min policy (length/lockout/history)
       localAdminExposurePct: number; // % of devices with >N local admins (configurable threshold)
       cisAvgPassRate: number | null; // bonus — null until CIS scans run in the fleet
-      mfaIdentityConnected: boolean; // m365/google tenant connected
+      identityProviderConnected: boolean; // m365/google tenant connected — NOT proof of MFA enforcement (see privilegedAccess.mfaStepUpEnforced)
       backupConfigured: boolean;     // active backup_configs OR c2c
       backupEncrypted: boolean | null;
       dnsFilteringActive: boolean;
@@ -138,7 +138,14 @@ Two options for the rollup numbers:
 
 **CIS is wired but optional, and never a dependency.** CIS baseline scans are not yet routinely run in the target fleets, so **every primary control percentage derives from `security_status`, `device_patches`, the integration tables, and the PAM/elevation tables** — all of which populate without any CIS scan. The CIS section is now implemented: when `config.includeCis` is true (default), the generator reads each in-scope device's latest `cis_baseline_results` row and computes `cisPassRate = passedChecks / totalChecks` (using the result's aggregate columns directly — no findings-jsonb parsing), with `cisAvgPassRate` the mean over devices that have a scan. When no scans exist it is `null` and the PDF renders "Not yet assessed — enable CIS baseline scans," never 0% (which would read as a failing control rather than an unmeasured one). When `config.includeCis` is false, the CIS query is skipped entirely and the hardening line is omitted from the PDF (`controls.cisIncluded` distinguishes "off" from "no data"). When CIS coverage later grows, the section lights up with no report changes.
 
-Percent formulas are simple coverage ratios over in-scope devices (denominator = devices in scope with a `security_status` row; devices never reporting are surfaced separately as "no data," never silently counted as compliant). `passwordComplexityPct` and `localAdminExposurePct` read `password_policy_summary` / `local_admin_summary` against thresholds in `config` (sensible defaults: min length ≥ 8, lockout enabled; local-admin threshold > 2). Privileged-access counts come from `pam_org_config` (one row/org), enabled `pam_rules`, and `elevation_requests` filtered to the report's date window.
+**No-data is never scored as the favorable answer (insurance-grade honesty).** Each control has its own *assessed* denominator, not a shared one: a device that reports `security_status` but lacks data for a specific control (corrupt/absent `local_admin_summary`, no password-policy fields, `firewall_enabled` null, `encryption_status` 'unknown') is counted as **unknown** for that control — excluded from both numerator and denominator — and the unknown count is surfaced (`localAdminUnknownCount`, `passwordUnknownCount`, `patchUnknownCount`). Percentages are `number | null`; when nothing was assessed the value is `null` and the PDF renders **"N/A — not assessed"**, never `0%` (which would read as a measured failure). Specific honesty rules baked in:
+- **Patch currency** counts a device only if it has a `device_patches` row (any status) — never-scanned devices are unknown, not "current".
+- **AV definitions currency** consumes `maxAvDefinitionsAgeDays` over native-AV devices that report a definitions date.
+- **Identity**: `identityProviderConnected` proves only that an M365/Google tenant is connected; it does **not** assert MFA. Real MFA enforcement is `privilegedAccess.mfaStepUpEnforced` (`authenticator_policies`).
+- **Integration health**: an integration failing to sync (`lastSyncStatus='error'`) is reported degraded, not active; sync status is rendered on the scorecard.
+- **CIS** reports its coverage (`cisAssessedCount`/`deviceCount`) alongside the average, so a thin sample can't read as a fleet number.
+
+`passwordComplexityPct` and `localAdminExposurePct` read `password_policy_summary` / `local_admin_summary` against thresholds in `config` (sensible defaults: min length ≥ 8, lockout enabled; local-admin threshold > 2). Privileged-access counts come from `pam_org_config` (one row/org), enabled `pam_rules`, and `elevation_requests` filtered to the report's date window.
 
 ## 6. Implementation surface (high level — a separate plan will task this out)
 
