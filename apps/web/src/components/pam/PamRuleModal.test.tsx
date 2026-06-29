@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRuleModal from './PamRuleModal';
@@ -313,7 +313,21 @@ describe('PamRuleModal', () => {
         expect(screen.getByTestId('pam-rule-hash')).toBeInTheDocument();
       });
 
-      await user.type(screen.getByTestId('pam-rule-signer'), 'Acme Corp');
+      // Set the signer atomically rather than typing it char-by-char. The modal
+      // fires cascading mount fetches (orgs → sites → signer-groups) whose
+      // resolutions re-render mid-interaction; with incremental user.type() a
+      // re-render lands between keystrokes and drops characters, so the criterion
+      // ends up empty and buildCriteria() short-circuits to "At least one match
+      // criterion is required." instead of issuing the preview. A single
+      // fireEvent.change commits the whole value in one synchronous update,
+      // immune to that race. This flaked on unrelated branches (e.g. an aws-sdk
+      // dependency bump) where the only failing test was this one.
+      fireEvent.change(screen.getByTestId('pam-rule-signer'), {
+        target: { value: 'Acme Corp' },
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('pam-rule-signer')).toHaveValue('Acme Corp'),
+      );
       await user.click(screen.getByTestId('pam-rule-preview-btn'));
 
       await waitFor(() => {
