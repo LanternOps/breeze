@@ -13,6 +13,12 @@ import {
   getConnection,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
+import {
+  importQuickbooksCustomers,
+  listQuickbooksCustomersAnnotated,
+  QbImportError,
+} from '../../services/accounting/quickbooksCustomerImport';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
 import { captureException } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
@@ -34,6 +40,14 @@ const settingsSchema = z.object({
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one setting is required',
 });
+const importCustomersSchema = z.object({
+  customerIds: z.array(z.string().min(1)).min(1).max(500),
+});
+
+function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status as 400 | 404);
+  throw err;
+}
 
 // CSRF binding cookie: the OAuth callback must complete in the SAME browser
 // that initiated /connect. Without it, an attacker who captures a victim into
@@ -242,6 +256,52 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     defaultIncomeAccountRef: connection.defaultIncomeAccountRef,
     defaultTaxCodeRef: connection.defaultTaxCodeRef,
   });
+});
+
+// List remote QuickBooks customers, annotated with whether each is already
+// imported. Read-only but partner-privileged, so partner/system scope.
+accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  try {
+    const data = await listQuickbooksCustomersAnnotated(partner.partnerId);
+    return c.json({ data });
+  } catch (err) {
+    return handleImportError(c, err);
+  }
+});
+
+// Import selected QuickBooks customers as orgs + sites. Write + MFA-gated.
+accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+  let summary;
+  try {
+    summary = await importQuickbooksCustomers({ partnerId: partner.partnerId, customerIds: c.req.valid('json').customerIds });
+  } catch (err) {
+    return handleImportError(c, err);
+  }
+
+  // Audit each created org + site (the import itself ran in system context).
+  for (const item of summary.imported) {
+    writeRouteAudit(c, {
+      orgId: item.organizationId,
+      action: 'organization.create',
+      resourceType: 'organization',
+      resourceId: item.organizationId,
+      resourceName: item.displayName,
+      details: { source: 'quickbooks_import', quickbooksCustomerId: item.customerId, siteId: item.siteId },
+    });
+  }
+
+  return c.json({ data: summary });
 });
 
 accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), async (c) => {
