@@ -29,6 +29,7 @@ const json = (payload: unknown, status = 200) =>
 
 const C1 = '11111111-1111-1111-1111-111111111111';
 const C2 = '22222222-2222-2222-2222-222222222222';
+const C3 = '33333333-3333-3333-3333-333333333333';
 
 const CONTRACTS = [
   {
@@ -76,6 +77,28 @@ const CONTRACTS = [
     createdAt: '2026-01-01',
     updatedAt: '2026-01-01',
   },
+  {
+    id: C3,
+    orgId: 'o1',
+    partnerId: 'p1',
+    name: 'Contract C',
+    status: 'active',
+    intervalMonths: 1,
+    currencyCode: 'USD',
+    nextBillingAt: '2026-02-01',
+    estimatedPeriodValue: '300.00',
+    billingTiming: 'advance',
+    startDate: '2026-01-01',
+    endDate: null,
+    autoIssue: false,
+    autoRenew: false,
+    renewalTermMonths: null,
+    renewalNoticeDays: null,
+    notes: null,
+    terms: null,
+    createdAt: '2026-01-01',
+    updatedAt: '2026-01-01',
+  },
 ];
 
 describe('ContractsList bulk actions', () => {
@@ -111,6 +134,19 @@ describe('ContractsList bulk actions', () => {
       expect(call).toBeTruthy();
       expect(JSON.parse((call![1] as RequestInit).body as string).ids).toEqual([C1, C2]);
     });
+  });
+
+  it('hides "Delete drafts" when the selection contains no drafts', async () => {
+    render(<ContractsList />);
+    await screen.findByTestId(`contract-row-${C3}`);
+
+    // Select only the active contract — there are no drafts in the selection,
+    // so the draft-only delete action must not be offered (it would be a no-op),
+    // while bulk Cancel (which the server applies to active/paused) stays.
+    fireEvent.click(screen.getByTestId(`contract-select-${C3}`));
+
+    expect(screen.getByTestId('contracts-bulk-action-cancel')).toBeInTheDocument();
+    expect(screen.queryByTestId('contracts-bulk-action-delete')).not.toBeInTheDocument();
   });
 
   it('opens cancel confirm dialog and posts ids to /contracts/bulk-cancel', async () => {

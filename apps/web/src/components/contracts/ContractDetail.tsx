@@ -292,9 +292,11 @@ export default function ContractDetail({ detail, onChanged }: Props) {
 
         {/* ── status + lifecycle + generate ─────────────────────────────── */}
         <div className="space-y-4">
-          {/* The status badge + cadence already lead the page header, so this card
-              carries only the one thing the header can't: what the buttons below
-              will do. data-testid kept for the suites that assert state here. */}
+          {/* The status badge already leads the page header (ContractWorkspace) and
+              cadence sits in the details card above, so this card carries only what
+              neither does: what the buttons below will do. The sr-only status node
+              keeps the contract state announced to assistive tech now that the
+              visible badge moved to the header. */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-detail-summary">
             <span className="sr-only" data-testid="contract-detail-status">
               {CONTRACT_STATUS_LABELS[contract.status]}
