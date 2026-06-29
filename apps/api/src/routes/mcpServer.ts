@@ -31,6 +31,8 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
 import { getUserPermissions } from '../services/permissions';
+import { getActiveOrgTenant } from '../services/tenantStatus';
+import { resolveServerUrl } from '../services/recoveryBootstrap';
 import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToolsSiteScope';
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
@@ -368,9 +370,19 @@ mcpServerRoutes.get(
     sseSessionQueues.set(sessionId, { queue: [], principalKey, createdAt: Date.now() });
 
     return streamSSE(c, async (stream) => {
-      // Send endpoint event so client knows where to POST messages
-      const baseUrl = new URL(c.req.url);
-      const messageUrl = `${baseUrl.protocol}//${baseUrl.host}${baseUrl.pathname.replace('/sse', '/message')}?sessionId=${sessionId}`;
+      // Send endpoint event so client knows where to POST messages.
+      //
+      // The scheme/host come from the configured public base URL
+      // (BREEZE_SERVER / PUBLIC_API_URL), NOT the raw request URL. Behind a
+      // reverse proxy (e.g. Caddy) the inbound hop is plain http://, so deriving
+      // the scheme from c.req.url emitted an http:// endpoint even on an https
+      // deployment. We deliberately do NOT trust X-Forwarded-Proto/Host here —
+      // matching the rest of the codebase's URL-emitting routes — to avoid host-
+      // header injection. Self-hosters set PUBLIC_API_URL to their external URL.
+      // The path is taken from the actual request so the /sse → /message mapping
+      // stays correct regardless of mount point.
+      const requestPath = new URL(c.req.url).pathname.replace('/sse', '/message');
+      const messageUrl = `${resolveServerUrl(c.req.url)}${requestPath}?sessionId=${sessionId}`;
 
       await stream.writeSSE({
         event: 'endpoint',
@@ -1565,15 +1577,28 @@ async function buildAuthFromApiKey(apiKey: {
     // restriction — it can never be broader than the user who minted it. Load
     // the creator's allowedSiteIds for this org so the site gate (verifyDeviceAccess)
     // applies to MCP/API-key callers exactly as it does to the JWT request path.
+    //
+    // The creator may be a Partner Admin with NO organization_users row for this
+    // org — their role lives in partner_users. getUserPermissions only consults
+    // the partner axis when given a partnerId, but manual (user-created) keys
+    // carry partnerId: null because apiKeyAuth deliberately gates partner-axis
+    // RLS visibility (accessiblePartnerIds) to mcp_provisioning keys. Resolve the
+    // owning org's partner here purely for ROLE resolution so a partner-admin-
+    // minted key can pass checkToolPermission. This does NOT widen the key's RLS
+    // partner visibility: the middleware still established this request's DB
+    // context with an empty accessiblePartnerIds, so partner-scoped tables stay
+    // unreadable. The key remains org-scoped (orgCondition pins to this org).
+    const partnerId =
+      apiKey.partnerId ?? (await getActiveOrgTenant(apiKey.orgId))?.partnerId ?? null;
     const creatorPerms = await getUserPermissions(apiKey.createdBy, {
-      partnerId: apiKey.partnerId || undefined,
+      partnerId: partnerId || undefined,
       orgId: apiKey.orgId,
     });
     const allowedSiteIds = creatorPerms?.allowedSiteIds;
     return {
       user,
       token: {} as AuthContext['token'],
-      partnerId: apiKey.partnerId,
+      partnerId,
       orgId: apiKey.orgId,
       scope: 'organization',
       accessibleOrgIds: [apiKey.orgId],

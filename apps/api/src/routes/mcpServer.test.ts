@@ -1120,6 +1120,57 @@ describe('MCP bootstrap carve-out', () => {
     delete process.env.MCP_MAX_SSE_SESSIONS_PER_KEY;
   });
 
+  it('SSE endpoint event uses the configured public base URL scheme/host, not the raw request URL', async () => {
+    // Regression: behind a reverse proxy (Caddy) the inbound hop is plain http,
+    // so deriving the message endpoint from c.req.url emitted an http:// URL on
+    // an https deployment. The endpoint must come from resolveServerUrl
+    // (BREEZE_SERVER || PUBLIC_API_URL) so it honors the external scheme/host.
+    delete process.env.IS_HOSTED;
+    const savedPublic = process.env.PUBLIC_API_URL;
+    const savedServer = process.env.BREEZE_SERVER;
+    delete process.env.BREEZE_SERVER;
+    process.env.PUBLIC_API_URL = 'https://mcp.example.com';
+
+    vi.doMock('../middleware/apiKeyAuth', () => ({
+      apiKeyAuthMiddleware: async (c: any, next: any) => {
+        c.set('apiKey', {
+          id: 'key-sse-scheme', orgId: 'org-1', partnerId: 'partner-1',
+          name: 'test', keyPrefix: 'brz_test', scopes: ['ai:read'],
+          rateLimit: 1000, createdBy: 'user-1',
+        });
+        c.set('apiKeyOrgId', 'org-1');
+        await next();
+      },
+      requireApiKeyScope: () => async (_c: any, next: any) => next(),
+    }));
+    vi.doMock('../services/redis', () => ({ getRedis: () => null }));
+
+    try {
+      const { mcpServerRoutes } = await import('./mcpServer');
+      const res = await mcpServerRoutes.request('/sse', {
+        method: 'GET',
+        headers: { 'X-API-Key': 'whatever' },
+      });
+      expect(res.status).toBe(200);
+
+      // The endpoint event is the first thing written; read one chunk then
+      // cancel so the handler's poll loop doesn't hang the test.
+      const reader = res.body!.getReader();
+      const { value } = await reader.read();
+      await reader.cancel();
+      const chunk = new TextDecoder().decode(value);
+
+      expect(chunk).toContain('event: endpoint');
+      expect(chunk).toMatch(/data: https:\/\/mcp\.example\.com\/message\?sessionId=/);
+      expect(chunk).not.toContain('data: http://');
+    } finally {
+      if (savedPublic === undefined) delete process.env.PUBLIC_API_URL;
+      else process.env.PUBLIC_API_URL = savedPublic;
+      if (savedServer === undefined) delete process.env.BREEZE_SERVER;
+      else process.env.BREEZE_SERVER = savedServer;
+    }
+  });
+
   // ===========================================================================
   // MED-1: Mcp-Session-Id is server-minted and bound to the calling principal
   // ===========================================================================
