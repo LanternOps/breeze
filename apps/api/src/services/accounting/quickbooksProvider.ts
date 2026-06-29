@@ -5,6 +5,8 @@ import type {
   AccountingProvider,
   ChangeSet,
   ConnectionTokens,
+  RemoteAddress,
+  RemoteCustomer,
   RemoteEntity,
   RemoteRef,
 } from './types';
@@ -13,6 +15,60 @@ import type { AccountingConnection } from './accountingConnectionService';
 const QBO_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QBO_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 const QBO_SCOPE = 'com.intuit.quickbooks.accounting';
+const QBO_API_MINOR_VERSION = '70';
+const QBO_CUSTOMER_PAGE_SIZE = 1000; // QBO hard cap per query page
+
+function qboApiBase(environment: 'sandbox' | 'production'): string {
+  return environment === 'production'
+    ? 'https://quickbooks.api.intuit.com'
+    : 'https://sandbox-quickbooks.api.intuit.com';
+}
+
+interface QboRawAddress {
+  Line1?: string; Line2?: string; City?: string;
+  CountrySubDivisionCode?: string; PostalCode?: string; Country?: string;
+}
+
+interface QboRawCustomer {
+  Id: string;
+  DisplayName?: string;
+  CompanyName?: string;
+  PrimaryEmailAddr?: { Address?: string };
+  PrimaryPhone?: { FreeFormNumber?: string };
+  GivenName?: string;
+  FamilyName?: string;
+  Active?: boolean;
+  BillAddr?: QboRawAddress;
+  ShipAddr?: QboRawAddress;
+}
+
+export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
+  if (!raw) return undefined;
+  const addr: RemoteAddress = {
+    line1: raw.Line1 || undefined,
+    line2: raw.Line2 || undefined,
+    city: raw.City || undefined,
+    region: raw.CountrySubDivisionCode || undefined,
+    postalCode: raw.PostalCode || undefined,
+    country: raw.Country || undefined,
+  };
+  return Object.values(addr).some((v) => v !== undefined) ? addr : undefined;
+}
+
+export function mapQboCustomer(raw: QboRawCustomer): RemoteCustomer {
+  const contactName = [raw.GivenName, raw.FamilyName].filter(Boolean).join(' ').trim();
+  return {
+    id: raw.Id,
+    displayName: raw.DisplayName || raw.CompanyName || raw.Id,
+    companyName: raw.CompanyName || undefined,
+    email: raw.PrimaryEmailAddr?.Address || undefined,
+    phone: raw.PrimaryPhone?.FreeFormNumber || undefined,
+    contactName: contactName || undefined,
+    active: raw.Active,
+    billAddr: mapQboAddress(raw.BillAddr),
+    shipAddr: mapQboAddress(raw.ShipAddr),
+  };
+}
 
 interface QboTokenResponse {
   access_token?: string;
@@ -44,8 +100,47 @@ export class QuickbooksProvider implements AccountingProvider {
     return this.requestTokens('refresh_token', { refreshToken, realmId: '' });
   }
 
-  async listRemoteCustomers(_conn: AccountingConnection, _query?: string): Promise<RemoteEntity[]> {
-    throw new Error('NotImplemented: Phase B');
+  // NOTE: assumes `conn.accessToken` is already a VALID token. Callers must
+  // resolve it via getValidAccessToken(db, conn) first (which refreshes +
+  // persists rotation) — this method stays pure HTTP with no db dependency.
+  async listRemoteCustomers(conn: AccountingConnection): Promise<RemoteCustomer[]> {
+    if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
+    if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
+
+    const base = qboApiBase(conn.environment);
+    const customers: RemoteCustomer[] = [];
+    let startPosition = 1;
+
+    // Page until a short page (< page size) signals the end.
+    for (;;) {
+      const query = `SELECT * FROM Customer STARTPOSITION ${startPosition} MAXRESULTS ${QBO_CUSTOMER_PAGE_SIZE}`;
+      const url = `${base}/v3/company/${conn.realmId}/query?query=${encodeURIComponent(query)}&minorversion=${QBO_API_MINOR_VERSION}`;
+      const response = await runOutsideDbContext(() =>
+        fetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${conn.accessToken}`,
+            Accept: 'application/json',
+          },
+        })
+      );
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        const err = new Error(`QuickBooks customer query failed with ${response.status}`);
+        (err as Error & { status?: number; body?: string }).status = response.status;
+        (err as Error & { status?: number; body?: string }).body = body.slice(0, 500);
+        throw err;
+      }
+
+      const parsed = await response.json() as { QueryResponse?: { Customer?: QboRawCustomer[] } };
+      const page = parsed.QueryResponse?.Customer ?? [];
+      for (const raw of page) customers.push(mapQboCustomer(raw));
+      if (page.length < QBO_CUSTOMER_PAGE_SIZE) break;
+      startPosition += QBO_CUSTOMER_PAGE_SIZE;
+    }
+
+    return customers;
   }
 
   async listRemoteItems(_conn: AccountingConnection, _query?: string): Promise<RemoteEntity[]> {
