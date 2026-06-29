@@ -9,13 +9,16 @@ export type DbExecutor = {
   delete: (...args: any[]) => any;
 };
 
+// Closed status domain for a partner's UniFi connection (compile-time typo guard).
+export type IntegrationStatus = 'pending' | 'connected' | 'reauth_required' | 'error';
+
 export interface UnifiConnection {
   id: string;
   partnerId: string;
   baseUrl: string;
   accountLabel: string | null;
   isActive: boolean;
-  status: string;
+  status: IntegrationStatus;
   lastSyncAt: Date | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
@@ -53,6 +56,32 @@ export async function getDecryptedApiKey(db: DbExecutor, partnerId: string): Pro
   const row = await selectActiveRow(db, partnerId);
   if (!row) return null;
   return decryptForColumn('unifi_integrations', 'api_key_encrypted', row.apiKeyEncrypted);
+}
+
+// Read baseUrl AND the decrypted key from the SAME active row, keyed by
+// (id, partnerId). Keeping both off one row avoids the subtle split where the key
+// came from the (partnerId, isActive) row and baseUrl from the (id, partnerId) row.
+export async function getSyncCredentials(
+  db: DbExecutor,
+  integrationId: string,
+  partnerId: string,
+): Promise<{ baseUrl: string; apiKey: string } | null> {
+  const rows = await db
+    .select()
+    .from(unifiIntegrations)
+    .where(
+      and(
+        eq(unifiIntegrations.id, integrationId),
+        eq(unifiIntegrations.partnerId, partnerId),
+        eq(unifiIntegrations.isActive, true),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  const apiKey = decryptForColumn('unifi_integrations', 'api_key_encrypted', row.apiKeyEncrypted);
+  if (!apiKey) return null;
+  return { baseUrl: row.baseUrl, apiKey };
 }
 
 export async function upsertConnection(
@@ -93,7 +122,7 @@ export async function markStatus(
   db: DbExecutor,
   connectionId: string,
   partnerId: string,
-  status: string,
+  status: IntegrationStatus,
   lastError?: string | null,
 ): Promise<void> {
   const updated = await db

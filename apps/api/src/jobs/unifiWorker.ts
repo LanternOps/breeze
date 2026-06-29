@@ -1,14 +1,14 @@
 import { Worker, type Job, type Queue } from 'bullmq';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { unifiIntegrations } from '../db/schema';
+import { unifiIntegrations, unifiSiteMappings } from '../db/schema';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { createUnifiClient } from '../services/unifi/unifiClient';
-import { getDecryptedApiKey, markStatus, markSynced } from '../services/unifi/unifiConnectionService';
-import { syncIntegration } from '../services/unifi/unifiSyncService';
+import { getSyncCredentials, markStatus, markSynced } from '../services/unifi/unifiConnectionService';
+import { collectSyncData, applySyncData } from '../services/unifi/unifiSyncService';
 import { attachWorkerObservability } from './workerObservability';
 
 export const UNIFI_SYNC_QUEUE = 'unifi-sync';
@@ -76,81 +76,78 @@ async function processScheduler(): Promise<{ queued: number }> {
   );
 
   const queue = getUnifiSyncQueue();
+  let queued = 0;
   for (const integration of integrations) {
-    await queue.add(
-      SYNC_INTEGRATION_JOB,
-      {
-        type: SYNC_INTEGRATION_JOB,
-        integrationId: integration.id,
-        partnerId: integration.partnerId,
-        trigger: 'scheduled',
-      },
-      {
-        removeOnComplete: { count: 100 },
-        removeOnFail: { count: 100 },
-      },
-    );
+    try {
+      await queue.add(
+        SYNC_INTEGRATION_JOB,
+        {
+          type: SYNC_INTEGRATION_JOB,
+          integrationId: integration.id,
+          partnerId: integration.partnerId,
+          trigger: 'scheduled',
+        },
+        {
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 100 },
+        },
+      );
+      queued += 1;
+    } catch (error) {
+      // One bad enqueue must not skip every later integration this tick.
+      console.error(`[UnifiWorker] Failed to enqueue sync for integration ${integration.id}:`, error);
+    }
   }
 
-  return { queued: integrations.length };
+  return { queued };
 }
 
 async function processSyncIntegration(data: SyncIntegrationJobData): Promise<void> {
-  await withSystemDbAccessContext(async () => {
-    const apiKey = await getDecryptedApiKey(db, data.partnerId);
-    if (!apiKey) {
-      await markStatus(db, data.integrationId, data.partnerId, 'reauth_required', 'No API key on connection');
-      return;
-    }
+  // 1) Short DB context: read credentials + mappings. No network I/O here, so no
+  //    pooled connection is held while UniFi is being called.
+  const prep = await withSystemDbAccessContext(async () => {
+    const creds = await getSyncCredentials(db, data.integrationId, data.partnerId);
+    if (!creds) return null;
+    const mappings = await db
+      .select()
+      .from(unifiSiteMappings)
+      .where(eq(unifiSiteMappings.integrationId, data.integrationId));
+    return { creds, mappings };
+  });
 
-    const [integration] = await db
-      .select({ baseUrl: unifiIntegrations.baseUrl })
-      .from(unifiIntegrations)
-      .where(
-        and(
-          eq(unifiIntegrations.id, data.integrationId),
-          eq(unifiIntegrations.partnerId, data.partnerId),
-        ),
-      )
-      .limit(1);
+  if (!prep) {
+    await withSystemDbAccessContext(() =>
+      markStatus(db, data.integrationId, data.partnerId, 'reauth_required', 'No API key on connection'),
+    );
+    return;
+  }
 
-    const client = createUnifiClient({
-      baseUrl: integration?.baseUrl ?? 'https://api.ui.com',
-      apiKey,
-    });
+  // 2) NO DB context: all UniFi HTTP (listHosts, per-site devices/metrics, 429
+  //    backoff sleeps) runs here without holding a connection idle-in-transaction.
+  const client = createUnifiClient({ baseUrl: prep.creds.baseUrl, apiKey: prep.creds.apiKey });
+  const collected = await collectSyncData(client, prep.mappings);
 
-    try {
-      const result = await syncIntegration(
-        { db, client },
-        { id: data.integrationId, partnerId: data.partnerId },
-        data.trigger,
-      );
+  // 3) Short DB context(s): persist the run + device reconciliation, then status.
+  try {
+    const result = await withSystemDbAccessContext(() =>
+      applySyncData(db, { id: data.integrationId, partnerId: data.partnerId }, data.trigger, prep.mappings, collected),
+    );
+    await withSystemDbAccessContext(async () => {
       await markSynced(db, data.integrationId, data.partnerId, result.status, result.error ?? null);
       if (result.status === 'failed') {
         const message = result.error ?? 'UniFi sync failed';
-        await markStatus(
-          db,
-          data.integrationId,
-          data.partnerId,
-          isAuthFailure(message) ? 'reauth_required' : 'error',
-          message,
-        );
-        return;
+        await markStatus(db, data.integrationId, data.partnerId, isAuthFailure(message) ? 'reauth_required' : 'error', message);
+      } else {
+        await markStatus(db, data.integrationId, data.partnerId, 'connected', result.error ?? null);
       }
-
-      await markStatus(db, data.integrationId, data.partnerId, 'connected', result.error ?? null);
-    } catch (error) {
-      const message = errorMessage(error);
-      await markStatus(
-        db,
-        data.integrationId,
-        data.partnerId,
-        isAuthFailure(message) ? 'reauth_required' : 'error',
-        message,
-      );
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    await withSystemDbAccessContext(async () => {
+      await markStatus(db, data.integrationId, data.partnerId, isAuthFailure(message) ? 'reauth_required' : 'error', message);
       await markSynced(db, data.integrationId, data.partnerId, 'failed', message);
-    }
-  });
+    });
+  }
 }
 
 function createWorker(): Worker<UnifiJobData> {

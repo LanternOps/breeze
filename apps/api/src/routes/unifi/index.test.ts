@@ -99,12 +99,18 @@ vi.mock('../../services/unifi/unifiCollectorService', () => ({
   deleteCollector: vi.fn(),
 }));
 
-vi.mock('../../services/unifi/unifiClient', () => ({
-  createUnifiClient: vi.fn(() => ({
-    listHosts: vi.fn(async () => []),
-    listSites: vi.fn(async () => []),
-  })),
-}));
+vi.mock('../../services/unifi/unifiClient', async (importActual) => {
+  // Keep the real UnifiApiError so the route's `err instanceof UnifiApiError`
+  // auth-vs-infra branch works under the mock.
+  const actual = await importActual<typeof import('../../services/unifi/unifiClient')>();
+  return {
+    ...actual,
+    createUnifiClient: vi.fn(() => ({
+      listHosts: vi.fn(async () => []),
+      listSites: vi.fn(async () => []),
+    })),
+  };
+});
 
 vi.mock('../../jobs/unifiWorker', () => ({
   enqueueUnifiSync: vi.fn(async () => undefined),
@@ -166,11 +172,13 @@ describe('unifi routes', () => {
     await expect(res.json()).resolves.toMatchObject({ success: true });
   });
 
-  it('POST /disconnect returns success:false when no connection was active', async () => {
+  it('POST /disconnect is idempotent: success:true even when nothing was active', async () => {
+    // Already-disconnected is the desired end state — must not surface as a failure
+    // (runAction would toast it). The route reports success regardless of row count.
     vi.mocked(svc.deleteConnection).mockResolvedValue(false);
     const res = await unifiRoutes.request('/disconnect', { method: 'POST' });
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({ success: false });
+    await expect(res.json()).resolves.toMatchObject({ success: true });
   });
 
   it('POST /connect returns 400 when apiKey is missing', async () => {
@@ -182,10 +190,10 @@ describe('unifi routes', () => {
     expect(res.status).toBe(400);
   });
 
-  it('POST /connect returns 400 when API key validation fails', async () => {
-    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+  it('POST /connect returns 400 on an auth failure (bad key → UnifiApiError 401)', async () => {
+    const { createUnifiClient, UnifiApiError } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
-      listHosts: vi.fn(async () => { throw new Error('Invalid API key'); }),
+      listHosts: vi.fn(async () => { throw new UnifiApiError('Invalid API key', 401); }),
       listSites: vi.fn(async () => []),
       listDevices: vi.fn(async () => []),
       getIspMetrics: vi.fn(async () => null),
@@ -196,6 +204,23 @@ describe('unifi routes', () => {
       body: JSON.stringify({ apiKey: 'bad-key' }),
     });
     expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false });
+  });
+
+  it('POST /connect returns 502 on a non-auth failure (UniFi outage, not a bad key)', async () => {
+    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+    vi.mocked(createUnifiClient).mockReturnValueOnce({
+      listHosts: vi.fn(async () => { throw new Error('connection refused'); }),
+      listSites: vi.fn(async () => []),
+      listDevices: vi.fn(async () => []),
+      getIspMetrics: vi.fn(async () => null),
+    });
+    const res = await unifiRoutes.request('/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey: 'good-key' }),
+    });
+    expect(res.status).toBe(502);
     await expect(res.json()).resolves.toMatchObject({ success: false });
   });
 

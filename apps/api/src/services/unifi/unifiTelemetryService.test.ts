@@ -177,6 +177,28 @@ describe('reconcileTelemetry', () => {
     expect(writes.updates).toHaveLength(0);
   });
 
+  it('coalesces a null raw to {} so the NOT NULL jsonb column never sees null', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a' }],
+    });
+
+    // The agent's rawOf returns JSON null on a decode failure/overflow; the wire
+    // schema (z.unknown()) lets it through, but raw is jsonb NOT NULL.
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', unifiSiteId: 's1', mac: 'aa:bb', name: 'AP', raw: null }],
+      clients: [{ mac: 'cc:dd', unifiSiteId: 's1', raw: null }],
+    });
+
+    const deviceInsert = writes.inserts.find((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInsert?.values.raw).toEqual({});
+    expect(deviceInsert?.values.raw).not.toBeNull();
+    const clientInsert = writes.inserts.find((w) => w.table === unifiClients);
+    expect(clientInsert?.values.raw).toEqual({});
+    expect(clientInsert?.values.raw).not.toBeNull();
+  });
+
   it('normalizes client MAC (uppercase/hyphen) for asset linking and storage', async () => {
     const { db, writes } = scriptedDb({
       collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },

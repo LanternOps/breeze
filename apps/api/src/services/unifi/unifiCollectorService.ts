@@ -5,6 +5,11 @@ import type { DbExecutor } from './unifiConnectionService';
 
 export type { DbExecutor } from './unifiConnectionService';
 
+// The legal collector status domain. Kept as a closed union so a typo
+// (e.g. 'conected') is a compile error rather than a silently-stored bad value
+// that breaks the UI status badge.
+export type CollectorStatus = 'pending' | 'connected' | 'firmware_too_old' | 'unreachable' | 'error';
+
 export interface UnifiCollector {
   id: string;
   integrationId: string;
@@ -15,7 +20,7 @@ export interface UnifiCollector {
   controllerUrl: string;
   isEnabled: boolean;
   pollIntervalSeconds: number;
-  status: string;
+  status: CollectorStatus;
   firmwareOk: boolean | null;
   lastPollAt: Date | null;
   lastPollStatus: string | null;
@@ -147,7 +152,7 @@ export async function getCollectorOwnerDeviceId(db: DbExecutor, collectorId: str
 export async function markCollectorPoll(
   db: DbExecutor,
   collectorId: string,
-  status: string,
+  status: CollectorStatus,
   firmwareOk: boolean | null,
   error?: string | null,
 ): Promise<void> {

@@ -21,7 +21,9 @@ unifiTelemetryRoutes.use('/:id/unifi-collectors', requireAgentRole);
 unifiTelemetryRoutes.use('/:id/unifi-telemetry', requireAgentRole);
 
 const deviceDto = z.object({
-  unifiDeviceId: z.string(),
+  // Non-empty: the telemetry upsert key is (collectorId, unifiDeviceId); an empty
+  // id would collapse multiple devices to one row, last-write-wins.
+  unifiDeviceId: z.string().min(1),
   unifiSiteId: z.string().nullable().optional(),
   mac: z.string().nullable().optional(),
   name: z.string().nullable().optional(),

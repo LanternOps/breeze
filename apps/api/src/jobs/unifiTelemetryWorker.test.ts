@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
   db: {},
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
 vi.mock('../services/bullmqQueue', () => ({ createInstrumentedQueue: vi.fn() }));
@@ -16,6 +16,7 @@ vi.mock('../services/unifi/unifiCollectorService', () => ({
 import { processIngest } from './unifiTelemetryWorker';
 import * as telemetrySvc from '../services/unifi/unifiTelemetryService';
 import * as collectorSvc from '../services/unifi/unifiCollectorService';
+import * as dbModule from '../db';
 
 const basePayload = {
   collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
@@ -69,5 +70,29 @@ describe('processIngest status semantics (I1/I2)', () => {
     await processIngest({ ...basePayload, error: 'site s2 devices: 500', devices: [{ unifiDeviceId: 'd1' } as any] });
     expect(telemetrySvc.reconcileTelemetry).toHaveBeenCalledWith({}, expect.objectContaining({ error: 'site s2 devices: 500' }), { markStale: false });
     expect(collectorSvc.markCollectorPoll).toHaveBeenCalledWith({}, 'c1', 'error', true, 'site s2 devices: 500');
+  });
+});
+
+describe('processIngest reconcile-failure status (rollback-safe)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (collectorSvc.getCollectorOwnerDeviceId as any).mockResolvedValue('dev-1');
+  });
+
+  it('records error status in a SEPARATE context and rethrows when reconcile fails', async () => {
+    (telemetrySvc.reconcileTelemetry as any).mockRejectedValueOnce(new Error('db boom'));
+    await expect(processIngest(basePayload)).rejects.toThrow('db boom');
+    // The collector UI must reflect the failure...
+    expect(collectorSvc.markCollectorPoll).toHaveBeenCalledWith({}, 'c1', 'error', true, 'db boom');
+    // ...written via a second context, because the reconcile transaction rolls
+    // back on throw — an in-transaction status write would be lost.
+    expect((dbModule.withSystemDbAccessContext as any).mock.calls.length).toBe(2);
+  });
+
+  it('does NOT write any status for a cross-device payload (no error-status leak to another collector)', async () => {
+    (collectorSvc.getCollectorOwnerDeviceId as any).mockResolvedValue('dev-OTHER');
+    (telemetrySvc.reconcileTelemetry as any).mockRejectedValueOnce(new Error('should not run'));
+    await processIngest({ ...basePayload, deviceId: 'dev-attacker' });
+    expect(collectorSvc.markCollectorPoll).not.toHaveBeenCalled();
   });
 });

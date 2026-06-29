@@ -62,6 +62,14 @@ export async function reconcileTelemetry(
     (unifiSiteId && siteByUnifi.get(unifiSiteId)) || { orgId: collector.orgId, siteId: collector.siteId };
 
   const now = new Date();
+  // polledAt is the controller measurement time (agent clock); use it for
+  // last_seen_at when parseable so the field isn't collected-but-ignored, and
+  // fall back to ingest time otherwise. updated_at stays ingest-time.
+  const parsedPolledAt = Date.parse(payload.polledAt);
+  const seenAt = Number.isNaN(parsedPolledAt) ? now : new Date(parsedPolledAt);
+  // raw is jsonb NOT NULL; the agent may emit JSON null (rawOf overflow/decode
+  // failure) which z.unknown() lets through. Coalesce so the insert never nulls it.
+  const rawOrEmpty = (v: unknown) => (v == null ? {} : v);
 
   // --- Devices ---
   const seenDeviceIds = new Set<string>();
@@ -71,14 +79,14 @@ export async function reconcileTelemetry(
     await db.insert(unifiDeviceTelemetry).values({
       collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac: d.mac, name: d.name,
       uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct, txBytes: d.txBytes, rxBytes: d.rxBytes,
-      numClients: d.numClients, poePorts: d.poePorts ?? null, raw: d.raw, isStale: false, lastSeenAt: now,
+      numClients: d.numClients, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiDeviceTelemetry.collectorId, unifiDeviceTelemetry.unifiDeviceId],
       set: {
         orgId, siteId, mac: d.mac, name: d.name, uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct,
-        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, poePorts: d.poePorts ?? null, raw: d.raw,
-        isStale: false, lastSeenAt: now, lastSyncedAt: now, updatedAt: now,
+        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
+        isStale: false, lastSeenAt: seenAt, lastSyncedAt: now, updatedAt: now,
       },
     });
     result.devicesUpserted++;
@@ -111,14 +119,14 @@ export async function reconcileTelemetry(
       collectorId: collector.id, orgId, siteId, mac, hostname: cl.hostname,
       ipAddress: cl.ip, connectedDeviceId: cl.connectedDeviceId, uplinkPortIdx: cl.uplinkPortIdx, isWired: cl.isWired,
       ssid: cl.ssid, vlan: cl.vlan, signalDbm: cl.signalDbm, txBytes: cl.txBytes, rxBytes: cl.rxBytes,
-      uptimeSeconds: cl.uptimeSeconds, discoveredAssetId, raw: cl.raw, isStale: false, lastSeenAt: now, updatedAt: now,
+      uptimeSeconds: cl.uptimeSeconds, discoveredAssetId, raw: rawOrEmpty(cl.raw), isStale: false, lastSeenAt: seenAt, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiClients.collectorId, unifiClients.mac],
       set: {
         orgId, siteId, hostname: cl.hostname, ipAddress: cl.ip, connectedDeviceId: cl.connectedDeviceId,
         uplinkPortIdx: cl.uplinkPortIdx, isWired: cl.isWired, ssid: cl.ssid, vlan: cl.vlan, signalDbm: cl.signalDbm,
         txBytes: cl.txBytes, rxBytes: cl.rxBytes, uptimeSeconds: cl.uptimeSeconds, discoveredAssetId,
-        raw: cl.raw, isStale: false, lastSeenAt: now, updatedAt: now,
+        raw: rawOrEmpty(cl.raw), isStale: false, lastSeenAt: seenAt, updatedAt: now,
       },
     });
     result.clientsUpserted++;

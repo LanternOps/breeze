@@ -103,7 +103,7 @@ export const unifiSyncRuns = pgTable('unifi_sync_runs', {
   error: text('error'),
 }, (table) => ({
   integrationStartedIdx: index('unifi_sync_runs_integration_started_idx')
-    .on(table.integrationId, table.startedAt),
+    .on(table.integrationId, table.startedAt.desc()),
 }));
 
 export const unifiCollectors = pgTable('unifi_collectors', {

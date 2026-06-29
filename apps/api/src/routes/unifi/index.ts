@@ -6,7 +6,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { PERMISSIONS } from '../../services/permissions';
 import { db } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
-import { createUnifiClient } from '../../services/unifi/unifiClient';
+import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection } from '../../services/unifi/unifiConnectionService';
 import { listCollectors, upsertCollector, deleteCollector } from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
@@ -89,8 +89,15 @@ unifiRoutes.post('/connect', partnerScopes, writePerm, requireMfa(), zValidator(
   const base = baseUrl ?? 'https://api.ui.com';
   try {
     await createUnifiClient({ baseUrl: base, apiKey }).listHosts();
-  } catch {
-    return c.json({ success: false, message: 'Could not validate the UniFi API key. Check the key and host URL.' }, 400);
+  } catch (err) {
+    // Only a 401/403 means the key is actually bad (→ 400, user-actionable).
+    // A UniFi outage, DNS/network fault, or a bug here is NOT "wrong key":
+    // surface 502 and log it so on-call can diagnose instead of blaming the key.
+    if (err instanceof UnifiApiError && (err.status === 401 || err.status === 403)) {
+      return c.json({ success: false, message: 'Could not validate the UniFi API key. Check the key and host URL.' }, 400);
+    }
+    console.error('[unifi] connect: non-auth failure validating API key:', err);
+    return c.json({ success: false, message: 'Could not reach UniFi to validate the key. Please try again shortly.' }, 502);
   }
   const conn = await upsertConnection(db, partner.partnerId, {
     baseUrl: base,
@@ -124,8 +131,11 @@ unifiRoutes.post('/disconnect', partnerScopes, writePerm, requireMfa(), async (c
   const auth = c.get('auth');
   const partner = resolvePartnerId(auth, requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const ok = await deleteConnection(db, partner.partnerId);
-  return c.json({ success: ok });
+  // Idempotent: a 0-row delete means "already disconnected", which is the desired
+  // end state — report success so runAction doesn't toast a misleading failure on
+  // a double-click or concurrent disconnect.
+  await deleteConnection(db, partner.partnerId);
+  return c.json({ success: true });
 });
 
 // GET /unifi/hosts — live host+site list for the mapping UI
@@ -162,16 +172,23 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
   const { mappings } = c.req.valid('json');
+  // Resolve + authorize EVERY target site before any write. Doing this inline
+  // per-iteration would leave earlier mappings persisted when a later cross-org
+  // entry hits the 403, so the client sees a failure on a partially-applied batch.
+  const resolved: Array<{ m: (typeof mappings)[number]; orgId: string; siteId: string }> = [];
   for (const m of mappings) {
     const [site] = await db.select({ id: sites.id, orgId: sites.orgId }).from(sites).where(eq(sites.id, m.siteId)).limit(1);
     if (!site) return c.json({ success: false, message: `Unknown Breeze site: ${m.siteId}` }, 400);
     if (!auth.canAccessOrg(site.orgId)) {
       return c.json({ success: false, message: 'Access to target organization denied' }, 403);
     }
+    resolved.push({ m, orgId: site.orgId, siteId: site.id });
+  }
+  for (const { m, orgId, siteId } of resolved) {
     await db.insert(unifiSiteMappings).values({
       integrationId: conn.id,
-      orgId: site.orgId,
-      siteId: site.id,
+      orgId,
+      siteId,
       unifiHostId: m.unifiHostId,
       unifiSiteId: m.unifiSiteId,
       unifiHostName: m.unifiHostName ?? null,
@@ -179,8 +196,8 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
     }).onConflictDoUpdate({
       target: [unifiSiteMappings.integrationId, unifiSiteMappings.unifiHostId, unifiSiteMappings.unifiSiteId],
       set: {
-        orgId: site.orgId,
-        siteId: site.id,
+        orgId,
+        siteId,
         unifiHostName: m.unifiHostName ?? null,
         unifiSiteName: m.unifiSiteName ?? null,
         updatedAt: new Date(),
@@ -259,8 +276,11 @@ unifiRoutes.delete('/collectors/:hostId', partnerScopes, writePerm, requireMfa()
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  const ok = await deleteCollector(db, conn.id, c.req.param('hostId'));
-  return c.json({ success: ok });
+  const hostId = c.req.param('hostId');
+  if (!hostId) return c.json({ success: false, message: 'hostId is required' }, 400);
+  // Idempotent (see /disconnect): already-absent is the desired end state.
+  await deleteCollector(db, conn.id, hostId);
+  return c.json({ success: true });
 });
 
 // GET /unifi/telemetry?siteId= — devices (with poe_ports) + clients for a mapped site

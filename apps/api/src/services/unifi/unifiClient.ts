@@ -82,15 +82,17 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
 
   return {
     async listHosts() {
-      const rows = await get<Array<Record<string, unknown>>>('/v1/hosts');
+      // Coerce a `data: null` / 204 empty result to [] so the .map() can't throw
+      // an opaque 500 ("Cannot read properties of null").
+      const rows = (await get<Array<Record<string, unknown>> | null>('/v1/hosts')) ?? [];
       return rows.map((h) => ({ id: String(h.id), name: str(h.name) ?? String(h.id) }));
     },
     async listSites() {
-      const rows = await get<Array<Record<string, unknown>>>('/v1/sites');
+      const rows = (await get<Array<Record<string, unknown>> | null>('/v1/sites')) ?? [];
       return rows.map((s) => ({ id: String(s.id), hostId: String(s.hostId ?? s.host_id ?? ''), name: str(s.name) ?? String(s.id) }));
     },
     async listDevices(hostId: string) {
-      const rows = await get<Array<Record<string, unknown>>>(`/v1/hosts/${encodeURIComponent(hostId)}/devices`);
+      const rows = (await get<Array<Record<string, unknown>> | null>(`/v1/hosts/${encodeURIComponent(hostId)}/devices`)) ?? [];
       return rows.map((d) => ({
         unifiDeviceId: String(d.id),
         mac: str(d.mac),
