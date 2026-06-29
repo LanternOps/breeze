@@ -3,7 +3,7 @@
 # ============================================
 
 # Stage 1: Base image with pnpm
-FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS base
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS base
 RUN npm install -g pnpm@10.33.4
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -49,7 +49,7 @@ WORKDIR /app/apps/web
 RUN pnpm build
 
 # Stage 4: Production runner
-FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS runner
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS runner
 WORKDIR /app
 
 # Install wget for healthcheck; remove the bundled npm (and its vendored undici,
