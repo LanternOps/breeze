@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// The worker wraps shared-path writes (setConnectionStatus) in the DB-context
+// helpers so the FORCE-RLS UPDATE runs under system scope. This is a unit test
+// with no database, so make the helpers pass-throughs that just invoke their
+// callback — the real context behavior is exercised by the cursor RLS
+// integration test (ticketMailboxCursor.rls.integration.test.ts).
+vi.mock('../db', () => ({
+  runOutsideDbContext: (fn: () => any) => fn(),
+  withSystemDbAccessContext: (fn: () => any) => fn(),
+}));
+
 vi.mock('../services/ticketMailbox/connectionService', () => ({
   listConnectedMailboxes: vi.fn(),
   updateDeltaCursor: vi.fn(async () => {}),
