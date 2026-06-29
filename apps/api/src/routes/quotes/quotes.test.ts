@@ -159,7 +159,7 @@ describe('quote crud + lines routes', () => {
       body: JSON.stringify({ catalogItemId: ORG_ID, quantity: 3 })
     });
     expect(res.status).toBe(200);
-    expect(svc.addCatalogLine).toHaveBeenCalledWith(QUOTE_ID, ORG_ID, 3, undefined, expect.anything());
+    expect(svc.addCatalogLine).toHaveBeenCalledWith(QUOTE_ID, ORG_ID, 3, undefined, expect.anything(), { partNumber: null });
   });
 
   it('DELETE /:id deletes a draft quote', async () => {

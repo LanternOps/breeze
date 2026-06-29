@@ -175,7 +175,7 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(line.termMonths).toBe(12);
     expect(line.unitPrice).toBe('49.99');
     expect(line.billingFrequency).toBe('monthly');
-    expect(line.description).toBe('Managed endpoint');
+    expect(line.name).toBe('Managed endpoint');
     expect(line.sourceType).toBe('catalog');
     expect(line.catalogItemId).toBe(item.id);
     expect(line.taxable).toBe(true);
@@ -560,7 +560,7 @@ describe('quoteService (breeze_app, real DB)', () => {
     );
     expect(line.catalogItemId).toBe(item.id);
     expect(line.unitPrice).toBe('10.00');
-    expect(line.description).toBe('Own SKU');
+    expect(line.name).toBe('Own SKU');
     expect(line.lineTotal).toBe('30.00'); // 3 * 10.00
   });
 
