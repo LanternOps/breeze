@@ -4,6 +4,7 @@ import {
   Boxes,
   DollarSign,
   MessageSquare,
+  Network,
   Plug,
   Shield,
   Users,
@@ -22,9 +23,10 @@ import TdSynnexCatalogPanel from '../settings/TdSynnexCatalogPanel';
 import TdSynnexEcExpressPanel from '../settings/TdSynnexEcExpressPanel';
 import QuickbooksIntegration from './QuickbooksIntegration';
 import StripePaymentsIntegration from './StripePaymentsIntegration';
+import UnifiIntegration from './UnifiIntegration';
 import { getJwtClaims } from '../../lib/authScope';
 
-type TabId = 'webhooks' | 'notifications' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors' | 'accounting';
+type TabId = 'webhooks' | 'notifications' | 'psa' | 'security' | 'monitoring' | 'identity' | 'distributors' | 'accounting' | 'unifi';
 type SecuritySubTab = 'sentinelone' | 'huntress';
 type IdentitySubTab = 'google' | 'm365';
 type DistributorSubTab = 'pax8' | 'tdsynnex' | 'tdsynnex-ec';
@@ -39,6 +41,7 @@ const tabs: { id: TabId; label: string; icon: typeof Activity }[] = [
   { id: 'identity', label: 'Identity', icon: Users },
   { id: 'distributors', label: 'Distributors', icon: Boxes },
   { id: 'accounting', label: 'Accounting', icon: DollarSign },
+  { id: 'unifi', label: 'UniFi', icon: Network },
 ];
 
 const securitySubTabs: { id: SecuritySubTab; label: string }[] = [
@@ -261,6 +264,8 @@ export default function IntegrationsPage({ initialTab = 'webhooks' }: Integratio
       )}
       {activeTab === 'accounting' && !isOrgScoped && accountingSubTab === 'quickbooks' && <QuickbooksIntegration />}
       {activeTab === 'accounting' && !isOrgScoped && accountingSubTab === 'stripe' && <StripePaymentsIntegration />}
+      {/* UniFi gates partner-only inside the component (mirrors QuickbooksIntegration). */}
+      {activeTab === 'unifi' && <UnifiIntegration />}
     </div>
   );
 }
