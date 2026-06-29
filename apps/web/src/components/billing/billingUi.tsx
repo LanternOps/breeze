@@ -44,27 +44,40 @@ export function RecurringBillingNote({ className, testId }: { className?: string
 }
 
 /**
- * Internal cost / profit summary for a quote. Single source so the editor rail
- * and the internal detail view show the same figures with the same labels — and
- * so the "missing cost" warning stays readable (dark amber text + icon) instead
- * of the low-contrast bright-amber it used to be. NEVER rendered on the customer
- * document. Both the editor rail and the internal detail view gate it on
- * `quotes:read` (cost is a read affordance, not a write one).
+ * Internal cost / profit summary for a quote or invoice. Single source so the
+ * editor rail and the internal detail view show the same figures with the same
+ * labels — and so the "missing cost" warning stays readable (dark amber text +
+ * icon) instead of the low-contrast bright-amber it used to be. NEVER rendered on
+ * the customer document. Each surface gates it on its own read permission
+ * (`quotes:read` / `invoices:read`) — cost is a read affordance, not a write one.
+ *
+ * `idPrefix` namespaces the data-testids so quote and invoice instances don't
+ * collide in tests; it defaults to `quote` for the original quote callers.
+ * Invoices are one-time, so their `QuoteProfit` carries zero monthly/annual net
+ * and those rows self-hide — the component needs no invoice-specific shape.
  */
-export function MarginPanel({ profit, currency }: { profit: QuoteProfit; currency: string }) {
+export function MarginPanel({
+  profit,
+  currency,
+  idPrefix = 'quote',
+}: {
+  profit: QuoteProfit;
+  currency: string;
+  idPrefix?: string;
+}) {
   return (
-    <div className="mt-3 rounded-md bg-muted/40 p-2 text-sm" data-testid="quote-margin">
+    <div className="mt-3 rounded-md bg-muted/40 p-2 text-sm" data-testid={`${idPrefix}-margin`}>
       <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
         Margin (internal)
       </div>
       <dl className="space-y-1 tabular-nums">
-        <div className="flex justify-between"><dt className="text-muted-foreground">Cost</dt><dd data-testid="quote-margin-cost">{formatMoney(profit.totalCost, currency)}</dd></div>
-        <div className="flex justify-between"><dt className="text-muted-foreground">Profit (one-time)</dt><dd data-testid="quote-margin-net-onetime">{formatMoney(profit.oneTimeNet, currency)}</dd></div>
-        {Number(profit.monthlyRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Profit (monthly)</dt><dd data-testid="quote-margin-net-monthly">{formatMoney(profit.monthlyRecurringNet, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>}
-        {Number(profit.annualRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Profit (annual)</dt><dd data-testid="quote-margin-net-annual">{formatMoney(profit.annualRecurringNet, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>}
+        <div className="flex justify-between"><dt className="text-muted-foreground">Cost</dt><dd data-testid={`${idPrefix}-margin-cost`}>{formatMoney(profit.totalCost, currency)}</dd></div>
+        <div className="flex justify-between"><dt className="text-muted-foreground">Profit (one-time)</dt><dd data-testid={`${idPrefix}-margin-net-onetime`}>{formatMoney(profit.oneTimeNet, currency)}</dd></div>
+        {Number(profit.monthlyRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Profit (monthly)</dt><dd data-testid={`${idPrefix}-margin-net-monthly`}>{formatMoney(profit.monthlyRecurringNet, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>}
+        {Number(profit.annualRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Profit (annual)</dt><dd data-testid={`${idPrefix}-margin-net-annual`}>{formatMoney(profit.annualRecurringNet, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>}
       </dl>
       {profit.linesMissingCost > 0 && (
-        <p className="mt-1 flex items-start gap-1 text-xs text-warning-foreground" data-testid="quote-margin-missing-cost">
+        <p className="mt-1 flex items-start gap-1 text-xs text-warning-foreground" data-testid={`${idPrefix}-margin-missing-cost`}>
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
           <span>
             Profit estimate is incomplete — {profit.linesMissingCost} line{profit.linesMissingCost === 1 ? '' : 's'} missing a cost.

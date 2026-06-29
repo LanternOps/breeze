@@ -132,6 +132,24 @@ describe('InvoiceEditor', () => {
     });
   });
 
+  it('renders the internal margin summary from line costs', async () => {
+    const costedLine = { ...manualLine, id: 'line-c', costBasis: '30.00', quantity: '2.00', unitPrice: '50.00', lineTotal: '100.00' };
+    render(<InvoiceEditor detail={draft([costedLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    // revenue 100 − cost (30×2 = 60) = 40 net.
+    expect(screen.getByTestId('invoice-margin-cost')).toHaveTextContent('$60.00');
+    expect(screen.getByTestId('invoice-margin-net-onetime')).toHaveTextContent('$40.00');
+    expect(screen.queryByTestId('invoice-margin-net-monthly')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-margin-missing-cost')).not.toBeInTheDocument();
+  });
+
+  it('flags a missing cost in the margin summary', async () => {
+    // manualLine has costBasis null → excluded from net and counted as missing.
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-margin-missing-cost')).toHaveTextContent('1 line missing a cost');
+  });
+
   it('flags unapproved-time lines with a warning banner', async () => {
     const unapproved = { ...manualLine, id: 'line-u', isUnapprovedTime: true };
     render(<InvoiceEditor detail={draft([unapproved])} onChanged={vi.fn()} />);

@@ -5,13 +5,14 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
-import { UnsavedBadge } from './billingUi';
+import { UnsavedBadge, MarginPanel } from './billingUi';
 import {
   type InvoiceDetail,
   type InvoiceLine,
   formatMoney,
   lineTitle,
   lineBlurb,
+  computeInvoiceProfit,
 } from './invoiceTypes';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -28,8 +29,12 @@ type AddMode = 'catalog' | 'manual';
 export default function InvoiceEditor({ detail, onChanged }: Props) {
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
+  // Cost/margin is a read affordance (mirrors InvoiceDetail + the quote rails'
+  // `quotes:read` gate) — anyone who can read the invoice sees it.
+  const canSeeMargin = can('invoices', 'read');
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
+  const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
 
   const [busy, setBusy] = useState(false);
   // Distinct from `busy` (which any line edit sets) so the Issue buttons can show
@@ -423,6 +428,10 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                 <a href="/settings/billing" className="underline hover:text-foreground">Set one in Billing settings</a>.
               </p>
             )}
+            {/* Internal margin summary — at-a-glance profitability while building the
+                invoice (the per-line cost/margin breakdown lives in InvoiceDetail's
+                Accounting view). Reuses the shared quote math; never customer-facing. */}
+            {canSeeMargin && <MarginPanel profit={profit} currency={currency} idPrefix="invoice" />}
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-bill-to">

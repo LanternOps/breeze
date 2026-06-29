@@ -35,6 +35,7 @@ export function sellerLines(a: SellerSnapshot['address'] | null | undefined): st
 // (packages/shared/src/types/billing-enums.ts). Imported for the Record maps
 // below and re-exported so existing './invoiceTypes' consumers are unaffected.
 import type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType } from '@breeze/shared';
+import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 export type { InvoiceStatus, PaymentMethod, InvoiceLineSourceType };
 
 export interface InvoiceSummary {
@@ -207,6 +208,33 @@ export function lineTaxAmount(
   const cents = Math.round(Number(lineTotal) * 100);
   if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(cents)) return null;
   return Math.round(cents * rate) / 100;
+}
+
+/**
+ * Internal profit summary for an invoice, computed with the same shared cents
+ * math (`computeQuoteProfit`) the quote editor/detail rails use — so an invoice
+ * margin can never settle to a different figure than the quote it came from.
+ *
+ * Invoices are one-time, so every line maps to `recurrence: 'one_time'` (the
+ * monthly/annual nets stay 0 and `MarginPanel` self-hides those rows). Revenue
+ * mirrors the per-line "Accounting view" (`revenueAllocation ?? lineTotal`) and
+ * cost is the full line cost (`costBasis × quantity`); both are folded into a
+ * single synthetic unit (`quantity: '1'`) so the shared per-line math reproduces
+ * exactly those figures. Lines with no `costBasis` are excluded from the net and
+ * counted in `linesMissingCost` (drives the "estimate incomplete" warning) — the
+ * same billed-only (`customerVisible`), tax-excluded contract as quotes.
+ */
+export function computeInvoiceProfit(lines: InvoiceLine[]): QuoteProfit {
+  return computeQuoteProfit(
+    lines.map((l) => ({
+      quantity: '1',
+      unitPrice: l.revenueAllocation ?? l.lineTotal,
+      unitCost: l.costBasis == null ? null : (Number(l.costBasis) * Number(l.quantity)).toFixed(2),
+      taxable: l.taxable,
+      customerVisible: l.customerVisible,
+      recurrence: 'one_time' as const,
+    })),
+  );
 }
 
 /** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */

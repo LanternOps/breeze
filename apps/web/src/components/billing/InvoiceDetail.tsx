@@ -21,7 +21,9 @@ import {
   lineBlurb,
   pctFromFraction,
   sellerLines,
+  computeInvoiceProfit,
 } from './invoiceTypes';
+import { MarginPanel } from './billingUi';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -83,6 +85,13 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     () => (accountingView ? lines : lines.filter((l) => l.customerVisible)),
     [accountingView, lines],
   );
+
+  // Cost/margin is an internal read affordance, visible to anyone who can read
+  // the invoice (mirrors the always-on Accounting view toggle and the quote
+  // rails' `quotes:read` gate). Same shared cents math as quotes so an invoice
+  // margin can't drift from the quote it was issued from.
+  const canSeeMargin = can('invoices', 'read');
+  const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
 
   const lineMargin = (l: InvoiceLine): string => {
     if (l.costBasis == null) return '—';
@@ -333,6 +342,10 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
                 {formatMoney(invoice.balance, currency)}
               </span>
             </div>
+            {/* Internal margin summary — profitability stays visible after the
+                invoice is issued and the Editor tab disappears (same reason
+                QuoteDetail renders it). Never reaches the customer document. */}
+            {canSeeMargin && <MarginPanel profit={profit} currency={currency} idPrefix="invoice" />}
           </div>
 
           {/* Seller From block */}

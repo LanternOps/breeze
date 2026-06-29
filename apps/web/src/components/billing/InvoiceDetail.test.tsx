@@ -60,14 +60,44 @@ describe('InvoiceDetail', () => {
     render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
 
-    // Customer view: hidden bundle child not rendered, no cost column.
+    // Customer view: hidden bundle child not rendered, no per-line cost/margin
+    // columns. (Scoped to the table headers — the internal margin summary panel
+    // carries its own "Cost" label and is always visible to readers.)
     expect(screen.queryByTestId('invoice-detail-line-l2')).not.toBeInTheDocument();
-    expect(screen.queryByText('Cost')).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Cost' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Margin' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('invoice-accounting-toggle'));
     expect(screen.getByTestId('invoice-detail-line-l2')).toBeInTheDocument();
-    expect(screen.getByText('Cost')).toBeInTheDocument();
-    expect(screen.getByText('Margin')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Cost' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Margin' })).toBeInTheDocument();
+  });
+
+  it('renders the internal margin summary (billed-only, one-time, excludes tax)', async () => {
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+
+    // l1 is the only billed line: revenue 120 − cost (80×1) = 40. The hidden bundle
+    // child l2 is not customer-visible, so it's excluded (matches the quote math).
+    expect(screen.getByTestId('invoice-margin-cost')).toHaveTextContent('$80.00');
+    expect(screen.getByTestId('invoice-margin-net-onetime')).toHaveTextContent('$40.00');
+    // Invoices are one-time → the recurring profit rows never appear.
+    expect(screen.queryByTestId('invoice-margin-net-monthly')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-margin-net-annual')).not.toBeInTheDocument();
+    // Every billed line has a cost → no "estimate incomplete" warning.
+    expect(screen.queryByTestId('invoice-margin-missing-cost')).not.toBeInTheDocument();
+  });
+
+  it('warns in the margin summary when a billed line has no cost', async () => {
+    const noCost: InvoiceDetailData = {
+      ...issued,
+      lines: [{ ...lines[0], costBasis: null }],
+    };
+    render(<InvoiceDetail detail={noCost} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-margin-missing-cost')).toHaveTextContent('1 line missing a cost');
+    // The line is excluded from the net, so profit reads as $0.00 (not negative).
+    expect(screen.getByTestId('invoice-margin-net-onetime')).toHaveTextContent('$0.00');
   });
 
   it('records a payment via the form', async () => {

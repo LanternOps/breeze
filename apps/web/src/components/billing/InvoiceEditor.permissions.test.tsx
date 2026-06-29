@@ -68,6 +68,8 @@ describe('InvoiceEditor — permission gating', () => {
     expect(screen.queryByTestId('invoice-issue-send')).not.toBeInTheDocument();
     // Notes entry is disabled (gated on write) rather than removed.
     expect(screen.getByTestId('invoice-notes')).toBeDisabled();
+    // Cost/margin is a read affordance — invoices:read sees the margin panel.
+    expect(screen.getByTestId('invoice-margin')).toBeInTheDocument();
   });
 
   it('invoices:write reveals editing controls but still hides Issue / Issue & Send', async () => {
@@ -83,6 +85,8 @@ describe('InvoiceEditor — permission gating', () => {
     // send-gated:
     expect(screen.queryByTestId('invoice-issue')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-issue-send')).not.toBeInTheDocument();
+    // Margin gates on invoices:read specifically — write without read does not see it.
+    expect(screen.queryByTestId('invoice-margin')).not.toBeInTheDocument();
   });
 
   it('invoices:send reveals Issue / Issue & Send but NOT the editing controls', async () => {

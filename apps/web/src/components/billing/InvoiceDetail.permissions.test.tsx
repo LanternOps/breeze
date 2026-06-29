@@ -83,6 +83,8 @@ describe('InvoiceDetail — permission gating', () => {
     expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-form')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-submit')).not.toBeInTheDocument();
+    // But cost/margin IS a read affordance — invoices:read sees the margin panel.
+    expect(screen.getByTestId('invoice-margin')).toBeInTheDocument();
   });
 
   it('invoices:write WITHOUT invoices:send still hides every send-gated control', async () => {
@@ -98,6 +100,8 @@ describe('InvoiceDetail — permission gating', () => {
     expect(screen.queryByTestId('invoice-payment-form')).not.toBeInTheDocument();
     // write does not grant export either.
     expect(screen.queryByTestId('invoice-download-pdf')).not.toBeInTheDocument();
+    // Margin gates on invoices:read specifically — write without read does not see it.
+    expect(screen.queryByTestId('invoice-margin')).not.toBeInTheDocument();
   });
 
   it('invoices:export reveals Download PDF but NOT the send-gated controls', async () => {
