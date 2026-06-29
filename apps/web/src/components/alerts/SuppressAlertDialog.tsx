@@ -15,7 +15,10 @@ type PresetId = (typeof PRESETS)[number]['id'];
 type Choice = PresetId | 'custom';
 
 type SuppressAlertDialogProps = {
-  alertTitle: string;
+  /** Single-alert title. Omit (and pass `count`) when suppressing in bulk. */
+  alertTitle?: string;
+  /** Number of alerts being suppressed; drives the bulk copy. Defaults to 1. */
+  count?: number;
   onCancel: () => void;
   /** Receives the resolved absolute, strictly-future suppression deadline. */
   onConfirm: (until: Date) => void;
@@ -28,7 +31,7 @@ function localDatetimeValue(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export default function SuppressAlertDialog({ alertTitle, onCancel, onConfirm }: SuppressAlertDialogProps) {
+export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, onConfirm }: SuppressAlertDialogProps) {
   const [choice, setChoice] = useState<Choice>('24h');
   const [custom, setCustom] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -66,10 +69,13 @@ export default function SuppressAlertDialog({ alertTitle, onCancel, onConfirm }:
     <Dialog open onClose={onCancel} title="Suppress alert" maxWidth="md" className="p-6">
       <h2 className="text-lg font-semibold">Suppress alert</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        How long should &ldquo;{alertTitle}&rdquo; stay suppressed?
+        {count > 1
+          ? `How long should these ${count} alerts stay suppressed?`
+          : <>How long should &ldquo;{alertTitle}&rdquo; stay suppressed?</>}
       </p>
 
       <fieldset className="mt-4 space-y-2" data-testid="suppress-duration-options">
+        <legend className="sr-only">Suppression duration</legend>
         {PRESETS.map((p) => (
           <label
             key={p.id}
@@ -86,25 +92,31 @@ export default function SuppressAlertDialog({ alertTitle, onCancel, onConfirm }:
             <span>{p.label}</span>
           </label>
         ))}
-        <label className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted">
-          <input
-            type="radio"
-            name="suppress-duration"
-            value="custom"
-            checked={choice === 'custom'}
-            onChange={() => { setChoice('custom'); setError(null); }}
-            data-testid="suppress-duration-custom"
-          />
-          <span>Until&hellip;</span>
+        {/* The radio and the datetime input are two separate controls, so each
+            gets its own accessible name — the <label> wraps only the radio, and
+            the input carries an aria-label — rather than one label spanning both. */}
+        <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="radio"
+              name="suppress-duration"
+              value="custom"
+              checked={choice === 'custom'}
+              onChange={() => { setChoice('custom'); setError(null); }}
+              data-testid="suppress-duration-custom"
+            />
+            <span>Until&hellip;</span>
+          </label>
           <input
             type="datetime-local"
+            aria-label="Custom suppression date and time"
             value={custom}
             min={minCustom}
             onChange={(e) => { setCustom(e.target.value); setChoice('custom'); setError(null); }}
             className="ml-auto rounded-md border bg-background px-2 py-1 text-sm"
             data-testid="suppress-duration-custom-input"
           />
-        </label>
+        </div>
       </fieldset>
 
       {error && (

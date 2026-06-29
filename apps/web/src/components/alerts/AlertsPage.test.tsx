@@ -449,3 +449,64 @@ describe('AlertsPage — suppress duration picker', () => {
     expect(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i })).toBeInTheDocument();
   });
 });
+
+describe('AlertsPage — bulk suppress', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const bulkMock = () =>
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/alerts/bulk' && method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ updated: 1, skipped: 0, failed: 0 }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+  it('opens the duration picker and POSTs /alerts/bulk with action:suppress + until on confirm', async () => {
+    bulkMock();
+    render(<AlertsPage />);
+
+    // Select the alert, open the bulk menu, choose Suppress.
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Select High CPU on SRV-01/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Bulk Actions/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Suppress/i }));
+
+    // The duration picker opens; no bulk POST has fired yet.
+    expect(await screen.findByTestId('suppress-confirm')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith('/alerts/bulk', expect.anything());
+
+    const before = Date.now();
+    fireEvent.click(screen.getByTestId('suppress-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/alerts/bulk',
+        expect.objectContaining({ method: 'POST', body: expect.any(String) }),
+      );
+    });
+
+    const call = fetchMock.mock.calls.find(([url]) => url === '/alerts/bulk')!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.action).toBe('suppress');
+    expect(body.alertIds).toEqual([ALERT_ID]);
+    const untilMs = new Date(body.until).getTime();
+    expect(untilMs).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000 - 2000);
+    expect(untilMs).toBeLessThanOrEqual(Date.now() + 24 * 60 * 60 * 1000 + 2000);
+
+    // Past-tense success copy ("suppressed", not "suppressd").
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ message: '1 alert suppressed' }),
+      );
+    });
+  });
+});

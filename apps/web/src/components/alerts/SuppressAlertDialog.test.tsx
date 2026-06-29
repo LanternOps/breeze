@@ -84,4 +84,23 @@ describe('SuppressAlertDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();
   });
+
+  it('shows bulk copy when a count > 1 is given', () => {
+    render(<SuppressAlertDialog count={5} onConfirm={onConfirm} onCancel={onCancel} />);
+    expect(screen.getByText(/these 5 alerts stay suppressed/i)).toBeInTheDocument();
+  });
+
+  it('gives the custom datetime input its own accessible name (not the radio label)', () => {
+    renderDialog();
+    // The radio and the datetime input are distinct, separately-labelled controls.
+    expect(screen.getByRole('radio', { name: /Until/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Custom suppression date and time/i)).toBe(
+      screen.getByTestId('suppress-duration-custom-input'),
+    );
+  });
+
+  it('labels the duration fieldset with a legend', () => {
+    renderDialog();
+    expect(screen.getByRole('group', { name: /Suppression duration/i })).toBeInTheDocument();
+  });
 });

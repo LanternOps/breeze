@@ -88,8 +88,19 @@ export const testAlertRuleSchema = z.object({
 });
 
 export const bulkAlertActionSchema = z.object({
-  action: z.enum(['acknowledge', 'resolve']),
-  alertIds: z.array(z.string().guid()).min(1).max(100)
+  action: z.enum(['acknowledge', 'resolve', 'suppress']),
+  alertIds: z.array(z.string().guid()).min(1).max(100),
+  // Required only for `suppress` — the absolute deadline the alerts stay muted
+  // until (ISO date string), mirroring POST /alerts/:id/suppress.
+  until: z.string().optional()
+}).superRefine((data, ctx) => {
+  if (data.action === 'suppress' && !data.until) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['until'],
+      message: 'until is required when suppressing alerts'
+    });
+  }
 });
 
 // Alerts schemas

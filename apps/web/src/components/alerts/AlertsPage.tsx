@@ -18,6 +18,14 @@ import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 
 type Device = { id: string; name: string };
 
+// Past-tense verbs for bulk-action success toasts. Without this, `${action}d`
+// produces "suppressd".
+const BULK_PAST_TENSE: Record<string, string> = {
+  acknowledge: 'acknowledged',
+  resolve: 'resolved',
+  suppress: 'suppressed',
+};
+
 function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
   return rows.map((row) => {
     const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? 'Unknown device';
@@ -52,6 +60,9 @@ export default function AlertsPage() {
   const [deviceFilterIds, setDeviceFilterIds] = useState<Set<string> | null>(null);
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
   const [suppressTarget, setSuppressTarget] = useState<Alert | null>(null);
+  // Bulk suppress needs a duration picker (the endpoint requires `until`), so it
+  // can't go through the simple Confirm bar like bulk ack/resolve.
+  const [bulkSuppressTarget, setBulkSuppressTarget] = useState<Alert[] | null>(null);
 
   // Honor the global Current/All-orgs scope toggle: when it flips (or the
   // current org changes), re-run the fetches so the list reflects the new
@@ -297,7 +308,7 @@ export default function AlertsPage() {
     }
   };
 
-  const executeBulkAction = async (action: string, selectedAlerts: Alert[]) => {
+  const executeBulkAction = async (action: string, selectedAlerts: Alert[], until?: Date) => {
     setSubmitting(true);
     try {
       await runAction({
@@ -305,11 +316,12 @@ export default function AlertsPage() {
           method: 'POST',
           body: JSON.stringify({
             action,
-            alertIds: selectedAlerts.map(a => a.id)
+            alertIds: selectedAlerts.map(a => a.id),
+            ...(until ? { until: until.toISOString() } : {})
           })
         }),
         errorFallback: `Failed to ${action} alerts`,
-        successMessage: `${selectedAlerts.length} alert${selectedAlerts.length > 1 ? 's' : ''} ${action}d`,
+        successMessage: `${selectedAlerts.length} alert${selectedAlerts.length > 1 ? 's' : ''} ${BULK_PAST_TENSE[action] ?? `${action}d`}`,
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchAlerts();
@@ -320,12 +332,16 @@ export default function AlertsPage() {
     } finally {
       setSubmitting(false);
       setPendingBulk(null);
+      setBulkSuppressTarget(null);
     }
   };
 
   const handleBulkAction = async (action: string, selectedAlerts: Alert[]) => {
-    // Show inline confirmation for destructive bulk actions
-    if (action === 'suppress' || selectedAlerts.length >= 3) {
+    if (action === 'suppress') {
+      // Open the duration picker; executeBulkAction fires on confirm with `until`.
+      setBulkSuppressTarget(selectedAlerts);
+    } else if (selectedAlerts.length >= 3) {
+      // Inline confirmation for larger ack/resolve batches.
       setPendingBulk({ action, alerts: selectedAlerts });
     } else {
       await executeBulkAction(action, selectedAlerts);
@@ -486,6 +502,15 @@ export default function AlertsPage() {
           alertTitle={suppressTarget.title}
           onCancel={() => setSuppressTarget(null)}
           onConfirm={(until) => void performSuppress(suppressTarget, until)}
+        />
+      )}
+
+      {bulkSuppressTarget && (
+        <SuppressAlertDialog
+          alertTitle={bulkSuppressTarget[0]?.title}
+          count={bulkSuppressTarget.length}
+          onCancel={() => setBulkSuppressTarget(null)}
+          onConfirm={(until) => void executeBulkAction('suppress', bulkSuppressTarget, until)}
         />
       )}
     </div>

@@ -375,7 +375,7 @@ alertsRoutes.get(
   }
 );
 
-// POST /alerts/bulk - Bulk acknowledge or resolve alerts
+// POST /alerts/bulk - Bulk acknowledge, resolve, or suppress alerts
 alertsRoutes.post(
   '/bulk',
   requireScope('organization', 'partner', 'system'),
@@ -383,7 +383,17 @@ alertsRoutes.post(
   zValidator('json', bulkAlertActionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { action, alertIds } = c.req.valid('json');
+    const { action, alertIds, until } = c.req.valid('json');
+
+    // Resolve + validate the suppression deadline once (mirrors the single
+    // POST /alerts/:id/suppress contract) so every alert gets the same `until`.
+    let suppressedUntil: Date | null = null;
+    if (action === 'suppress') {
+      suppressedUntil = new Date(until!);
+      if (Number.isNaN(suppressedUntil.getTime()) || suppressedUntil <= new Date()) {
+        return c.json({ error: 'Suppression time must be in the future' }, 400);
+      }
+    }
 
     // Fetch alerts scoped to user's org access
     const orgCondition =
@@ -429,6 +439,19 @@ alertsRoutes.post(
               acknowledgedBy: auth.user.id,
             })
             .where(eq(alerts.id, alert.id));
+        } else if (action === 'suppress') {
+          // A resolved alert can't be suppressed (matches the single endpoint).
+          if (alert.status === 'resolved') {
+            results.skipped++;
+            continue;
+          }
+          await db
+            .update(alerts)
+            .set({
+              status: 'suppressed',
+              suppressedUntil,
+            })
+            .where(eq(alerts.id, alert.id));
         } else {
           if (alert.status === 'resolved') {
             results.skipped++;
@@ -445,38 +468,55 @@ alertsRoutes.post(
         }
         results.updated++;
 
-        try {
-          await publishEvent(
-            action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
-            alert.orgId,
-            {
-              alertId: alert.id,
-              ruleId: alert.ruleId,
-              deviceId: alert.deviceId,
-              ...(action === 'acknowledge'
-                ? { acknowledgedBy: auth.user.id }
-                : { resolvedBy: auth.user.id }),
-            },
-            'alerts-route',
-            { userId: auth.user.id }
-          );
-        } catch (eventErr) {
-          console.error(
-            `[alerts/bulk] Failed to publish ${action} event for alert ${alert.id}:`,
-            eventErr instanceof Error ? eventErr.message : eventErr
-          );
+        // The single suppress endpoint doesn't publish an event-bus event, only
+        // ML feedback — mirror that here and keep publishEvent for ack/resolve.
+        if (action !== 'suppress') {
+          try {
+            await publishEvent(
+              action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
+              alert.orgId,
+              {
+                alertId: alert.id,
+                ruleId: alert.ruleId,
+                deviceId: alert.deviceId,
+                ...(action === 'acknowledge'
+                  ? { acknowledgedBy: auth.user.id }
+                  : { resolvedBy: auth.user.id }),
+              },
+              'alerts-route',
+              { userId: auth.user.id }
+            );
+          } catch (eventErr) {
+            console.error(
+              `[alerts/bulk] Failed to publish ${action} event for alert ${alert.id}:`,
+              eventErr instanceof Error ? eventErr.message : eventErr
+            );
+          }
         }
 
         await emitAlertStateFeedback({
           orgId: alert.orgId,
           alertId: alert.id,
-          eventType: action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
-          outcome: action === 'acknowledge' ? 'acknowledged' : 'resolved',
+          eventType:
+            action === 'acknowledge'
+              ? 'alert.acknowledged'
+              : action === 'suppress'
+                ? 'alert.suppressed'
+                : 'alert.resolved',
+          outcome:
+            action === 'acknowledge'
+              ? 'acknowledged'
+              : action === 'suppress'
+                ? 'suppressed'
+                : 'resolved',
           actorUserId: auth.user.id,
           occurredAt: now,
           metadata: {
             source: 'alerts.bulk',
             previousStatus: alert.status,
+            ...(action === 'suppress' && suppressedUntil
+              ? { suppressedUntil: suppressedUntil.toISOString() }
+              : {}),
           },
         });
       } catch (dbErr) {

@@ -314,6 +314,83 @@ describe('POST /alerts/bulk site-axis scope (T3)', () => {
   });
 });
 
+// Bulk suppress (PR #2020 follow-up): the bulk endpoint must accept
+// action:'suppress' with a future `until`, set suppressedUntil, skip resolved
+// alerts, and reject a missing/past deadline.
+describe('POST /alerts/bulk suppress', () => {
+  const ORG = 'org-1';
+  const ALERT_A = 'a1a1a1a1-1111-4111-8111-111111111111';
+  const ALERT_B = 'a2a2a2a2-2222-4222-8222-222222222222';
+  const ALERT_RESOLVED = 'a4a4a4a4-4444-4444-8444-444444444444';
+  const FUTURE = '2999-01-01T00:00:00.000Z';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    grantedRef.current = new Set<string>(['alerts:write']);
+    authRef.current = {
+      scope: 'organization',
+      user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
+      partnerId: null, orgId: ORG, accessibleOrgIds: null,
+      allowedSiteIds: undefined, canAccessOrg: () => true,
+    } as typeof authRef.current;
+    state.devices = [];
+    state.alerts = [
+      { id: ALERT_A, orgId: ORG, deviceId: null, status: 'active', ruleId: 'r-a' },
+      { id: ALERT_B, orgId: ORG, deviceId: null, status: 'acknowledged', ruleId: 'r-b' },
+      { id: ALERT_RESOLVED, orgId: ORG, deviceId: null, status: 'resolved', ruleId: 'r-r' },
+    ];
+  });
+
+  it('suppresses active + acknowledged alerts until the given deadline', async () => {
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: [ALERT_A, ALERT_B], action: 'suppress', until: FUTURE }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ updated: 2, skipped: 0 });
+    const a = state.alerts.find((x) => x.id === ALERT_A)!;
+    expect(a.status).toBe('suppressed');
+    expect(new Date(a.suppressedUntil).toISOString()).toBe(FUTURE);
+    expect(state.alerts.find((x) => x.id === ALERT_B)?.status).toBe('suppressed');
+  });
+
+  it('skips resolved alerts (cannot suppress a resolved alert)', async () => {
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: [ALERT_A, ALERT_RESOLVED], action: 'suppress', until: FUTURE }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ updated: 1, skipped: 1 });
+    expect(state.alerts.find((x) => x.id === ALERT_RESOLVED)?.status).toBe('resolved');
+  });
+
+  it('400 when `until` is omitted', async () => {
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: [ALERT_A], action: 'suppress' }),
+    });
+    expect(res.status).toBe(400);
+    // Nothing was mutated.
+    expect(state.alerts.find((x) => x.id === ALERT_A)?.status).toBe('active');
+  });
+
+  it('400 when `until` is in the past', async () => {
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: [ALERT_A], action: 'suppress', until: '2000-01-01T00:00:00.000Z' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Suppression time must be in the future' });
+    expect(state.alerts.find((x) => x.id === ALERT_A)?.status).toBe('active');
+  });
+});
+
 describe('attachAlertCorrelationSummaries', () => {
   it('adds group child count and noise reduction fields to visible alert rows', () => {
     const [alert] = attachAlertCorrelationSummaries(
