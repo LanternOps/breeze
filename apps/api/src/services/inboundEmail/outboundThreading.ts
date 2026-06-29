@@ -27,27 +27,27 @@ export function commentMessageId(ticketId: string, commentId: string): string | 
 }
 
 /**
- * The partner's inbound (Reply-To) address. Spec §2: the address is a derived
- * default ({slug}@TICKETS_INBOUND_DOMAIN), OVERRIDABLE for self-hosted via
- * partners.settings.ticketing.inbound.address. The override wins (and is used
- * even when no platform domain is configured); a blank/whitespace override is
- * ignored.
+ * The partner's inbound (Reply-To) address. The address is a derived default
+ * ({localPart}@TICKETS_INBOUND_DOMAIN, where localPart is the partner's
+ * inbound_local_part or, when unset, its slug), OVERRIDABLE for self-hosted via
+ * partners.settings.ticketing.inbound.address. The override wins (even with no
+ * platform domain configured); a blank/whitespace override is ignored.
  *
  * NOTE: the override is emitted VERBATIM as Reply-To — the resolver does NOT
  * validate it. For inbound replies to thread back, the operator MUST register
  * the override's domain in `partner_inbound_domains` (or use the derived
- * {slug}@TICKETS_INBOUND_DOMAIN form). Replies sent to an UNregistered override
- * domain resolve to no partner and are dropped as `ignored`. This is an operator
- * constraint, not a code invariant enforced here.
+ * {localPart}@TICKETS_INBOUND_DOMAIN form). Replies sent to an UNregistered
+ * override domain resolve to no partner and are dropped as `ignored`. This is
+ * an operator constraint, not a code invariant enforced here.
  */
 export function partnerInboundAddress(
-  partnerSlug: string,
+  localPart: string,
   configuredOverride: string | undefined,
 ): string | null {
   const override = configuredOverride?.trim();
   if (override) return override;
   const d = domain();
-  return d ? `${partnerSlug}@${d}` : null;
+  return d ? `${localPart}@${d}` : null;
 }
 
 /** Threading header set. With a commentId → a reply (In-Reply-To/References =

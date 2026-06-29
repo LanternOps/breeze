@@ -356,12 +356,13 @@ export async function getTicketConfig(partnerId: string) {
   const priorities = await readPriorities(partnerId);
 
   const [partner] = await db
-    .select({ slug: partners.slug, settings: partners.settings })
+    .select({ slug: partners.slug, inboundLocalPart: partners.inboundLocalPart, settings: partners.settings })
     .from(partners)
     .where(eq(partners.id, partnerId))
     .limit(1);
 
   const slug = partner?.slug ?? '';
+  const inboundLocalPart = partner?.inboundLocalPart ?? null;
   const settings = (partner?.settings as Record<string, unknown> | null) ?? {};
   const inboundCfg = (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
     {
@@ -371,7 +372,8 @@ export async function getTicketConfig(partnerId: string) {
     } | undefined) ?? {};
   const domain = getConfig().TICKETS_INBOUND_DOMAIN ?? '';
   const domainConfigured = domain.length > 0;
-  const derived = domainConfigured && slug ? `${slug}@${domain}` : '';
+  const effectiveLocalPart = inboundLocalPart ?? slug;
+  const derived = domainConfigured && effectiveLocalPart ? `${effectiveLocalPart}@${domain}` : '';
   const addressOverride = (inboundCfg.address && inboundCfg.address.length > 0) ? inboundCfg.address : null;
 
   const inbound = {
@@ -384,6 +386,7 @@ export async function getTicketConfig(partnerId: string) {
     autoresponseSubject: inboundCfg.autoresponseSubject ?? null,
     autoresponseBody: inboundCfg.autoresponseBody ?? null,
     slug,
+    inboundLocalPart,
     domainConfigured,
   };
 

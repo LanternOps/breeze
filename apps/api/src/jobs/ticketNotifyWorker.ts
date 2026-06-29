@@ -169,7 +169,7 @@ async function collectRequesterEmail(
   let replyTo: string | undefined;
   if (ticket.partnerId) {
     const partnerRows = await db
-      .select({ slug: partners.slug, settings: partners.settings })
+      .select({ slug: partners.slug, inboundLocalPart: partners.inboundLocalPart, settings: partners.settings })
       .from(partners)
       .where(eq(partners.id, ticket.partnerId))
       .limit(1);
@@ -177,7 +177,7 @@ async function collectRequesterEmail(
     const override = (partnerRows[0]?.settings as
       | { ticketing?: { inbound?: { address?: string } } }
       | undefined)?.ticketing?.inbound?.address;
-    if (slug) replyTo = partnerInboundAddress(slug, override) ?? undefined;
+    if (slug) replyTo = partnerInboundAddress(partnerRows[0]?.inboundLocalPart ?? slug, override) ?? undefined;
   }
 
   const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
@@ -223,7 +223,7 @@ async function collectAutoresponse(
   let partnerName = '';
   if (ticket.partnerId) {
     const partnerRows = await db
-      .select({ slug: partners.slug, name: partners.name, settings: partners.settings })
+      .select({ slug: partners.slug, name: partners.name, inboundLocalPart: partners.inboundLocalPart, settings: partners.settings })
       .from(partners)
       .where(eq(partners.id, ticket.partnerId))
       .limit(1);
@@ -232,7 +232,7 @@ async function collectAutoresponse(
     const inbound = (partnerRows[0]?.settings as
       | { ticketing?: { inbound?: { address?: string; autoresponseSubject?: string | null; autoresponseBody?: string | null } } }
       | undefined)?.ticketing?.inbound;
-    if (slug) replyTo = partnerInboundAddress(slug, inbound?.address) ?? undefined;
+    if (slug) replyTo = partnerInboundAddress(partnerRows[0]?.inboundLocalPart ?? slug, inbound?.address) ?? undefined;
     custom = { subject: inbound?.autoresponseSubject ?? null, body: inbound?.autoresponseBody ?? null };
   }
 

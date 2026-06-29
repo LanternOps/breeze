@@ -22,6 +22,16 @@ describe('outbound threading helpers', () => {
     expect(partnerInboundAddress('acme', undefined)).toBe('acme@tickets.example.com');
   });
 
+  it('builds the derived address from the provided local-part', () => {
+    // domain() resolves to TICKETS_INBOUND_DOMAIN; existing tests in this file
+    // already establish how it is configured — reuse that setup.
+    expect(partnerInboundAddress('support', undefined)).toBe('support@tickets.example.com');
+  });
+
+  it('still lets a non-empty override win over the local-part', () => {
+    expect(partnerInboundAddress('support', 'tickets@msp.com')).toBe('tickets@msp.com');
+  });
+
   it('partnerInboundAddress honors the self-hosted override (spec §2)', () => {
     // partner.settings.ticketing.inbound.address overrides the derived default.
     expect(partnerInboundAddress('acme', 'support@helpdesk.theirmsp.com'))
