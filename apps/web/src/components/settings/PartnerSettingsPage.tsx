@@ -134,6 +134,14 @@ export default function PartnerSettingsPage() {
   const [error, setError] = useState<string>();
   const [activeTab, setActiveTab] = useState<TabKey>('company');
 
+  // The M365 consent callback returns to `/settings/partner?ticketMailbox=…#ticketing`.
+  // Capture that signal ONCE at mount (this page mounts a single time), before the
+  // mailbox card strips the param, so we can deep-link the embedded Ticketing group's
+  // Inbound sub-tab deterministically — see TicketingSettingsTabs `initialTab`.
+  const [deepLinkTicketMailbox] = useState(
+    () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ticketMailbox')
+  );
+
   // Regional form state
   const [timezone, setTimezone] = useState('UTC');
   const [dateFormat, setDateFormat] = useState<DateFormat>('MM/DD/YYYY');
@@ -627,7 +635,7 @@ export default function PartnerSettingsPage() {
             Configure ticket statuses, priority SLA defaults, categories, and billing exports.
             These apply across all of your organizations.
           </p>
-          <TicketingSettingsTabs syncHash={false} />
+          <TicketingSettingsTabs syncHash={false} initialTab={deepLinkTicketMailbox ? 'inbound' : undefined} />
         </section>
       )}
     </div>

@@ -58,6 +58,15 @@ describe('TicketingSettingsTabs', () => {
     expect(window.location.hash).toBe('#ticketing');
   });
 
+  it('seeds the initial sub-tab from the initialTab prop (deterministic deep-link)', () => {
+    // The M365 consent deep-link relies on the parent passing initialTab so the group
+    // opens on the right sub-tab regardless of remounts — independent of any URL param
+    // the mailbox card may have already stripped.
+    render(<TicketingSettingsTabs syncHash={false} initialTab="export" />);
+    expect(screen.getByTestId('stub-billables-export-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticketing-tab-panel-statuses')).toBeNull();
+  });
+
   it('ignores #tab= deep links when syncHash is false', () => {
     window.location.hash = '#tab=export';
     render(<TicketingSettingsTabs syncHash={false} />);
