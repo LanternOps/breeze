@@ -61,6 +61,35 @@ interface SyncRun {
   error: string | null;
 }
 
+// Per-console deep-telemetry collector config (from GET /unifi/collectors).
+interface UnifiCollector {
+  id: string;
+  unifiHostId: string;
+  siteId: string;
+  collectorDeviceId: string;
+  controllerUrl: string;
+  isEnabled: boolean;
+  status: string;
+  firmwareOk: boolean | null;
+  lastPollAt: string | null;
+  lastPollStatus: string | null;
+  lastPollError: string | null;
+}
+// Agent devices eligible to be a collector (from GET /devices).
+interface AgentDevice { id: string; name: string | null; siteId: string | null; status?: string | null }
+// Deep telemetry rows (from GET /unifi/telemetry?siteId=).
+interface TelemetryDevice {
+  id: string; unifiDeviceId: string; name: string | null; mac: string | null;
+  uptimeSeconds: number | null; numClients: number | null; isStale: boolean;
+  poePorts: Array<{ port_idx?: number; name?: string; poe_mode?: string; poe_power_w?: number; link_speed_mbps?: number; up?: boolean }> | null;
+}
+interface TelemetryClient {
+  id: string; mac: string; hostname: string | null; ipAddress: string | null;
+  connectedDeviceId: string | null; isWired: boolean | null; ssid: string | null; signalDbm: number | null; isStale: boolean;
+}
+// Per-host draft for the collector config form.
+interface CollectorDraft { siteId: string; collectorDeviceId: string; controllerUrl: string; apiKey: string }
+
 // Stable key for a discovered UniFi site within a host (host ids repeat across hosts otherwise).
 const mapKey = (hostId: string, unifiSiteId: string) => `${hostId}::${unifiSiteId}`;
 
@@ -85,6 +114,16 @@ export default function UnifiIntegration() {
   const [selection, setSelection] = useState<Record<string, string>>({});
   const [savingMappings, setSavingMappings] = useState(false);
   const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
+
+  // Deep-telemetry collector state.
+  const [collectors, setCollectors] = useState<Record<string, UnifiCollector>>({});
+  const [agents, setAgents] = useState<AgentDevice[]>([]);
+  const [collectorDrafts, setCollectorDrafts] = useState<Record<string, CollectorDraft>>({});
+  const [savingCollector, setSavingCollector] = useState<string | null>(null);
+  // Telemetry viewer state.
+  const [telemetrySite, setTelemetrySite] = useState<string>('');
+  const [telemetry, setTelemetry] = useState<{ devices: TelemetryDevice[]; clients: TelemetryClient[] } | null>(null);
+  const [telemetryLoading, setTelemetryLoading] = useState(false);
 
   const onUnauthorized = useCallback(() => {
     navigateTo(loginPathWithNext());
@@ -163,13 +202,15 @@ export default function UnifiIntegration() {
   }, [onUnauthorized]);
 
   const loadDetails = useCallback(async () => {
-    const [sitesRes, orgsRes, mappingsRes, runsRes] = await Promise.all([
+    const [sitesRes, orgsRes, mappingsRes, runsRes, collectorsRes, devicesRes] = await Promise.all([
       fetchWithAuth('/orgs/sites?limit=500'),
       fetchWithAuth('/orgs/organizations?limit=500'),
       fetchWithAuth('/unifi/mappings'),
       fetchWithAuth('/unifi/sync-runs'),
+      fetchWithAuth('/unifi/collectors'),
+      fetchWithAuth('/devices?limit=500'),
     ]);
-    if ([sitesRes, orgsRes, mappingsRes, runsRes].some((r) => r.status === 401)) {
+    if ([sitesRes, orgsRes, mappingsRes, runsRes, collectorsRes, devicesRes].some((r) => r.status === 401)) {
       onUnauthorized();
       return;
     }
@@ -185,6 +226,31 @@ export default function UnifiIntegration() {
     }
     const runsJson = await runsRes.json().catch(() => ({}));
     if (runsRes.ok) setSyncRuns((runsJson as { runs?: SyncRun[] }).runs ?? []);
+    const collectorsJson = await collectorsRes.json().catch(() => ({}));
+    if (collectorsRes.ok) {
+      const list = (collectorsJson as { collectors?: UnifiCollector[] }).collectors ?? [];
+      setCollectors(Object.fromEntries(list.map((col) => [col.unifiHostId, col])));
+      // Pre-fill each host's draft from its saved collector (key stays blank — never echoed back).
+      setCollectorDrafts((prev) => {
+        const next = { ...prev };
+        for (const col of list) {
+          next[col.unifiHostId] = {
+            siteId: col.siteId,
+            collectorDeviceId: col.collectorDeviceId,
+            controllerUrl: col.controllerUrl,
+            apiKey: next[col.unifiHostId]?.apiKey ?? '',
+          };
+        }
+        return next;
+      });
+    }
+    const devicesJson = await devicesRes.json().catch(() => ({}));
+    if (devicesRes.ok) {
+      const list = (devicesJson as { data?: AgentDevice[]; devices?: AgentDevice[] }).data
+        ?? (devicesJson as { devices?: AgentDevice[] }).devices
+        ?? (Array.isArray(devicesJson) ? (devicesJson as AgentDevice[]) : []);
+      setAgents(list);
+    }
     await loadHosts();
   }, [onUnauthorized, loadHosts]);
 
@@ -218,6 +284,68 @@ export default function UnifiIntegration() {
       setSavingMappings(false);
     }
   }, [hosts, selection, onUnauthorized, loadDetails]);
+
+  const updateDraft = useCallback((hostId: string, patch: Partial<CollectorDraft>) => {
+    setCollectorDrafts((prev) => {
+      const base = prev[hostId] ?? { siteId: '', collectorDeviceId: '', controllerUrl: '', apiKey: '' };
+      return { ...prev, [hostId]: { ...base, ...patch } };
+    });
+  }, []);
+
+  const handleSaveCollector = useCallback(async (hostId: string) => {
+    const draft = collectorDrafts[hostId];
+    if (!draft?.siteId || !draft.collectorDeviceId || !draft.controllerUrl.trim() || !draft.apiKey.trim()) {
+      setLoadError('Pick a Breeze site, a collector agent, and enter the controller URL and local API key.');
+      return;
+    }
+    setSavingCollector(hostId);
+    setLoadError(null);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/unifi/collectors', {
+          method: 'PUT',
+          body: JSON.stringify({
+            unifiHostId: hostId,
+            siteId: draft.siteId,
+            collectorDeviceId: draft.collectorDeviceId,
+            controllerUrl: draft.controllerUrl.trim(),
+            apiKey: draft.apiKey.trim(),
+          }),
+        }),
+        errorFallback: 'Failed to save the UniFi collector.',
+        successMessage: 'UniFi collector saved',
+        onUnauthorized,
+      });
+      // Clear the entered key from memory; reload status.
+      updateDraft(hostId, { apiKey: '' });
+      await loadDetails();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) handleActionError(err, 'Failed to save the UniFi collector.');
+    } finally {
+      setSavingCollector(null);
+    }
+  }, [collectorDrafts, onUnauthorized, loadDetails, updateDraft]);
+
+  const handleLoadTelemetry = useCallback(async (siteId: string) => {
+    setTelemetrySite(siteId);
+    setTelemetry(null);
+    if (!siteId) return;
+    setTelemetryLoading(true);
+    try {
+      const res = await fetchWithAuth(`/unifi/telemetry?siteId=${encodeURIComponent(siteId)}`);
+      if (res.status === 401) return onUnauthorized();
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setTelemetry({
+          devices: (json as { devices?: TelemetryDevice[] }).devices ?? [],
+          clients: (json as { clients?: TelemetryClient[] }).clients ?? [],
+        });
+      }
+    } finally {
+      setTelemetryLoading(false);
+    }
+  }, [onUnauthorized]);
 
   const handleConnect = useCallback(async () => {
     const key = apiKey.trim();
@@ -546,6 +674,210 @@ export default function UnifiIntegration() {
         </div>
       )}
 
+      {isConnected && hosts && hosts.length > 0 && (
+        <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-collectors-card">
+          <h2 className="text-lg font-semibold">Deep telemetry collectors</h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Assign a Breeze agent at the site to poll each UniFi console&apos;s local Network Integration API
+            (firmware&nbsp;≥&nbsp;9.3) for per-port PoE, device health, and connected clients. The local API key is
+            stored encrypted and pushed to the chosen agent.
+          </p>
+          <div className="space-y-4">
+            {hosts.map((h) => {
+              const collector = collectors[h.id];
+              const draft = collectorDrafts[h.id] ?? { siteId: '', collectorDeviceId: '', controllerUrl: '', apiKey: '' };
+              const eligibleAgents = agents.filter((a) => !draft.siteId || a.siteId === draft.siteId);
+              return (
+                <div key={h.id} className="rounded-lg border p-4" data-testid="unifi-collector-row">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{h.name}</span>
+                    {collector && (
+                      <span
+                        className={`ml-auto inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${collectorStatusClasses(collector.status)}`}
+                        title={collector.lastPollError ?? undefined}
+                        data-testid="unifi-collector-status"
+                      >
+                        {collector.status}
+                        {collector.lastPollAt ? ` · ${formatDateTime(collector.lastPollAt)}` : ''}
+                      </span>
+                    )}
+                  </div>
+                  {collector?.lastPollError && (
+                    <p className="mt-1 text-xs text-red-600" data-testid="unifi-collector-error">{collector.lastPollError}</p>
+                  )}
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label className="text-sm">
+                      <span className="text-muted-foreground">Breeze site (this console serves)</span>
+                      <select
+                        value={draft.siteId}
+                        onChange={(e) => updateDraft(h.id, { siteId: e.target.value, collectorDeviceId: '' })}
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                        data-testid="unifi-collector-site"
+                      >
+                        <option value="">— Select site —</option>
+                        {sitesByOrg.map((group) => (
+                          <optgroup key={group.name} label={group.name}>
+                            {group.sites.map((site) => (
+                              <option key={site.id} value={site.id}>{site.name}</option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-muted-foreground">Collector agent</span>
+                      <select
+                        value={draft.collectorDeviceId}
+                        onChange={(e) => updateDraft(h.id, { collectorDeviceId: e.target.value })}
+                        disabled={!draft.siteId}
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm disabled:opacity-50"
+                        data-testid="unifi-collector-agent"
+                      >
+                        <option value="">{draft.siteId ? '— Select agent —' : 'Pick a site first'}</option>
+                        {eligibleAgents.map((a) => (
+                          <option key={a.id} value={a.id}>{a.name ?? a.id}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-muted-foreground">Controller URL</span>
+                      <input
+                        type="text"
+                        value={draft.controllerUrl}
+                        onChange={(e) => updateDraft(h.id, { controllerUrl: e.target.value })}
+                        placeholder="https://192.168.1.1"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                        data-testid="unifi-collector-url"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-muted-foreground">Local API key{collector ? ' (leave blank to keep)' : ''}</span>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        value={draft.apiKey}
+                        onChange={(e) => updateDraft(h.id, { apiKey: e.target.value })}
+                        placeholder="Network Integration API key"
+                        className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                        data-testid="unifi-collector-key"
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveCollector(h.id)}
+                    disabled={savingCollector === h.id}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    data-testid="unifi-collector-save"
+                  >
+                    {savingCollector === h.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                    {collector ? 'Update collector' : 'Enable deep telemetry'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {isConnected && (
+        <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-telemetry-card">
+          <h2 className="text-lg font-semibold">Deep telemetry</h2>
+          <p className="mb-4 text-sm text-muted-foreground">Live per-device PoE/health and connected clients for a mapped site.</p>
+          <label className="block max-w-xs text-sm">
+            <span className="text-muted-foreground">Site</span>
+            <select
+              value={telemetrySite}
+              onChange={(e) => void handleLoadTelemetry(e.target.value)}
+              className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+              data-testid="unifi-telemetry-site"
+            >
+              <option value="">— Select site —</option>
+              {sitesByOrg.map((group) => (
+                <optgroup key={group.name} label={group.name}>
+                  {group.sites.map((site) => (
+                    <option key={site.id} value={site.id}>{site.name}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+
+          {telemetryLoading ? (
+            <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground" data-testid="unifi-telemetry-loading">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading telemetry…
+            </div>
+          ) : telemetry ? (
+            <div className="mt-4 space-y-6">
+              <div>
+                <h3 className="mb-2 text-sm font-semibold">Devices ({telemetry.devices.length})</h3>
+                {telemetry.devices.length === 0 ? (
+                  <p className="text-sm text-muted-foreground" data-testid="unifi-telemetry-devices-empty">No device telemetry yet.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y text-sm" data-testid="unifi-telemetry-devices">
+                      <thead>
+                        <tr className="text-left text-muted-foreground">
+                          <th className="px-3 py-2 font-medium">Device</th>
+                          <th className="px-3 py-2 font-medium">MAC</th>
+                          <th className="px-3 py-2 font-medium">Clients</th>
+                          <th className="px-3 py-2 font-medium">PoE ports</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {telemetry.devices.map((d) => (
+                          <tr key={d.id} className={d.isStale ? 'text-muted-foreground' : ''} data-testid="unifi-telemetry-device-row">
+                            <td className="px-3 py-2 font-medium">{d.name ?? d.unifiDeviceId}</td>
+                            <td className="px-3 py-2 text-muted-foreground">{d.mac ?? '—'}</td>
+                            <td className="px-3 py-2 tabular-nums">{d.numClients ?? '—'}</td>
+                            <td className="px-3 py-2">
+                              {Array.isArray(d.poePorts) && d.poePorts.length > 0
+                                ? `${d.poePorts.filter((p) => p.up).length}/${d.poePorts.length} up · ${d.poePorts.reduce((sum, p) => sum + (p.poe_power_w ?? 0), 0).toFixed(1)}W`
+                                : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+              <div>
+                <h3 className="mb-2 text-sm font-semibold">Clients ({telemetry.clients.length})</h3>
+                {telemetry.clients.length === 0 ? (
+                  <p className="text-sm text-muted-foreground" data-testid="unifi-telemetry-clients-empty">No clients reported.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y text-sm" data-testid="unifi-telemetry-clients">
+                      <thead>
+                        <tr className="text-left text-muted-foreground">
+                          <th className="px-3 py-2 font-medium">Host</th>
+                          <th className="px-3 py-2 font-medium">IP</th>
+                          <th className="px-3 py-2 font-medium">MAC</th>
+                          <th className="px-3 py-2 font-medium">Link</th>
+                          <th className="px-3 py-2 font-medium">Signal</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {telemetry.clients.map((cl) => (
+                          <tr key={cl.id} className={cl.isStale ? 'text-muted-foreground' : ''} data-testid="unifi-telemetry-client-row">
+                            <td className="px-3 py-2 font-medium">{cl.hostname ?? '—'}</td>
+                            <td className="px-3 py-2 text-muted-foreground">{cl.ipAddress ?? '—'}</td>
+                            <td className="px-3 py-2 text-muted-foreground">{cl.mac}</td>
+                            <td className="px-3 py-2">{cl.isWired ? 'Wired' : cl.ssid ? `Wi-Fi · ${cl.ssid}` : 'Wi-Fi'}</td>
+                            <td className="px-3 py-2 tabular-nums">{cl.signalDbm != null ? `${cl.signalDbm} dBm` : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+
       {isConnected && (
         <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-history-card">
           <div className="flex items-center gap-2">
@@ -613,6 +945,22 @@ function runStatusClasses(status: string): string {
     case 'partial':
       return 'border-amber-200 bg-amber-50 text-amber-700';
     case 'failed':
+      return 'border-red-200 bg-red-50 text-red-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+// Collector status → badge colors (unifi_collectors.status:
+// pending | connected | unreachable | error | firmware_too_old).
+function collectorStatusClasses(status: string): string {
+  switch (status) {
+    case 'connected':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'unreachable':
+    case 'firmware_too_old':
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'error':
       return 'border-red-200 bg-red-50 text-red-700';
     default:
       return 'border-slate-200 bg-slate-50 text-slate-600';
