@@ -131,6 +131,8 @@ Breeze can turn customer emails into tickets automatically, so your help desk wo
 
 Each partner gets an **inbound address** -- the email address customers send to. Copy it from the Inbound email card and share it with your customers (or forward your existing support mailbox to it). Mail sent to that address is converted into tickets.
 
+The address's local part (the bit before the `@`) is editable on the Inbound email card -- handy if your partner was bootstrapped with an awkward auto-generated value and you want something tidy like `support` or `tickets`. It must be lowercase, URL/email-safe (letters, numbers, and hyphens), and unique across partners. Changing it does **not** break your old address: the previous value keeps routing to you, so addresses you've already published to customers and any in-flight email threads continue to work. New outbound replies are sent from the new address.
+
 ### How emails become tickets
 
 - **New tickets.** An email from a recognized customer creates a new ticket, with the subject as the ticket subject and the body as the first message.
