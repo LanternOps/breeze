@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { ChevronUp, ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
@@ -26,7 +26,7 @@ import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
 import DistributorLookup from './DistributorLookup';
 import Pax8ProductLookup from './Pax8ProductLookup';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
-import { UnsavedBadge, RecurringBillingNote } from '../billingUi';
+import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
@@ -82,10 +82,17 @@ interface Props {
   onChanged: () => void;
 }
 
-// A quiet, transient "Saved" cue for the right-rail blur-to-save fields (terms,
-// tax). BlockCard and EditableLineRow replicate this same pattern inline rather
-// than calling the hook. Returns the on-flag and a trigger; clears its timer on
-// unmount so a late fire can't setState a gone node.
+// Per-field blur-saves are confirmed by the amber dirty-ring clearing (sighted)
+// plus the SrSaved live region (screen readers) — NOT a toast. Toasts are
+// reserved for action-level events the user can't otherwise see (Line added,
+// Block removed, Proposal sent, Draft deleted), which fire their own
+// runAction successMessage. Per-field toasts were a storm during editing and
+// double-announced alongside SrSaved, so they were removed.
+
+// A transient "Saved" cue for the right-rail blur-to-save fields (terms, tax).
+// BlockCard and EditableLineRow replicate this same pattern inline rather than
+// calling the hook. Returns the on-flag (drives the SR live region) and a
+// trigger; clears its timer on unmount so a late fire can't setState a gone node.
 function useSavedFlash(): [boolean, () => void] {
   const [on, setOn] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -98,12 +105,22 @@ function useSavedFlash(): [boolean, () => void] {
   return [on, flash];
 }
 
-// Visually-hidden polite live region — announces a transient message (e.g.
-// "Saved") to screen readers without taking visual space. Pairs with the visible
-// cue so sighted and SR users get the same feedback.
-function SrSaved({ show, label = 'Saved' }: { show: boolean; label?: string }) {
+// Visually-hidden polite live region — announces a transient "Saved" to screen
+// readers without taking visual space, pairing with the dirty-ring clearing that
+// sighted users see. The single per-field announcer (no toast), so SR users hear
+// "Saved" once, not twice. testId lets tests assert the cue fired.
+function SrSaved({ show, label = 'Saved', testId }: { show: boolean; label?: string; testId?: string }) {
   // role="status" already implies aria-live="polite" — don't double it.
-  return <span role="status" className="sr-only">{show ? label : ''}</span>;
+  return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
+}
+
+// A field's save-state outline: amber while the edit is unsaved, a brief green
+// pulse when it lands (driven by a ~1.5s saved-flash), nothing at rest. It's a
+// box-shadow (ring), so it NEVER reflows neighbouring content — unlike the inline
+// "Saved" text we tried before, which shifted layout as it appeared/disappeared.
+// Pair with a constant `transition-shadow` on the field so both states fade.
+function fieldRing(dirty: boolean, saved: boolean): string {
+  return dirty ? 'ring-1 ring-warning' : saved ? 'ring-1 ring-success' : '';
 }
 
 // Up/down reorder controls: lucide chevrons in 28px targets (clears the WCAG
@@ -150,6 +167,10 @@ function MoveControls({
 export default function QuoteEditor({ detail, onChanged }: Props) {
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
+  // The per-line internal cost/markup/profit strip duplicates the rail's Margin
+  // summary and roughly doubles the height of every line, so it's collapsed by
+  // default; the rail summary stays always-on. Threaded down to each line row.
+  const [showInternal, setShowInternal] = useState(false);
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
   // Focus anchor: after a confirmed block/line removal the triggering button is
@@ -494,13 +515,13 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               ? { imageId: uploaded.imageId, caption: imageCaption.trim() }
               : { imageId: uploaded.imageId },
           }),
-          errorFallback: 'Image uploaded, but adding the block failed.',
-          successMessage: 'Image block added',
+          errorFallback: 'Image uploaded, but adding the section failed.',
+          successMessage: 'Image section added',
           onUnauthorized: UNAUTHORIZED,
         });
         setImageFile(null); setImageCaption('');
         refresh();
-      }, 'Could not add the image block.');
+      }, 'Could not add the image section.');
       return;
     }
 
@@ -520,13 +541,13 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     await runScoped('add-block', async () => {
       await runAction({
         request: () => addBlock(quote.id, body),
-        errorFallback: 'Could not add the block.',
-        successMessage: 'Block added',
+        errorFallback: 'Could not add the section.',
+        successMessage: 'Section added',
         onUnauthorized: UNAUTHORIZED,
       });
       setHeadingText(''); setRichText(''); setTableLabel('');
       refresh();
-    }, 'Could not add the block.');
+    }, 'Could not add the section.');
   }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, quote.id, refresh, runScoped]);
 
   // Removing a line_items block cascades to every line under it (server-side), so
@@ -543,12 +564,12 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     runScoped(`block:${block.id}`, async () => {
       await runAction({
         request: () => deleteBlock(quote.id, block.id),
-        errorFallback: 'Could not remove the block.',
-        successMessage: 'Block removed',
+        errorFallback: 'Could not remove the section.',
+        successMessage: 'Section removed',
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not remove the block.'),
+    }, 'Could not remove the section.'),
   [quote.id, refresh, runScoped]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
@@ -744,7 +765,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
     runScoped(`block:${block.id}`, async () => {
       await runAction({
         request: () => updateBlock(quote.id, block.id, { blockType: block.blockType, content } as QuoteBlockInput),
-        errorFallback: 'Could not update the block.',
+        errorFallback: 'Could not update the section.',
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
@@ -777,7 +798,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         try {
           await runAction({
             request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
-            errorFallback: 'Could not reorder blocks.',
+            errorFallback: 'Could not reorder sections.',
             onUnauthorized: UNAUTHORIZED,
           });
           refresh();
@@ -826,15 +847,35 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
   return (
     <div className="space-y-6" data-testid="quote-editor">
-      {canWrite && (
-        <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
-          Changes save automatically as you edit. An amber outline marks an edit that hasn’t saved yet.
-        </p>
-      )}
+      {/* The autosave hint is writer-only, but the cost/margin toggle is offered to
+          everyone who can see the editor: read-only users also have per-line cost
+          bands and deserve the same collapse control (ml-auto keeps it right-aligned
+          whether or not the hint renders). */}
+      <div className="flex flex-wrap items-center gap-2">
+        {canWrite && (
+          <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
+            Changes save automatically as you edit. An amber outline marks an edit that hasn’t saved yet.
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={() => setShowInternal((v) => !v)}
+          aria-pressed={showInternal}
+          data-testid="quote-editor-toggle-internal"
+          className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
+        >
+          {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
+          {showInternal ? 'Hide cost & margin' : 'Show cost & margin'}
+        </button>
+      </div>
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
+        {/* min-w-0: this 1fr grid track holds a pricing table with min-w-[640px]
+            inside an overflow-x-auto wrapper. Without min-w-0 the track refuses to
+            shrink below the table's min-content and the whole editor blows out to
+            ~758px on a phone (page-level horizontal scroll). */}
         <div
-          className="space-y-4 rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="min-w-0 space-y-4 rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           ref={blocksColRef}
           tabIndex={-1}
         >
@@ -854,6 +895,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 catalog={catalog}
                 isPending={isPending}
                 canWrite={canWrite}
+                showInternal={showInternal}
                 ecActive={ecActive}
                 pax8Active={pax8Active}
                 isFirst={idx === 0}
@@ -876,7 +918,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           {/* Add block */}
           {canWrite && (
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-add-block">
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Add block</h3>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Add section</h3>
             <div className="mb-3 flex flex-wrap gap-2">
               {ADD_BLOCK_OPTIONS.map((o) => (
                 <button
@@ -958,7 +1000,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 data-testid="quote-add-block-submit"
                 className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                {addType === 'image' ? 'Upload & add image' : 'Add block'}
+                {addType === 'image' ? 'Upload & add image' : 'Add section'}
               </button>
             </div>
           </div>
@@ -1001,28 +1043,12 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 </div>
               )}
             </dl>
-            {canWrite && (
-              <div className="mt-3 rounded-md bg-muted/40 p-2 text-sm" data-testid="quote-margin">
-                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">Margin (internal)</div>
-                <dl className="space-y-1 tabular-nums">
-                  <div className="flex justify-between"><dt className="text-muted-foreground">Cost</dt><dd data-testid="quote-margin-cost">{formatMoney(profit.totalCost, currency)}</dd></div>
-                  <div className="flex justify-between"><dt className="text-muted-foreground">Net (one-time)</dt><dd data-testid="quote-margin-net-onetime">{formatMoney(profit.oneTimeNet, currency)}</dd></div>
-                  {Number(profit.monthlyRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Net (monthly)</dt><dd data-testid="quote-margin-net-monthly">{formatMoney(profit.monthlyRecurringNet, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>}
-                  {Number(profit.annualRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Net (annual)</dt><dd data-testid="quote-margin-net-annual">{formatMoney(profit.annualRecurringNet, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>}
-                </dl>
-                {profit.linesMissingCost > 0 && (
-                  <p className="mt-1 text-xs text-warning" data-testid="quote-margin-missing-cost">
-                    {profit.linesMissingCost} line{profit.linesMissingCost === 1 ? '' : 's'} without a cost — net is partial.
-                  </p>
-                )}
-              </div>
-            )}
+            {canWrite && <MarginPanel profit={profit} currency={currency} />}
             {canWrite && (
               <div className="mt-2 border-t pt-2">
                 <div className="flex items-center justify-between gap-2">
                   <label htmlFor="quote-tax-rate" className="flex items-center gap-2 text-sm text-muted-foreground">
                     Tax rate
-                    {taxSaved && <span className="text-xs font-medium text-success" data-testid="quote-tax-saved">Saved</span>}
                   </label>
                   <div className="flex items-center gap-1">
                     <input
@@ -1039,8 +1065,8 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                       aria-invalid={taxError !== null}
                       aria-describedby={taxError ? 'quote-tax-rate-error' : undefined}
                       data-testid="quote-tax-rate"
-                      className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${
-                        taxError ? 'border-destructive ring-1 ring-destructive' : taxDirty ? 'ring-1 ring-warning' : ''
+                      className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${
+                        taxError ? 'border-destructive ring-1 ring-destructive' : fieldRing(taxDirty, taxSaved)
                       }`}
                     />
                     <span className="text-sm text-muted-foreground">%</span>
@@ -1051,7 +1077,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 ) : (
                   <p className="mt-1 text-xs text-muted-foreground">Applies to lines marked taxable.</p>
                 )}
-                <SrSaved show={taxSaved} />
+                <SrSaved show={taxSaved} testId="quote-tax-saved" />
               </div>
             )}
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
@@ -1080,7 +1106,6 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
             <div className="mb-2 flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
               <span className="flex items-center gap-2">
-                {termsSaved && <span className="text-xs font-medium text-success" data-testid="quote-terms-saved">Saved</span>}
                 <UnsavedBadge show={termsDirty} />
               </span>
             </div>
@@ -1091,10 +1116,10 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               disabled={!canWrite || isPending('terms')}
               data-testid="quote-terms"
               rows={3}
-              className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${termsDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
               placeholder="Payment terms, warranty clauses, etc."
             />
-            <SrSaved show={termsSaved} />
+            <SrSaved show={termsSaved} testId="quote-terms-saved" />
           </div>
         </div>
       </div>
@@ -1117,15 +1142,15 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           })();
         }}
         isLoading={pendingRemove ? isPending(`block:${pendingRemove.id}`) : false}
-        title="Remove block"
+        title="Remove section"
         message={
           pendingRemove?.blockType === 'line_items' && linesForBlock(pendingRemove.id).length > 0
             ? `This removes the pricing table and its ${linesForBlock(pendingRemove.id).length} line item${
                 linesForBlock(pendingRemove.id).length === 1 ? '' : 's'
               }. This can't be undone.`
-            : 'This removes this block. This can’t be undone.'
+            : "This removes this section. This can't be undone."
         }
-        confirmLabel="Remove block"
+        confirmLabel="Remove section"
         confirmTestId="quote-block-remove-confirm"
       />
 
@@ -1147,7 +1172,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
         title="Remove line"
         message={
           pendingLineRemove
-            ? `This removes "${pendingLineRemove.description || 'this line'}" from the quote. This can’t be undone.`
+            ? `This removes "${lineTitle(pendingLineRemove) || 'this line'}" from the quote. This can't be undone.`
             : ''
         }
         confirmLabel="Remove line"
@@ -1159,7 +1184,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, ecActive, pax8Active, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
+  block, quoteId, lines, currency, taxRate, catalog, isPending, canWrite, showInternal, ecActive, pax8Active, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -1169,6 +1194,7 @@ function BlockCard({
   catalog: CatalogItem[];
   isPending: (key: string) => boolean;
   canWrite: boolean;
+  showInternal: boolean;
   ecActive: boolean;
   pax8Active: boolean;
   isFirst: boolean;
@@ -1265,10 +1291,7 @@ function BlockCard({
         <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {BLOCK_TYPE_LABELS[block.blockType] ?? block.blockType}
           {isTable && tableLabel ? ` · ${tableLabel}` : ''}
-          {blockSaved && (
-            <span className="font-medium normal-case tracking-normal text-success" data-testid={`quote-block-saved-${block.id}`}>Saved</span>
-          )}
-          <SrSaved show={blockSaved} />
+          <SrSaved show={blockSaved} testId={`quote-block-saved-${block.id}`} />
         </span>
         {canWrite && (
           <div className="flex items-center gap-1">
@@ -1277,8 +1300,8 @@ function BlockCard({
               disabledDown={isLast}
               onUp={() => onMoveBlock(block, 'up')}
               onDown={() => onMoveBlock(block, 'down')}
-              labelUp="Move block up"
-              labelDown="Move block down"
+              labelUp="Move section up"
+              labelDown="Move section down"
               testIdUp={`quote-block-move-up-${block.id}`}
               testIdDown={`quote-block-move-down-${block.id}`}
             />
@@ -1305,7 +1328,7 @@ function BlockCard({
               onBlur={() => void commitHeading()}
               disabled={blockBusy}
               data-testid={`quote-block-heading-input-${block.id}`}
-              className={`w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold disabled:opacity-60 ${headingDraft.trim() !== heading ? 'ring-1 ring-warning' : ''}`}
+              className={`w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold transition-shadow disabled:opacity-60 ${fieldRing(headingDraft.trim() !== heading, blockSaved)}`}
             />
           ) : (
             <p className="text-lg font-semibold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
@@ -1321,7 +1344,7 @@ function BlockCard({
               disabled={blockBusy}
               rows={4}
               data-testid={`quote-block-rich-input-${block.id}`}
-              className={`w-full resize-y rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60 ${richDraft !== html ? 'ring-1 ring-warning' : ''}`}
+              className={`w-full resize-y rounded-md border bg-background px-2 py-1 text-sm transition-shadow disabled:opacity-60 ${fieldRing(richDraft !== html, blockSaved)}`}
             />
           ) : (
             <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
@@ -1334,7 +1357,7 @@ function BlockCard({
               {imageCaption && <figcaption className="text-xs text-muted-foreground">{imageCaption}</figcaption>}
             </figure>
           ) : (
-            <p className="text-sm text-muted-foreground">Image block (rendered in the PDF).</p>
+            <p className="text-sm text-muted-foreground">Image section (rendered in the PDF).</p>
           )
         )}
 
@@ -1343,14 +1366,15 @@ function BlockCard({
             {/* The 7-column row (description + 4 inline controls + total + actions)
                 can't compress gracefully on a tablet, so the table keeps a sensible
                 min width and the wrapper scrolls horizontally below that. */}
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label="Pricing table — scroll sideways for tax, total and row actions" tabIndex={0}>
             <table className="w-full min-w-[640px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-2 py-2 font-medium">Description</th>
                   <th className="px-2 py-2 text-right font-medium">Qty</th>
-                  <th className="px-2 py-2 text-right font-medium">Unit</th>
+                  <th className="px-2 py-2 text-right font-medium">Unit price</th>
                   <th className="px-2 py-2 font-medium">Recurrence</th>
+                  <th className="px-2 py-2 text-center font-medium">Taxable</th>
                   <th
                     className="px-2 py-2 text-right font-medium"
                     title="Per-line tax. The header Tax total is authoritative and may differ by a rounding cent."
@@ -1358,13 +1382,15 @@ function BlockCard({
                     Tax
                   </th>
                   <th className="px-2 py-2 text-right font-medium">Total</th>
-                  <th className="px-2 py-2" />
+                  {/* Row-actions column is pinned to the right edge so Up/Down/Remove
+                      stay reachable when the wide table scrolls horizontally. */}
+                  <th className="sticky right-0 border-l bg-card px-2 py-2" />
                 </tr>
               </thead>
               <tbody>
                 {lines.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-2 py-6 text-center text-sm text-muted-foreground">
+                    <td colSpan={8} className="px-2 py-6 text-center text-sm text-muted-foreground">
                       No lines yet. Add a catalog item or a manual line below.
                     </td>
                   </tr>
@@ -1379,13 +1405,14 @@ function BlockCard({
                         busy={isPending(`line:${l.id}`)}
                         isFirst={idx === 0}
                         isLast={idx === lines.length - 1}
+                        showInternal={showInternal}
                         onEdit={onEditLine}
                         onMove={onMoveLine}
                         onRemove={onRemoveLine}
                         onDraft={onLineDraft}
                       />
                     ) : (
-                      <ReadonlyLineRow key={l.id} line={l} currency={currency} taxRate={taxRate} />
+                      <ReadonlyLineRow key={l.id} line={l} currency={currency} taxRate={taxRate} isFirst={idx === 0} showInternal={showInternal} />
                     ),
                   )
                 )}
@@ -1491,6 +1518,7 @@ function BlockCard({
                     </select>
                   </div>
                   {/* Internal-only cost & identity fields (never shown to the customer). */}
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Internal · not shown to customer</p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <input
                       type="text" placeholder="SKU (optional)" aria-label="SKU" value={sku}
@@ -1525,7 +1553,10 @@ function BlockCard({
                     <button
                       type="button"
                       onClick={() => void submitManual()}
-                      disabled={addLineBusy || !desc.trim()}
+                      // A line needs a name OR a description (mirrors the API + addManual
+                      // refine). Gating on description alone silently blocked valid
+                      // name-only lines like a titled SKU with no prose.
+                      disabled={addLineBusy || (!name.trim() && !desc.trim())}
                       data-testid={`quote-manual-add-${block.id}`}
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
@@ -1546,7 +1577,7 @@ function BlockCard({
 // ── A single read-only pricing-table line (no write permission) ───────────
 // Mirrors EditableLineRow's two-row shape — the customer-facing cells plus the
 // internal cost/markup/net band — but renders everything as plain text.
-function ReadonlyLineRow({ line: l, currency, taxRate }: { line: QuoteLine; currency: string; taxRate: string | null }) {
+function ReadonlyLineRow({ line: l, currency, taxRate, isFirst, showInternal }: { line: QuoteLine; currency: string; taxRate: string | null; isFirst: boolean; showInternal: boolean }) {
   const mk = markupPct(l.unitPrice, l.unitCost);
   const markupStr = mk === null ? '—' : `${String(Number(mk.toFixed(2)))}%`;
   const netCents = l.unitCost === null
@@ -1572,21 +1603,28 @@ function ReadonlyLineRow({ line: l, currency, taxRate }: { line: QuoteLine; curr
             {formatRecurrence(l.recurrence)}
           </span>
         </td>
-        <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">
+        <td className="px-2 py-2 text-center text-muted-foreground" data-testid={`quote-line-taxable-${l.id}`}>
+          {/* aria-label on a non-focusable span is ignored by AT, so hide the glyph
+              and carry the meaning in an sr-only label instead. */}
+          <span aria-hidden="true">{l.taxable ? '✓' : '—'}</span>
+          <span className="sr-only">{l.taxable ? 'Taxable' : 'Not taxable'}</span>
+        </td>
+        <td className="px-2 py-2 text-right tabular-nums text-muted-foreground" data-testid={`quote-line-tax-${l.id}`}>
           {tax === null ? '—' : formatMoney(tax, currency)}
         </td>
         <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
-        <td className="px-2 py-2 text-right" />
+        <td className="sticky right-0 border-l bg-card px-2 py-2 text-right" />
       </tr>
-      <tr className="border-0" data-testid={`quote-line-internal-${l.id}`}>
-        <td colSpan={7} className="px-2 pb-2">
+      <tr className={`border-0 ${showInternal ? '' : 'hidden'}`} data-testid={`quote-line-internal-${l.id}`}>
+        <td colSpan={8} className="px-2 pb-2">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-[hsl(220_12%_40%)] dark:text-muted-foreground">
-            <span className="font-medium uppercase tracking-wide">Internal</span>
+            {/* Full disclaimer on the first row, a subtle "Internal" tag on the rest. */}
+            <span className="font-medium uppercase tracking-wide">{isFirst ? 'Internal · not shown to customer' : 'Internal'}</span>
             <span data-testid={`quote-line-sku-${l.id}`}>SKU {l.sku || '—'}</span>
             <span data-testid={`quote-line-partnumber-${l.id}`}>PN {l.partNumber || '—'}</span>
             <span data-testid={`quote-line-cost-${l.id}`}>Cost {l.unitCost === null ? '—' : formatMoney(l.unitCost, currency)}</span>
             <span data-testid={`quote-line-markup-${l.id}`}>Markup {markupStr}</span>
-            <span className="ml-auto">net{' '}
+            <span className="ml-auto">Profit{' '}
               <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${l.id}`}>
                 {netCents === null ? '—' : formatMoney(fromCents(netCents), currency)}
               </span>
@@ -1607,7 +1645,7 @@ function ReadonlyLineRow({ line: l, currency, taxRate }: { line: QuoteLine; curr
 // state to the incoming prop so server-side normalization (e.g. recomputed
 // totals, clamped quantity) wins.
 function EditableLineRow({
-  line, currency, taxRate, busy, isFirst, isLast, onEdit, onMove, onRemove, onDraft,
+  line, currency, taxRate, busy, isFirst, isLast, showInternal, onEdit, onMove, onRemove, onDraft,
 }: {
   line: QuoteLine;
   currency: string;
@@ -1615,6 +1653,7 @@ function EditableLineRow({
   busy: boolean;
   isFirst: boolean;
   isLast: boolean;
+  showInternal: boolean;
   onEdit: (lineId: string, body: LineUpdate) => Promise<boolean>;
   onMove: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemove: (line: QuoteLine) => void;
@@ -1705,11 +1744,16 @@ function EditableLineRow({
   const displayTotal = totalDiverged ? computeLineTotal(effQty, effPrice) : line.lineTotal;
   const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
 
-  // Markup is derived from price+cost (no separate state); the markup input is
-  // uncontrolled and re-seeded via key={markupStr} when price/cost change. Net is
-  // (price − cost) × qty in cents, shown as money; "—" when no cost is set.
+  // Markup is derived from price+cost. The input is controlled by local state that
+  // resyncs from the derived value when price/cost change — but only while the
+  // field is NOT focused, so a cross-field cost edit never yanks the caret. (This
+  // replaces the old key={markupStr} remount, which dropped focus on every
+  // commit.) Net is (price − cost) × qty in cents; "—" when no cost is set.
   const mk = markupPct(effPrice, cost);
   const markupStr = mk === null ? '' : String(Number(mk.toFixed(2)));
+  const markupFocused = useRef(false);
+  const [markupInput, setMarkupInput] = useState(markupStr);
+  useEffect(() => { if (!markupFocused.current) setMarkupInput(markupStr); }, [markupStr]);
   const netCents = cost.trim() === ''
     ? null
     : toCents(computeLineTotal(effQty, effPrice)) - toCents(computeLineTotal(effQty, cost));
@@ -1825,7 +1869,7 @@ function EditableLineRow({
               onBlur={commitName}
               disabled={busy}
               data-testid={`quote-line-name-${line.id}`}
-              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${nameDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
             />
             <textarea
               value={desc}
@@ -1836,7 +1880,7 @@ function EditableLineRow({
               rows={2}
               disabled={busy}
               data-testid={`quote-line-desc-${line.id}`}
-              className={`min-h-9 w-full resize-y rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${descDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`min-h-9 w-full resize-y rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
             />
           </div>
         </div>
@@ -1850,7 +1894,7 @@ function EditableLineRow({
           onBlur={commitQty}
           disabled={busy}
           data-testid={`quote-line-qty-${line.id}`}
-          className={`h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${qtyDirty ? 'ring-1 ring-warning' : ''}`}
+          className={`h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(qtyDirty, saved)}`}
         />
       </td>
       <td className="px-2 py-2 text-right">
@@ -1862,7 +1906,7 @@ function EditableLineRow({
           onBlur={commitPrice}
           disabled={busy}
           data-testid={`quote-line-price-${line.id}`}
-          className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${priceDirty ? 'ring-1 ring-warning' : ''}`}
+          className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(priceDirty, saved)}`}
         />
       </td>
       <td className="px-2 py-2">
@@ -1883,31 +1927,28 @@ function EditableLineRow({
           <option value="annual">Annual</option>
         </select>
       </td>
-      <td className="px-2 py-2 text-right">
-        <label className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={taxable}
-            aria-label="Taxable"
-            onChange={(e) => {
-              const next = e.target.checked;
-              setTaxable(next); // optimistic — revert if the save fails
-              void edit({ taxable: next }).then((ok) => { if (!ok) setTaxable(line.taxable); });
-            }}
-            disabled={busy}
-            data-testid={`quote-line-taxable-${line.id}`}
-          />
-          <span className="tabular-nums" data-testid={`quote-line-tax-${line.id}`}>
-            {displayTax === null ? '—' : formatMoney(displayTax, currency)}
-          </span>
-        </label>
+      <td className="px-2 py-2 text-center">
+        <input
+          type="checkbox"
+          checked={taxable}
+          aria-label="Taxable"
+          onChange={(e) => {
+            const next = e.target.checked;
+            setTaxable(next); // optimistic — revert if the save fails
+            void edit({ taxable: next }).then((ok) => { if (!ok) setTaxable(line.taxable); });
+          }}
+          disabled={busy}
+          data-testid={`quote-line-taxable-${line.id}`}
+        />
+      </td>
+      <td className="px-2 py-2 text-right tabular-nums text-muted-foreground" data-testid={`quote-line-tax-${line.id}`}>
+        {displayTax === null ? '—' : formatMoney(displayTax, currency)}
       </td>
       <td className="px-2 py-2 text-right tabular-nums">
         <span data-testid={`quote-line-total-${line.id}`}>{formatMoney(displayTotal, currency)}</span>
-        {saved && <span className="ml-1 text-xs font-medium text-success" data-testid={`quote-line-saved-${line.id}`}>Saved</span>}
-        <SrSaved show={saved} />
+        <SrSaved show={saved} testId={`quote-line-saved-${line.id}`} />
       </td>
-      <td className="px-2 py-2 text-right">
+      <td className="sticky right-0 border-l bg-card px-2 py-2 text-right">
         <div className="flex items-center justify-end gap-1">
           <MoveControls
             disabledUp={isFirst}
@@ -1931,11 +1972,16 @@ function EditableLineRow({
         </div>
       </td>
     </tr>
-    {/* Internal-only cost/markup/net band — never shown to the customer. */}
-    <tr className="border-0" data-testid={`quote-line-internal-${line.id}`}>
-      <td colSpan={7} className="px-2 pb-2">
+    {/* Internal-only cost/markup/profit band — never shown to the customer.
+        Collapsed by default via the editor's "Show cost & margin" toggle; kept in
+        the DOM (hidden) rather than unmounted so totals/draft wiring stays live. */}
+    <tr className={`border-0 ${showInternal ? '' : 'hidden'}`} data-testid={`quote-line-internal-${line.id}`}>
+      <td colSpan={8} className="px-2 pb-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-[hsl(220_12%_40%)] dark:text-muted-foreground">
-          <span className="font-medium uppercase tracking-wide">Internal</span>
+          {/* Full disclaimer on the first row; a subtle "Internal" tag persists on
+              every following row so a writer scanning mid-table never mistakes the
+              cost/markup band for customer-facing copy. */}
+          <span className="font-medium uppercase tracking-wide">{isFirst ? 'Internal · not shown to customer' : 'Internal'}</span>
           <label className="flex items-center gap-1">SKU
             <input
               type="text"
@@ -1944,7 +1990,7 @@ function EditableLineRow({
               onBlur={commitSku}
               disabled={busy}
               data-testid={`quote-line-sku-${line.id}`}
-              className={`h-6 w-28 rounded border bg-background px-1 text-foreground ${skuDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(skuDirty, saved)}`}
             />
           </label>
           <label className="flex items-center gap-1">PN
@@ -1955,7 +2001,7 @@ function EditableLineRow({
               onBlur={commitPartNumber}
               disabled={busy}
               data-testid={`quote-line-partnumber-${line.id}`}
-              className={`h-6 w-28 rounded border bg-background px-1 text-foreground ${partDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(partDirty, saved)}`}
             />
           </label>
           <label className="flex items-center gap-1">Cost
@@ -1966,21 +2012,27 @@ function EditableLineRow({
               onBlur={commitCost}
               disabled={busy}
               data-testid={`quote-line-cost-${line.id}`}
-              className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground ${costDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${fieldRing(costDirty, saved)}`}
             />
           </label>
           <label className="flex items-center gap-1">Markup
             <input
               type="number" step="0.1"
-              defaultValue={markupStr}
-              key={markupStr}
-              onBlur={(e) => onMarkupCommit(e.target.value)}
+              value={markupInput}
+              onFocus={() => { markupFocused.current = true; }}
+              onChange={(e) => setMarkupInput(e.target.value)}
+              onBlur={(e) => { markupFocused.current = false; onMarkupCommit(e.target.value); }}
               disabled={busy || cost.trim() === ''}
+              // Tell keyboard/SR users WHY the field is disabled — sighted users can
+              // see the empty cost field, AT users can't.
+              title={cost.trim() === '' ? 'Enter a cost first to set markup %' : undefined}
+              aria-describedby={cost.trim() === '' ? `quote-line-markup-hint-${line.id}` : undefined}
               data-testid={`quote-line-markup-${line.id}`}
               className="h-6 w-16 rounded border bg-background px-1 text-right tabular-nums text-foreground disabled:opacity-60"
             />%
+            {cost.trim() === '' && <span id={`quote-line-markup-hint-${line.id}`} className="sr-only">Enter a cost first to set markup %.</span>}
           </label>
-          <span className="ml-auto">net{' '}
+          <span className="ml-auto">Profit{' '}
             <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${line.id}`}>
               {netCents === null ? '—' : formatMoney(fromCents(netCents), currency)}
             </span>

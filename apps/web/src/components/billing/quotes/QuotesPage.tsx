@@ -451,9 +451,10 @@ export function QuotesPage() {
                         <span
                           className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[qt.status]}`}
                           data-testid={`quotes-status-${qt.id}`}
-                          aria-label={`Status: ${statusLabel(qt)}`}
                         >
-                          {statusLabel(qt)}
+                          {/* Real visually-hidden text, not aria-label on a non-interactive
+                              span (unreliable for screen readers) — mirrors QuoteDetail. */}
+                          <span className="sr-only">Status: </span>{statusLabel(qt)}
                         </span>
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums">{formatMoney(qt.total, qt.currencyCode)}</td>

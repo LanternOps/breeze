@@ -1,15 +1,14 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { fetchWithAuth } from '../../../stores/auth';
-import { navigateTo } from '@/lib/navigation';
-import { handleActionError } from '../../../lib/runAction';
+import { useCallback, useMemo, type CSSProperties } from 'react';
 import { useOrgStore } from '../../../stores/orgStore';
-import { quotePdfUrl, quoteImageUrl } from '../../../lib/api/quotes';
+import { quoteImageUrl } from '../../../lib/api/quotes';
+import { useAuthedImage, useQuotePdfDownload } from './useQuoteImage';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
   type QuoteLine,
   STATUS_COLORS,
   statusLabel,
+  stripHtml,
   formatDate,
   formatMoney,
   lineTaxAmount,
@@ -18,31 +17,6 @@ import {
   pctFromFraction,
   sellerLines,
 } from './quoteTypes';
-
-const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
-
-// rich_text blocks store author HTML. We render the result as a React text node
-// (auto-escaped) — never via dangerouslySetInnerHTML — so this is display
-// cleanup, not a security boundary. The tag strip runs to a fixpoint so a split
-// tag (e.g. `<<script>script>`) can't survive a single pass, and `&amp;` is
-// decoded LAST so it can't re-introduce an entity that a later rule re-decodes.
-function stripHtml(html: string): string {
-  let out = html
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n');
-  let prev: string;
-  do { prev = out; out = out.replace(/<[^>]*>/g, ''); } while (out !== prev);
-  return out
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&amp;/gi, '&')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 const RECURRENCE_LABEL: Record<QuoteLine['recurrence'], string> = {
   one_time: '',
@@ -55,31 +29,11 @@ const RECURRENCE_SUFFIX: Record<QuoteLine['recurrence'], string> = {
   annual: '/yr',
 };
 
-/** Quote images require the Bearer header, so a bare <img src> would 401. Fetch
- *  the authed bytes → blob → object URL, revoked on unmount/change. Mirrors the
- *  editor's QuoteImagePreview. */
+/** Quote images require the Bearer header, so a bare <img src> would 401. The
+ *  shared useAuthedImage hook fetches the authed bytes → blob → object URL,
+ *  revoked on unmount/change. Same loader the editor and detail views use. */
 function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
-  const [url, setUrl] = useState<string>();
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let objectUrl: string | undefined;
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetchWithAuth(quoteImageUrl(quoteId, imageId));
-        if (!res.ok) { if (active) setFailed(true); return; }
-        const blob = await res.blob();
-        objectUrl = window.URL.createObjectURL(blob);
-        if (active) setUrl(objectUrl);
-        else window.URL.revokeObjectURL(objectUrl);
-      } catch (err) {
-        console.error('[QuoteDocument] image load failed', imageId, err instanceof Error ? err.message : err);
-        if (active) setFailed(true);
-      }
-    })();
-    return () => { active = false; if (objectUrl) window.URL.revokeObjectURL(objectUrl); };
-  }, [quoteId, imageId]);
+  const { url, failed } = useAuthedImage(quoteImageUrl(quoteId, imageId));
 
   if (failed) {
     return (
@@ -107,7 +61,7 @@ function PricingTable({ lines, currency, label, taxRate, showTax }: { lines: Quo
       {label && (
         <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold text-foreground sm:px-5">{label}</div>
       )}
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${label || 'Pricing'} — scroll sideways for more columns`} tabIndex={0}>
         <table className="w-full min-w-[30rem] text-sm">
           <thead>
             <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
@@ -128,7 +82,7 @@ function PricingTable({ lines, currency, label, taxRate, showTax }: { lines: Quo
                   <td className="px-4 py-3 text-foreground sm:px-5">
                     <span className="font-medium">{lineTitle(l)}</span>
                     {tag && (
-                      <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
                         {tag}
                       </span>
                     )}
@@ -365,7 +319,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
 export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailData }) {
   const { quote } = detail;
   const organizations = useOrgStore((s) => s.organizations);
-  const [busy, setBusy] = useState(false);
+  const { busy, downloadPdf } = useQuotePdfDownload(quote);
 
   const customerName = useMemo(() => {
     const billTo = quote.billToName?.trim();
@@ -373,29 +327,6 @@ export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailDa
     const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
     return resolved || quote.orgId.slice(0, 8);
   }, [quote.billToName, quote.orgId, organizations]);
-
-  const downloadPdf = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await fetchWithAuth(quotePdfUrl(quote.id));
-      if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) { handleActionError(new Error('pdf'), 'Could not download the quote PDF.'); return; }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${quote.quoteNumber ?? `quote-${quote.id}`}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      handleActionError(err, 'Could not download the quote PDF.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, quote.id, quote.quoteNumber]);
 
   return (
     <div className="space-y-4" data-testid="quote-preview">

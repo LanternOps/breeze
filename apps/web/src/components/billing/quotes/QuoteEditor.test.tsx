@@ -84,10 +84,13 @@ describe('QuoteEditor', () => {
         termsAndConditions: 'Net 30',
       });
     });
-    // Blur-to-save fields now share the quiet "Saved" cue instead of a success
-    // toast (unified save-feedback model across the editor).
-    await waitFor(() => expect(screen.getByTestId('quote-terms-saved')).toBeInTheDocument());
-    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Terms saved' }));
+    // Per-field blur-saves are confirmed by the dirty-ring clearing (sighted) plus
+    // the SrSaved live region (screen readers) — NOT a toast. Toasts are reserved
+    // for action-level events; firing one per keystroke-blur was a storm that also
+    // double-announced alongside the live region.
+    await waitFor(() => expect(screen.getByTestId('quote-terms-saved')).toHaveTextContent('Saved'));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Saved' }));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Terms saved' }));
   });
 
   it('renders the T&C textarea pre-filled with existing termsAndConditions', async () => {

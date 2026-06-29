@@ -4,6 +4,7 @@ import { navigateTo } from '@/lib/navigation';
 import QuoteEditor from './QuoteEditor';
 import QuoteDetail from './QuoteDetail';
 import QuoteDocumentPreview from './QuoteDocument';
+import QuoteActions from './QuoteActions';
 import { type QuoteDetail as QuoteDetailData } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -128,13 +129,16 @@ export default function QuoteWorkspace({ id }: Props) {
 
   return (
     <div className="space-y-4" data-testid="quote-workspace">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <a href="/billing/quotes" className="text-xs text-muted-foreground hover:underline">← Quotes</a>
+          <a href="/billing/quotes" aria-label="Back to quotes" className="text-xs text-muted-foreground hover:underline"><span aria-hidden="true">←</span> Quotes</a>
           <h1 className="text-xl font-semibold" data-testid="quote-workspace-title">
             {detail.quote.quoteNumber ?? 'Draft quote'}
           </h1>
         </div>
+        {/* Primary actions live here so Send (the money-moment) and Download are
+            reachable from any tab, not buried inside the Detail tab. */}
+        <QuoteActions detail={detail} onChanged={reload} variant="header" />
       </div>
 
       {/* Tabs */}
@@ -180,7 +184,7 @@ export default function QuoteWorkspace({ id }: Props) {
 
       {activeTab === 'detail' && (
         <div role="tabpanel" id="quote-tabpanel-detail" aria-labelledby="quote-tab-detail" tabIndex={0}>
-          <QuoteDetail detail={detail} onChanged={() => void reload()} />
+          <QuoteDetail detail={detail} onChanged={() => void reload()} actionsInHeader />
         </div>
       )}
     </div>

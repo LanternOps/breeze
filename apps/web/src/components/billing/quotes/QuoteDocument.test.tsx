@@ -31,8 +31,8 @@ function makeDetail(overrides: Partial<QuoteDetailData> = {}): QuoteDetailData {
       { id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: { label: 'Services' }, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
     ],
     lines: [
-      { id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: null, description: 'Managed Workstation', quantity: '10', unitPrice: '45.00', taxable: false, customerVisible: true, lineTotal: '450.00', recurrence: 'monthly', termMonths: null, billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
-      { id: 'l-2', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: null, description: 'Onboarding', quantity: '1', unitPrice: '500.00', taxable: false, customerVisible: true, lineTotal: '500.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, sortOrder: 1, createdAt: '2026-06-01T00:00:00Z' },
+      { id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: null, description: 'Managed Workstation', quantity: '10', unitPrice: '45.00', unitCost: null, sku: null, partNumber: null, taxable: false, customerVisible: true, lineTotal: '450.00', recurrence: 'monthly', termMonths: null, billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
+      { id: 'l-2', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: null, description: 'Onboarding', quantity: '1', unitPrice: '500.00', unitCost: null, sku: null, partNumber: null, taxable: false, customerVisible: true, lineTotal: '500.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, sortOrder: 1, createdAt: '2026-06-01T00:00:00Z' },
     ],
     branding: {
       partnerName: 'Lantern IT', logoUrl: null, primaryColor: '#1c8a9e', footer: 'Thank you for your business.',

@@ -1,18 +1,18 @@
-import { useCallback, useMemo, useState } from 'react';
-import { fetchWithAuth } from '../../../stores/auth';
-import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../../lib/runAction';
+import { useCallback, useMemo } from 'react';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
-import { deleteQuote, quotePdfUrl, sendQuote } from '../../../lib/api/quotes';
-import { ConfirmDialog } from '../../shared/ConfirmDialog';
-import { RecurringBillingNote } from '../billingUi';
+import { quoteImageUrl } from '../../../lib/api/quotes';
+import { useAuthedImage } from './useQuoteImage';
+import QuoteActions from './QuoteActions';
+import { RecurringBillingNote, MarginPanel } from '../billingUi';
+import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
   type QuoteLine,
   STATUS_COLORS,
   statusLabel,
+  stripHtml,
   formatDate,
   formatMoney,
   formatRecurrence,
@@ -23,70 +23,40 @@ import {
   sellerLines,
 } from './quoteTypes';
 
-const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
-
 interface Props {
   detail: QuoteDetailData;
   // The parent reloads the quote when an action mutates it (e.g. send flips the
-  // status draft→sent and stamps sentAt). Phase 1 had no detail-view mutations;
-  // Phase 2's Send button uses it.
+  // status draft→sent and stamps sentAt).
   onChanged?: () => void;
+  // When the workspace header renders the primary actions, the Detail rail
+  // suppresses its own copy so Send/Download/Delete aren't doubled on the Detail
+  // tab. Standalone (and in tests) Detail renders the actions itself.
+  actionsInHeader?: boolean;
 }
 
-export default function QuoteDetail({ detail, onChanged }: Props) {
+export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Props) {
   const { can } = usePermissions();
+  // Margin/profit is internal-but-not-restricted: any user who can read the quote
+  // sees it. Gating on read (not write) keeps cost visibility consistent with the
+  // editor's read-only line rows, which show the cost band to read users too.
+  const canSeeMargin = can('quotes', 'read');
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
 
-  const [busy, setBusy] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [sendOpen, setSendOpen] = useState(false);
-  const [delOpen, setDelOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const refresh = useCallback(() => onChanged?.(), [onChanged]);
-
-  // Sending emails the customer and is irreversible, so it goes through a
-  // confirm step — and an empty quote (no blocks, no lines) can't be sent at all.
-  const isEmpty = blocks.length === 0 && lines.length === 0;
-
-  const send = useCallback(async () => {
-    if (sending) return;
-    setSending(true);
-    try {
-      await runAction({
-        request: () => sendQuote(quote.id),
-        errorFallback: 'Could not send the proposal.',
-        successMessage: 'Proposal sent',
-        onUnauthorized: UNAUTHORIZED,
-      });
-      setSendOpen(false);
-      refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not send the proposal.');
-    } finally {
-      setSending(false);
-    }
-  }, [sending, quote.id, refresh]);
-
-  const remove = useCallback(async () => {
-    if (deleting) return;
-    setDeleting(true);
-    try {
-      await runAction({
-        request: () => deleteQuote(quote.id),
-        errorFallback: 'Could not delete the draft.',
-        successMessage: 'Draft deleted',
-        onUnauthorized: UNAUTHORIZED,
-      });
-      setDelOpen(false);
-      void navigateTo('/billing/quotes');
-    } catch (err) {
-      handleActionError(err, 'Could not delete the draft.');
-    } finally {
-      setDeleting(false);
-    }
-  }, [deleting, quote.id]);
+  // Same cents math as the editor rail (computeQuoteProfit), fed the read-model
+  // strings, so the Detail margin can never diverge from the editor margin.
+  const profit = useMemo<QuoteProfit>(
+    () => computeQuoteProfit(lines.map((l) => ({
+      quantity: l.quantity,
+      unitPrice: l.unitPrice,
+      taxable: l.taxable,
+      customerVisible: l.customerVisible,
+      recurrence: l.recurrence,
+      unitCost: l.unitCost,
+    }))),
+    [lines],
+  );
 
   const sortedBlocks = useMemo(
     () => [...blocks].sort((a, b) => a.sortOrder - b.sortOrder),
@@ -104,29 +74,6 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
   // Lines not attached to any block (direct/unsectioned lines) render in a trailing
   // table so nothing is dropped from the view.
   const looseLines = useMemo(() => linesForBlock(null), [linesForBlock]);
-
-  const downloadPdf = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await fetchWithAuth(quotePdfUrl(quote.id));
-      if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) { handleActionError(new Error('pdf'), 'Could not download the quote PDF.'); return; }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${quote.quoteNumber ?? `quote-${quote.id}`}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      handleActionError(err, 'Could not download the quote PDF.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, quote.id, quote.quoteNumber]);
 
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
@@ -154,7 +101,9 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
     <div className="space-y-6" data-testid="quote-detail">
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── rendered blocks + lines ───────────────────────────────────── */}
-        <div className="space-y-4">
+        {/* min-w-0 lets this 1fr track shrink below its tables' content width so
+            the page doesn't scroll horizontally on a phone. */}
+        <div className="min-w-0 space-y-4">
           {sortedBlocks.length === 0 && looseLines.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-card p-8 text-center" data-testid="quote-detail-empty">
               <p className="text-sm text-muted-foreground">This quote has no content yet.</p>
@@ -183,20 +132,24 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
           )}
 
           {looseLines.length > 0 && (
-            <LineTable lines={looseLines} currency={currency} label="Other items" testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
+            <LineTable lines={looseLines} currency={currency} label="Additional items" testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
           )}
         </div>
 
         {/* ── summary + actions ─────────────────────────────────────────── */}
+        {/* The Totals card keeps the shadow and the large "due" figure so it reads
+            as the anchor; the surrounding meta/from/terms cards are flatter (border
+            only) so the rail isn't a stack of equal-weight boxes. */}
         <div className="space-y-4">
-          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-summary">
+          <div className="rounded-lg border bg-card p-4" data-testid="quote-detail-summary">
             <div className="mb-3 flex items-center justify-between">
               <span
                 className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[quote.status]}`}
                 data-testid="quote-detail-status"
-                aria-label={`Status: ${statusLabel(quote)}`}
               >
-                {statusLabel(quote)}
+                {/* Real visually-hidden text rather than aria-label on a non-
+                    interactive span, which screen readers don't reliably announce. */}
+                <span className="sr-only">Status: </span>{statusLabel(quote)}
               </span>
               {quote.expiryDate && (
                 <span className="text-xs text-muted-foreground">Expires {formatDate(quote.expiryDate)}</span>
@@ -211,13 +164,13 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
             </dl>
           </div>
 
-          {/* Recurring + totals summary */}
+          {/* Recurring + totals summary — the rail's anchor (shadow + large figure). */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-totals">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Totals</h3>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">One-time</dt><dd>{formatMoney(quote.oneTimeTotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Monthly</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Annual</dt><dd>{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">Monthly recurring</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">Annual recurring</dt><dd>{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>
               {showTax && (
                 <div className="flex justify-between"><dt className="text-muted-foreground">Tax{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
               )}
@@ -235,11 +188,15 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
                 <RecurringBillingNote className="mt-2" />
               </>
             )}
+            {/* Internal cost / profit — same shared panel and figures as the editor
+                rail, so profitability survives past draft when the Editor tab is
+                hidden for non-draft quotes. */}
+            {canSeeMargin && <MarginPanel profit={profit} currency={currency} />}
           </div>
 
           {/* Seller From block */}
           {quote.sellerSnapshot && (
-            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-from">
+            <div className="rounded-lg border bg-card p-4" data-testid="quote-detail-from">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</h3>
               <div className="space-y-0.5 text-sm">
                 {quote.sellerSnapshot.name && (
@@ -263,111 +220,62 @@ export default function QuoteDetail({ detail, onChanged }: Props) {
 
           {/* Terms & Conditions */}
           {quote.termsAndConditions && (
-            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-terms">
+            <div className="rounded-lg border bg-card p-4" data-testid="quote-detail-terms">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
               <p className="whitespace-pre-wrap text-sm text-muted-foreground">{quote.termsAndConditions}</p>
             </div>
           )}
 
-          {/* Actions — the primary action leads. On a draft that's "Send proposal"
-              (the irreversible money-moment); on an issued quote only "Download PDF"
-              remains, as a secondary affordance. */}
-          <div className="space-y-2">
-            {/* Send a draft proposal: issues a number, emails the customer's billing
-                contact with the PDF + a public accept link, and flips draft→sent.
-                Gated on quotes:send. Only a draft can be sent — once sent, the
-                button drops out (the status pill above reflects the new state). The
-                click opens a confirm step; an empty quote can't be sent. */}
-            {can('quotes', 'send') && quote.status === 'draft' && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setSendOpen(true)}
-                  disabled={sending || isEmpty}
-                  title={isEmpty ? 'Add at least one item before sending.' : undefined}
-                  data-testid="quote-send"
-                  className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-                >
-                  {sending ? 'Sending…' : 'Send proposal'}
-                </button>
-                {isEmpty && (
-                  <p className="text-center text-xs text-muted-foreground" data-testid="quote-send-empty-hint">
-                    Add at least one item before sending.
-                  </p>
-                )}
-              </>
-            )}
-            {/* PDF download is a read affordance — quotes has no dedicated export
-                action, so it's gated on quotes:read (visible to anyone who can view
-                the quote). Secondary to the send action. */}
-            {can('quotes', 'read') && (
-              <button
-                type="button"
-                onClick={() => void downloadPdf()}
-                disabled={busy}
-                data-testid="quote-download-pdf"
-                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                Download PDF
-              </button>
-            )}
-            {can('quotes', 'write') && quote.status === 'draft' && (
-              <button
-                type="button"
-                onClick={() => setDelOpen(true)}
-                data-testid="quote-delete-open"
-                className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
-              >
-                Delete draft
-              </button>
-            )}
-          </div>
+          {/* Actions — suppressed here when the workspace header owns them, so the
+              primary Send action isn't doubled on the Detail tab. */}
+          {!actionsInHeader && <QuoteActions detail={detail} onChanged={onChanged} variant="rail" />}
         </div>
       </div>
-      <ConfirmDialog
-        open={sendOpen}
-        onClose={() => setSendOpen(false)}
-        onConfirm={() => void send()}
-        isLoading={sending}
-        variant="warning"
-        title="Send this proposal?"
-        message={`We'll email this proposal to ${orgName} and mark it Sent — ${formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)} due on acceptance. This can't be undone.`}
-        confirmLabel="Send proposal"
-        confirmTestId="quote-send-confirm"
-      />
-      <ConfirmDialog
-        open={delOpen}
-        onClose={() => setDelOpen(false)}
-        onConfirm={() => void remove()}
-        isLoading={deleting}
-        title="Delete draft quote"
-        message="This permanently deletes the draft quote. This cannot be undone."
-        confirmLabel="Delete draft"
-        confirmTestId="quote-delete-confirm"
-      />
     </div>
   );
+}
+
+// Authed image for the internal detail view — same loader and treatment as the
+// customer document, so the Detail tab shows the real image (not a placeholder).
+function DetailImage({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
+  const { url, failed } = useAuthedImage(quoteImageUrl(quoteId, imageId));
+  if (failed) {
+    return (
+      <div className="rounded-lg border border-dashed bg-muted/40 px-4 py-8 text-center text-xs text-muted-foreground">
+        Image unavailable
+      </div>
+    );
+  }
+  if (!url) return <div className="h-40 animate-pulse rounded-lg bg-muted/60" aria-hidden />;
+  return <img src={url} alt={caption || 'Proposal image'} className="w-full rounded-lg border bg-card object-contain" />;
 }
 
 function BlockView({ block, lines, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; currency: string; taxRate: string | null; showTax: boolean }) {
   const heading = (block.content?.text as string | undefined) ?? '';
   const html = (block.content?.html as string | undefined) ?? '';
   const tableLabel = (block.content?.label as string | undefined) ?? '';
+  const imageId = (block.content?.imageId as string | undefined) ?? '';
   const caption = (block.content?.caption as string | undefined) ?? '';
 
   if (block.blockType === 'heading') {
     return <h2 className="text-lg font-semibold" data-testid={`quote-detail-block-${block.id}`}>{heading}</h2>;
   }
   if (block.blockType === 'rich_text') {
+    // Flatten author HTML the same way the customer document does, so the Detail
+    // tab never shows literal `<p>` tags where the proposal shows clean text.
+    const text = stripHtml(html);
+    if (!text) return null;
     return (
-      <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-detail-block-${block.id}`}>{html}</p>
+      <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-detail-block-${block.id}`}>{text}</p>
     );
   }
   if (block.blockType === 'image') {
+    if (!imageId) return null;
     return (
-      <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground" data-testid={`quote-detail-block-${block.id}`}>
-        Image{caption ? ` — ${caption}` : ''} (rendered in the PDF).
-      </div>
+      <figure className="space-y-1" data-testid={`quote-detail-block-${block.id}`}>
+        <DetailImage quoteId={block.quoteId} imageId={imageId} caption={caption} />
+        {caption && <figcaption className="text-xs text-muted-foreground">{caption}</figcaption>}
+      </figure>
     );
   }
   // line_items
@@ -385,12 +293,13 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
       {label && (
         <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h3>
       )}
-      <table className="w-full text-sm" data-testid={testId}>
+      <div className="overflow-x-auto" role="region" aria-label={`${label || 'Pricing'} — scroll sideways for more columns`} tabIndex={0}>
+      <table className="w-full min-w-[30rem] text-sm" data-testid={testId}>
         <thead>
           <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
             <th className="px-3 py-2 font-medium">Description</th>
             <th className="px-3 py-2 text-right font-medium">Qty</th>
-            <th className="px-3 py-2 text-right font-medium">Unit</th>
+            <th className="px-3 py-2 text-right font-medium">Unit price</th>
             <th className="px-3 py-2 font-medium">Recurrence</th>
             {showTax && <th className="px-3 py-2 text-right font-medium">Tax</th>}
             <th className="px-3 py-2 text-right font-medium">Total</th>
@@ -413,7 +322,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
                   <td className="px-3 py-2 text-right tabular-nums">{l.quantity}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
                   <td className="px-3 py-2">
-                    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
                       {formatRecurrence(l.recurrence)}
                     </span>
                   </td>
@@ -427,6 +336,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
           )}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
