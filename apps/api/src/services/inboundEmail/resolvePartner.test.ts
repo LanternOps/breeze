@@ -16,7 +16,7 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../../db/schema', () => ({
   partnerInboundDomains: { __t: 'domains', domain: 'domain', partnerId: 'partnerId' },
-  partners: { __t: 'partners', slug: 'slug', id: 'id' }
+  partners: { __t: 'partners', slug: 'slug', inboundLocalPart: 'inboundLocalPart', id: 'id' }
 }));
 
 import { resolvePartnerByRecipient } from './resolvePartner';
@@ -27,6 +27,15 @@ describe('resolvePartnerByRecipient', () => {
   it('resolves via the platform slug address', async () => {
     dbMocks.partnerRows = [{ id: 'p-1' }];
     expect(await resolvePartnerByRecipient('acme@tickets.example.com')).toBe('p-1');
+  });
+  it('resolves the partner for an alias address on the platform domain', async () => {
+    dbMocks.partnerRows = [{ id: 'p-2' }];
+    expect(await resolvePartnerByRecipient('support@tickets.example.com')).toBe('p-2');
+  });
+
+  it('returns null when no partner matches the local-part', async () => {
+    dbMocks.partnerRows = [];
+    expect(await resolvePartnerByRecipient('nobody@tickets.example.com')).toBeNull();
   });
   it('returns null for an unknown recipient domain', async () => {
     expect(await resolvePartnerByRecipient('x@notours.com')).toBeNull();

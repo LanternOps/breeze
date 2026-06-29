@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import { db } from '../../db';
 import { partnerInboundDomains, partners } from '../../db/schema';
 import { getConfig } from '../../config/validate';
@@ -18,7 +18,8 @@ export async function resolvePartnerByRecipient(recipient: string): Promise<stri
 
   // (2) platform slug address: {slug}@TICKETS_INBOUND_DOMAIN
   if (getConfig().TICKETS_INBOUND_DOMAIN && domain === getConfig().TICKETS_INBOUND_DOMAIN) {
-    const p = await db.select({ id: partners.id }).from(partners).where(eq(partners.slug, local)).limit(1);
+    const p = await db.select({ id: partners.id }).from(partners)
+      .where(or(eq(partners.inboundLocalPart, local), eq(partners.slug, local))).limit(1);
     if (p[0]) return p[0].id;
   }
   return null;
