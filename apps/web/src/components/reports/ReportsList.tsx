@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
-import { exportReport, getBrowserTimezone } from './reportExport';
+import { exportReport, downloadBlob, getBrowserTimezone } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type ReportType =
@@ -82,6 +82,13 @@ const formatLabels: Record<ReportFormat, string> = {
   pdf: 'PDF',
   excel: 'Excel'
 };
+
+/** Extract the filename from a Content-Disposition header, if present. */
+function parseContentDispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const match = /filename="?([^";]+)"?/.exec(header);
+  return match?.[1] ?? null;
+}
 
 export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: ReportsListProps) {
   const effectiveTimezone = timezone || getBrowserTimezone();
@@ -196,29 +203,36 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   const handleDownload = async (run: ReportRun) => {
     setDownloadingRunId(run.id);
     try {
-      const runRes = await fetchWithAuth(`/reports/runs/${run.id}`);
-      if (!runRes.ok) throw new Error('Failed to fetch run details');
-      const runDetails = await runRes.json();
-      const report = runDetails.report;
-      if (!report?.type || !report?.format) throw new Error('Report data is incomplete');
+      const res = await fetchWithAuth(`/reports/runs/${run.id}/download`);
+      if (!res.ok) {
+        let message = 'Download failed';
+        try {
+          message = (await res.json())?.error ?? message;
+        } catch {
+          /* non-JSON error body */
+        }
+        throw new Error(message);
+      }
 
-      // Fetch the full report definition to get the original config
-      const reportRes = await fetchWithAuth(`/reports/${report.id}`);
-      const reportConfig = reportRes.ok ? (await reportRes.json()).config ?? {} : {};
+      const contentType = res.headers.get('content-type') ?? '';
+      if (contentType.includes('application/json')) {
+        // PDF path: server returned the stored snapshot; render client-side.
+        const payload = await res.json();
+        const rows = (payload.data as { rows?: unknown[] })?.rows ?? [];
+        exportReport(rows, {
+          format: 'pdf',
+          reportType: payload.type ?? run.reportType ?? 'report',
+          timezone: effectiveTimezone,
+        });
+        return;
+      }
 
-      const genRes = await fetchWithAuth('/reports/generate', {
-        method: 'POST',
-        body: JSON.stringify({ type: report.type, format: report.format, config: reportConfig }),
-      });
-      if (!genRes.ok) throw new Error('Failed to generate report data');
-      const genData = await genRes.json();
-
-      const rows = (genData.data as { rows?: unknown[] })?.rows ?? [];
-      exportReport(rows, {
-        format: report.format as 'csv' | 'pdf' | 'excel',
-        reportType: report.type,
-        timezone: effectiveTimezone,
-      });
+      // CSV/Excel: save the returned file blob directly.
+      const blob = await res.blob();
+      const filename =
+        parseContentDispositionFilename(res.headers.get('content-disposition')) ??
+        `${run.reportType ?? 'report'}-report.csv`;
+      downloadBlob(blob, filename);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Download failed');
     } finally {
