@@ -20,6 +20,32 @@ function mechanism(authResults: string | undefined, name: string): string | unde
   return new RegExp(`\\b${name}=(\\w+)`, 'i').exec(authResults)?.[1];
 }
 
+/**
+ * Return the value of the Authentication-Results header we can TRUST, or '' if none.
+ *
+ * Graph's `internetMessageHeaders` returns the full header set, which can include an
+ * `Authentication-Results` line a malicious sender put into their OWN message
+ * (e.g. `Authentication-Results: anything; dmarc=pass`). Exchange Online stamps a
+ * GENUINE header whose authserv-id is the receiving (accepted) domain. So — mirroring
+ * the mailgun normalizer's authserv-id check — trust ONLY a header whose authserv-id
+ * matches the support mailbox's own domain; ignore foreign/absent authserv-id headers.
+ * Unmatched → '' → all verdicts 'unknown' → verified=false → the R4 gate quarantines
+ * (never drops) for manual review. NOTE: if a tenant's EOP stamps a different
+ * authserv-id than the mailbox domain, genuine mail will quarantine until this is
+ * tuned — safe because nothing is lost.
+ */
+function trustedAuthResults(
+  headers: GraphMessage['internetMessageHeaders'], mailboxDomain: string,
+): string {
+  if (!mailboxDomain) return '';
+  for (const h of headers ?? []) {
+    if (h.name.toLowerCase() !== 'authentication-results') continue;
+    const authservId = (h.value.split(';')[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase();
+    if (authservId === mailboxDomain) return h.value;
+  }
+  return '';
+}
+
 /** Always returns a full SenderAuth (fail-closed). verified iff DMARC passed. */
 function buildSenderAuth(authResults: string | undefined): SenderAuth {
   const spf = normalizeVerdict(mechanism(authResults, 'spf'));
@@ -35,6 +61,7 @@ export function normalizeGraphMessage(
   mailboxAddress: string,
 ): NormalizedInboundEmail {
   const fromAddr = msg.from?.emailAddress?.address?.trim().toLowerCase() ?? '';
+  const mailboxDomain = mailboxAddress.split('@')[1]?.trim().toLowerCase() ?? '';
   const references = header(msg.internetMessageHeaders, 'References')?.trim().split(/\s+/).filter(Boolean);
   const contentType = msg.body?.contentType?.toLowerCase();
   const html = contentType === 'html' ? msg.body?.content : undefined;
@@ -55,7 +82,7 @@ export function normalizeGraphMessage(
     references,
     autoSubmitted: header(msg.internetMessageHeaders, 'Auto-Submitted'),
     precedence: header(msg.internetMessageHeaders, 'Precedence'),
-    senderAuth: buildSenderAuth(header(msg.internetMessageHeaders, 'Authentication-Results')),
+    senderAuth: buildSenderAuth(trustedAuthResults(msg.internetMessageHeaders, mailboxDomain)),
     // Phase-1 parity: attachment bodies deferred; metadata not fetched yet.
     attachments: [],
     raw: {

@@ -47,7 +47,8 @@ describe('M365 inbound → ticket (real DB)', () => {
       bodyPreview: 'printer down',
       hasAttachments: false,
       internetMessageHeaders: [
-        { name: 'Authentication-Results', value: 'spf=pass; dkim=pass; dmarc=pass' },
+        // authserv-id 'a.com' matches the support mailbox domain → trusted (clears R4).
+        { name: 'Authentication-Results', value: 'a.com; spf=pass; dkim=pass; dmarc=pass' },
       ],
     };
     const normalized = normalizeGraphMessage(msg, partnerId, 'support@a.com');

@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { captureException } from '../services/sentry';
 import {
   listConnectedMailboxes,
@@ -35,7 +36,11 @@ async function sweepOne(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[nu
     }
 
     const next = status === 401 || status === 403 ? 'reauth_required' : 'error';
-    await setConnectionStatus(c.id, c.partnerId, next, err instanceof Error ? err.message : 'poll failed');
+    // setConnectionStatus is shared with the request path (bare db); the worker has
+    // no request DB context, so wrap in system context or the FORCE-RLS UPDATE
+    // matches zero rows and the status never surfaces.
+    await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      setConnectionStatus(c.id, c.partnerId, next, err instanceof Error ? err.message : 'poll failed')));
     return;
   }
 

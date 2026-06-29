@@ -83,12 +83,18 @@ export async function setConnectionStatus(
     .where(and(eq(ticketMailboxConnections.id, id), eq(ticketMailboxConnections.partnerId, partnerId)));
 }
 
+/** Worker-only. Self-wraps in system context: ticket_mailbox_connections is
+ *  FORCE RLS (partner-axis), and the poll worker runs with no request DB context,
+ *  so a bare write would match zero rows silently and the cursor would never
+ *  advance. */
 export async function updateDeltaCursor(
   id: string, deltaLink: string, polledAt: Date, lastMessageAt: Date | null,
 ): Promise<void> {
-  await db.update(ticketMailboxConnections)
-    .set({ deltaLink, lastPolledAt: polledAt, ...(lastMessageAt ? { lastMessageAt } : {}), updatedAt: new Date() })
-    .where(eq(ticketMailboxConnections.id, id));
+  await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    await db.update(ticketMailboxConnections)
+      .set({ deltaLink, lastPolledAt: polledAt, ...(lastMessageAt ? { lastMessageAt } : {}), updatedAt: new Date() })
+      .where(eq(ticketMailboxConnections.id, id));
+  }));
 }
 
 export async function disableConnection(id: string, partnerId: string): Promise<void> {
@@ -98,12 +104,14 @@ export async function disableConnection(id: string, partnerId: string): Promise<
 }
 
 /** 410 Gone: Graph invalidated the delta token. Clear it so the next sweep restarts
- *  the delta from "now" (no history backfill). Stays 'connected'. Called from the
- *  poll worker under system context. */
+ *  the delta from "now" (no history backfill). Stays 'connected'. Worker-only;
+ *  self-wraps in system context (FORCE RLS — see updateDeltaCursor). */
 export async function resetDeltaCursor(id: string): Promise<void> {
-  await db.update(ticketMailboxConnections)
-    .set({ deltaLink: null, updatedAt: new Date() })
-    .where(eq(ticketMailboxConnections.id, id));
+  await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    await db.update(ticketMailboxConnections)
+      .set({ deltaLink: null, updatedAt: new Date() })
+      .where(eq(ticketMailboxConnections.id, id));
+  }));
 }
 
 /** Lightweight Graph probe: can the app read this mailbox under the tenant's consent? */

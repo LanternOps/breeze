@@ -15,7 +15,8 @@ const msg: GraphMessage = {
   internetMessageHeaders: [
     { name: 'In-Reply-To', value: '<prev@mail.x.com>' },
     { name: 'References', value: '<root@mail.x.com> <prev@mail.x.com>' },
-    { name: 'Authentication-Results', value: 'spf=pass; dkim=pass; dmarc=pass action=none' },
+    // authserv-id 'a.com' matches the support mailbox domain → trusted (EOP stamp).
+    { name: 'Authentication-Results', value: 'a.com; spf=pass; dkim=pass; dmarc=pass action=none' },
   ],
 };
 
@@ -44,5 +45,31 @@ describe('normalizeGraphMessage', () => {
     expect(n.senderAuth).toBeDefined();
     expect(n.senderAuth?.verified).toBe(false);
     expect(n.senderAuth?.dmarc).toBe('unknown');
+  });
+
+  it('does NOT trust a sender-forged Authentication-Results (authserv-id mismatch → verified=false)', () => {
+    const forged: GraphMessage = {
+      ...msg,
+      internetMessageHeaders: [
+        // A header the sender injected into their own message; authserv-id is NOT
+        // the mailbox domain, so it must be ignored (spoof defense).
+        { name: 'Authentication-Results', value: 'attacker.test; spf=pass; dkim=pass; dmarc=pass' },
+      ],
+    };
+    const n = normalizeGraphMessage(forged, 'partner-9', 'support@a.com');
+    expect(n.senderAuth?.verified).toBe(false);
+    expect(n.senderAuth?.dmarc).toBe('unknown');
+  });
+
+  it('trusts the genuine EOP header even when a forged one is also present', () => {
+    const both: GraphMessage = {
+      ...msg,
+      internetMessageHeaders: [
+        { name: 'Authentication-Results', value: 'attacker.test; dmarc=pass' },          // forged
+        { name: 'Authentication-Results', value: 'a.com; spf=pass; dkim=pass; dmarc=pass' }, // EOP
+      ],
+    };
+    const n = normalizeGraphMessage(both, 'partner-9', 'support@a.com');
+    expect(n.senderAuth?.verified).toBe(true);
   });
 });
