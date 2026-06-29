@@ -297,28 +297,40 @@
       Return="check"
       HideTarget="yes" />
 
-    <!-- Capture the launched MSI path + bootstrap inputs while the original
-         session properties are still readable (immediate CA). OriginalDatabase
-         points at the user's downloaded file here; by deferred execution the
-         package is cached to C:\Windows\Installer and the (TOKEN@HOST) name is
-         gone. Packed pipe-delimited because deferred CAs only see CustomActionData.
+    <!-- Pass the launched MSI path (which carries the bootstrap token in its
+         filename — Breeze Agent (TOKEN@HOST).msi) to the agent on the deferred
+         CA's command line, via [OriginalDatabase] referenced DIRECTLY.
 
-         The download filename carries the token in PARENTHESES — Breeze Agent
-         (TOKEN@HOST).msi — NOT square brackets. This value flows through MSI's
-         Formatted-field engine, where "[...]" is the property-reference
-         delimiter, and a bracketed token substring gets stripped along the way,
-         silently dropping the token (observed in #1956). Parens are literal in
-         Formatted fields and survive into CustomActionData. The agent parser
-         accepts both forms. -->
-    <CustomAction
-      Id="SetBootstrapData"
-      Property="BootstrapEnroll"
-      Value="[OriginalDatabase]|[BOOTSTRAP_TOKEN]|[SERVER_URL]" />
+         MSI formats a deferred CA's Target at SCHEDULE time (the immediate
+         execute-sequence pass), where OriginalDatabase still points at the user's
+         downloaded file — the (TOKEN@HOST) name is intact and is baked into the
+         script. (By deferred EXECUTION time the package is cached to
+         C:\Windows\Installer and OriginalDatabase would be tokenless, but the
+         Target has already been formatted by then.) Verified on the shipped
+         v0.86.0 MSI: the formatted Target carries the full path with the token.
 
+         Do NOT revert this to "[CustomActionData]". A deferred EXE custom action
+         cannot read CustomActionData from its command line — [CustomActionData]
+         formats to an EMPTY string at schedule time, so the agent received an
+         empty install-data argument and silently skipped enrollment on EVERY
+         install ("no bootstrap token present" then unenrolled). That was the real
+         cause of the field reports; it was misattributed to #1956's
+         bracket-stripping, but brackets were never the issue and the prior
+         SetBootstrapData then CustomActionData indirection never delivered the
+         token at all.
+
+         The token rides in PARENTHESES — Breeze Agent (TOKEN@HOST).msi — not
+         square brackets, because "[...]" is MSI's Formatted-field delimiter and a
+         bracketed substring is stripped; parens are literal and survive. The
+         agent parser (installer_filename.go) accepts both. The pipe-delimited
+         <OriginalDatabase>|<BOOTSTRAP_TOKEN>|<SERVER_URL> shape mirrors the
+         agent's resolveBootstrapInputs payload (an explicitly-supplied token +
+         server take precedence; both are empty on the filename-bootstrap path).
+         HideTarget keeps the token out of the verbose log. -->
     <CustomAction
       Id="BootstrapEnroll"
       FileRef="filBreezeAgentExe"
-      ExeCommand="bootstrap --install-data &quot;[CustomActionData]&quot; --quiet"
+      ExeCommand="bootstrap --install-data &quot;[OriginalDatabase]|[BOOTSTRAP_TOKEN]|[SERVER_URL]&quot; --quiet"
       Execute="deferred"
       Impersonate="no"
       Return="check"
@@ -374,9 +386,9 @@
       <Custom Action="EnrollAgent" Before="InstallServices" Condition="NOT Installed AND SERVER_URL AND ENROLLMENT_KEY" />
       <!-- Filename/property bootstrap enrollment: only when explicit
            SERVER_URL+ENROLLMENT_KEY were NOT supplied (those take the
-           EnrollAgent path above). SetBootstrapData (immediate) must run before
-           the deferred BootstrapEnroll so CustomActionData is populated. -->
-      <Custom Action="SetBootstrapData" Before="BootstrapEnroll" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
+           EnrollAgent path above). The deferred CA references [OriginalDatabase]
+           directly (baked at schedule time, here, while it still names the
+           downloaded file) — no immediate capture CA is needed. -->
       <Custom Action="BootstrapEnroll" Before="InstallServices" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
