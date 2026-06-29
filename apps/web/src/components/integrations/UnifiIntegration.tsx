@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   Loader2,
   Plug,
@@ -12,14 +13,17 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
-type ConnectionStatus = 'connected' | 'disconnected' | 'error';
+type ConnectionStatus = 'connected' | 'error' | 'reauth_required';
 
+// Mirrors the GET /unifi contract: `{ connected: false }` when not connected, otherwise
+// `{ connected: true, status, accountLabel, lastSyncAt, lastSyncStatus, lastSyncError }`.
 interface UnifiStatus {
-  status: ConnectionStatus;
-  connectedAt: string | null;
-  lastSyncAt: string | null;
-  hostCount: number | null;
-  lastError: string | null;
+  connected: boolean;
+  status?: ConnectionStatus;
+  accountLabel?: string | null;
+  lastSyncAt?: string | null;
+  lastSyncStatus?: string | null;
+  lastSyncError?: string | null;
 }
 
 export default function UnifiIntegration() {
@@ -155,13 +159,31 @@ export default function UnifiIntegration() {
     );
   }
 
-  const isConnected = status?.status === 'connected';
+  // Connected vs. not is the API's `connected` boolean. The `status` string then
+  // distinguishes healthy ('connected') from degraded ('error' / 'reauth_required').
+  const isConnected = status?.connected === true;
+  const needsReauth = isConnected && status?.status === 'reauth_required';
+  const hasError = isConnected && status?.status === 'error';
 
   return (
     <div className="space-y-6" data-testid="unifi-panel">
       <div className="flex items-center gap-3">
         <Header />
-        {isConnected ? (
+        {needsReauth ? (
+          <span
+            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700"
+            data-testid="unifi-status-reauth"
+          >
+            <AlertTriangle className="h-3.5 w-3.5" /> Reconnect required
+          </span>
+        ) : hasError ? (
+          <span
+            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs text-red-700"
+            data-testid="unifi-status-error"
+          >
+            <AlertTriangle className="h-3.5 w-3.5" /> Sync error
+          </span>
+        ) : isConnected ? (
           <span
             className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700"
             data-testid="unifi-status-connected"
@@ -191,9 +213,6 @@ export default function UnifiIntegration() {
             gateways, switches, and access points across your hosts. Breeze maps UniFi sites to
             your Breeze sites and reconciles discovered network assets.
           </p>
-          {status?.lastError && (
-            <p className="mt-2 text-xs text-amber-700" data-testid="unifi-last-error">{status.lastError}</p>
-          )}
           <label className="mt-4 block text-sm font-medium" htmlFor="unifi-api-key">
             UniFi Site Manager API key
           </label>
@@ -222,10 +241,37 @@ export default function UnifiIntegration() {
 
       {isConnected && status && (
         <div className="space-y-5 rounded-lg border bg-card p-5" data-testid="unifi-connected">
+          {/* Degraded states must be loud — a connection in 'error' or 'reauth_required'
+              still renders the connected view, but with a prominent banner so the
+              operator sees the backend's message instead of silently failing syncs. */}
+          {needsReauth && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800" data-testid="unifi-reauth-banner">
+              <p className="font-medium">UniFi needs to be reconnected — the stored API key was rejected.</p>
+              {status.lastSyncError && (
+                <p className="mt-1 text-xs text-amber-700" data-testid="unifi-last-error">{status.lastSyncError}</p>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleDisconnect()}
+                disabled={disconnecting}
+                className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                data-testid="unifi-reconnect"
+              >
+                {disconnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                Reconnect UniFi
+              </button>
+            </div>
+          )}
+          {hasError && status.lastSyncError && (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" data-testid="unifi-last-error">
+              {status.lastSyncError}
+            </p>
+          )}
+
           <dl className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <dt className="text-muted-foreground">Connected</dt>
-              <dd className="font-medium">{status.connectedAt ? formatDateTime(status.connectedAt) : '—'}</dd>
+              <dt className="text-muted-foreground">Account</dt>
+              <dd className="font-medium" data-testid="unifi-account-label">{status.accountLabel ?? '—'}</dd>
             </div>
             <div>
               <dt className="text-muted-foreground">Last sync</dt>
@@ -234,8 +280,8 @@ export default function UnifiIntegration() {
               </dd>
             </div>
             <div>
-              <dt className="text-muted-foreground">Hosts</dt>
-              <dd className="font-medium" data-testid="unifi-host-count">{status.hostCount ?? '—'}</dd>
+              <dt className="text-muted-foreground">Last sync status</dt>
+              <dd className="font-medium" data-testid="unifi-last-sync-status">{status.lastSyncStatus ?? '—'}</dd>
             </div>
           </dl>
 
