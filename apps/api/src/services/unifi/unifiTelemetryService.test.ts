@@ -117,18 +117,18 @@ describe('reconcileTelemetry', () => {
 
     const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
     expect(deviceInserts).toHaveLength(1);
-    expect(deviceInserts[0].values.orgId).toBe('org-mapped');
-    expect(deviceInserts[0].values.siteId).toBe('site-mapped');
-    expect(deviceInserts[0].values.unifiDeviceId).toBe('d1');
-    expect(deviceInserts[0].values.isStale).toBe(false);
+    expect(deviceInserts[0]!.values.orgId).toBe('org-mapped');
+    expect(deviceInserts[0]!.values.siteId).toBe('site-mapped');
+    expect(deviceInserts[0]!.values.unifiDeviceId).toBe('d1');
+    expect(deviceInserts[0]!.values.isStale).toBe(false);
 
     const clientInserts = writes.inserts.filter((w) => w.table === unifiClients);
     expect(clientInserts).toHaveLength(1);
-    expect(clientInserts[0].values.orgId).toBe('org-mapped');
-    expect(clientInserts[0].values.siteId).toBe('site-mapped');
-    expect(clientInserts[0].values.mac).toBe('cc:dd');
-    expect(clientInserts[0].values.discoveredAssetId).toBe('asset-1');
-    expect(clientInserts[0].values.isStale).toBe(false);
+    expect(clientInserts[0]!.values.orgId).toBe('org-mapped');
+    expect(clientInserts[0]!.values.siteId).toBe('site-mapped');
+    expect(clientInserts[0]!.values.mac).toBe('cc:dd');
+    expect(clientInserts[0]!.values.discoveredAssetId).toBe('asset-1');
+    expect(clientInserts[0]!.values.isStale).toBe(false);
 
     const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
     expect(assetInserts).toHaveLength(0);
@@ -153,11 +153,11 @@ describe('reconcileTelemetry', () => {
 
     const deviceUpdates = writes.updates.filter((u) => u.table === unifiDeviceTelemetry);
     expect(deviceUpdates).toHaveLength(1);
-    expect(deviceUpdates[0].values.isStale).toBe(true);
+    expect(deviceUpdates[0]!.values.isStale).toBe(true);
 
     const clientUpdates = writes.updates.filter((u) => u.table === unifiClients);
     expect(clientUpdates).toHaveLength(1);
-    expect(clientUpdates[0].values.isStale).toBe(true);
+    expect(clientUpdates[0]!.values.isStale).toBe(true);
   });
 
   it('does not stale existing rows when markStale=false (partial poll)', async () => {
@@ -216,7 +216,7 @@ describe('reconcileTelemetry', () => {
     const clientInserts = writes.inserts.filter((w) => w.table === unifiClients);
     expect(clientInserts).toHaveLength(1);
     // Stored canonical (lowercase, colon-separated) and linked despite the source casing.
-    expect(clientInserts[0].values.mac).toBe('aa:bb:cc:dd:ee:ff');
-    expect(clientInserts[0].values.discoveredAssetId).toBe('asset-9');
+    expect(clientInserts[0]!.values.mac).toBe('aa:bb:cc:dd:ee:ff');
+    expect(clientInserts[0]!.values.discoveredAssetId).toBe('asset-9');
   });
 });

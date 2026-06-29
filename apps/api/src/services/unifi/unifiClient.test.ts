@@ -13,7 +13,7 @@ describe('unifiClient', () => {
     const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
     const hosts = await client.listHosts();
     expect(hosts).toEqual([{ id: 'h1', name: 'Console 1' }]);
-    const [url, init] = fetchImpl.mock.calls[0];
+    const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe('https://api.ui.com/v1/hosts');
     expect((init.headers as Record<string, string>)['X-API-KEY']).toBe('k');
   });
@@ -64,7 +64,7 @@ describe('unifiClient', () => {
       state: 'CONNECTED', uptime: 1234,
     }] }));
     const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-    const [dev] = await client.listDevices('h1');
+    const dev = (await client.listDevices('h1'))[0]!;
     expect(dev.unifiDeviceId).toBe('d1');
     expect(dev.mac).toBe('aa:bb');
     expect(dev.deviceType).toBe('uap');

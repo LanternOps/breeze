@@ -198,17 +198,17 @@ describe('unifiSyncService.syncIntegration', () => {
     // A discoveredAssets row must have been inserted with correct fields
     const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
     expect(assetInserts).toHaveLength(1);
-    expect(assetInserts[0].values.ipAddress).toBe('10.0.0.5');
-    expect(assetInserts[0].values.assetType).toBe('access_point'); // 'uap' maps to 'access_point'
-    expect(assetInserts[0].values.orgId).toBe('org-1');
-    expect(assetInserts[0].values.manufacturer).toBe('Ubiquiti');
+    expect(assetInserts[0]!.values.ipAddress).toBe('10.0.0.5');
+    expect(assetInserts[0]!.values.assetType).toBe('access_point'); // 'uap' maps to 'access_point'
+    expect(assetInserts[0]!.values.orgId).toBe('org-1');
+    expect(assetInserts[0]!.values.manufacturer).toBe('Ubiquiti');
 
     // A unifiDevices row must have been inserted, linked to the new asset
     const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
     expect(deviceInserts).toHaveLength(1);
-    expect(deviceInserts[0].values.unifiDeviceId).toBe('d1');
-    expect(deviceInserts[0].values.discoveredAssetId).toBe('asset-1'); // returned by scriptedDb
-    expect(deviceInserts[0].values.deviceType).toBe('ap'); // 'uap' maps to 'ap'
+    expect(deviceInserts[0]!.values.unifiDeviceId).toBe('d1');
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-1'); // returned by scriptedDb
+    expect(deviceInserts[0]!.values.deviceType).toBe('ap'); // 'uap' maps to 'ap'
   });
 
   it('classifies an unchanged device as unchanged (no update churn)', async () => {
@@ -332,6 +332,6 @@ describe('unifiSyncService.syncIntegration', () => {
     // unifiDevices insert still happens, with discoveredAssetId: null
     const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
     expect(deviceInserts).toHaveLength(1);
-    expect(deviceInserts[0].values.discoveredAssetId).toBeNull();
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBeNull();
   });
 });

@@ -584,6 +584,22 @@ describe('unifi routes', () => {
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 
+  it('GET /telemetry returns 403 for a site-restricted caller outside their allowlist', async () => {
+    const { authMiddleware } = await import('../../middleware/auth');
+    // Org is accessible, but the caller's site allowlist excludes this site.
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, orgId: null, canAccessOrg: vi.fn(() => true), canAccessSite: vi.fn(() => false), user: { id: 'u1' } });
+      return next();
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })) })),
+    } as any);
+    const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(403);
+    // Blocked before any telemetry read (only the site lookup ran).
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
   it('GET /telemetry returns devices + clients for an accessible site', async () => {
     // site lookup → telemetry devices → telemetry clients
     vi.mocked(db.select)

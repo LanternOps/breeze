@@ -227,7 +227,11 @@ unifiRoutes.get('/mappings', partnerScopes, readPerm, async (c) => {
     wanMetricsAt: unifiSiteMappings.wanMetricsAt,
     updatedAt: unifiSiteMappings.updatedAt,
   }).from(unifiSiteMappings).where(eq(unifiSiteMappings.integrationId, conn.id));
-  return c.json({ mappings });
+  // Site-axis gate: a site-restricted caller only sees mappings for sites in their
+  // allowlist; partner-wide callers (canAccessSite undefined) see all.
+  const siteGate = auth.canAccessSite;
+  const visible = siteGate ? mappings.filter((m) => siteGate(m.siteId)) : mappings;
+  return c.json({ mappings: visible });
 });
 
 // GET /unifi/collectors — configured collectors + status
@@ -297,6 +301,10 @@ unifiRoutes.get('/telemetry', partnerScopes, readPerm, async (c) => {
   const [site] = await db.select({ id: sites.id, orgId: sites.orgId }).from(sites).where(eq(sites.id, siteId)).limit(1);
   if (!site) return c.json({ error: 'Unknown site' }, 404);
   if (!auth.canAccessOrg(site.orgId)) return c.json({ error: 'Access to this site denied' }, 403);
+  // Site-axis gate: a site-restricted caller (allowedSiteIds set) must not read a
+  // site outside their allowlist even within an org they can access. Unrestricted
+  // (partner-wide) callers have canAccessSite undefined → no-op.
+  if (auth.canAccessSite && !auth.canAccessSite(siteId)) return c.json({ error: 'Access to this site denied' }, 403);
   const devicesOut = await db.select().from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.siteId, siteId));
   const clientsOut = await db.select().from(unifiClients).where(eq(unifiClients.siteId, siteId));
   return c.json({ devices: devicesOut, clients: clientsOut });
