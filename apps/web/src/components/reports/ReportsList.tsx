@@ -222,7 +222,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
         const payload = await res.json();
         const data = payload.data as { rows?: unknown[]; summary?: unknown } | undefined;
         const rows = data?.rows ?? [];
-        exportReport(rows, {
+        await exportReport(rows, {
           format: 'pdf',
           reportType: payload.type ?? run.reportType ?? 'report',
           timezone: effectiveTimezone,

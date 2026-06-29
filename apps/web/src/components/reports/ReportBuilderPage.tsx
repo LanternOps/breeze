@@ -57,12 +57,12 @@ export default function ReportBuilderPage({ timezone }: ReportBuilderPageProps =
     await handlePreview(values);
   }, [handlePreview]);
 
-  const handleExport = useCallback((format: 'csv' | 'pdf' | 'excel') => {
+  const handleExport = useCallback(async (format: 'csv' | 'pdf' | 'excel') => {
     if (!previewData) return;
 
     try {
       const rows = (previewData.data as { rows?: unknown[] })?.rows ?? [];
-      exportReport(rows, { format, reportType: previewData.type, timezone: effectiveTimezone });
+      await exportReport(rows, { format, reportType: previewData.type, timezone: effectiveTimezone });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed. Please try again.');
     }

@@ -12,17 +12,11 @@ import {
   Users,
   X
 } from 'lucide-react';
-import { cn, heightPercentClass } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-
-type TemplatePreview = {
-  gradient: string;
-  accent: string;
-  bars: number[];
-};
 
 type TemplateTone = {
   iconBg: string;
@@ -34,14 +28,12 @@ type ReportTemplate = {
   name: string;
   description: string;
   defaults: Partial<ReportBuilderFormValues>;
-  preview: TemplatePreview;
   icon: ElementType;
   tone: TemplateTone;
   previewImage?: string;
 };
 
-type TemplateApiItem = Omit<Partial<ReportTemplate>, 'preview'> & {
-  preview?: Partial<TemplatePreview>;
+type TemplateApiItem = Partial<ReportTemplate> & {
   previewUrl?: string;
   reportType?: string;
   type?: string;
@@ -99,12 +91,6 @@ const formatLabels: Record<ReportFormat, string> = {
   excel: 'Excel'
 };
 
-const fallbackPreview: TemplatePreview = {
-  gradient: 'from-slate-500/20 to-slate-500/5',
-  accent: 'bg-slate-500/60',
-  bars: [35, 60, 45, 70, 50]
-};
-
 const defaultTemplates: ReportTemplate[] = [
   {
     id: 'security_compliance_posture',
@@ -117,11 +103,6 @@ const defaultTemplates: ReportTemplate[] = [
       dateRange: { preset: 'last_30_days' },
       schedule: 'one_time',
       format: 'pdf'
-    },
-    preview: {
-      gradient: 'from-indigo-500/20 to-violet-500/10',
-      accent: 'bg-indigo-500/60',
-      bars: [70, 85, 60, 90, 75]
     },
     icon: ShieldCheck,
     tone: {
@@ -140,11 +121,6 @@ const defaultTemplates: ReportTemplate[] = [
       schedule: 'monthly',
       format: 'pdf'
     },
-    preview: {
-      gradient: 'from-sky-500/20 to-indigo-500/10',
-      accent: 'bg-sky-500/60',
-      bars: [30, 55, 45, 70, 60]
-    },
     icon: BarChart3,
     tone: {
       iconBg: 'bg-sky-500/15',
@@ -162,11 +138,6 @@ const defaultTemplates: ReportTemplate[] = [
       schedule: 'weekly',
       format: 'pdf'
     },
-    preview: {
-      gradient: 'from-emerald-500/20 to-emerald-500/5',
-      accent: 'bg-emerald-500/60',
-      bars: [45, 65, 40, 75, 55]
-    },
     icon: Activity,
     tone: {
       iconBg: 'bg-emerald-500/15',
@@ -183,11 +154,6 @@ const defaultTemplates: ReportTemplate[] = [
       dateRange: { preset: 'last_30_days' },
       schedule: 'monthly',
       format: 'pdf'
-    },
-    preview: {
-      gradient: 'from-amber-500/25 to-amber-500/10',
-      accent: 'bg-amber-500/70',
-      bars: [65, 80, 50, 90, 70]
     },
     icon: ShieldCheck,
     tone: {
@@ -207,11 +173,6 @@ const defaultTemplates: ReportTemplate[] = [
       schedule: 'weekly',
       format: 'pdf'
     },
-    preview: {
-      gradient: 'from-rose-500/25 to-rose-500/10',
-      accent: 'bg-rose-500/70',
-      bars: [70, 55, 80, 45, 65]
-    },
     icon: Bell,
     tone: {
       iconBg: 'bg-rose-500/15',
@@ -228,11 +189,6 @@ const defaultTemplates: ReportTemplate[] = [
       dateRange: { preset: 'last_30_days' },
       schedule: 'weekly',
       format: 'csv'
-    },
-    preview: {
-      gradient: 'from-teal-500/25 to-teal-500/10',
-      accent: 'bg-teal-500/70',
-      bars: [40, 60, 50, 70, 55]
     },
     icon: Users,
     tone: {
@@ -251,11 +207,6 @@ const defaultTemplates: ReportTemplate[] = [
       schedule: 'monthly',
       format: 'pdf'
     },
-    preview: {
-      gradient: 'from-blue-500/20 to-blue-500/10',
-      accent: 'bg-blue-500/70',
-      bars: [55, 70, 60, 80, 50]
-    },
     icon: Timer,
     tone: {
       iconBg: 'bg-blue-500/15',
@@ -272,11 +223,6 @@ const defaultTemplates: ReportTemplate[] = [
       dateRange: { preset: 'last_30_days' },
       schedule: 'monthly',
       format: 'excel'
-    },
-    preview: {
-      gradient: 'from-orange-500/25 to-orange-500/10',
-      accent: 'bg-orange-500/70',
-      bars: [60, 45, 70, 55, 80]
     },
     icon: CreditCard,
     tone: {
@@ -329,15 +275,6 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
   if (!name) return null;
 
   const id = item.id ?? fallback?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  const basePreview = fallback?.preview ?? fallbackPreview;
-  const previewBars = item.preview && Array.isArray(item.preview.bars) ? item.preview.bars : basePreview.bars;
-  const preview = item.preview
-    ? {
-        gradient: item.preview.gradient ?? basePreview.gradient,
-        accent: item.preview.accent ?? basePreview.accent,
-        bars: previewBars
-      }
-    : basePreview;
   const previewImage = item.previewImage ?? item.previewUrl ?? fallback?.previewImage;
   const fallbackType = fallback?.defaults.type ?? 'executive_summary';
   const rawType = item.defaults?.type ?? item.type ?? item.reportType ?? fallback?.defaults.type;
@@ -364,7 +301,6 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
       schedule,
       format
     },
-    preview,
     icon: fallback?.icon ?? FileText,
     tone: fallback?.tone ?? {
       iconBg: 'bg-slate-500/15',
@@ -397,39 +333,29 @@ const mergeTemplates = (items: TemplateApiItem[]) => {
   return [...merged, ...extras];
 };
 
-const TemplatePreviewCard = ({ template }: { template: ReportTemplate }) => {
-  if (template.previewImage) {
-    return (
-      <img
-        src={template.previewImage}
-        alt={`${template.name} preview`}
-        className="h-28 w-full rounded-md border object-cover"
-      />
-    );
-  }
-
+/** A real screenshot when the template provides one; otherwise nothing. */
+const TemplatePreviewImage = ({ template }: { template: ReportTemplate }) => {
+  if (!template.previewImage) return null;
   return (
-    <div className="h-28 rounded-md border bg-muted/30 p-3">
-      <div className="flex items-center justify-between">
-        <div className="h-2 w-20 rounded-full bg-muted-foreground/20" />
-        <div className={cn('h-2 w-10 rounded-full', template.preview.accent)} />
-      </div>
-      <div className={cn('mt-3 flex h-10 items-end gap-1 rounded-md bg-linear-to-br p-1.5', template.preview.gradient)}>
-        {template.preview.bars.map((height, index) => (
-          <div
-            key={`${template.id}-bar-${index}`}
-            className={cn('flex-1 rounded-sm', template.preview.accent, heightPercentClass(height))}
-          />
-        ))}
-      </div>
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        <div className="h-2 rounded-full bg-muted-foreground/20" />
-        <div className="h-2 rounded-full bg-muted-foreground/20" />
-        <div className="h-2 rounded-full bg-muted-foreground/20" />
-      </div>
-    </div>
+    <img
+      src={template.previewImage}
+      alt={`${template.name} preview`}
+      className="mt-4 h-28 w-full rounded-md border object-cover"
+    />
   );
 };
+
+/** Honest definition list of what the template actually produces. */
+const TemplateSpec = ({ items }: { items: { label: string; value: string }[] }) => (
+  <dl className="mt-4 grid grid-cols-3 divide-x divide-border rounded-md border bg-muted/30">
+    {items.map(item => (
+      <div key={item.label} className="px-3 py-2.5">
+        <dt className="text-[11px] text-muted-foreground">{item.label}</dt>
+        <dd className="mt-0.5 text-sm font-medium text-foreground">{item.value}</dd>
+      </div>
+    ))}
+  </dl>
+);
 
 export default function ReportTemplates() {
   const [templates, setTemplates] = useState<ReportTemplate[]>(defaultTemplates);
@@ -552,27 +478,28 @@ export default function ReportTemplates() {
                 </div>
               </div>
 
-              <div className="mt-4">
-                <TemplatePreviewCard template={template} />
-              </div>
+              <p className="mt-3 text-sm text-muted-foreground">{template.description}</p>
 
-              <p className="mt-4 text-sm text-muted-foreground">{template.description}</p>
+              <TemplatePreviewImage template={template} />
 
-              <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-                <span>Schedule: {scheduleLabel}</span>
-                <span>Format: {formatLabel}</span>
-              </div>
+              <TemplateSpec
+                items={[
+                  { label: 'Cadence', value: scheduleLabel },
+                  { label: 'Format', value: formatLabel },
+                  {
+                    label: 'Default range',
+                    value: template.defaults.dateRange?.preset?.replace(/_/g, ' ') ?? 'last 30 days',
+                  },
+                ]}
+              />
 
-              <div className="mt-4 flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">
-                  Default range: {template.defaults.dateRange?.preset?.replace(/_/g, ' ') ?? 'last 30 days'}
-                </span>
+              <div className="mt-auto pt-4">
                 <button
                   type="button"
                   onClick={() => handleOpenBuilder(template)}
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground hover:opacity-90"
+                  className="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition hover:opacity-90"
                 >
-                  Use Template
+                  Use template
                 </button>
               </div>
             </div>

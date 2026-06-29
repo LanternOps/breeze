@@ -4,10 +4,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const textCalls: string[] = [];
 
 vi.mock('jspdf', () => {
+  // Mock surface must cover every jsPDF method the branded renderer calls;
+  // a missing method would throw before any text() lands and fail vacuously.
   const doc = {
     setFontSize: () => doc,
     setTextColor: () => doc,
     setFont: () => doc,
+    setFillColor: () => doc,
+    setDrawColor: () => doc,
+    setLineCap: () => doc,
+    setLineJoin: () => doc,
+    setLineWidth: () => doc,
+    rect: () => doc,
+    roundedRect: () => doc,
+    circle: () => doc,
+    line: () => doc,
+    addImage: () => doc,
+    getTextWidth: () => 10,
     text: (t: unknown) => {
       textCalls.push(String(t));
       return doc;
@@ -15,6 +28,9 @@ vi.mock('jspdf', () => {
     addPage: () => doc,
     splitTextToSize: (t: string) => [t],
     output: () => new Blob(['pdf'], { type: 'application/pdf' }),
+    getCurrentPageInfo: () => ({ pageNumber: 1 }),
+    getNumberOfPages: () => 1,
+    putTotalPages: () => doc,
     internal: { pageSize: { getWidth: () => 842, getHeight: () => 595 } },
     lastAutoTable: { finalY: 100 },
   };
@@ -28,6 +44,10 @@ vi.mock('jspdf', () => {
 vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
 
 import { exportReport, type PostureSummary } from './reportExport';
+import type { ReportBranding } from './reportPdf';
+
+// Pass branding explicitly so the PDF path never hits the network branding fetch.
+const noBranding: ReportBranding = { name: 'Breeze', logoDataUrl: null, logoAspect: null };
 
 const summary: PostureSummary = {
   org: { id: 'o1', name: 'Acme Co' },
@@ -76,33 +96,37 @@ describe('exportReport — security_compliance_posture PDF', () => {
     (URL as unknown as { revokeObjectURL: () => void }).revokeObjectURL = () => {};
   });
 
-  it('renders the posture scorecard without throwing and prints control percentages', () => {
-    expect(() =>
-      exportReport([{ hostname: 'pc-1', protection: 'Huntress (RTP on)' }], {
-        format: 'pdf',
-        reportType: 'security_compliance_posture',
-        timezone: 'UTC',
-        summary,
-      })
-    ).not.toThrow();
+  it('renders the branded scorecard and surfaces control values + honest N/A', async () => {
+    await exportReport([{ hostname: 'pc-1', protection: 'Huntress (RTP on)' }], {
+      format: 'pdf',
+      reportType: 'security_compliance_posture',
+      timezone: 'UTC',
+      summary,
+      branding: noBranding,
+    });
 
     const joined = textCalls.join('\n');
-    expect(joined).toContain('Security & Compliance Posture');
-    expect(joined).toContain('Acme Co');
-    expect(joined).toContain('Managed EDR coverage: 67%');
-    expect(joined).toContain('Not yet assessed'); // CIS null → not 0%
-    expect(joined).toContain('Active PAM rules: 2');
+    expect(joined).toContain('Security & Compliance Posture'); // title
+    expect(joined).toContain('Acme Co'); // org subtitle
+    expect(joined).toContain('STRONG'); // score band chip (82)
+    // Control coverage renders label + value as distinct cells.
+    expect(joined).toContain('Managed EDR coverage');
+    expect(joined).toContain('67%');
+    expect(joined).toContain('AV definitions current'); // config-driven control live
+    expect(joined).toContain('100%');
+    expect(joined).toContain('CIS hardening');
+    expect(joined).toContain('Not assessed'); // CIS null → not a misleading 0%
+    expect(joined).toContain('Active PAM rules');
     expect(joined).toMatch(/Huntress/);
-    // Honest labels & no-data handling from the review fixes:
-    expect(joined).toContain('Identity provider connected (M365/Google): Yes'); // C2: not "MFA"
+    // Honest labels & no-data handling preserved from the review fixes:
+    expect(joined).toContain('Identity provider connected'); // not "MFA"
     expect(joined).not.toContain('MFA / identity connected');
-    expect(joined).toContain('Patch current (no critical pending): N/A — not assessed'); // M1: null → N/A
-    expect(joined).toContain('(3 unknown)'); // patch unknown surfaced
-    expect(joined).toContain('AV definitions current: 100%'); // H2: config-driven control live
-    expect(joined).toContain('Local-admin exposure (over threshold): N/A — not assessed (2 unknown)');
+    expect(joined).toContain('Patch current (no critical pending)');
+    expect(joined).toContain('N/A'); // null pct → N/A, never 0%
+    expect(joined).toContain('Local-admin exposure');
   });
 
-  it('shows CIS coverage and degraded DNS sync when present', () => {
+  it('shows CIS coverage and flags degraded products when present', async () => {
     const s: PostureSummary = {
       ...summary,
       controls: {
@@ -117,37 +141,42 @@ describe('exportReport — security_compliance_posture PDF', () => {
         { product: 'Cisco Umbrella', category: 'dns_filtering', active: false, lastSyncStatus: 'error', deviceCoverage: null },
       ],
     };
-    exportReport([{ hostname: 'pc-1' }], {
+    await exportReport([{ hostname: 'pc-1' }], {
       format: 'pdf',
       reportType: 'security_compliance_posture',
       timezone: 'UTC',
       summary: s,
+      branding: noBranding,
     });
     const joined = textCalls.join('\n');
-    expect(joined).toContain('Hardening (CIS): 95% across 2/3 devices assessed'); // H4 coverage
-    expect(joined).toContain('DNS filtering active: No (sync: error)'); // H3 degraded
-    expect(joined).toContain('DEGRADED'); // product flagged
+    expect(joined).toContain('CIS hardening');
+    expect(joined).toContain('95% (2/3)'); // pass-rate with assessed/total-scope coverage
+    expect(joined).toContain('DNS filtering active'); // grid shows clean Yes/No
+    expect(joined).toContain('DEGRADED'); // degraded product flagged
+    expect(joined).toContain('[sync: error]'); // sync detail surfaced on the product
   });
 
-  it('omits the CIS hardening line when the section is toggled off', () => {
+  it('omits the CIS hardening line when the section is toggled off', async () => {
     const off = { ...summary, controls: { ...summary.controls, cisIncluded: false } };
-    exportReport([{ hostname: 'pc-1' }], {
+    await exportReport([{ hostname: 'pc-1' }], {
       format: 'pdf',
       reportType: 'security_compliance_posture',
       timezone: 'UTC',
       summary: off,
+      branding: noBranding,
     });
-    expect(textCalls.join('\n')).not.toContain('Hardening (CIS)');
+    expect(textCalls.join('\n')).not.toContain('CIS hardening');
   });
 
-  it('falls back to the plain table when no summary is supplied', () => {
-    expect(() =>
+  it('falls back to the branded generic table when no summary is supplied', async () => {
+    await expect(
       exportReport([{ hostname: 'pc-1' }], {
         format: 'pdf',
         reportType: 'security_compliance_posture',
         timezone: 'UTC',
+        branding: noBranding,
       })
-    ).not.toThrow();
-    expect(textCalls.join('\n')).toContain('Security Compliance Posture Report');
+    ).resolves.toBeUndefined();
+    expect(textCalls.join('\n')).toContain('Security Compliance Posture'); // humanized title
   });
 });

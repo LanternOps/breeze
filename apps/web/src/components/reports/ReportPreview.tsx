@@ -363,11 +363,11 @@ export default function ReportPreview({
                             <div
                               className={cn(
                                 'h-full rounded-full',
-                                severity === 'critical' && 'bg-red-500',
-                                severity === 'high' && 'bg-orange-500',
-                                severity === 'medium' && 'bg-yellow-500',
-                                severity === 'low' && 'bg-blue-500',
-                                severity === 'info' && 'bg-gray-500',
+                                severity === 'critical' && 'bg-destructive',
+                                severity === 'high' && 'bg-warning',
+                                severity === 'medium' && 'bg-warning/60',
+                                severity === 'low' && 'bg-info',
+                                severity === 'info' && 'bg-muted-foreground',
                                 widthPercentClass(percentage)
                               )}
                             />
@@ -439,8 +439,8 @@ export default function ReportPreview({
                         key={index}
                         className={cn(
                           'flex items-start gap-3 rounded-md border p-3',
-                          issue.severity === 'warning' && 'border-yellow-500/40 bg-yellow-500/10',
-                          issue.severity === 'info' && 'border-blue-500/40 bg-blue-500/10'
+                          issue.severity === 'warning' && 'border-warning/40 bg-warning/10',
+                          issue.severity === 'info' && 'border-info/40 bg-info/10'
                         )}
                       >
                         <span className="text-sm font-medium">{issue.count}</span>
