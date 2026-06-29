@@ -270,7 +270,13 @@ unifiRoutes.get('/telemetry', partnerScopes, readPerm, async (c) => {
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const siteId = c.req.query('siteId');
   if (!siteId) return c.json({ error: 'siteId is required' }, 400);
-  // Org-axis RLS additionally constrains rows to orgs the caller can access.
+  // Explicit cross-tenant guard (defense-in-depth, not RLS alone): resolve the
+  // site's org and confirm the caller can access it — mirrors PUT /mappings and
+  // PUT /collectors. Without this, an arbitrary siteId query param relies solely
+  // on org-axis RLS to scope the read.
+  const [site] = await db.select({ id: sites.id, orgId: sites.orgId }).from(sites).where(eq(sites.id, siteId)).limit(1);
+  if (!site) return c.json({ error: 'Unknown site' }, 404);
+  if (!auth.canAccessOrg(site.orgId)) return c.json({ error: 'Access to this site denied' }, 403);
   const devicesOut = await db.select().from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.siteId, siteId));
   const clientsOut = await db.select().from(unifiClients).where(eq(unifiClients.siteId, siteId));
   return c.json({ devices: devicesOut, clients: clientsOut });

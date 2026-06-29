@@ -542,6 +542,39 @@ describe('unifi routes', () => {
     expect(collectorSvc.upsertCollector).not.toHaveBeenCalled();
   });
 
+  // GET /telemetry — cross-org guard + happy path
+  it('GET /telemetry returns 403 when the site org is not accessible', async () => {
+    const { authMiddleware } = await import('../../middleware/auth');
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, orgId: null, canAccessOrg: vi.fn(() => false), user: { id: 'u1' } });
+      return next();
+    });
+    // site lookup resolves, but canAccessOrg=false must block before any telemetry read
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })) })),
+    } as any);
+    const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(403);
+    // No telemetry query should have run (only the single site lookup select)
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('GET /telemetry returns devices + clients for an accessible site', async () => {
+    // site lookup → telemetry devices → telemetry clients
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ id: 'dt1', siteId: SITE_ID }]) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ id: 'cl1', siteId: SITE_ID }]) })) } as any);
+    const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ devices: [{ id: 'dt1' }], clients: [{ id: 'cl1' }] });
+  });
+
+  it('GET /telemetry returns 400 when siteId is missing', async () => {
+    const res = await unifiRoutes.request('/telemetry', { method: 'GET' });
+    expect(res.status).toBe(400);
+  });
+
   // GET /sync-runs — happy path
   it('GET /sync-runs returns runs when connected', async () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
