@@ -56,7 +56,8 @@ const reportTypeLabels: Record<ReportType, string> = {
   alert_summary: 'Alert Summary',
   compliance: 'Compliance Report',
   performance: 'Performance Report',
-  executive_summary: 'Executive Summary'
+  executive_summary: 'Executive Summary',
+  security_compliance_posture: 'Security & Compliance Posture'
 };
 
 const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;

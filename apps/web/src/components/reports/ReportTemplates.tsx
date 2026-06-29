@@ -62,6 +62,7 @@ const reportTypeValues: TemplateReportType[] = [
   'compliance',
   'performance',
   'executive_summary',
+  'security_compliance_posture',
   'devices',
   'alerts',
   'patches',
@@ -78,6 +79,7 @@ const reportTypeLabels: Record<string, string> = {
   compliance: 'Compliance Report',
   performance: 'Performance Report',
   executive_summary: 'Executive Summary',
+  security_compliance_posture: 'Security & Compliance Posture',
   devices: 'Devices',
   alerts: 'Alerts',
   patches: 'Patches',
@@ -104,6 +106,29 @@ const fallbackPreview: TemplatePreview = {
 };
 
 const defaultTemplates: ReportTemplate[] = [
+  {
+    id: 'security_compliance_posture',
+    name: 'Security & Compliance Posture (Insurance)',
+    description:
+      'Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.',
+    defaults: {
+      name: 'Security & Compliance Posture',
+      type: 'security_compliance_posture',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'one_time',
+      format: 'pdf'
+    },
+    preview: {
+      gradient: 'from-indigo-500/20 to-violet-500/10',
+      accent: 'bg-indigo-500/60',
+      bars: [70, 85, 60, 90, 75]
+    },
+    icon: ShieldCheck,
+    tone: {
+      iconBg: 'bg-indigo-500/15',
+      iconColor: 'text-indigo-600'
+    }
+  },
   {
     id: 'executive_summary',
     name: 'Executive Summary',

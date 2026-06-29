@@ -144,7 +144,10 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   alert_summary: 'alerts',
   compliance: 'compliance',
   performance: 'activity',
-  executive_summary: 'activity'
+  executive_summary: 'activity',
+  // Posture is delivered via a curated template, not the freeform builder; map to
+  // the closest builder data-source so the legacy builder degrades gracefully.
+  security_compliance_posture: 'compliance'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [

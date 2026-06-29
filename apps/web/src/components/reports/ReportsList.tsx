@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
-import { exportReport, downloadBlob, getBrowserTimezone } from './reportExport';
+import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 export type ReportType =
@@ -23,7 +23,8 @@ export type ReportType =
   | 'alert_summary'
   | 'compliance'
   | 'performance'
-  | 'executive_summary';
+  | 'executive_summary'
+  | 'security_compliance_posture';
 
 export type ReportSchedule = 'one_time' | 'daily' | 'weekly' | 'monthly';
 
@@ -67,7 +68,8 @@ const reportTypeLabels: Record<ReportType, string> = {
   alert_summary: 'Alert Summary',
   compliance: 'Compliance Report',
   performance: 'Performance Report',
-  executive_summary: 'Executive Summary'
+  executive_summary: 'Executive Summary',
+  security_compliance_posture: 'Security & Compliance Posture'
 };
 
 const scheduleLabels: Record<ReportSchedule, string> = {
@@ -218,11 +220,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       if (contentType.includes('application/json')) {
         // PDF path: server returned the stored snapshot; render client-side.
         const payload = await res.json();
-        const rows = (payload.data as { rows?: unknown[] })?.rows ?? [];
+        const data = payload.data as { rows?: unknown[]; summary?: unknown } | undefined;
+        const rows = data?.rows ?? [];
         exportReport(rows, {
           format: 'pdf',
           reportType: payload.type ?? run.reportType ?? 'report',
           timezone: effectiveTimezone,
+          // posture report carries a summary scorecard; harmless for other types
+          summary: data?.summary as PostureSummary | undefined,
         });
         return;
       }
