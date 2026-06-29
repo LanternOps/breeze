@@ -29,7 +29,7 @@ cd "$(dirname "$0")/../.."
 # "domains" that are really file extensions (e.g. an icon path "128x128@2x.png"
 # parses as foo@2x.png) — never customer data.
 ALLOW_RE='\.(png|ico|svg|jpe?g|webp|gif|html?|css|js|jsx|ts|tsx|json|md|sh|ya?ml|txt|woff2?)$'
-ALLOW_RE="$ALLOW_RE"'|\.(test|example|local|internal|invalid)$'
+ALLOW_RE="$ALLOW_RE"'|\.(test|example|local|internal|invalid|localhost)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)example\.(com|net|org)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)sentry\.io$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)2breeze\.app$'
@@ -40,7 +40,7 @@ ALLOW_RE="$ALLOW_RE"'|(^|\.)theirmsp\.com$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)gserviceaccount\.com$'
 # Exact known-safe domains: public/example, infra, generic placeholders, and
 # owner-blessed real domains (olivetech.co — see PR #1968 discussion).
-ALLOW_RE="$ALLOW_RE"'|^(anthropic\.com|nist\.gov|google\.com|gmail\.com|mailinator\.com|contoso\.com|lanternops\.io|lantern\.it|olivetech\.co|a\.com|b\.co|b\.com|x\.com|mail\.x\.com|x\.io|y\.com|foo\.com|bar\.com|test\.com|corp\.com|company\.com|org\.com|msp\.com|yourmsp\.com|customer\.com|cust\.com|partner\.com|evil\.com|notours\.com|nowhere\.com|yourcompany\.com|yourdomain\.com)$'
+ALLOW_RE="$ALLOW_RE"'|^(anthropic\.com|nist\.gov|google\.com|gmail\.com|mailinator\.com|contoso\.com|lanternops\.io|lantern\.it|olivetech\.co|a\.com|b\.co|b\.com|x\.com|mail\.x\.com|x\.io|y\.com|foo\.com|bar\.com|test\.com|corp\.com|company\.com|org\.com|msp\.com|yourmsp\.com|customer\.com|cust\.com|partner\.com|evil\.com|notours\.com|nowhere\.com|yourcompany\.com|yourdomain\.com|theirdomain\.com)$'
 
 EMAIL_RE='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
 
