@@ -35,7 +35,8 @@ export function slugify(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 90);
+    .slice(0, 90)
+    .replace(/-+$/, ''); // re-trim: the 90-char slice can leave a dangling hyphen
   return slug || 'org';
 }
 
@@ -48,26 +49,32 @@ export function generateUniqueSlug(base: string, taken: Set<string>): string {
 }
 
 // Resolve the partner's QB connection + a fresh access token, then fetch all
-// customers from QuickBooks. Token resolution runs in system context so the
-// refresh-token rotation write succeeds (request context has no auth here).
+// customers from QuickBooks. These run in SYSTEM context (the connection +
+// token-rotation write are partner-axis, not org-scoped) and must be wrapped in
+// runOutsideDbContext: this service is called from an authenticated route whose
+// handler already runs inside withDbAccessContext, so entering a system context
+// without first exiting the request context poisons the pooled connection's
+// txn (see CLAUDE.md "withSystemDbAccessContext — call runOutsideDbContext first
+// if inside a request").
 async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
-  const conn = await withSystemDbAccessContext(() => getConnection(db, partnerId, PROVIDER));
-  if (!conn || conn.status === 'disconnected') {
+  const conn = await runOutsideDbContext(() => withSystemDbAccessContext(() => getConnection(db, partnerId, PROVIDER)));
+  if (!conn || conn.status !== 'connected') {
     throw new QbImportError('QuickBooks is not connected for this partner', 'not_connected', 404);
   }
-  const accessToken = await withSystemDbAccessContext(() => getValidAccessToken(db, conn));
+  const accessToken = await runOutsideDbContext(() => withSystemDbAccessContext(() => getValidAccessToken(db, conn)));
   const customers = await getAccountingProvider(PROVIDER).listRemoteCustomers({ ...conn, accessToken });
   return customers;
 }
 
 // Map external id -> { organizationId, slug } for every org already linked to
-// this partner's QB realm. Used for dedup + slug-uniqueness.
+// this partner's QB realm. Used for dedup + slug-uniqueness. Same system-context
+// + runOutsideDbContext rule as fetchCustomers (called from inside a request).
 async function loadExistingOrgs(partnerId: string): Promise<{ byExternalId: Map<string, string>; slugs: Set<string> }> {
-  const rows = await withSystemDbAccessContext(() =>
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
     db.select({ id: organizations.id, accountingExternalId: organizations.accountingExternalId, slug: organizations.slug })
       .from(organizations)
       .where(and(eq(organizations.partnerId, partnerId), eq(organizations.accountingProvider, PROVIDER)))
-  ) as Array<{ id: string; accountingExternalId: string | null; slug: string | null }>;
+  )) as Array<{ id: string; accountingExternalId: string | null; slug: string | null }>;
 
   const byExternalId = new Map<string, string>();
   const slugs = new Set<string>();
