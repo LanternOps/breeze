@@ -33,6 +33,8 @@ import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
 import { buildAutoresponseEmail } from '../services/inboundEmail/autoresponseTemplate';
+import { resolveOutboundMailbox } from '../services/ticketMailbox/resolveOutboundMailbox';
+import { sendThreadedReply, sendNewMail } from '../services/ticketMailbox/graphReplySender';
 import type { TicketTemplateVars } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
@@ -57,6 +59,10 @@ interface EmailPayload {
   bestEffort?: boolean; // if true, swallow send errors
   replyTo?: string;
   headers?: Record<string, string>;
+  // Customer-facing only: when the partner has a connected M365 mailbox, the reply
+  // is sent FROM that mailbox via Graph (native threading) instead of EmailService.
+  // Tech/assignee payloads never set this, so they always use EmailService.
+  graphMailbox?: { tenantId: string; mailbox: string; originalMessageId: string | null };
 }
 
 async function getTicket(ticketId: string) {
@@ -143,12 +149,18 @@ async function collectRequesterEmail(
 
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
+  // Customer-facing reply routing: if this partner has a connected M365 mailbox, send
+  // FROM that mailbox via Graph (native threading). Tech/assignee notifications never
+  // call collectRequesterEmail, so they never carry graphMailbox.
+  const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
+
   // Un-threaded path (e.g. ticket.status_changed 'Resolved'): unchanged from before.
   if (!commentId) {
     return [{
       to: ticket.submitterEmail,
       subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-      html: bodyHtml
+      html: bodyHtml,
+      graphMailbox
     }];
   }
 
@@ -183,7 +195,8 @@ async function collectRequesterEmail(
     subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
     html: bodyHtml,
     replyTo,
-    headers
+    headers,
+    graphMailbox
   }];
 }
 
@@ -253,7 +266,12 @@ async function collectAutoresponse(
   const anchor = ticketThreadAnchor(ticket.id);
   if (anchor) headers['Message-ID'] = anchor;
 
-  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true }];
+  // Customer-facing: route the autoresponse through the partner's M365 mailbox when
+  // connected (Graph manages threading; the SMTP Auto-Submitted/Message-ID headers
+  // are only used on the EmailService fallback path).
+  const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
+
+  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true, graphMailbox }];
 }
 
 async function collectSlaBreachNotification(
@@ -368,26 +386,45 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
   });
 
   // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
+  if (emailPayloads.length === 0) return;
+  // getEmailService() may be null (no platform transport configured). Graph payloads
+  // must still send in that case, so the null-guard moved inside the loop's EmailService
+  // branch rather than short-circuiting the whole send phase.
   const email = getEmailService();
-  if (!email || emailPayloads.length === 0) return;
 
   for (const payload of emailPayloads) {
-    const sendArgs = {
-      to: payload.to,
-      subject: payload.subject,
-      html: payload.html,
-      replyTo: payload.replyTo,
-      headers: payload.headers
+    const send = async () => {
+      // Customer-facing reply via the partner's connected M365 mailbox (Graph).
+      if (payload.graphMailbox) {
+        const { tenantId, mailbox, originalMessageId } = payload.graphMailbox;
+        if (originalMessageId) {
+          await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html);
+        } else {
+          await sendNewMail({ tenantId, mailbox }, payload.to, payload.subject, payload.html);
+        }
+        return;
+      }
+      // Platform EmailService path (tech/assignee notifications + customers on partners
+      // with no connected mailbox). Skip silently if no transport is configured.
+      if (!email) return;
+      await email.sendEmail({
+        to: payload.to,
+        subject: payload.subject,
+        html: payload.html,
+        replyTo: payload.replyTo,
+        headers: payload.headers
+      });
     };
+
     if (payload.bestEffort) {
       try {
-        await email.sendEmail(sendArgs);
+        await send();
       } catch (err) {
         console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
       }
     } else {
       // Non-best-effort: let throw bubble up so BullMQ can retry.
-      await email.sendEmail(sendArgs);
+      await send();
     }
   }
 }

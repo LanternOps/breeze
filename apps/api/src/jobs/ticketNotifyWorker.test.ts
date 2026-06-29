@@ -44,6 +44,15 @@ vi.mock('../db/schema', () => ({
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
+// M365 mailbox routing: default to "no connected mailbox" so these existing tests
+// exercise the unchanged EmailService path (and don't consume a selectMock read).
+vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({
+  resolveOutboundMailbox: vi.fn(async () => null)
+}));
+vi.mock('../services/ticketMailbox/graphReplySender', () => ({
+  sendThreadedReply: vi.fn(async () => {}),
+  sendNewMail: vi.fn(async () => {})
+}));
 
 import { handleTicketEvent } from './ticketNotifyWorker';
 
