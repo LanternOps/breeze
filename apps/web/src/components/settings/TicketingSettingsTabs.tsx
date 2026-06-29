@@ -5,6 +5,7 @@ import BillablesExportCard from './BillablesExportCard';
 import TicketStatusesTab from './TicketStatusesTab';
 import TicketPrioritiesTab from './TicketPrioritiesTab';
 import InboundEmailCard from './InboundEmailCard';
+import M365MailboxCard from './M365MailboxCard';
 import CannedResponsesCard from './CannedResponsesCard';
 import { getJwtClaims } from '../../lib/authScope';
 
@@ -128,8 +129,9 @@ export default function TicketingSettingsTabs({ syncHash = true }: { syncHash?: 
       {activeTab === 'export' && <BillablesExportCard />}
 
       {activeTab === 'inbound' && canManageInbound && (
-        <div data-testid="ticketing-tab-panel-inbound">
+        <div data-testid="ticketing-tab-panel-inbound" className="space-y-6">
           <InboundEmailCard />
+          <M365MailboxCard />
         </div>
       )}
 

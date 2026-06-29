@@ -50,6 +50,7 @@ const TARGET_GLOBS = [
   'src/components/settings/TicketStatusesTab.tsx',
   'src/components/settings/TicketPrioritiesTab.tsx',
   'src/components/settings/InboundEmailCard.tsx',
+  'src/components/settings/M365MailboxCard.tsx',
   'src/components/settings/OrgPortalSettingsEditor.tsx',
   'src/components/settings/OrgTicketSettingsEditor.tsx',
   'src/components/alerts/CreateTicketFromAlertDialog.tsx',
@@ -273,7 +274,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(54);
+    expect(absoluteFiles.length).toBe(55);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
