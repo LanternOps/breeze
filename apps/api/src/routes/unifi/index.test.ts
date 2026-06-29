@@ -221,11 +221,12 @@ describe('unifi routes', () => {
         })),
       })),
     } as any);
-    // Mock the insert
+    // Mock the insert — capture valuesMock to assert orgId was passed through
+    const valuesMock = vi.fn(() => ({
+      onConflictDoUpdate: vi.fn(async () => undefined),
+    }));
     vi.mocked(db.insert).mockReturnValueOnce({
-      values: vi.fn(() => ({
-        onConflictDoUpdate: vi.fn(async () => undefined),
-      })),
+      values: valuesMock,
     } as any);
 
     const res = await unifiRoutes.request('/mappings', {
@@ -244,6 +245,7 @@ describe('unifi routes', () => {
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ success: true });
     expect(db.insert).toHaveBeenCalled();
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }));
   });
 
   it('POST /sync returns 400 when not connected', async () => {
@@ -273,5 +275,145 @@ describe('unifi routes', () => {
     const res = await unifiRoutes.request('/', { method: 'GET' });
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({ error: expect.stringContaining('partnerId is required') });
+  });
+
+  // POST /test
+  it('POST /test returns 400 when not connected', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue(null);
+    const res = await unifiRoutes.request('/test', { method: 'POST' });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false, message: 'Not connected' });
+  });
+
+  it('POST /test returns 502 when live client.listHosts() throws', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+    vi.mocked(createUnifiClient).mockReturnValueOnce({
+      listHosts: vi.fn(async () => { throw new Error('connection refused'); }),
+      listSites: vi.fn(async () => []),
+      listDevices: vi.fn(async () => []),
+      getIspMetrics: vi.fn(async () => null),
+    });
+    const res = await unifiRoutes.request('/test', { method: 'POST' });
+    expect(res.status).toBe(502);
+    await expect(res.json()).resolves.toMatchObject({ success: false });
+  });
+
+  // GET /hosts
+  it('GET /hosts returns 400 when not connected', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue(null);
+    const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false, message: 'Not connected' });
+  });
+
+  it('GET /hosts returns host list with nested sites', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+    vi.mocked(createUnifiClient).mockReturnValueOnce({
+      listHosts: vi.fn(async () => [{ id: 'host-1', name: 'My Host' }]),
+      listSites: vi.fn(async () => [{ id: 'usite-1', name: 'My Site', hostId: 'host-1' }]),
+      listDevices: vi.fn(async () => []),
+      getIspMetrics: vi.fn(async () => null),
+    });
+    const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      hosts: [{ id: 'host-1', name: 'My Host', sites: [{ id: 'usite-1', name: 'My Site' }] }],
+    });
+  });
+
+  // PUT /mappings — cross-org security
+  it('PUT /mappings returns 403 when canAccessOrg returns false for site org', async () => {
+    const { authMiddleware } = await import('../../middleware/auth');
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner' as const,
+        partnerId: PARTNER_ID,
+        orgId: null,
+        canAccessOrg: vi.fn(() => false),
+        user: { id: '55555555-5555-5555-5555-555555555555', email: 'admin@example.com' },
+      });
+      return next();
+    });
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]),
+        })),
+      })),
+    } as any);
+
+    const res = await unifiRoutes.request('/mappings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }],
+      }),
+    });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ success: false });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  // GET /sync-runs — happy path
+  it('GET /sync-runs returns runs when connected', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    const mockRuns = [{ id: 'run-1', integrationId: CONN_ID, startedAt: '2026-06-28T00:00:00.000Z' }];
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(async () => mockRuns),
+          })),
+        })),
+      })),
+    } as any);
+    const res = await unifiRoutes.request('/sync-runs', { method: 'GET' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ runs: mockRuns });
   });
 });

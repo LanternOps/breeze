@@ -79,7 +79,7 @@ unifiRoutes.post('/connect', partnerScopes, writePerm, requireMfa(), zValidator(
   const base = baseUrl ?? 'https://api.ui.com';
   try {
     await createUnifiClient({ baseUrl: base, apiKey }).listHosts();
-  } catch (err) {
+  } catch {
     return c.json({ success: false, message: 'Could not validate the UniFi API key. Check the key and host URL.' }, 400);
   }
   const conn = await upsertConnection(db, partner.partnerId, {
@@ -155,6 +155,9 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   for (const m of mappings) {
     const [site] = await db.select({ id: sites.id, orgId: sites.orgId }).from(sites).where(eq(sites.id, m.siteId)).limit(1);
     if (!site) return c.json({ success: false, message: `Unknown Breeze site: ${m.siteId}` }, 400);
+    if (!auth.canAccessOrg(site.orgId)) {
+      return c.json({ success: false, message: 'Access to target organization denied' }, 403);
+    }
     await db.insert(unifiSiteMappings).values({
       integrationId: conn.id,
       orgId: site.orgId,
