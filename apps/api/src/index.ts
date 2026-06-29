@@ -186,6 +186,7 @@ import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from '
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
 import { initializeMonitorWorker, shutdownMonitorWorker } from './jobs/monitorWorker';
 import { initializeUnifiWorker } from './jobs/unifiWorker';
+import { initializeUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
 import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
@@ -1147,6 +1148,7 @@ async function initializeWorkers(): Promise<void> {
     ['snmpWorker', initializeSnmpWorker],
     ['monitorWorker', initializeMonitorWorker],
     ['unifiWorker', initializeUnifiWorker],
+    ['unifiTelemetryWorker', initializeUnifiTelemetryWorker],
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['cveEnrichmentWorker', initializeCveEnrichmentWorker],
