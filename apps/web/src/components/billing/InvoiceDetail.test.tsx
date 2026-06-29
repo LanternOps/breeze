@@ -77,14 +77,36 @@ describe('InvoiceDetail', () => {
     render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
 
-    // l1 is the only billed line: revenue 120 − cost (80×1) = 40. The hidden bundle
-    // child l2 is not customer-visible, so it's excluded (matches the quote math).
+    // l1 is the only top-level line: revenue 120 − cost (80×1) = 40. l2 is a bundle
+    // child (parentLineId 'l1'), so it's excluded from the summary regardless of
+    // visibility — its cost is already rolled into the parent.
     expect(screen.getByTestId('invoice-margin-cost')).toHaveTextContent('$80.00');
     expect(screen.getByTestId('invoice-margin-net-onetime')).toHaveTextContent('$40.00');
     // Invoices are one-time → the recurring profit rows never appear.
     expect(screen.queryByTestId('invoice-margin-net-monthly')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-margin-net-annual')).not.toBeInTheDocument();
-    // Every billed line has a cost → no "estimate incomplete" warning.
+    // Every counted line has a cost → no "estimate incomplete" warning.
+    expect(screen.queryByTestId('invoice-margin-missing-cost')).not.toBeInTheDocument();
+  });
+
+  it('counts a bundle once — a VISIBLE component is not double-counted', async () => {
+    // A bundle persists as a parent rollup line whose costBasis is the full bundle
+    // cost (Σ component costs) PLUS child component lines that each carry their own
+    // costBasis. Here the parent (p1) rolls up cost 80 / revenue 120, and a VISIBLE
+    // component child (c1) carries its own cost 10. Summing every line would give
+    // cost 90 / net 30; folding over top-level lines only gives the correct
+    // cost 80 / net 40 — the parent already includes the component's cost.
+    const bundle: InvoiceDetailData = {
+      ...issued,
+      lines: [
+        { ...lines[0], id: 'p1', parentLineId: null, costBasis: '80.00', revenueAllocation: '120.00', customerVisible: true, quantity: '1.00', unitPrice: '120.00', lineTotal: '120.00' },
+        { ...lines[1], id: 'c1', parentLineId: 'p1', costBasis: '10.00', revenueAllocation: '40.00', customerVisible: true, quantity: '1.00', unitPrice: '0.00', lineTotal: '0.00' },
+      ],
+    };
+    render(<InvoiceDetail detail={bundle} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-margin-cost')).toHaveTextContent('$80.00');
+    expect(screen.getByTestId('invoice-margin-net-onetime')).toHaveTextContent('$40.00');
     expect(screen.queryByTestId('invoice-margin-missing-cost')).not.toBeInTheDocument();
   });
 

@@ -87,9 +87,10 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
   );
 
   // Cost/margin is an internal read affordance, visible to anyone who can read
-  // the invoice (mirrors the always-on Accounting view toggle and the quote
-  // rails' `quotes:read` gate). Same shared cents math as quotes so an invoice
-  // margin can't drift from the quote it was issued from.
+  // the invoice (the same read-level gate the quote rails use for `quotes:read`;
+  // cost is a read affordance, not a write one). Independent of the per-line
+  // Accounting view toggle below, which defaults off. Uses the shared cents math
+  // so the figure is rounded + labelled identically to a quote's.
   const canSeeMargin = can('invoices', 'read');
   const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
 
