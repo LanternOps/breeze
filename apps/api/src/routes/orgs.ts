@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
@@ -34,6 +34,15 @@ const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISS
 const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const requireSiteRead = requirePermission(PERMISSIONS.SITES_READ.resource, PERMISSIONS.SITES_READ.action);
 const requireSiteWrite = requirePermission(PERMISSIONS.SITES_WRITE.resource, PERMISSIONS.SITES_WRITE.action);
+
+const RESERVED_INBOUND_LOCAL_PARTS = new Set([
+  'postmaster',
+  'abuse',
+  'noreply',
+  'no-reply',
+  'mailer-daemon',
+  'webmaster',
+]);
 
 const paginationSchema = z.object({
   page: z.string().optional(),
@@ -460,7 +469,13 @@ const partnerSettingsSchema = z.object({
 const updatePartnerSettingsSchema = z.object({
   settings: partnerSettingsSchema.optional(),
   name: z.string().min(1).optional(),
-  billingEmail: z.string().email().optional()
+  billingEmail: z.string().email().optional(),
+  inboundLocalPart: z
+    .string()
+    .max(63)
+    .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use lowercase letters, numbers, and hyphens only')
+    .nullable()
+    .optional()
 });
 
 // Get own partner details (for partner-scoped users)
@@ -500,7 +515,18 @@ orgRoutes.get('/partners/me/ip-allowlist/status', requireScope('partner'), requi
 });
 
 // Update own partner settings (for partner-scoped users)
-orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSettingsSchema), async (c) => {
+orgRoutes.patch(
+  '/partners/me',
+  requireScope('partner'),
+  requirePartner,
+  requireOrgWrite,
+  requireMfa(),
+  zValidator('json', updatePartnerSettingsSchema, (result, c) => {
+    if (!result.success && result.error.issues.some((issue) => issue.path[0] === 'inboundLocalPart')) {
+      return c.json({ error: 'Use lowercase letters, numbers, and hyphens only' }, 422);
+    }
+  }),
+  async (c) => {
   const auth = c.get('auth');
   const body = c.req.valid('json');
 
@@ -589,6 +615,29 @@ orgRoutes.patch('/partners/me', requireScope('partner'), requirePartner, require
 
   if (body.name) updateData.name = body.name;
   if (body.billingEmail) updateData.billingEmail = body.billingEmail;
+  if (body.inboundLocalPart !== undefined) {
+    if (body.inboundLocalPart === null) {
+      updateData.inboundLocalPart = null;
+    } else {
+      const candidate = body.inboundLocalPart.toLowerCase();
+      if (RESERVED_INBOUND_LOCAL_PARTS.has(candidate)) {
+        return c.json({ error: 'That inbound address is reserved' }, 422);
+      }
+      const clash = await db
+        .select({ id: partners.id })
+        .from(partners)
+        .where(and(
+          or(eq(partners.inboundLocalPart, candidate), eq(partners.slug, candidate)),
+          ne(partners.id, auth.partnerId as string),
+          isNull(partners.deletedAt)
+        ))
+        .limit(1);
+      if (clash[0]) {
+        return c.json({ error: 'That inbound address is already taken' }, 409);
+      }
+      updateData.inboundLocalPart = candidate;
+    }
+  }
 
   // Keep the first-class `partners.timezone` column in sync with the legacy
   // `settings.timezone` JSONB key the UI writes (issue #1318). The column is the
