@@ -42,11 +42,14 @@ export const quoteLineInputSchema = z.object({
   recurrence: quoteLineRecurrenceSchema.default('one_time'),
   termMonths: z.number().int().min(1).max(120).nullable().optional(),
   billingFrequency: z.enum(['monthly', 'annual']).nullable().optional(),
+  unitCost: money.nullable().optional(),
+  sku: z.string().max(100).nullable().optional(),
+  partNumber: z.string().max(100).nullable().optional(),
 }).refine((d) => Boolean(d.name?.trim() || d.description?.trim()), {
   message: 'A line needs a name or a description', path: ['name'],
 });
 
-export const catalogQuoteLineSchema = z.object({ catalogItemId: z.string().guid(), quantity: positiveQty, blockId: z.string().guid().optional() });
+export const catalogQuoteLineSchema = z.object({ catalogItemId: z.string().guid(), quantity: positiveQty, blockId: z.string().guid().optional(), partNumber: z.string().max(100).nullable().optional() });
 export const bundleQuoteLineSchema = z.object({ bundleId: z.string().guid(), quantity: positiveQty, blockId: z.string().guid().optional() });
 
 export const updateQuoteLineSchema = z.object({
@@ -59,6 +62,9 @@ export const updateQuoteLineSchema = z.object({
   recurrence: quoteLineRecurrenceSchema.optional(),
   termMonths: z.number().int().min(1).max(120).nullable().optional(),
   sortOrder: z.number().int().min(0).optional(),
+  unitCost: money.nullable().optional(),
+  sku: z.string().max(100).nullable().optional(),
+  partNumber: z.string().max(100).nullable().optional(),
 });
 
 export const createQuoteSchema = z.object({

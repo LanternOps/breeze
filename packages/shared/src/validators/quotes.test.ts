@@ -3,6 +3,7 @@ import {
   createQuoteSchema, quoteLineInputSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   acceptQuoteSchema, declineQuoteSchema,
   updateQuoteSchema, reorderBlocksSchema, reorderLinesSchema,
+  updateQuoteLineSchema, catalogQuoteLineSchema,
 } from './quotes';
 
 describe('quote validators', () => {
@@ -95,5 +96,22 @@ describe('quote T&C field', () => {
   });
   it('update accepts termsAndConditions (nullable to clear)', () => {
     expect(updateQuoteSchema.parse({ termsAndConditions: null }).termsAndConditions).toBeNull();
+  });
+});
+
+describe('quote line cost/sku/partNumber', () => {
+  it('manual line accepts cost/sku/partNumber', () => {
+    const r = quoteLineInputSchema.safeParse({
+      sourceType: 'manual', name: 'Widget', quantity: 1, unitPrice: 10, taxable: false,
+      unitCost: 6.5, sku: 'WID-1', partNumber: 'MPN-9',
+    });
+    expect(r.success).toBe(true);
+  });
+  it('update line accepts cost/sku/partNumber and rejects negative cost', () => {
+    expect(updateQuoteLineSchema.safeParse({ unitCost: 6.5, sku: 'X', partNumber: 'Y' }).success).toBe(true);
+    expect(updateQuoteLineSchema.safeParse({ unitCost: -1 }).success).toBe(false);
+  });
+  it('catalog line accepts an optional partNumber override', () => {
+    expect(catalogQuoteLineSchema.safeParse({ catalogItemId: '00000000-0000-0000-0000-000000000001', quantity: 1, partNumber: 'MPN-1' }).success).toBe(true);
   });
 });
