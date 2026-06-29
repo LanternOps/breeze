@@ -669,7 +669,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           description: form.description.trim() || null,
           quantity: qtyNum,
           unitPrice: priceNum,
-          unitCost: form.cost.trim() === '' ? null : Number(form.cost) || null,
+          unitCost: form.cost.trim() === ''
+            ? null
+            : (Number.isFinite(Number(form.cost)) && Number(form.cost) >= 0 ? Number(form.cost) : null),
           sku: form.sku.trim() || null,
           partNumber: form.partNumber.trim() || null,
           taxable: form.taxable,

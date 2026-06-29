@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
-import { updateLine } from '../../../lib/api/quotes';
+import { addManualLine, updateLine } from '../../../lib/api/quotes';
 
 // Writer permissions so the inline line editor renders (read-only hides it).
 vi.mock('../../../stores/auth', () => ({
@@ -65,6 +65,7 @@ const baseQuote: QuoteDetailData['quote'] = {
 };
 
 const updateLineMock = vi.mocked(updateLine);
+const addManualLineMock = vi.mocked(addManualLine);
 
 describe('QuoteEditor — per-line cost/markup/net strip', () => {
   beforeEach(() => {
@@ -134,5 +135,35 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     expect(screen.getByTestId('quote-margin-net-onetime')).toHaveTextContent('$30.00');
     expect(screen.getByTestId('quote-margin-net-monthly')).toHaveTextContent('$15.00');
     expect(screen.getByTestId('quote-margin-missing-cost')).toBeInTheDocument();
+  });
+
+  it('manual-add preserves an explicit cost of 0 (not null)', async () => {
+    addManualLineMock.mockResolvedValue(
+      { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
+    );
+    const detail: QuoteDetailData = {
+      quote: baseQuote,
+      blocks: [block],
+      lines: [baseLine],
+    };
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    // The add-line panel defaults to catalog mode — switch to the manual line form.
+    fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
+
+    fireEvent.change(screen.getByTestId('quote-manual-name-blk-1'), { target: { value: 'Freebie' } });
+    fireEvent.change(screen.getByTestId('quote-manual-desc-blk-1'), { target: { value: 'Included at no charge' } });
+    fireEvent.change(screen.getByTestId('quote-manual-qty-blk-1'), { target: { value: '1' } });
+    fireEvent.change(screen.getByTestId('quote-manual-price-blk-1'), { target: { value: '50' } });
+    fireEvent.change(screen.getByTestId('quote-manual-cost-blk-1'), { target: { value: '0' } });
+
+    fireEvent.click(screen.getByTestId('quote-manual-add-blk-1'));
+
+    await waitFor(() => expect(addManualLineMock).toHaveBeenCalled());
+    expect(addManualLineMock).toHaveBeenCalledWith(
+      'q-1',
+      expect.objectContaining({ unitCost: 0 }),
+    );
   });
 });
