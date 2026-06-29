@@ -242,6 +242,7 @@ import { initializeQuoteExpiryReaper, shutdownQuoteExpiryReaper } from './jobs/q
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
+import { initializeTicketMailboxPollWorker } from './jobs/ticketMailboxPollWorker';
 import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { decryptForColumn } from './services/secretCrypto';
@@ -1191,6 +1192,7 @@ async function initializeWorkers(): Promise<void> {
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
+    ['ticketMailboxPollWorker', initializeTicketMailboxPollWorker],
     ['invoiceWorker', initializeInvoiceWorkers],
     ['contractWorker', initializeContractWorkers],
   ];
