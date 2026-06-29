@@ -12,6 +12,7 @@ export const partners = pgTable('partners', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: varchar('name', { length: 255 }).notNull(),
   slug: varchar('slug', { length: 100 }).notNull().unique(),
+  inboundLocalPart: varchar('inbound_local_part', { length: 63 }),
   type: partnerTypeEnum('type').notNull().default('msp'),
   plan: planTypeEnum('plan').notNull().default('free'),
   status: partnerStatusEnum('status').notNull().default('active'),
