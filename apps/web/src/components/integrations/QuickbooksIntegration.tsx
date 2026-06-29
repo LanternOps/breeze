@@ -13,6 +13,7 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext, getJwtClaims } from '../../lib/authScope';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { showToast } from '../shared/Toast';
+import QuickbooksCustomerImport from './QuickbooksCustomerImport';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'reauth_required' | 'error';
 type PushMode = 'auto' | 'manual';
@@ -296,6 +297,8 @@ export default function QuickbooksIntegration() {
           </div>
         </div>
       )}
+
+      {isConnected && <QuickbooksCustomerImport onUnauthorized={onUnauthorized} />}
     </div>
   );
 }
