@@ -309,13 +309,15 @@
          Target has already been formatted by then.) Verified on the shipped
          v0.86.0 MSI: the formatted Target carries the full path with the token.
 
-         Do NOT revert this to "[CustomActionData]". A deferred EXE custom action
-         cannot read CustomActionData from its command line — [CustomActionData]
-         formats to an EMPTY string at schedule time, so the agent received an
-         empty install-data argument and silently skipped enrollment on EVERY
-         install ("no bootstrap token present" then unenrolled). That was the real
-         cause of the field reports; it was misattributed to #1956's
-         bracket-stripping, but brackets were never the issue and the prior
+         Do NOT revert this to "[CustomActionData]". For a deferred EXE custom
+         action, [CustomActionData] in the ExeCommand formats to an EMPTY string
+         at schedule time (CustomActionData only exists at deferred-execution time,
+         and only DLL/script CAs can read it — an EXE CA gets nothing on its
+         command line). So the agent received an empty install-data argument and
+         silently skipped enrollment on EVERY install ("no bootstrap token
+         present" then unenrolled). That was the real cause of the field reports.
+         It was misattributed to #1956's bracket-stripping — a real but separate
+         bug that just wasn't the cause of non-enrollment; the prior
          SetBootstrapData then CustomActionData indirection never delivered the
          token at all.
 

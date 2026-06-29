@@ -41,6 +41,17 @@ func TestResolveBootstrapInputs(t *testing.T) {
 			wantErr: errNoBootstrapInput,
 		},
 		{
+			// Post-fix the BootstrapEnroll CA formats [OriginalDatabase] directly
+			// into the command line, so install-data is ALWAYS a non-empty MSI path
+			// (never the old "" empty arg). A plain install whose filename carries no
+			// (TOKEN@HOST) must still resolve to errNoBootstrapInput so runBootstrap
+			// soft-exits 0 — otherwise the deferred CA's Return="check" would roll
+			// back every tokenless/manual install.
+			name:    "real product filename without token (manual install, must not error-rollback)",
+			data:    `C:\Program Files\Breeze\Breeze Agent.msi||`,
+			wantErr: errNoBootstrapInput,
+		},
+		{
 			name:       "property token without server falls back to filename",
 			data:       `C:\dl\Breeze Agent [ABCDE12345@eu.2breeze.app].msi|ZZZZZ99999|`,
 			wantToken:  "ABCDE12345",
