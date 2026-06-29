@@ -371,3 +371,81 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
     );
   });
 });
+
+describe('AlertsPage — suppress duration picker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const listOnlyMock = (suppressResponse: () => Promise<Response>) =>
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === `/alerts/${ALERT_ID}/suppress` && method === 'POST') {
+        return suppressResponse();
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+  it('opens the duration picker instead of firing a blind POST (the original bug)', async () => {
+    listOnlyMock(() => Promise.resolve(makeJsonResponse({ id: ALERT_ID, status: 'suppressed' })));
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i }));
+
+    // The dialog is shown and NO suppress request has been sent yet.
+    expect(await screen.findByTestId('suppress-confirm')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      `/alerts/${ALERT_ID}/suppress`,
+      expect.anything(),
+    );
+  });
+
+  it('sends the default 24h "until" timestamp in the body when confirmed', async () => {
+    listOnlyMock(() => Promise.resolve(makeJsonResponse({ id: ALERT_ID, status: 'suppressed' })));
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i }));
+    const before = Date.now();
+    fireEvent.click(await screen.findByTestId('suppress-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/${ALERT_ID}/suppress`,
+        expect.objectContaining({ method: 'POST', body: expect.any(String) }),
+      );
+    });
+
+    const call = fetchMock.mock.calls.find(([url]) => url === `/alerts/${ALERT_ID}/suppress`)!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(typeof body.until).toBe('string');
+    // Default preset is 24h — guard the value, not just "in the future", so a
+    // regression to a different default is caught.
+    const untilMs = new Date(body.until).getTime();
+    expect(untilMs).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000 - 2000);
+    expect(untilMs).toBeLessThanOrEqual(Date.now() + 24 * 60 * 60 * 1000 + 2000);
+  });
+
+  it('reverts the optimistic update and surfaces the server error when suppression fails', async () => {
+    listOnlyMock(() => Promise.resolve(makeJsonResponse({ error: 'Cannot suppress a resolved alert' }, false, 400)));
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i }));
+    fireEvent.click(await screen.findByTestId('suppress-confirm'));
+
+    // The server's specific reason is shown, not a generic message.
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Cannot suppress a resolved alert' }),
+      );
+    });
+    // Optimistic suppression is rolled back: the row's Suppress button returns.
+    expect(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i })).toBeInTheDocument();
+  });
+});

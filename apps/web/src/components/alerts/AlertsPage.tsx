@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { CheckCircle, Settings2 } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
+import SuppressAlertDialog from './SuppressAlertDialog';
 import AlertsSummary from './AlertsSummary';
 import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
@@ -50,6 +51,7 @@ export default function AlertsPage() {
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
   const [deviceFilterIds, setDeviceFilterIds] = useState<Set<string> | null>(null);
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
+  const [suppressTarget, setSuppressTarget] = useState<Alert | null>(null);
 
   // Honor the global Current/All-orgs scope toggle: when it flips (or the
   // current org changes), re-run the fetches so the list reflects the new
@@ -233,7 +235,15 @@ export default function AlertsPage() {
     }
   };
 
-  const handleSuppress = async (alert: Alert) => {
+  // One-click Suppress opens the duration picker; the suppress endpoint needs an
+  // absolute `until`, so we can't fire blind — performSuppress runs on confirm.
+  const handleSuppress = (alert: Alert) => {
+    setSuppressTarget(alert);
+  };
+
+  const performSuppress = async (alert: Alert, until: Date) => {
+    setSuppressTarget(null);
+
     // Optimistic update with undo
     const previousStatus = alert.status;
     setAlerts(prev => prev.map(a =>
@@ -243,15 +253,14 @@ export default function AlertsPage() {
       handleCloseDetail();
     }
 
+    const revert = () => setAlerts(prev => prev.map(a =>
+      a.id === alert.id ? { ...a, status: previousStatus } : a
+    ));
+
     showToast({
       message: `"${alert.title}" suppressed`,
       type: 'undo',
-      onUndo: () => {
-        // Revert optimistic update
-        setAlerts(prev => prev.map(a =>
-          a.id === alert.id ? { ...a, status: previousStatus } : a
-        ));
-      },
+      onUndo: revert,
       duration: 5000,
     });
 
@@ -262,19 +271,29 @@ export default function AlertsPage() {
       // explicit revert + error toast on failure below). Routing through
       // runAction would double-toast and fight the optimistic flow.
       const response = await fetchWithAuth(`/alerts/${alert.id}/suppress`, {
-        method: 'POST'
+        method: 'POST',
+        body: JSON.stringify({ until: until.toISOString() }),
       });
       if (!response.ok) {
-        throw new Error('Failed to suppress alert');
+        // Surface the server's specific reason (e.g. "Cannot suppress a resolved
+        // alert" when someone resolved it while the picker was open) rather than
+        // a generic message.
+        const body = await response.json().catch(() => null);
+        revert();
+        console.error('[alerts] suppress failed', alert.id, response.status);
+        showToast({ message: body?.error ?? 'Failed to suppress alert', type: 'error' });
+      } else {
+        fetchAlerts();
       }
-      fetchAlerts();
     } catch (err) {
-      // Revert on failure
-      setAlerts(prev => prev.map(a =>
-        a.id === alert.id ? { ...a, status: previousStatus } : a
-      ));
-      const msg = err instanceof Error ? err.message : 'Failed to suppress alert';
-      showToast({ message: msg, type: 'error' });
+      // fetchWithAuth already redirects to /login on session expiry — don't
+      // toast over the navigation (mirrors the runAction onUnauthorized path).
+      if (err instanceof AuthSessionExpiredError) return;
+      // Network/abort/timeout: revert and show a clean message (the raw
+      // AbortError/TypeError text is browser jargon, not user-facing copy).
+      revert();
+      console.error('[alerts] suppress failed', alert.id, err);
+      showToast({ message: 'Failed to suppress alert', type: 'error' });
     }
   };
 
@@ -459,6 +478,14 @@ export default function AlertsPage() {
           onResolve={handleResolve}
           onSuppress={handleSuppress}
           submitting={submitting}
+        />
+      )}
+
+      {suppressTarget && (
+        <SuppressAlertDialog
+          alertTitle={suppressTarget.title}
+          onCancel={() => setSuppressTarget(null)}
+          onConfirm={(until) => void performSuppress(suppressTarget, until)}
         />
       )}
     </div>
