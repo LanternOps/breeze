@@ -13,7 +13,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-import { addFeatureLink, updateFeatureLink, listFeatureLinks, pamInlineSettingsSchema } from './configurationPolicy';
+import { addFeatureLink, updateFeatureLink, listFeatureLinks, pamInlineSettingsSchema, validateFeaturePolicyExists } from './configurationPolicy';
 import { db } from '../db';
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
@@ -500,5 +500,114 @@ describe('updateFeatureLink — pam inlineSettings service-layer validation', ()
     // null inlineSettings means "clear" — pam validation is skipped
     const result = await updateFeatureLink('link-pam', { inlineSettings: null }, 'policy-1');
     expect(result).not.toBeNull();
+  });
+});
+
+// ============================================================
+// vulnerability inlineSettings service-layer validation (BE-16 gating)
+// ============================================================
+
+describe('addFeatureLink — vulnerability inlineSettings service-layer validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockTxReturning(inlineSettings: unknown) {
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(() =>
+            Promise.resolve([
+              { id: 'link-vuln', configPolicyId: 'policy-1', featureType: 'vulnerability', featurePolicyId: null, inlineSettings },
+            ])
+          ),
+        })),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+  }
+
+  it('throws ZodError before the transaction when enabled is the string "true"', async () => {
+    await expect(
+      addFeatureLink('policy-1', 'vulnerability', null, { enabled: 'true' })
+    ).rejects.toThrow();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('throws ZodError for an unknown extra key', async () => {
+    await expect(
+      addFeatureLink('policy-1', 'vulnerability', null, { enabled: true, rogue: 'x' })
+    ).rejects.toThrow();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('enters the transaction for valid { enabled: false } and {}', async () => {
+    mockTxReturning({ enabled: false });
+    await expect(addFeatureLink('policy-1', 'vulnerability', null, { enabled: false })).resolves.toBeDefined();
+    mockTxReturning({});
+    await expect(addFeatureLink('policy-1', 'vulnerability', null, {})).resolves.toBeDefined();
+  });
+
+  it('skips validation when inlineSettings is null/undefined', async () => {
+    mockTxReturning(null);
+    await expect(addFeatureLink('policy-1', 'vulnerability', null, null)).resolves.toBeDefined();
+    await expect(addFeatureLink('policy-1', 'vulnerability', null, undefined)).resolves.toBeDefined();
+  });
+});
+
+describe('updateFeatureLink — vulnerability inlineSettings service-layer validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeTxWithExistingVulnLink() {
+    const tx: any = {
+      select: vi.fn(() => selectLimitRows([
+        { id: 'link-vuln', configPolicyId: 'policy-1', featureType: 'vulnerability', featurePolicyId: null, inlineSettings: {} },
+      ])),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([{ id: 'link-vuln', featureType: 'vulnerability' }])),
+          })),
+        })),
+      })),
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })),
+      insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve([])) })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return tx;
+  }
+
+  it('throws ZodError when updating with a non-boolean enabled', async () => {
+    makeTxWithExistingVulnLink();
+    await expect(
+      updateFeatureLink('link-vuln', { inlineSettings: { enabled: 'true' } }, 'policy-1')
+    ).rejects.toThrow();
+  });
+
+  it('throws ZodError when updating with an unknown extra key', async () => {
+    makeTxWithExistingVulnLink();
+    await expect(
+      updateFeatureLink('link-vuln', { inlineSettings: { enabled: true, rogue: true } }, 'policy-1')
+    ).rejects.toThrow();
+  });
+
+  it('succeeds when updating with valid { enabled: true }', async () => {
+    makeTxWithExistingVulnLink();
+    const result = await updateFeatureLink('link-vuln', { inlineSettings: { enabled: true } }, 'policy-1');
+    expect(result).not.toBeNull();
+  });
+});
+
+describe('validateFeaturePolicyExists — vulnerability is inline-only', () => {
+  it('rejects a featurePolicyId (vulnerability has no standalone policy table)', async () => {
+    const result = await validateFeaturePolicyExists('vulnerability', 'some-uuid', 'org-1');
+    expect(result.valid).toBe(false);
+  });
+
+  it('accepts inline-only (no featurePolicyId)', async () => {
+    const result = await validateFeaturePolicyExists('vulnerability', null, 'org-1');
+    expect(result.valid).toBe(true);
   });
 });

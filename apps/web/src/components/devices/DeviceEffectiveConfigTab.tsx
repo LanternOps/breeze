@@ -13,6 +13,7 @@ import {
   ScrollText,
   Shield,
   ShieldCheck,
+  ShieldAlert,
   Activity,
   Usb,
   Wrench,
@@ -40,7 +41,8 @@ type FeatureType =
   | 'software_policy'
   | 'sensitive_data'
   | 'peripheral_control'
-  | 'onedrive_helper';
+  | 'onedrive_helper'
+  | 'vulnerability';
 
 type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device' | 'default';
 
@@ -106,6 +108,7 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   event_log:          { label: 'Event Logs',          Icon: ScrollText },
   helper:             { label: 'Breeze Assist',       Icon: LifeBuoy },
   onedrive_helper:    { label: 'OneDrive Helper',     Icon: Cloud },
+  vulnerability:      { label: 'Vulnerability Scanning', Icon: ShieldAlert },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the

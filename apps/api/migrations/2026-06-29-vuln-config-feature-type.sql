@@ -5,8 +5,12 @@
 -- warranty/helper/pam. Default behavior with no policy assigned = disabled.
 --
 -- ALTER TYPE ... ADD VALUE is transaction-safe here because the new value is NOT
--- used elsewhere in this migration (no table references it). Idempotent guard via
--- pg_enum existence check, mirroring 0029-event-log-policy-settings.sql.
+-- used elsewhere in this migration (no table references it) — Postgres 12+ allows
+-- ADD VALUE inside the transaction autoMigrate wraps each file in, as long as the
+-- value isn't consumed in that same transaction. (0029-event-log-policy-settings.sql
+-- carries an older "cannot run inside a transaction" note that predates PG12 and is
+-- now inaccurate under autoMigrate — don't follow it.) The idempotent pg_enum
+-- existence guard below uses the same pattern as 0029.
 
 DO $$
 BEGIN
