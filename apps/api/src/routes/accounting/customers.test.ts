@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { listAnnotatedMock, importMock, QbImportError } = vi.hoisted(() => {
+const { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError } = vi.hoisted(() => {
   const listAnnotatedMock = vi.fn();
   const importMock = vi.fn();
+  const writeRouteAuditMock = vi.fn();
   class QbImportError extends Error { code: string; status: number; constructor(m: string, c: string, s: number) { super(m); this.code = c; this.status = s; } }
-  return { listAnnotatedMock, importMock, QbImportError };
+  return { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError };
 });
 vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
   listQuickbooksCustomersAnnotated: listAnnotatedMock,
@@ -20,7 +21,7 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: () => async (_c: any, next: any) => next(),
 }));
 
-vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
 
 vi.mock('../../config/env', () => ({
   QBO_CLIENT_ID: 'client-id',
@@ -71,6 +72,11 @@ describe('POST /accounting/:provider/customers/import', () => {
     const body = await res.json();
     expect(body.data.imported).toHaveLength(1);
     expect(importMock).toHaveBeenCalledWith({ partnerId: 'p1', customerIds: ['1'] });
+    // Each created org is audited — guards against the audit loop being dropped.
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'organization.create', resourceId: 'org-1' }),
+    );
   });
 
   it('rejects an empty customerIds array with 400', async () => {
