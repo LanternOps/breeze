@@ -19,6 +19,7 @@ export const CONFIG_FEATURE_TYPES = [
   'patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance',
   'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data',
   'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
+  'vulnerability',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];

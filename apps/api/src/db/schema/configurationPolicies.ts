@@ -43,6 +43,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'remote_access',
   'pam',
   'onedrive_helper',
+  'vulnerability',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [

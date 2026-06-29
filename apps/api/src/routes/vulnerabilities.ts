@@ -11,7 +11,7 @@ import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 import { writeRouteAudit } from '../services/auditEvents';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
 import { userRateLimit } from '../middleware/userRateLimit';
-import { enqueueVulnSourceSync } from '../jobs/vulnerabilityJobs';
+import { enqueueVulnSourceSync, enqueueVulnCorrelation } from '../jobs/vulnerabilityJobs';
 
 export const vulnerabilityRoutes = new Hono();
 
@@ -547,6 +547,25 @@ vulnerabilitySyncRoutes.post(
       action: 'vulnerability.manual_sync',
       resourceType: 'vulnerability_source',
       details: { source, jobId },
+    });
+    return c.json({ enqueued: true, jobId });
+  },
+);
+
+// Manually trigger a correlation pass (platform-admin + MFA via the `*` mw above).
+// Useful to populate device_vulnerabilities immediately after enabling the
+// `vulnerability` config-policy feature for an org, instead of waiting for the
+// daily 13:00 UTC schedule.
+vulnerabilitySyncRoutes.post(
+  '/correlate',
+  userRateLimit('vuln-manual-correlate', 10, 3600), // 10/hour/user
+  async (c) => {
+    const jobId = await enqueueVulnCorrelation();
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'vulnerability.manual_correlate',
+      resourceType: 'vulnerability_source',
+      details: { jobId },
     });
     return c.json({ enqueued: true, jobId });
   },
