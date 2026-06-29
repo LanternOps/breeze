@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
@@ -100,5 +100,40 @@ describe('QuoteEditor — permission gating', () => {
     expect(screen.getByTestId('quote-block-remove-blk-1')).toBeInTheDocument();
     expect(screen.getByTestId('quote-block-add-line-blk-1')).toBeInTheDocument();
     expect(screen.getByTestId('quote-line-remove-line-1')).toBeInTheDocument();
+  });
+
+  // Cost/margin is a read affordance: read-only users get the collapse toggle, the
+  // per-line internal band, and the rail Margin panel — the same cost surfaces a
+  // writer sees. Regression guard for the toggle accidentally being re-gated on
+  // write (which would silently hide all cost from readers).
+  it('read-only user gets the cost & margin toggle, the rail margin panel, and can expand the per-line band', async () => {
+    state.permissions = [{ resource: 'quotes', action: 'read' }];
+    const costed: QuoteDetailData = { ...detail, lines: [{ ...line, unitCost: '30.00' }] };
+    render(<QuoteEditor detail={costed} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    // The toggle is offered to readers (unlike the write-only autosave hint).
+    const toggle = screen.getByTestId('quote-editor-toggle-internal');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // Rail margin panel is visible to readers (gated on quotes:read, not write).
+    expect(screen.getByTestId('quote-margin-cost')).toHaveTextContent('$30.00');
+    // Internal per-line band starts collapsed, then expands on toggle.
+    expect(screen.getByTestId('quote-line-internal-line-1')).toHaveClass('hidden');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('quote-line-internal-line-1')).not.toHaveClass('hidden');
+    expect(screen.getByTestId('quote-line-cost-line-1')).toHaveTextContent('$30.00');
+    // The non-taxable line's cell announces its state via the sr-only label.
+    expect(screen.getByTestId('quote-line-taxable-line-1')).toHaveTextContent('Not taxable');
+  });
+
+  // ReadonlyLineRow replaced the taxable checkbox with a glyph + sr-only label;
+  // the glyph is aria-hidden, so the accessible name must come from the label.
+  it('read-only Taxable cell announces a taxable line via an sr-only label', async () => {
+    state.permissions = [{ resource: 'quotes', action: 'read' }];
+    const taxed: QuoteDetailData = { ...detail, lines: [{ ...line, taxable: true }] };
+    render(<QuoteEditor detail={taxed} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-line-taxable-line-1')).toHaveTextContent('Taxable');
   });
 });

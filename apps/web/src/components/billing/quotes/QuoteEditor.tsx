@@ -85,7 +85,7 @@ interface Props {
 // Per-field blur-saves are confirmed by the amber dirty-ring clearing (sighted)
 // plus the SrSaved live region (screen readers) — NOT a toast. Toasts are
 // reserved for action-level events the user can't otherwise see (Line added,
-// Block removed, Proposal sent, Draft deleted), which fire their own
+// Section removed, Proposal sent, Draft deleted), which fire their own
 // runAction successMessage. Per-field toasts were a storm during editing and
 // double-announced alongside SrSaved, so they were removed.
 
@@ -167,6 +167,11 @@ function MoveControls({
 export default function QuoteEditor({ detail, onChanged }: Props) {
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
+  // Cost/margin is a read affordance, not a write one: read-only users already see
+  // the per-line internal cost bands (ReadonlyLineRow) + the toggle, so the rail
+  // Margin summary is gated the same way QuoteDetail gates it — on quotes:read —
+  // rather than on write, which would hide the aggregate while showing the parts.
+  const canSeeMargin = can('quotes', 'read');
   // The per-line internal cost/markup/profit strip duplicates the rail's Margin
   // summary and roughly doubles the height of every line, so it's collapsed by
   // default; the rail summary stays always-on. Threaded down to each line row.
@@ -681,6 +686,15 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
       handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
       return Promise.resolve(false);
     }
+    // Cost is optional, but a non-empty entry must be valid — reject it the same way
+    // commitCost does inline, rather than silently coercing bad input to null (which
+    // would drop the user's cost and understate the margin with no feedback).
+    const costEmpty = form.cost.trim() === '';
+    const costNum = Number(form.cost);
+    if (!costEmpty && (!Number.isFinite(costNum) || costNum < 0)) {
+      handleActionError(new Error('invalid cost'), 'Enter a cost of 0 or more.');
+      return Promise.resolve(false);
+    }
     return runScoped(`add-line:${blockId}`, async () => {
       await runAction({
         request: () => addManualLine(quote.id, {
@@ -690,9 +704,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
           description: form.description.trim() || null,
           quantity: qtyNum,
           unitPrice: priceNum,
-          unitCost: form.cost.trim() === ''
-            ? null
-            : (Number.isFinite(Number(form.cost)) && Number(form.cost) >= 0 ? Number(form.cost) : null),
+          unitCost: costEmpty ? null : costNum,
           sku: form.sku.trim() || null,
           partNumber: form.partNumber.trim() || null,
           taxable: form.taxable,
@@ -1043,7 +1055,7 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
                 </div>
               )}
             </dl>
-            {canWrite && <MarginPanel profit={profit} currency={currency} />}
+            {canSeeMargin && <MarginPanel profit={profit} currency={currency} />}
             {canWrite && (
               <div className="mt-2 border-t pt-2">
                 <div className="flex items-center justify-between gap-2">
@@ -1703,7 +1715,10 @@ function EditableLineRow({
   useEffect(() => { setRec(line.recurrence); }, [line.recurrence]);
   useEffect(() => { setTaxable(line.taxable); }, [line.taxable]);
 
-  // Quiet "Saved" flash in place of the old per-field success toast.
+  // Quiet "Saved" flash in place of the old per-field success toast. This is a
+  // single row-level flag on purpose: committing any one field briefly pulses the
+  // green ring across the row's fields, reading as "this line saved" rather than
+  // tracking which individual cell changed.
   const [saved, setSaved] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
@@ -1846,7 +1861,10 @@ function EditableLineRow({
   // Editing markup% commits a new unit price derived from cost: price = cost·(1+m).
   const onMarkupCommit = (raw: string) => {
     const m = Number(raw);
-    if (cost.trim() === '' || !Number.isFinite(m)) return; // need a cost base
+    // Need a cost base, and treat an emptied markup field as "leave price alone" —
+    // Number('') is 0 (finite), which would otherwise rewrite unitPrice down to cost
+    // (zero margin) just because the user cleared the field.
+    if (cost.trim() === '' || raw.trim() === '' || !Number.isFinite(m)) return;
     const nextPrice = priceFromMarkup(cost, m);
     setPrice(nextPrice);
     priceEdited.current = false;

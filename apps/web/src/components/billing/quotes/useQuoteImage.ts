@@ -7,9 +7,9 @@ import { quotePdfUrl } from '../../../lib/api/quotes';
 /**
  * Fetch an access-controlled image (a quote image, a catalog thumbnail) that
  * requires the Bearer header — a bare `<img src>` would 401 — and expose it as a
- * blob object URL, revoked on unmount/change. One implementation for every authed
- * image across the quote surfaces (editor, internal detail, customer document) so
- * the three can't drift in how they load or fail.
+ * blob object URL, revoked on unmount/change. Shared by the internal detail view
+ * and the customer document so the two can't drift in how they load or fail. (The
+ * editor's own thumbnail/preview still use inline loaders and aren't on this hook.)
  *
  * Returns `{ url, failed }`: `url` is undefined while loading, `failed` flips true
  * on a non-OK response or a network error. Pass `path = null` to render nothing
@@ -33,7 +33,11 @@ export function useAuthedImage(path: string | null): { url?: string; failed: boo
         if (!active) return;
         objectUrl = window.URL.createObjectURL(blob);
         setUrl(objectUrl);
-      } catch {
+      } catch (err) {
+        // Keep the developer breadcrumb the inline loaders had — the user sees the
+        // "image unavailable" fallback, but a silent catch hides why an authed
+        // image failed across the surfaces that now share this hook.
+        console.error('[useAuthedImage] image load failed', path, err instanceof Error ? err.message : err);
         if (active) setFailed(true);
       }
     })();

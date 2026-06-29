@@ -117,9 +117,8 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
               type="button"
               onClick={() => setSendOpen(true)}
               disabled={sending || isEmpty}
-              // Point screen readers at the reason the button is disabled. In the
-              // header variant the hint is sr-only (no room for a visible line), so
-              // aria-describedby is the only way the "why" reaches an AT user.
+              // Tie the disabled button to the visible hint below (rendered in both
+              // variants) so AT announces the reason when the button takes focus.
               aria-describedby={isEmpty ? `quote-send-empty-hint-${variant}` : undefined}
               title={isEmpty ? 'Add at least one item before sending.' : undefined}
               data-testid="quote-send"

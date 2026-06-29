@@ -48,7 +48,8 @@ export function RecurringBillingNote({ className, testId }: { className?: string
  * and the internal detail view show the same figures with the same labels — and
  * so the "missing cost" warning stays readable (dark amber text + icon) instead
  * of the low-contrast bright-amber it used to be. NEVER rendered on the customer
- * document. Callers gate visibility on the cost-read permission.
+ * document. Both the editor rail and the internal detail view gate it on
+ * `quotes:read` (cost is a read affordance, not a write one).
  */
 export function MarginPanel({ profit, currency }: { profit: QuoteProfit; currency: string }) {
   return (
