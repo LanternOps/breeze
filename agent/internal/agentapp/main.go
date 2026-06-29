@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,11 +33,45 @@ import (
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/tcc"
+	"github.com/breeze-rmm/agent/internal/unifi"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
 )
+
+// unifiAuthTransport injects the agent's bearer token into requests to the
+// Breeze API for the UniFi telemetry collector. It reveals the token per-request
+// (preserving secmem semantics) and clones the request rather than mutating the
+// caller's. Redirect-following is disabled on the owning http.Client so the
+// token can never leak to another host (mirrors pkg/api's redirect guard).
+type unifiAuthTransport struct {
+	base  http.RoundTripper
+	token *secmem.SecureString
+}
+
+func (t *unifiAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.token != nil && !t.token.IsZeroed() {
+		r2 := req.Clone(req.Context())
+		r2.Header.Set("Authorization", "Bearer "+t.token.Reveal())
+		return t.base.RoundTrip(r2)
+	}
+	return t.base.RoundTrip(req)
+}
+
+// newUnifiAPIClient builds an http.Client that authenticates to the Breeze API
+// as this agent and refuses redirects (token-leak guard).
+func newUnifiAPIClient(token *secmem.SecureString, tlsCfg *tls.Config) *http.Client {
+	tr := &http.Transport{}
+	if tlsCfg != nil {
+		tr.TLSClientConfig = tlsCfg
+	}
+	return &http.Client{
+		Timeout:       30 * time.Second,
+		Transport:     &unifiAuthTransport{base: tr, token: token},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
 
 var (
 	version          = "0.5.0"
@@ -648,6 +683,19 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
 	hb.SetWebSocketClient(wsClient)
 	go wsClient.Start()
+
+	// UniFi Phase 2a: read-only deep-telemetry collector. Polls each assigned
+	// on-site UniFi controller's local Network Integration API and uploads
+	// per-device PoE/health + client telemetry. Runs for the agent process
+	// lifetime and no-ops until the server assigns collectors to this device.
+	if cfg.ServerURL != "" && cfg.AgentID != "" {
+		go unifi.StartCollectorLoop(context.Background(), unifi.CollectorDeps{
+			APIBaseURL: cfg.ServerURL,
+			AgentID:    cfg.AgentID,
+			HTTP:       newUnifiAPIClient(secureToken, tlsCfg),
+			Logf:       func(format string, args ...any) { log.Debug(fmt.Sprintf(format, args...)) },
+		})
+	}
 
 	// PAM Track 3: subscribe to Microsoft-Windows-LUA ETW provider for
 	// UAC consent discovery. Windows-only; no-op stub on other platforms
