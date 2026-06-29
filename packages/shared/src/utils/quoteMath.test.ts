@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeQuoteTotals, computeLineTotal, toCents, fromCents, type QuoteLineForMath } from './quoteMath';
+import { computeQuoteTotals, computeLineTotal, toCents, fromCents, markupPct, priceFromMarkup, computeQuoteProfit, type QuoteLineForMath } from './quoteMath';
 
 const line = (over: Partial<QuoteLineForMath>): QuoteLineForMath => ({
   quantity: '1', unitPrice: '0', taxable: false, recurrence: 'one_time', customerVisible: true, ...over,
@@ -50,5 +50,32 @@ describe('quoteMath (shared)', () => {
     expect(toCents('')).toBe(0);
     expect(toCents(null)).toBe(0);
     expect(fromCents(1234)).toBe('12.34');
+  });
+
+  it('markupPct: (price-cost)/cost, null when cost absent/zero', () => {
+    expect(markupPct('130', '100')).toBeCloseTo(30);
+    expect(markupPct('130', null)).toBeNull();
+    expect(markupPct('130', '0')).toBeNull();
+  });
+
+  it('priceFromMarkup: cost*(1+m), cent-rounded', () => {
+    expect(priceFromMarkup('100', 30)).toBe('130.00');
+    expect(priceFromMarkup('9.99', 50)).toBe('14.99'); // 14.985 -> 14.99
+  });
+
+  it('computeQuoteProfit: net by cadence, excl tax, billed-only, flags missing cost', () => {
+    const lineHelper = (o: Partial<QuoteLineForMath>) => ({
+      quantity: '1', unitPrice: '0', taxable: false, customerVisible: true, recurrence: 'one_time' as const, ...o,
+    });
+    const r = computeQuoteProfit([
+      lineHelper({ unitPrice: '130', unitCost: '100' }),                       // one-time net 30
+      lineHelper({ unitPrice: '40', unitCost: '25', recurrence: 'monthly' }),  // monthly net 15
+      lineHelper({ unitPrice: '50', unitCost: null }),                         // missing cost
+      lineHelper({ unitPrice: '99', unitCost: '50', customerVisible: false }), // excluded (not billed)
+    ]);
+    expect(r.oneTimeNet).toBe('30.00');
+    expect(r.monthlyRecurringNet).toBe('15.00');
+    expect(r.totalCost).toBe('125.00');
+    expect(r.linesMissingCost).toBe(1);
   });
 });

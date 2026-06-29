@@ -39,6 +39,7 @@ export function computeLineTotal(quantity: string | number, unitPrice: string | 
 export interface QuoteLineForMath {
   quantity: string;
   unitPrice: string;
+  unitCost?: string | null;
   taxable: boolean;
   customerVisible: boolean;
   recurrence: 'one_time' | 'monthly' | 'annual';
@@ -90,5 +91,53 @@ export function computeQuoteTotals(lines: QuoteLineForMath[], taxRate: number | 
     monthlyRecurringTotal: fromCents(monthly),
     annualRecurringTotal: fromCents(annual),
     dueOnAcceptanceTotal: fromCents(oneTime + oneTimeTaxCents),
+  };
+}
+
+/** markup on cost = (price − cost) / cost · 100. Null when cost is absent/≤0. */
+export function markupPct(price: string | number, cost: string | number | null | undefined): number | null {
+  if (cost === null || cost === undefined || cost === '') return null;
+  const c = Number(cost); const p = Number(price);
+  if (!Number.isFinite(c) || c <= 0 || !Number.isFinite(p)) return null;
+  return ((p - c) / c) * 100;
+}
+
+/** Unit price from a target markup% on cost, cent-rounded (round-half-up). */
+export function priceFromMarkup(cost: string | number, markupPctValue: number): string {
+  const c = Number(cost);
+  if (!Number.isFinite(c) || !Number.isFinite(markupPctValue)) return '0.00';
+  return fromCents(roundHalfUp(c * (1 + markupPctValue / 100) * 100));
+}
+
+export interface QuoteProfit {
+  oneTimeNet: string;
+  monthlyRecurringNet: string;
+  annualRecurringNet: string;
+  totalCost: string;
+  /** Count of billed lines with no cost — excluded from net, so the figure is partial. */
+  linesMissingCost: number;
+}
+
+/** Net = revenue − cost, EXCLUDING tax, over billed (customerVisible) lines, split
+ *  by cadence. Lines with no unitCost are excluded and counted in linesMissingCost. */
+export function computeQuoteProfit(lines: QuoteLineForMath[]): QuoteProfit {
+  let oneTimeNet = 0, monthlyNet = 0, annualNet = 0, totalCost = 0, missing = 0;
+  for (const l of lines) {
+    if (!l.customerVisible) continue;
+    if (l.unitCost === null || l.unitCost === undefined || l.unitCost === '') { missing++; continue; }
+    const revenueCents = toCents(computeLineTotal(l.quantity, l.unitPrice));
+    const costCents = toCents(computeLineTotal(l.quantity, l.unitCost));
+    const netCents = revenueCents - costCents;
+    totalCost += costCents;
+    if (l.recurrence === 'monthly') monthlyNet += netCents;
+    else if (l.recurrence === 'annual') annualNet += netCents;
+    else oneTimeNet += netCents;
+  }
+  return {
+    oneTimeNet: fromCents(oneTimeNet),
+    monthlyRecurringNet: fromCents(monthlyNet),
+    annualRecurringNet: fromCents(annualNet),
+    totalCost: fromCents(totalCost),
+    linesMissingCost: missing,
   };
 }
