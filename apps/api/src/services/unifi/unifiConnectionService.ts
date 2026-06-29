@@ -128,8 +128,8 @@ export async function deleteConnection(db: DbExecutor, partnerId: string): Promi
     .delete(unifiIntegrations)
     .where(and(eq(unifiIntegrations.partnerId, partnerId), eq(unifiIntegrations.isActive, true)))
     .returning({ id: unifiIntegrations.id });
-  if (deleted.length === 0) {
-    throw new Error(`deleteConnection matched no unifi_integrations row (partnerId=${partnerId})`);
-  }
-  return true;
+  // A 0-row delete is the routine idempotent case (no active connection for this
+  // partner) — return false, never throw. Disconnecting an already-disconnected
+  // partner must not 500.
+  return deleted.length > 0;
 }

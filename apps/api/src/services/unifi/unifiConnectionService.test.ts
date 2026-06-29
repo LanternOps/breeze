@@ -27,4 +27,15 @@ describe('unifiConnectionService', () => {
     const db = makeDb({ selectRows: [] });
     await expect(svc.getDecryptedApiKey(db, 'partner-x')).resolves.toBeNull();
   });
+
+  it('markSynced throws when no row is updated (RLS-context guard)', async () => {
+    const db = makeDb({ updateRows: [] });
+    await expect(svc.markSynced(db, 'conn-1', 'partner-1', 'success'))
+      .rejects.toThrow(/no unifi_integrations row/i);
+  });
+
+  it('deleteConnection returns false on 0 rows (idempotent) and true when a row is deleted', async () => {
+    await expect(svc.deleteConnection(makeDb({ deleteRows: [] }), 'partner-1')).resolves.toBe(false);
+    await expect(svc.deleteConnection(makeDb({ deleteRows: [{ id: 'conn-1' }] }), 'partner-1')).resolves.toBe(true);
+  });
 });
