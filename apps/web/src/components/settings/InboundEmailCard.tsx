@@ -24,6 +24,7 @@ interface InboundConfig {
   enabled: boolean;
   address: string;
   addressOverride: string | null;
+  inboundLocalPart: string | null;
   defaultTriageOrgId: string | null;
   autoresponderEnabled: boolean;
   triageUnknownSenders: boolean;
@@ -79,6 +80,7 @@ export default function InboundEmailCard() {
   const [saving, setSaving] = useState(false);
   const [convertOpenId, setConvertOpenId] = useState<string | null>(null);
   const [convertOrgId, setConvertOrgId] = useState('');
+  const [localPartDraft, setLocalPartDraft] = useState('');
   // Draft state for the auto-reply editor — kept separate from `cfg` so typing
   // doesn't auto-save; persisted explicitly via the Save button.
   const [autoSubject, setAutoSubject] = useState('');
@@ -91,9 +93,14 @@ export default function InboundEmailCard() {
       return;
     }
     const body = (await res.json()) as { data: { inbound: InboundConfig } };
-    setCfg(body.data.inbound);
-    setAutoSubject(body.data.inbound.autoresponseSubject ?? '');
-    setAutoBody(body.data.inbound.autoresponseBody ?? '');
+    const nextCfg: InboundConfig = {
+      ...body.data.inbound,
+      inboundLocalPart: body.data.inbound.inboundLocalPart ?? null,
+    };
+    setCfg(nextCfg);
+    setLocalPartDraft(nextCfg.inboundLocalPart ?? (nextCfg.address?.split('@')[0] ?? ''));
+    setAutoSubject(nextCfg.autoresponseSubject ?? '');
+    setAutoBody(nextCfg.autoresponseBody ?? '');
   }, []);
 
   const loadQueue = useCallback(async (p: number) => {
@@ -191,6 +198,37 @@ export default function InboundEmailCard() {
     },
     [cfg],
   );
+
+  const saveLocalPart = useCallback(async () => {
+    if (!cfg) return;
+    const value = localPartDraft.trim().toLowerCase();
+    const current = cfg.inboundLocalPart ?? cfg.address.split('@')[0];
+    if (value === current) return;
+    const ok = window.confirm(
+      'Customers using your current address will still reach you. New replies will be sent from the new address. Change it?',
+    );
+    if (!ok) return;
+    setSaving(true);
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth('/orgs/partners/me', {
+            method: 'PATCH',
+            body: JSON.stringify({ inboundLocalPart: value }),
+          }),
+        errorFallback: SAVE_ERROR,
+        successMessage: 'Inbound address updated',
+        friendly: friendlyCode,
+        onUnauthorized: UNAUTHORIZED,
+      });
+      const domainPart = cfg.address.split('@')[1] ?? '';
+      setCfg({ ...cfg, inboundLocalPart: value, address: cfg.addressOverride ?? `${value}@${domainPart}` });
+    } catch (err) {
+      handleActionError(err, SAVE_ERROR);
+    } finally {
+      setSaving(false);
+    }
+  }, [cfg, localPartDraft]);
 
   const convert = useCallback(
     async (id: string) => {
@@ -302,11 +340,22 @@ export default function InboundEmailCard() {
           {cfg.domainConfigured ? (
             <div className="mt-0.5 flex items-center gap-2">
               <input
-                readOnly
-                value={cfg.address}
-                className="flex-1 rounded-md border bg-muted/30 px-2.5 py-1.5 text-sm"
-                data-testid="inbound-address"
+                value={localPartDraft}
+                onChange={(e) => setLocalPartDraft(e.target.value)}
+                className="w-40 rounded-md border px-2.5 py-1.5 text-sm"
+                data-testid="inbound-localpart"
+                aria-label="Inbound address local part"
               />
+              <span className="text-sm text-muted-foreground">@{cfg.address.split('@')[1] ?? ''}</span>
+              <button
+                type="button"
+                onClick={saveLocalPart}
+                disabled={saving || localPartDraft === (cfg.inboundLocalPart ?? cfg.address.split('@')[0])}
+                className="rounded-md border px-2.5 py-1.5 text-sm"
+                data-testid="inbound-localpart-save"
+              >
+                Save
+              </button>
               <button
                 type="button"
                 onClick={copyAddress}
