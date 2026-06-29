@@ -67,6 +67,17 @@ describe('InvoiceEditor', () => {
     expect(screen.getByTestId('invoice-line-line-1')).toHaveTextContent('Consulting');
   });
 
+  it('warns when a line is taxable but no tax rate is configured', async () => {
+    const taxable = { ...manualLine, taxable: true };
+    const { rerender } = render(<InvoiceEditor detail={draft([taxable])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-tax-rate-hint')).toHaveTextContent('no tax rate is set');
+
+    // Once a real rate exists the hint disappears (and the Tax row shows the percent).
+    rerender(<InvoiceEditor detail={draft([taxable], { taxRate: '0.07', taxTotal: '7.00' })} onChanged={vi.fn()} />);
+    expect(screen.queryByTestId('invoice-tax-rate-hint')).not.toBeInTheDocument();
+  });
+
   it('adds a manual line and triggers a reload (onChanged)', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {

@@ -78,17 +78,18 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
         {/* ── Header ─────────────────────────────────────────────── */}
         <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-3">
-            {seller?.name ? (
-              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
-                {seller.name}
-              </p>
-            ) : (
-              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
-                Invoice
-              </p>
+            {/* Seller wordmark + letterhead rule only when the seller is named. An
+                unbranded invoice lets the right-hand "Invoice" meta carry identity
+                rather than repeating the word "Invoice" on both sides of the header. */}
+            {seller?.name && (
+              <>
+                <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
+                  {seller.name}
+                </p>
+                {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
+                <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
+              </>
             )}
-            {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
-            <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
             {seller && (
               <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
                 {sellerLines(seller.address).map((line, i) => <p key={i}>{line}</p>)}
@@ -101,9 +102,11 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
 
           <div className="space-y-2 sm:text-right">
             <p className="text-[1.75rem] font-semibold leading-none tracking-tight text-foreground" data-testid="invoice-document-number">
-              {invoice.invoiceNumber ?? 'Draft'}
+              {invoice.invoiceNumber ?? 'Invoice'}
             </p>
-            <p className="text-sm font-medium text-muted-foreground">Invoice</p>
+            {/* The "Invoice" type label is redundant on an unnumbered draft, where the
+                heading above already reads "Invoice" and the status pill reads "Draft". */}
+            {invoice.invoiceNumber && <p className="text-sm font-medium text-muted-foreground">Invoice</p>}
             <span
               className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`}
               aria-label={`Status: ${statusLabel(invoice)}`}

@@ -250,6 +250,11 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   }, [busy, invoice.id, refresh]);
 
   const hasVisibleLines = lines.some((l) => l.customerVisible);
+  // Tax rate is inherited from partner Billing settings, not set per invoice. When
+  // a line is marked taxable but no rate is configured, the Tax row reads $0.00
+  // with no obvious cause — point the operator at where the rate actually lives.
+  const hasTaxableLine = lines.some((l) => l.taxable);
+  const noTaxRate = !invoice.taxRate || Number(invoice.taxRate) <= 0;
 
   return (
     <div className="space-y-6" data-testid="invoice-editor">
@@ -305,15 +310,18 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           {/* Add line */}
           {canWrite && (
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-add-line">
-            <div className="mb-3 flex gap-2">
+            {/* Segmented control — same vocabulary as the New-invoice source toggle
+                so "pick one mode" looks identical everywhere in the invoice flow. */}
+            <div className="mb-3 inline-flex gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Add line source">
               {(['catalog', 'manual'] as AddMode[]).map((m) => (
                 <button
                   key={m}
                   type="button"
                   onClick={() => setAddMode(m)}
+                  aria-pressed={addMode === m}
                   data-testid={`invoice-add-mode-${m}`}
-                  className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
-                    addMode === m ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted'
+                  className={`rounded px-3 py-1.5 text-xs font-medium transition ${
+                    addMode === m ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
                   {m === 'catalog' ? 'Catalog item' : 'Manual line'}
@@ -406,14 +414,27 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Summary</h3>
             <dl className="space-y-1 text-sm">
               <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd data-testid="invoice-subtotal">{formatMoney(invoice.subtotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Tax{invoice.taxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">Tax{!noTaxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
               <div className="flex justify-between border-t pt-1 font-semibold"><dt>Total</dt><dd data-testid="invoice-total">{formatMoney(invoice.total, currency)}</dd></div>
             </dl>
+            {hasTaxableLine && noTaxRate && (
+              <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-tax-rate-hint">
+                Lines are marked taxable, but no tax rate is set.{' '}
+                <a href="/settings/billing" className="underline hover:text-foreground">Set one in Billing settings</a>.
+              </p>
+            )}
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-bill-to">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bill to</h3>
-            <p className="text-sm">{invoice.billToName ?? 'Set on the organization billing settings.'}</p>
+            {invoice.billToName ? (
+              <p className="text-sm">{invoice.billToName}</p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No billing contact set.{' '}
+                <a href="/settings/organizations" className="underline hover:text-foreground">Add one in Organization settings</a>.
+              </p>
+            )}
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-xs">

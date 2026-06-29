@@ -84,6 +84,40 @@ describe('InvoicesPage', () => {
     expect(window.location.hash).toContain('orgId=org-1');
   });
 
+  it('surfaces a Drafts shortcut that filters to drafts', async () => {
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+    const drafts = screen.getByTestId('invoices-drafts-card');
+    expect(drafts).toHaveTextContent('Drafts');
+    fireEvent.click(drafts);
+    expect(window.location.hash).toContain('status=draft');
+  });
+
+  it('hides the filter toolbar on a genuinely empty list', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-empty')).toBeInTheDocument());
+    // Controls with nothing to act on are hidden in the true empty state.
+    expect(screen.queryByTestId('invoices-filters')).not.toBeInTheDocument();
+  });
+
+  it('shows a Clear control once a filter is active and resets all filters', async () => {
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+    // No clear affordance until something is filtering.
+    expect(screen.queryByTestId('invoices-filters-clear')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('invoices-filter-status'), { target: { value: 'overdue' } });
+    fireEvent.click(screen.getByTestId('invoices-filters-clear'));
+    expect(window.location.hash).toBe('');
+    expect(screen.getByTestId('invoices-filter-status')).toHaveValue('');
+  });
+
   it('navigates to a row on click', async () => {
     wireDefault();
     render(<InvoicesPage />);

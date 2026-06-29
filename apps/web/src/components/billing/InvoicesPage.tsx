@@ -9,6 +9,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useBulkSelection } from './bulk/useBulkSelection';
 import { BulkActionBar } from './bulk/BulkActionBar';
+import { DataCard, CardField } from '../shared/ResponsiveTable';
 import AccessDenied from '../shared/AccessDenied';
 import {
   type InvoiceStatus,
@@ -166,6 +167,12 @@ export function InvoicesPage() {
     });
   }, []);
 
+  const clearFilters = useCallback(() => {
+    setFilters(EMPTY_FILTERS);
+    writeFilters(EMPTY_FILTERS);
+    setSearch('');
+  }, []);
+
   // Load sites for the org picker in the dialog.
   const loadAssembleSites = useCallback(async (orgId: string) => {
     setAssembleSiteId('');
@@ -290,11 +297,16 @@ export function InvoicesPage() {
     const open = invoices.filter((i) => i.status !== 'void' && num(i.balance) > 0);
     const outstanding = open.reduce((sum, i) => sum + num(i.balance), 0);
     const overdue = invoices.filter((i) => i.status === 'overdue').length;
+    const draftCount = invoices.filter((i) => i.status === 'draft').length;
     // Single-currency partners are the norm; label the strip with the first
     // invoice's currency. Multi-currency outstanding totals are not split in v1.
     const ccy = (invoices[0]?.currencyCode) || 'USD';
-    return { outstanding, overdue, openCount: open.length, ccy };
+    return { outstanding, overdue, draftCount, openCount: open.length, ccy };
   }, [invoices]);
+
+  // Any server- or client-side filter narrowing the list. Drives both the Clear
+  // affordance and whether the toolbar shows on an otherwise-empty list.
+  const filtersActive = !!(filters.orgId || filters.status || filters.from || filters.to || search.trim());
 
   const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => {
     const active = sort?.key === sortKey;
@@ -362,6 +374,18 @@ export function InvoicesPage() {
             <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(summary.outstanding, summary.ccy)}</div>
             <div className="text-xs text-muted-foreground">{summary.openCount} open</div>
           </div>
+          {summary.draftCount > 0 && (
+            <button
+              type="button"
+              onClick={() => applyFilter({ status: 'draft' })}
+              className="rounded-lg border bg-card px-4 py-3 text-left transition hover:bg-muted/40"
+              data-testid="invoices-drafts-card"
+            >
+              <div className="text-xs text-muted-foreground">Drafts</div>
+              <div className="mt-0.5 text-lg font-semibold tabular-nums">{summary.draftCount}</div>
+              <div className="text-xs text-muted-foreground">not yet issued</div>
+            </button>
+          )}
           {summary.overdue > 0 && (
             <button
               type="button"
@@ -377,7 +401,9 @@ export function InvoicesPage() {
         </div>
       )}
 
-      {/* Toolbar: search + filters */}
+      {/* Toolbar: search + filters. Hidden on a genuinely-empty list (no invoices
+          and nothing filtered) — controls with nothing to act on are just noise. */}
+      {(invoices.length > 0 || filtersActive) && (
       <div className="flex flex-wrap items-end gap-2" data-testid="invoices-filters">
         <input
           value={search}
@@ -426,10 +452,22 @@ export function InvoicesPage() {
           aria-label="Issued to"
           className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
+        {filtersActive && (
+          <button
+            type="button"
+            onClick={clearFilters}
+            data-testid="invoices-filters-clear"
+            className="inline-flex h-10 items-center rounded-md px-3 text-sm font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
+          >
+            Clear
+          </button>
+        )}
       </div>
+      )}
 
-      {/* Table */}
-      <div className="rounded-lg border bg-card shadow-xs">
+      {/* Table. The card chrome is desktop-only: on mobile the stacked DataCards
+          carry their own borders, so a wrapping card here would nest borders. */}
+      <div className="sm:rounded-lg sm:border sm:bg-card sm:shadow-xs">
         {loading ? (
           <div className="divide-y" data-testid="invoices-loading">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -477,7 +515,10 @@ export function InvoicesPage() {
           </div>
         ) : (
           <div className="relative">
-            <div className="overflow-x-auto">
+            {/* Desktop: scrollable table from `sm` up. Below `sm` a 8-column table
+                pushes Balance + Status into horizontal overflow, so the phone gets
+                a stacked card list instead (same rows, same data, same actions). */}
+            <div className="hidden overflow-x-auto sm:block" data-testid="invoices-table-desktop">
               <table className="w-full text-sm" data-testid="invoices-table">
                 <thead>
                   <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -553,6 +594,57 @@ export function InvoicesPage() {
                 </tbody>
               </table>
             </div>
+
+            {/* Mobile: stacked cards (the table hides below `sm`). */}
+            <div className="space-y-2 sm:hidden" data-testid="invoices-table-cards">
+              {rows.map((inv) => {
+                const overdue = inv.status === 'overdue';
+                const hasBalance = num(inv.balance) > 0 && inv.status !== 'void';
+                return (
+                  <DataCard
+                    key={inv.id}
+                    onClick={() => void navigateTo(`/billing/invoices/${inv.id}`)}
+                    className={overdue ? 'border-destructive/30' : undefined}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <label className="flex items-center gap-2 font-medium" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select invoice ${inv.invoiceNumber ?? inv.id}`}
+                          data-testid={`invoices-card-select-${inv.id}`}
+                          checked={bulk.has(inv.id)}
+                          onChange={() => bulk.toggle(inv.id)}
+                        />
+                        {inv.invoiceNumber ?? (
+                          <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            Draft
+                          </span>
+                        )}
+                      </label>
+                      <span
+                        className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
+                        data-testid={`invoices-card-status-${inv.id}`}
+                        aria-label={`Status: ${statusLabel(inv)}`}
+                      >
+                        {statusLabel(inv)}
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-1.5">
+                      <CardField label="Organization">{orgName(inv.orgId)}</CardField>
+                      <CardField label="Issued">{formatDate(inv.issueDate)}</CardField>
+                      <CardField label="Due">
+                        <span className={overdue ? 'font-medium text-destructive' : undefined}>{formatDate(inv.dueDate)}</span>
+                      </CardField>
+                      <CardField label="Total"><span className="tabular-nums">{formatMoney(inv.total, inv.currencyCode)}</span></CardField>
+                      <CardField label="Balance">
+                        <span className={`tabular-nums ${hasBalance ? 'font-medium' : 'text-muted-foreground'}`}>{formatMoney(inv.balance, inv.currencyCode)}</span>
+                      </CardField>
+                    </div>
+                  </DataCard>
+                );
+              })}
+            </div>
+
             <BulkActionBar
               count={bulk.size}
               onClear={bulk.clear}
@@ -568,10 +660,10 @@ export function InvoicesPage() {
       </div>
 
       {/* Bulk void dialog */}
-      <Dialog open={voidOpen} onClose={() => setVoidOpen(false)} title="Void invoices" maxWidth="md" className="p-6">
+      <Dialog open={voidOpen} onClose={() => setVoidOpen(false)} title="Void invoices" labelledBy="invoices-bulk-void-title" maxWidth="md" className="p-6">
         <div className="space-y-4" data-testid="invoices-bulk-void-dialog">
           <div>
-            <h2 className="text-lg font-semibold">Void invoices</h2>
+            <h2 id="invoices-bulk-void-title" className="text-lg font-semibold">Void invoices</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Voiding releases billed work so it can be re-invoiced. This cannot be undone.
             </p>
@@ -622,12 +714,13 @@ export function InvoicesPage() {
         open={assembleOpen}
         onClose={() => setAssembleOpen(false)}
         title="New invoice"
+        labelledBy="invoices-assemble-title"
         maxWidth="lg"
         className="p-6"
       >
         <div className="space-y-4" data-testid="invoices-assemble-dialog">
           <div>
-            <h2 className="text-lg font-semibold">New invoice</h2>
+            <h2 id="invoices-assemble-title" className="text-lg font-semibold">New invoice</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Assemble unbilled work into a draft, or start a blank invoice.
             </p>

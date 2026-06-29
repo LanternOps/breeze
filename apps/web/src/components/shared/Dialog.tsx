@@ -29,8 +29,13 @@ const FOCUSABLE =
 export interface DialogProps {
   open: boolean;
   onClose: () => void;
-  /** Accessible label (used as aria-label) */
+  /** Accessible label (used as aria-label). Ignored when `labelledBy` is set. */
   title: string;
+  /** Id of a visible heading inside the dialog. When provided, the dialog is
+   *  named via `aria-labelledby` instead of `aria-label`, so a screen reader
+   *  doesn't announce the same text twice (once as the dialog name, once as the
+   *  visible heading). */
+  labelledBy?: string;
   /** Maps to Tailwind max-w-{value}. Default: 'lg' */
   maxWidth?: DialogMaxWidth;
   /** Top-align instead of center (for tall content that scrolls the backdrop) */
@@ -44,6 +49,7 @@ export function Dialog({
   open,
   onClose,
   title,
+  labelledBy,
   maxWidth = 'lg',
   alignTop = false,
   className = '',
@@ -127,7 +133,7 @@ export function Dialog({
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        {...(labelledBy ? { 'aria-labelledby': labelledBy } : { 'aria-label': title })}
         tabIndex={-1}
         className={`dialog-panel w-full ${maxWidthClass[maxWidth]} rounded-lg border bg-card shadow-lg focus:outline-hidden ${className}`}
         style={{ animation: 'dialog-panel-in 200ms cubic-bezier(0.25, 1, 0.5, 1)' }}

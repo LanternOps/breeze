@@ -102,6 +102,21 @@ describe('InvoiceDetail', () => {
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({ amount: 50, method: 'check' });
   });
 
+  it('blocks payment recording on a draft and explains why', async () => {
+    const draft: InvoiceDetailData = {
+      ...issued,
+      invoice: { ...issued.invoice, status: 'draft', invoiceNumber: null },
+    };
+    render(<InvoiceDetail detail={draft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    // The payment form / pay-link must not be offered before an invoice is issued.
+    expect(screen.queryByTestId('invoice-payment-form')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-submit')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
+    // Instead the operator is told what unlocks it.
+    expect(screen.getByTestId('invoice-payments-draft-hint')).toHaveTextContent('Issue this invoice to record payments.');
+  });
+
   it('shows the void action for an issued invoice and opens the dialog', async () => {
     render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
