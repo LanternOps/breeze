@@ -1,7 +1,7 @@
 import { afterAll, describe, it, expect } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, users, organizations, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents } from '../../db/schema';
+import { partners, users, organizations, sites, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents, unifiCollectors, unifiDeviceTelemetry, unifiClients } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
 import { automations, automationRuns } from '../../db/schema/automations';
@@ -2322,6 +2322,7 @@ describe('unifi_devices RLS — cross-org forge enforcement (Shape 1)', () => {
   let partnerId = '';
   let orgAId = '';
   let orgBId = '';
+  let orgASiteId = '';
 
   function orgContext(orgId: string) {
     return {
@@ -2359,11 +2360,19 @@ describe('unifi_devices RLS — cross-org forge enforcement (Shape 1)', () => {
       if (!orgA || !orgB) throw new Error('failed to seed orgs for unifi_devices forge test');
       orgAId = orgA.id;
       orgBId = orgB.id;
+
+      const [siteA] = await db
+        .insert(sites)
+        .values({ orgId: orgA.id, name: 'RLS UniFi Devices Site A' })
+        .returning({ id: sites.id });
+      if (!siteA) throw new Error('failed to seed org A site for unifi_devices forge test');
+      orgASiteId = siteA.id;
     });
   }
 
   afterAll(async () => {
     await withSystemDbAccessContext(async () => {
+      if (orgASiteId) await db.delete(sites).where(eq(sites.id, orgASiteId));
       if (orgAId) await db.delete(organizations).where(eq(organizations.id, orgAId));
       if (orgBId) await db.delete(organizations).where(eq(organizations.id, orgBId));
       if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
@@ -2386,6 +2395,86 @@ describe('unifi_devices RLS — cross-org forge enforcement (Shape 1)', () => {
             integrationId: phantomId,
             mappingId: phantomId,
             unifiDeviceId: 'forge-device',
+            raw: {},
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/row-level security/i);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'org B INSERT into unifi_collectors with org_id=A is rejected by RLS',
+    async () => {
+      await ensureFixtures();
+      const phantomId = '00000000-0000-0000-0000-000000000001';
+      let caught: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgBId), async () =>
+          db.insert(unifiCollectors).values({
+            integrationId: phantomId,
+            orgId: orgAId, // forging org A while in org B's context
+            siteId: orgASiteId,
+            unifiHostId: 'forge-host',
+            collectorDeviceId: phantomId,
+            controllerUrl: 'https://10.0.0.1',
+            localApiKeyEncrypted: 'rls-forge-not-a-real-key',
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/row-level security/i);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'org B INSERT into unifi_device_telemetry with org_id=A is rejected by RLS',
+    async () => {
+      await ensureFixtures();
+      const phantomId = '00000000-0000-0000-0000-000000000001';
+      let caught: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgBId), async () =>
+          db.insert(unifiDeviceTelemetry).values({
+            collectorId: phantomId,
+            orgId: orgAId,
+            siteId: orgASiteId,
+            unifiDeviceId: 'forge-dev',
+            raw: {},
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/row-level security/i);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'org B INSERT into unifi_clients with org_id=A is rejected by RLS',
+    async () => {
+      await ensureFixtures();
+      const phantomId = '00000000-0000-0000-0000-000000000001';
+      let caught: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgBId), async () =>
+          db.insert(unifiClients).values({
+            collectorId: phantomId,
+            orgId: orgAId,
+            siteId: orgASiteId,
+            mac: 'aa:bb:cc:00:11:22',
             raw: {},
           }),
         );
