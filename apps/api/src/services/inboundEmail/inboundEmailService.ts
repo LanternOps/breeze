@@ -106,7 +106,7 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
     // (1) Tenant identity is established ONLY from the recipient. Sender data is untrusted.
     // Resolution runs INSIDE the try so a failure here still routes to the durable
     // failed-log instead of escaping (and being silently retried / lost).
-    partnerId = await resolvePartnerByRecipient(n.to);
+    partnerId = n.resolvedPartnerId ?? await resolvePartnerByRecipient(n.to);
     if (!partnerId) {
       // Distinguish a malformed/empty recipient (no `@`, can never resolve) from a
       // well-formed address for a domain we simply don't host. Both log `ignored`,

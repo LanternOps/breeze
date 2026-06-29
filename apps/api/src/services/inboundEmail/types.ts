@@ -8,7 +8,7 @@ export type InboundParseStatus = 'matched' | 'created' | 'quarantined' | 'failed
 
 // Inbound provider identity. The mailgun impl reports 'mailgun'; 'resend' is
 // reserved for the planned second provider.
-export type InboundProviderName = 'mailgun' | 'resend';
+export type InboundProviderName = 'mailgun' | 'resend' | 'm365';
 
 // A single sender-authentication verdict, normalized to lowercase. 'pass'/'fail'
 // are the meaningful states; 'none'/'neutral'/'unknown' are all treated as NOT a
@@ -33,6 +33,10 @@ export interface NormalizedInboundEmail {
   provider: InboundProviderName;
   providerMessageId: string;
   to: string;            // recipient → partner resolution
+  /** When the feeder already knows the partner (e.g. it polled THAT partner's
+   *  mailbox), skip recipient-based resolution. This is feeder-trusted, not
+   *  derived from untrusted message content. */
+  resolvedPartnerId?: string;
   from: string;          // sender (untrusted)
   fromName?: string;
   subject: string;
