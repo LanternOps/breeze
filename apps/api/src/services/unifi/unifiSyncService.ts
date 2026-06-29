@@ -157,6 +157,8 @@ export async function syncIntegration(
     })
     .returning({ id: unifiSyncRuns.id });
 
+  if (!run) throw new Error('Failed to create unifi_sync_runs ledger entry');
+
   try {
     const mappings = await db
       .select()
@@ -167,6 +169,7 @@ export async function syncIntegration(
     result.hostsSeen = hosts.length;
 
     const seenDeviceIds = new Set<string>();
+    const failedMappingIds = new Set<string>();
     let anySiteFailed = false;
 
     for (const mapping of mappings) {
@@ -238,19 +241,26 @@ export async function syncIntegration(
           }
         }
       } catch (siteErr) {
+        failedMappingIds.add(mapping.id);
         anySiteFailed = true;
         result.error = `site ${mapping.unifiSiteId}: ${(siteErr as Error).message}`;
       }
     }
 
     // Mark devices that disappeared this run as stale and unlink them.
+    // Only stale devices whose mapping succeeded this run — a transient per-site
+    // error must not unlink still-online devices on that site.
     const allForIntegration = await db
-      .select({ id: unifiDevices.id, unifiDeviceId: unifiDevices.unifiDeviceId })
+      .select({
+        id: unifiDevices.id,
+        unifiDeviceId: unifiDevices.unifiDeviceId,
+        mappingId: unifiDevices.mappingId,
+      })
       .from(unifiDevices)
       .where(eq(unifiDevices.integrationId, integration.id));
 
     for (const row of allForIntegration) {
-      if (!seenDeviceIds.has(row.unifiDeviceId)) {
+      if (!seenDeviceIds.has(row.unifiDeviceId) && !failedMappingIds.has(row.mappingId)) {
         await db
           .update(unifiDevices)
           .set({ isStale: true, discoveredAssetId: null, updatedAt: new Date() })

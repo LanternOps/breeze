@@ -215,10 +215,14 @@ describe('unifiSyncService.syncIntegration', () => {
     // raw is shared by reference so JSON.stringify comparison is trivially equal
     const raw = { id: 'd1', type: 'usw', uptime: 500 };
     const existingDevice = { id: 'dev-1', raw, unifiDeviceId: 'd1' };
+    // Provide a matched existing asset so reconcileDiscoveredAsset takes the UPDATE path,
+    // not the INSERT path (realistic for a device seen in a previous run).
+    const existingAsset = { id: 'asset-existing' };
 
     const { writes, db } = scriptedDb({
       mappings: [BASE_MAPPING],
       existingDevices: [existingDevice],
+      existingAsset,
     });
     const client = fakeClient([
       {
@@ -244,6 +248,65 @@ describe('unifiSyncService.syncIntegration', () => {
     expect(result.status).toBe('success');
 
     // No new unifiDevices row should be inserted (only an update)
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
+    expect(deviceInserts).toHaveLength(0);
+
+    // The unchanged path must UPDATE unifiDevices (it does not skip)
+    const deviceUpdates = writes.updates.filter((w) => w.table === unifiDevices);
+    expect(deviceUpdates).toHaveLength(1);
+
+    // No discoveredAssets INSERT — existing asset matched by mac → UPDATE path
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(0);
+  });
+
+  it('marks stale only devices on sites that successfully synced; leaves failed-site devices untouched', async () => {
+    const MAP_2 = {
+      id: 'map-2',
+      integrationId: 'int-1',
+      orgId: 'org-1',
+      siteId: 'site-2',
+      unifiHostId: 'h2',
+      unifiSiteId: 's2',
+    };
+
+    // dev-1 on map-1 (successful, 0 devices returned) → should be marked stale
+    // dev-2 on map-2 (failed)                         → must NOT be marked stale
+    const existingDevices = [
+      { id: 'dev-1', unifiDeviceId: 'ud-1', mappingId: 'map-1' },
+      { id: 'dev-2', unifiDeviceId: 'ud-2', mappingId: 'map-2' },
+    ];
+
+    const { writes, db } = scriptedDb({
+      mappings: [BASE_MAPPING, MAP_2],
+      existingDevices,
+    });
+
+    // map-1 (h1): succeeds with no devices this run
+    // map-2 (h2): listDevices throws → failedMappingIds captures 'map-2'
+    const staledClient: UnifiClient = {
+      listHosts: async () => [{ id: 'h1', name: 'C1' }, { id: 'h2', name: 'C2' }],
+      listSites: async () => [],
+      listDevices: async (hostId) => {
+        if (hostId === 'h2') throw new Error('timeout');
+        return [];
+      },
+      getIspMetrics: async () => null,
+    };
+
+    const result = await syncIntegration({ db, client: staledClient }, BASE_INTEGRATION, 'manual');
+
+    // Only dev-1 (map-1, succeeded) should be stale
+    const staleUpdates = writes.updates.filter(
+      (w) => w.table === unifiDevices && w.values.isStale === true,
+    );
+    expect(staleUpdates).toHaveLength(1);
+    expect(result.devicesRemoved).toBe(1);
+
+    // dev-2 (map-2, failed) must not have been touched
+    expect(result.status).toBe('partial');
+
+    // No devices were created (listDevices returned empty / threw)
     const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
     expect(deviceInserts).toHaveLength(0);
   });
