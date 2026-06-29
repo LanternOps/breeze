@@ -8,6 +8,7 @@ import {
   boolean,
   integer,
   bigint,
+  real,
   jsonb,
   inet,
   index,
@@ -16,6 +17,7 @@ import {
 import { organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { discoveredAssets } from './discovery';
+import { devices } from './devices';
 
 export const unifiIntegrations = pgTable('unifi_integrations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -102,4 +104,84 @@ export const unifiSyncRuns = pgTable('unifi_sync_runs', {
 }, (table) => ({
   integrationStartedIdx: index('unifi_sync_runs_integration_started_idx')
     .on(table.integrationId, table.startedAt),
+}));
+
+export const unifiCollectors = pgTable('unifi_collectors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id').notNull().references(() => unifiIntegrations.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  unifiHostId: text('unifi_host_id').notNull(),
+  collectorDeviceId: uuid('collector_device_id').notNull().references(() => devices.id),
+  controllerUrl: text('controller_url').notNull(),
+  localApiKeyEncrypted: text('local_api_key_encrypted').notNull(),
+  isEnabled: boolean('is_enabled').notNull().default(true),
+  pollIntervalSeconds: integer('poll_interval_seconds').notNull().default(60),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+  firmwareOk: boolean('firmware_ok'),
+  lastPollAt: timestamp('last_poll_at'),
+  lastPollStatus: varchar('last_poll_status', { length: 16 }),
+  lastPollError: text('last_poll_error'),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  integrationHostIdx: uniqueIndex('unifi_collectors_integration_host_idx').on(table.integrationId, table.unifiHostId),
+  deviceIdx: index('unifi_collectors_device_idx').on(table.collectorDeviceId).where(sql`${table.isEnabled}`),
+}));
+
+export const unifiDeviceTelemetry = pgTable('unifi_device_telemetry', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  collectorId: uuid('collector_id').notNull().references(() => unifiCollectors.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  unifiDeviceId: text('unifi_device_id').notNull(),
+  mac: text('mac'),
+  name: text('name'),
+  uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+  cpuPct: real('cpu_pct'),
+  memPct: real('mem_pct'),
+  txBytes: bigint('tx_bytes', { mode: 'number' }),
+  rxBytes: bigint('rx_bytes', { mode: 'number' }),
+  numClients: integer('num_clients'),
+  poePorts: jsonb('poe_ports'),
+  raw: jsonb('raw').notNull(),
+  isStale: boolean('is_stale').notNull().default(false),
+  lastSeenAt: timestamp('last_seen_at'),
+  firstSyncedAt: timestamp('first_synced_at').defaultNow().notNull(),
+  lastSyncedAt: timestamp('last_synced_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  collectorDeviceIdx: uniqueIndex('unifi_device_telemetry_collector_device_idx').on(table.collectorId, table.unifiDeviceId),
+  orgIdx: index('unifi_device_telemetry_org_idx').on(table.orgId, table.siteId),
+}));
+
+export const unifiClients = pgTable('unifi_clients', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  collectorId: uuid('collector_id').notNull().references(() => unifiCollectors.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  siteId: uuid('site_id').notNull().references(() => sites.id),
+  mac: text('mac').notNull(),
+  hostname: text('hostname'),
+  ipAddress: inet('ip_address'),
+  connectedDeviceId: text('connected_device_id'),
+  uplinkPortIdx: integer('uplink_port_idx'),
+  isWired: boolean('is_wired'),
+  ssid: text('ssid'),
+  vlan: integer('vlan'),
+  signalDbm: integer('signal_dbm'),
+  txBytes: bigint('tx_bytes', { mode: 'number' }),
+  rxBytes: bigint('rx_bytes', { mode: 'number' }),
+  uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+  discoveredAssetId: uuid('discovered_asset_id').references(() => discoveredAssets.id),
+  raw: jsonb('raw').notNull(),
+  isStale: boolean('is_stale').notNull().default(false),
+  firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  collectorMacIdx: uniqueIndex('unifi_clients_collector_mac_idx').on(table.collectorId, table.mac),
+  orgMacIdx: index('unifi_clients_org_mac_idx').on(table.orgId, table.mac),
 }));
