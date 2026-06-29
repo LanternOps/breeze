@@ -66,6 +66,7 @@ vi.mock('../db/schema', () => ({
     outputUrl: 'reportRuns.outputUrl',
     errorMessage: 'reportRuns.errorMessage',
     rowCount: 'reportRuns.rowCount',
+    result: 'reportRuns.result',
     createdAt: 'reportRuns.createdAt'
   },
   devices: {
@@ -166,12 +167,22 @@ vi.mock('../services/permissions', () => ({
 }));
 
 import { db } from '../db';
+import { reportRoutes } from './reports';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const SITE_ALLOWED = '22222222-2222-2222-2222-222222222222';
 const SITE_DENIED = '33333333-3333-3333-3333-333333333333';
 const DEVICE_ALLOWED = '44444444-4444-4444-4444-444444444444';
 const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
+
+/** A thenable that resolves to `rows` and supports any drizzle chain method. */
+function selectChain(rows: any) {
+  const p: any = Promise.resolve(rows);
+  for (const m of ['from', 'where', 'innerJoin', 'leftJoin', 'orderBy', 'groupBy', 'limit', 'offset']) {
+    p[m] = () => p;
+  }
+  return p;
+}
 
 function conditionHas(condition: any, op: string, column: string, predicate: (value: any) => boolean): boolean {
   if (!condition) return false;
@@ -320,6 +331,120 @@ function mockGenerateDeviceInventoryQuery(rows: Array<{ hostname: string; siteId
   } as any);
 }
 
+describe('GET /reports/runs/:id/download', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    permissionState.deny = false;
+    permissionState.permissions = undefined;
+  });
+
+  it('streams CSV for a completed run with stored rows', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+
+    vi.mocked(db.select)
+      // getReportRunWithOrgCheck → run row (with orgId for access check)
+      .mockReturnValueOnce(selectChain([
+        { id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: ORG_ID }
+      ]))
+      // download handler → result + report meta
+      .mockReturnValueOnce(selectChain([
+        {
+          result: { rows: [{ hostname: 'pc-1', os: 'windows' }], rowCount: 1 },
+          reportType: 'device_inventory',
+          reportName: 'Inventory',
+          reportFormat: 'csv'
+        }
+      ]));
+
+    const res = await app.request('/reports/runs/run-1/download');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    expect(res.headers.get('content-disposition')).toContain('attachment');
+    const body = await res.text();
+    expect(body).toContain('hostname');
+    expect(body).toContain('"pc-1"');
+  });
+
+  it('returns 409 when the run is not completed', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    vi.mocked(db.select).mockReturnValueOnce(selectChain([
+      { id: 'run-1', reportId: 'rep-1', status: 'pending', orgId: ORG_ID }
+    ]));
+    const res = await app.request('/reports/runs/run-1/download');
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 409 when a completed run has no tabular rows', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{ id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: ORG_ID }]))
+      .mockReturnValueOnce(selectChain([{ result: { summary: {} }, reportType: 'executive_summary', reportName: 'Exec', reportFormat: 'csv' }]));
+    const res = await app.request('/reports/runs/run-1/download');
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 404 for a run the caller cannot access', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    vi.mocked(db.select).mockReturnValueOnce(selectChain([
+      { id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: 'deadbeef-0000-0000-0000-000000000000' }
+    ]));
+    const res = await app.request('/reports/runs/run-1/download');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns the snapshot as JSON for pdf format', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{ id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: ORG_ID }]))
+      .mockReturnValueOnce(selectChain([{ result: { rows: [{ hostname: 'pc-1' }], rowCount: 1 }, reportType: 'device_inventory', reportName: 'Inventory', reportFormat: 'pdf' }]));
+    const res = await app.request('/reports/runs/run-1/download?format=pdf');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const json = await res.json();
+    expect(json.data.rows[0].hostname).toBe('pc-1');
+  });
+});
+
+describe('POST /reports/:id/generate persists a snapshot', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    permissionState.deny = false;
+    permissionState.permissions = undefined;
+  });
+
+  it('generates synchronously and stores result + completed status', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+
+    const setArgs: any[] = [];
+    vi.mocked(db.update).mockReturnValue({
+      set: (v: any) => { setArgs.push(v); return { where: () => Promise.resolve() }; }
+    } as any);
+
+    // getReportWithOrgCheck → report; then generator selects → empty
+    vi.mocked(db.select).mockImplementation(() =>
+      selectChain([{ id: 'rep-1', orgId: ORG_ID, type: 'device_inventory', name: 'Inv', config: {}, format: 'csv' }])
+    );
+    vi.mocked(db.insert).mockReturnValue({
+      values: () => ({ returning: () => Promise.resolve([{ id: 'run-1', status: 'pending' }]) })
+    } as any);
+
+    const res = await app.request('/reports/rep-1/generate', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('completed');
+    const completedSet = setArgs.find((a) => a.status === 'completed');
+    expect(completedSet).toBeDefined();
+    expect(completedSet.result).toBeDefined();
+    expect(completedSet.outputUrl).toBe('/api/reports/runs/run-1/download');
+  });
+});
+
 describe('reports routes', () => {
   let app: Hono;
 
@@ -372,21 +497,17 @@ describe('reports routes', () => {
   });
 
   it('should generate a saved report run', async () => {
-    vi.useFakeTimers();
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{
-            id: 'report-1',
-            orgId: ORG_ID,
-            name: 'Device Inventory',
-            type: 'device_inventory',
-            schedule: 'daily',
-            format: 'csv'
-          }])
-        })
-      })
-    } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{
+        id: 'report-1',
+        orgId: ORG_ID,
+        name: 'Device Inventory',
+        type: 'device_inventory',
+        config: {},
+        schedule: 'daily',
+        format: 'csv'
+      }]))
+      .mockReturnValueOnce(selectChain([]));
 
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
@@ -406,10 +527,7 @@ describe('reports routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.runId).toBe('run-1');
-    expect(body.status).toBe('pending');
-
-    await vi.runAllTimersAsync();
-    vi.useRealTimers();
+    expect(body.status).toBe('completed');
   });
 
   it('should update a report schedule', async () => {

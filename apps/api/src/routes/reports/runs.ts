@@ -6,8 +6,11 @@ import { reports, reportRuns } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
+import { generateReport, siteScopeRequestAllowed, type ReportResult } from '../../services/reportGenerationService';
+import { rowsToCsv, rowsToTsv } from '@breeze/shared';
 import { getPagination, ensureOrgAccess, getReportWithOrgCheck, getReportRunWithOrgCheck } from './helpers';
-import { listRunsSchema } from './schemas';
+import { downloadQuerySchema, listRunsSchema } from './schemas';
+import type { UserPermissions } from '../../services/permissions';
 
 export const runsRoutes = new Hono();
 
@@ -50,43 +53,47 @@ runsRoutes.post(
       details: { reportId: report.id }
     });
 
-    // In a real implementation, this would trigger an async job
-    // For now, we'll simulate the report generation process
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const config = (report.config ?? {}) as Record<string, unknown>;
 
-    // Update report's lastGeneratedAt
+    if (!(await siteScopeRequestAllowed(report.orgId, config, perms))) {
+      await db
+        .update(reportRuns)
+        .set({ status: 'failed', completedAt: new Date(), errorMessage: 'Access to report scope denied' })
+        .where(eq(reportRuns.id, run.id));
+      return c.json({ error: 'Access to report scope denied' }, 403);
+    }
+
     await db
       .update(reports)
       .set({ lastGeneratedAt: new Date(), updatedAt: new Date() })
       .where(eq(reports.id, reportId));
 
-    // Simulate processing (in production, this would be async)
-    setTimeout(async () => {
-      try {
-        await db
-          .update(reportRuns)
-          .set({
-            status: 'completed',
-            completedAt: new Date(),
-            outputUrl: `/api/reports/runs/${run.id}/download`
-          })
-          .where(eq(reportRuns.id, run.id));
-      } catch {
-        await db
-          .update(reportRuns)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            errorMessage: 'Failed to generate report'
-          })
-          .where(eq(reportRuns.id, run.id));
-      }
-    }, 1000);
-
-    return c.json({
-      message: 'Report generation started',
-      runId: run.id,
-      status: run.status
-    });
+    try {
+      const result = await generateReport(report.type, report.orgId, config, perms);
+      const rowCount = result.rowCount ?? (Array.isArray(result.rows) ? result.rows.length : 0);
+      await db
+        .update(reportRuns)
+        .set({
+          status: 'completed',
+          completedAt: new Date(),
+          outputUrl: `/api/reports/runs/${run.id}/download`,
+          result,
+          rowCount
+        })
+        .where(eq(reportRuns.id, run.id));
+      return c.json({ message: 'Report generated', runId: run.id, status: 'completed' });
+    } catch (err) {
+      await db
+        .update(reportRuns)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          errorMessage: err instanceof Error ? err.message : 'Failed to generate report'
+        })
+        .where(eq(reportRuns.id, run.id));
+      return c.json({ message: 'Report generation failed', runId: run.id, status: 'failed' }, 500);
+    }
   }
 );
 
@@ -166,6 +173,64 @@ runsRoutes.get(
       data: runsList,
       pagination: { page, limit, total }
     });
+  }
+);
+
+// GET /reports/runs/:id/download - Download a completed run's stored snapshot
+runsRoutes.get(
+  '/runs/:id/download',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_EXPORT.resource, PERMISSIONS.REPORTS_EXPORT.action),
+  zValidator('query', downloadQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const runId = c.req.param('id')!;
+    const { format: requestedFormat } = c.req.valid('query');
+
+    const run = await getReportRunWithOrgCheck(runId, auth);
+    if (!run) {
+      return c.json({ error: 'Report run not found' }, 404);
+    }
+    if (run.status !== 'completed') {
+      return c.json({ error: 'Report run is not completed' }, 409);
+    }
+
+    const [row] = await db
+      .select({
+        result: reportRuns.result,
+        reportType: reports.type,
+        reportName: reports.name,
+        reportFormat: reports.format
+      })
+      .from(reportRuns)
+      .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .where(eq(reportRuns.id, runId))
+      .limit(1);
+
+    const result = (row?.result ?? null) as ReportResult | null;
+    const rows = Array.isArray(result?.rows) ? (result!.rows as unknown[]) : [];
+    const format = requestedFormat ?? row?.reportFormat ?? 'csv';
+    const dateStr = new Date().toISOString().split('T')[0];
+    const baseName = `${row?.reportType ?? 'report'}-report-${dateStr}`;
+
+    // PDF / JSON: hand the snapshot to the client to render (avoids a server PDF engine).
+    if (format === 'pdf' || format === 'json') {
+      return c.json({ type: row?.reportType, format, data: result });
+    }
+
+    if (rows.length === 0) {
+      return c.json({ error: 'Report run has no tabular data to download' }, 409);
+    }
+
+    if (format === 'excel') {
+      c.header('Content-Type', 'application/vnd.ms-excel');
+      c.header('Content-Disposition', `attachment; filename="${baseName}.xls"`);
+      return c.body(rowsToTsv(rows));
+    }
+
+    c.header('Content-Type', 'text/csv;charset=utf-8;');
+    c.header('Content-Disposition', `attachment; filename="${baseName}.csv"`);
+    return c.body(rowsToCsv(rows));
   }
 );
 

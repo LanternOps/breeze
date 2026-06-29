@@ -68,6 +68,10 @@ export const listRunsSchema = z.object({
   status: z.enum(['pending', 'running', 'completed', 'failed']).optional()
 });
 
+export const downloadQuerySchema = z.object({
+  format: z.enum(['csv', 'pdf', 'excel', 'json']).optional()
+});
+
 export const dataQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   siteId: z.string().guid().optional(),
