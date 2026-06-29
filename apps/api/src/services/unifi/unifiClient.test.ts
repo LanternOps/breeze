@@ -39,4 +39,20 @@ describe('unifiClient', () => {
     expect(dev.uptimeSeconds).toBe(1234);
     expect(dev.raw).toMatchObject({ id: 'd1', model: 'U6-Pro' });
   });
+
+  it('throws UnifiApiError on a meta.rc=error envelope (HTTP 200)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({ meta: { rc: 'error', msg: 'not found' } }, 200)
+    );
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    // Single call: a Response body can only be read once, so assert both facets at once.
+    await expect(client.listHosts()).rejects.toMatchObject({ name: 'UnifiApiError', status: 200 });
+  });
+
+  it('returns null from getIspMetrics on an explicit data:null envelope', async () => {
+    // Regression: `data ?? body` would have returned the whole envelope here.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: null }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    await expect(client.getIspMetrics('s1')).resolves.toBeNull();
+  });
 });

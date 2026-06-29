@@ -60,7 +60,10 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
     if (body?.meta?.rc === 'error') {
       throw new UnifiApiError(body.meta.msg ?? 'UniFi API error', res.status, body.meta.msg);
     }
-    return (body?.data ?? body) as T;
+    // Distinguish an explicit `data: null` (a valid empty result, e.g. no ISP
+    // metrics) from a missing envelope: `?? body` would wrongly return the whole
+    // envelope on `data: null`, breaking list `.map()` and getIspMetrics's null path.
+    return (body && 'data' in body ? body.data : body) as T;
   }
 
   return {
