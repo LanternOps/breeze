@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, boolean, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, varchar, boolean, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 import { partners } from './orgs';
 import { users } from './users';
 
@@ -8,7 +8,7 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   tenantId: text('tenant_id'),
   mailboxAddress: text('mailbox_address').notNull(),
   displayName: text('display_name'),
-  status: text('status').notNull().default('pending_consent'),
+  status: varchar('status', { length: 20 }).notNull().default('pending_consent'),
   deltaLink: text('delta_link'),
   strictSenderAuth: boolean('strict_sender_auth').notNull().default(false),
   lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
