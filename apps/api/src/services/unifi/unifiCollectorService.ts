@@ -131,6 +131,19 @@ export async function listCollectorsForDevice(db: DbExecutor, deviceId: string):
   }));
 }
 
+// Returns the device that owns a collector, or null if the collector is unknown.
+// The ingest worker uses this to enforce that an agent may only write telemetry
+// for a collector bound to its own device (the agent path runs system-scoped, so
+// RLS does not provide this guarantee — the check must be explicit).
+export async function getCollectorOwnerDeviceId(db: DbExecutor, collectorId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ collectorDeviceId: unifiCollectors.collectorDeviceId })
+    .from(unifiCollectors)
+    .where(eq(unifiCollectors.id, collectorId))
+    .limit(1);
+  return row?.collectorDeviceId ?? null;
+}
+
 export async function markCollectorPoll(
   db: DbExecutor,
   collectorId: string,

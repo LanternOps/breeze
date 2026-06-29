@@ -37,13 +37,75 @@ func (d CollectorDeps) logf(format string, args ...any) {
 	}
 }
 
+// The upload DTOs match the API's camelCase ingest contract (telemetrySchema in
+// routes/agents/unifiTelemetry.ts). They are deliberately separate from Device/
+// Client, whose snake_case tags decode the UniFi controller response — reusing
+// those for upload posts a snake_case body the API rejects (no unifiDeviceId).
+type uploadDevice struct {
+	UnifiDeviceID string          `json:"unifiDeviceId"`
+	UnifiSiteID   string          `json:"unifiSiteId,omitempty"`
+	Mac           string          `json:"mac,omitempty"`
+	Name          string          `json:"name,omitempty"`
+	UptimeSeconds int64           `json:"uptimeSeconds"`
+	CPUPct        float64         `json:"cpuPct"`
+	MemPct        float64         `json:"memPct"`
+	TxBytes       int64           `json:"txBytes"`
+	RxBytes       int64           `json:"rxBytes"`
+	NumClients    int             `json:"numClients"`
+	PoePorts      []PoePort       `json:"poePorts,omitempty"`
+	Raw           json.RawMessage `json:"raw,omitempty"`
+}
+
+type uploadClient struct {
+	Mac               string          `json:"mac"`
+	UnifiSiteID       string          `json:"unifiSiteId,omitempty"`
+	Hostname          string          `json:"hostname,omitempty"`
+	IP                string          `json:"ip,omitempty"`
+	ConnectedDeviceID string          `json:"connectedDeviceId,omitempty"`
+	UplinkPortIdx     int             `json:"uplinkPortIdx"`
+	IsWired           bool            `json:"isWired"`
+	SSID              string          `json:"ssid,omitempty"`
+	Vlan              int             `json:"vlan"`
+	SignalDbm         int             `json:"signalDbm"`
+	TxBytes           int64           `json:"txBytes"`
+	RxBytes           int64           `json:"rxBytes"`
+	UptimeSeconds     int64           `json:"uptimeSeconds"`
+	Raw               json.RawMessage `json:"raw,omitempty"`
+}
+
 type telemetryPayload struct {
-	CollectorID string   `json:"collectorId"`
-	PolledAt    string   `json:"polledAt"`
-	FirmwareOK  bool     `json:"firmwareOk"`
-	Devices     []Device `json:"devices"`
-	Clients     []Client `json:"clients"`
-	Error       string   `json:"error,omitempty"`
+	CollectorID string         `json:"collectorId"`
+	PolledAt    string         `json:"polledAt"`
+	FirmwareOK  bool           `json:"firmwareOk"`
+	Devices     []uploadDevice `json:"devices"`
+	Clients     []uploadClient `json:"clients"`
+	Error       string         `json:"error,omitempty"`
+}
+
+func toUploadDevices(in []Device) []uploadDevice {
+	out := make([]uploadDevice, len(in))
+	for i, d := range in {
+		out[i] = uploadDevice{
+			UnifiDeviceID: d.ID, UnifiSiteID: d.SiteID, Mac: d.Mac, Name: d.Name,
+			UptimeSeconds: d.UptimeSeconds, CPUPct: d.CPUPct, MemPct: d.MemPct,
+			TxBytes: d.TxBytes, RxBytes: d.RxBytes, NumClients: d.NumClients,
+			PoePorts: d.PoePorts, Raw: d.Raw,
+		}
+	}
+	return out
+}
+
+func toUploadClients(in []Client) []uploadClient {
+	out := make([]uploadClient, len(in))
+	for i, cl := range in {
+		out[i] = uploadClient{
+			Mac: cl.Mac, UnifiSiteID: cl.SiteID, Hostname: cl.Hostname, IP: cl.IP,
+			ConnectedDeviceID: cl.ConnectedDeviceID, UplinkPortIdx: cl.UplinkPortIdx, IsWired: cl.IsWired,
+			SSID: cl.SSID, Vlan: cl.Vlan, SignalDbm: cl.SignalDbm,
+			TxBytes: cl.TxBytes, RxBytes: cl.RxBytes, UptimeSeconds: cl.UptimeSeconds, Raw: cl.Raw,
+		}
+	}
+	return out
 }
 
 // RunOnce polls one controller and uploads the snapshot. controllerHTTP may be nil
@@ -56,8 +118,8 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 		CollectorID: cfg.CollectorID,
 		PolledAt:    time.Now().UTC().Format(time.RFC3339),
 		FirmwareOK:  snap.FirmwareOK,
-		Devices:     snap.Devices,
-		Clients:     snap.Clients,
+		Devices:     toUploadDevices(snap.Devices),
+		Clients:     toUploadClients(snap.Clients),
 	}
 	if pollErr != nil {
 		payload.Error = pollErr.Error()
@@ -114,7 +176,7 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) {
 }
 
 func fetchConfigs(ctx context.Context, deps CollectorDeps) ([]CollectorConfig, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, deps.APIBaseURL+"/agent/unifi-collectors", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, deps.agentBase()+"/unifi-collectors", nil)
 	if err != nil {
 		return nil, err
 	}

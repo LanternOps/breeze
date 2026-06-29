@@ -3,7 +3,7 @@ import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { reconcileTelemetry, type TelemetryPayload } from '../services/unifi/unifiTelemetryService';
-import { markCollectorPoll } from '../services/unifi/unifiCollectorService';
+import { markCollectorPoll, getCollectorOwnerDeviceId } from '../services/unifi/unifiCollectorService';
 
 export const UNIFI_TELEMETRY_QUEUE = 'unifi-telemetry';
 
@@ -20,15 +20,37 @@ export async function enqueueUnifiTelemetry(payload: TelemetryPayload): Promise<
   }));
 }
 
-async function processIngest(payload: TelemetryPayload): Promise<void> {
+export async function processIngest(payload: TelemetryPayload): Promise<void> {
   await withSystemDbAccessContext(async () => {
+    // Ownership gate (system context bypasses RLS): the posting agent's
+    // token-resolved deviceId, stamped by the route, must own this collector.
+    // Reject — without ANY write — a payload for a collector on another device.
+    const ownerDeviceId = await getCollectorOwnerDeviceId(db, payload.collectorId);
+    if (!ownerDeviceId || ownerDeviceId !== payload.deviceId) {
+      console.warn(
+        `[UnifiTelemetryWorker] rejected telemetry for collector ${payload.collectorId}: ` +
+        `device mismatch (owner=${ownerDeviceId ?? 'none'}, claimed=${payload.deviceId ?? 'none'})`,
+      );
+      return;
+    }
+
     if (!payload.firmwareOk) {
       await markCollectorPoll(db, payload.collectorId, 'firmware_too_old', false, payload.error ?? 'Controller firmware below 9.3 or integration disabled');
       return;
     }
+
+    // A poll-level error means the controller was reachable but the poll was
+    // partial (or fully failed). Don't stale on partial data; report the right
+    // status: 'unreachable' when nothing came back, 'error' when some did.
+    const partial = !!payload.error;
     try {
-      await reconcileTelemetry(db, payload);
-      await markCollectorPoll(db, payload.collectorId, 'connected', true, payload.error ?? null);
+      await reconcileTelemetry(db, payload, { markStale: !partial });
+      if (partial) {
+        const empty = payload.devices.length === 0 && payload.clients.length === 0;
+        await markCollectorPoll(db, payload.collectorId, empty ? 'unreachable' : 'error', true, payload.error ?? null);
+      } else {
+        await markCollectorPoll(db, payload.collectorId, 'connected', true, null);
+      }
     } catch (err) {
       await markCollectorPoll(db, payload.collectorId, 'error', true, (err as Error).message);
       throw err; // surface to BullMQ for retry/visibility

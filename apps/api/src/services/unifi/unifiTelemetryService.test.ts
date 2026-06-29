@@ -159,4 +159,42 @@ describe('reconcileTelemetry', () => {
     expect(clientUpdates).toHaveLength(1);
     expect(clientUpdates[0].values.isStale).toBe(true);
   });
+
+  it('does not stale existing rows when markStale=false (partial poll)', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a' }],
+      existingDevices: [{ id: 'old-dev', unifiDeviceId: 'gone', isStale: false }],
+      existingClients: [{ id: 'old-cli', mac: 'ff:ff', isStale: false }],
+    });
+
+    const res = await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true, devices: [], clients: [],
+    }, { markStale: false });
+
+    expect(res.devicesStaled).toBe(0);
+    expect(res.clientsStaled).toBe(0);
+    expect(writes.updates).toHaveLength(0);
+  });
+
+  it('normalizes client MAC (uppercase/hyphen) for asset linking and storage', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a' }],
+      assetByMac: { 'aa:bb:cc:dd:ee:ff': { id: 'asset-9' } },
+    });
+
+    const res = await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [],
+      clients: [{ mac: 'AA-BB-CC-DD-EE-FF', unifiSiteId: 's1', hostname: 'h', ip: null, connectedDeviceId: null, uplinkPortIdx: null, isWired: true, ssid: null, vlan: null, signalDbm: null, txBytes: null, rxBytes: null, uptimeSeconds: null, raw: {} }],
+    });
+
+    expect(res.clientsUpserted).toBe(1);
+    const clientInserts = writes.inserts.filter((w) => w.table === unifiClients);
+    expect(clientInserts).toHaveLength(1);
+    // Stored canonical (lowercase, colon-separated) and linked despite the source casing.
+    expect(clientInserts[0].values.mac).toBe('aa:bb:cc:dd:ee:ff');
+    expect(clientInserts[0].values.discoveredAssetId).toBe('asset-9');
+  });
 });

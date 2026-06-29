@@ -45,13 +45,48 @@ describe('agent unifi telemetry routes', () => {
     expect(collectorSvc.listCollectorsForDevice).toHaveBeenCalledWith(expect.anything(), 'dev-1');
   });
 
-  it('POST /agents/:id/unifi-telemetry enqueues the payload and returns 202', async () => {
+  it('POST /agents/:id/unifi-telemetry enqueues the payload, stamping the token deviceId', async () => {
     const body = { collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true, devices: [], clients: [] };
     const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-telemetry`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     });
     expect(res.status).toBe(202);
-    expect(worker.enqueueUnifiTelemetry).toHaveBeenCalledWith(expect.objectContaining({ collectorId: 'c1' }));
+    // Server stamps the token-resolved deviceId so the worker can verify ownership.
+    expect(worker.enqueueUnifiTelemetry).toHaveBeenCalledWith(expect.objectContaining({ collectorId: 'c1', deviceId: 'dev-1' }));
+  });
+
+  it('POST /agents/:id/unifi-telemetry accepts a populated camelCase device payload', async () => {
+    const body = {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{
+        unifiDeviceId: 'd1', unifiSiteId: 's1', mac: 'aa:bb:cc:dd:ee:ff', name: 'AP',
+        uptimeSeconds: 10, cpuPct: 1, memPct: 2, txBytes: 3, rxBytes: 4, numClients: 1,
+        poePorts: [{ portIdx: 1, up: true }], raw: { x: 1 },
+      }],
+      clients: [{ mac: '11:22:33:44:55:66', unifiSiteId: 's1', hostname: 'phone', ip: '10.0.0.9', isWired: false, raw: {} }],
+    };
+    const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-telemetry`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(202);
+    expect(worker.enqueueUnifiTelemetry).toHaveBeenCalledWith(
+      expect.objectContaining({ devices: [expect.objectContaining({ unifiDeviceId: 'd1' })] }),
+    );
+  });
+
+  it('POST /agents/:id/unifi-telemetry returns 403 when the device context is missing', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', { agentId: AGENT_ID, orgId: 'org-1', role: 'agent' } as never); // no deviceId
+      return next();
+    });
+    app.route('/agents', unifiTelemetryRoutes);
+    const body = { collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true, devices: [], clients: [] };
+    const res = await app.request(`/agents/${AGENT_ID}/unifi-telemetry`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(403);
+    expect(worker.enqueueUnifiTelemetry).not.toHaveBeenCalled();
   });
 
   it('POST /agents/:id/unifi-telemetry rejects an invalid payload with 400', async () => {

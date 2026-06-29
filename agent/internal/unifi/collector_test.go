@@ -54,4 +54,39 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 	if got["collectorId"] != "c1" || got["firmwareOk"] != true {
 		t.Fatalf("unexpected payload: %+v", got)
 	}
+	// The uploaded device must carry the camelCase unifiDeviceId the API requires;
+	// posting the controller's snake_case shape would 400 (regression guard, C2).
+	devs, ok := got["devices"].([]any)
+	if !ok || len(devs) != 1 {
+		t.Fatalf("expected 1 device in payload, got %+v", got["devices"])
+	}
+	if d0, _ := devs[0].(map[string]any); d0["unifiDeviceId"] != "d1" {
+		t.Fatalf("device missing camelCase unifiDeviceId: %+v", devs[0])
+	}
+}
+
+// fetchConfigs must GET the agent-scoped path /agents/<id>/unifi-collectors, not
+// the bare /agent/unifi-collectors (which 404s and never returns configs — C3).
+func TestFetchConfigsHitsAgentScopedPath(t *testing.T) {
+	var gotPath string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path == "/agents/agent-1/unifi-collectors" {
+			w.Write([]byte(`{"collectors":[{"collectorId":"c1","controllerUrl":"https://10.0.0.1","apiKey":"k","pollIntervalSeconds":60}]}`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer api.Close()
+
+	configs, err := fetchConfigs(context.Background(), CollectorDeps{APIBaseURL: api.URL, AgentID: "agent-1", HTTP: api.Client()})
+	if err != nil {
+		t.Fatalf("fetchConfigs: %v", err)
+	}
+	if gotPath != "/agents/agent-1/unifi-collectors" {
+		t.Fatalf("fetchConfigs hit unexpected path: %q", gotPath)
+	}
+	if len(configs) != 1 || configs[0].CollectorID != "c1" {
+		t.Fatalf("unexpected configs: %+v", configs)
+	}
 }

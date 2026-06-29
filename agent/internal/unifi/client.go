@@ -122,49 +122,73 @@ func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int,
 }
 
 // Poll reads sites, then devices + clients per site, tagging each with its SiteID.
+//
+// Failure semantics (consumed by the ingest worker to set collector status):
+//   - 404 on the integration base  → FirmwareOK=false, nil error (firmware < 9.3
+//     or integration disabled). This is the ONLY way FirmwareOK goes false.
+//   - transport / non-2xx reaching the controller → FirmwareOK=true, non-nil
+//     error (the controller is unreachable, not firmware-incapable).
+//   - a per-site fetch/decode failure does NOT abort the poll: the remaining
+//     sites are still collected and the first such error is returned alongside
+//     the partial snapshot, so the worker can record a partial result without
+//     staling devices that simply belong to a momentarily-failing site.
 func (c *APIClient) Poll(ctx context.Context) (Snapshot, error) {
-	var snap Snapshot
+	snap := Snapshot{FirmwareOK: true}
 	sitesData, status, err := c.get(ctx, apiBase+"/sites")
-	if err != nil {
-		return snap, err
-	}
 	if status == http.StatusNotFound {
 		snap.FirmwareOK = false
 		return snap, nil
 	}
-	snap.FirmwareOK = true
+	if err != nil {
+		return snap, err
+	}
 	var sites []struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(sitesData, &sites); err != nil {
 		return snap, fmt.Errorf("decode sites: %w", err)
 	}
-	for _, s := range sites {
-		devData, _, err := c.get(ctx, fmt.Sprintf("%s/sites/%s/devices", apiBase, s.ID))
-		if err != nil {
-			return snap, err
-		}
-		var devs []Device
-		_ = json.Unmarshal(devData, &devs)
-		for i := range devs {
-			devs[i].SiteID = s.ID
-			devs[i].Raw = rawOf(devData, i)
-		}
-		snap.Devices = append(snap.Devices, devs...)
 
-		cliData, _, err := c.get(ctx, fmt.Sprintf("%s/sites/%s/clients", apiBase, s.ID))
-		if err != nil {
-			return snap, err
+	var firstErr error
+	note := func(e error) {
+		if e != nil && firstErr == nil {
+			firstErr = e
 		}
-		var clis []Client
-		_ = json.Unmarshal(cliData, &clis)
-		for i := range clis {
-			clis[i].SiteID = s.ID
-			clis[i].Raw = rawOf(cliData, i)
-		}
-		snap.Clients = append(snap.Clients, clis...)
 	}
-	return snap, nil
+	for _, s := range sites {
+		devData, _, derr := c.get(ctx, fmt.Sprintf("%s/sites/%s/devices", apiBase, s.ID))
+		if derr != nil {
+			note(fmt.Errorf("site %s devices: %w", s.ID, derr))
+		} else {
+			var devs []Device
+			if uerr := json.Unmarshal(devData, &devs); uerr != nil {
+				note(fmt.Errorf("site %s decode devices: %w", s.ID, uerr))
+			} else {
+				for i := range devs {
+					devs[i].SiteID = s.ID
+					devs[i].Raw = rawOf(devData, i)
+				}
+				snap.Devices = append(snap.Devices, devs...)
+			}
+		}
+
+		cliData, _, cerr := c.get(ctx, fmt.Sprintf("%s/sites/%s/clients", apiBase, s.ID))
+		if cerr != nil {
+			note(fmt.Errorf("site %s clients: %w", s.ID, cerr))
+		} else {
+			var clis []Client
+			if uerr := json.Unmarshal(cliData, &clis); uerr != nil {
+				note(fmt.Errorf("site %s decode clients: %w", s.ID, uerr))
+			} else {
+				for i := range clis {
+					clis[i].SiteID = s.ID
+					clis[i].Raw = rawOf(cliData, i)
+				}
+				snap.Clients = append(snap.Clients, clis...)
+			}
+		}
+	}
+	return snap, firstErr
 }
 
 // rawOf returns the raw JSON element at index i of a JSON array, or null.

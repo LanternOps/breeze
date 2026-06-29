@@ -71,7 +71,11 @@ unifiTelemetryRoutes.get('/:id/unifi-collectors', async (c) => {
 
 // POST /agents/:id/unifi-telemetry — ingest a batched poll; enqueue, don't write inline.
 unifiTelemetryRoutes.post('/:id/unifi-telemetry', zValidator('json', telemetrySchema), async (c) => {
+  const agent = c.get('agent') as { deviceId?: string } | undefined;
+  if (!agent?.deviceId) return c.json({ error: 'agent device context missing' }, 403);
   const payload = c.req.valid('json');
-  await enqueueUnifiTelemetry(payload);
+  // Stamp the token-resolved deviceId server-side (never trust a client value);
+  // the worker enforces it matches the collector's owner before any write.
+  await enqueueUnifiTelemetry({ ...payload, deviceId: agent.deviceId });
   return c.json({ accepted: true }, 202);
 });

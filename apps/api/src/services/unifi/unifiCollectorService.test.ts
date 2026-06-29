@@ -46,4 +46,12 @@ describe('unifiCollectorService', () => {
     const db = makeDb({ deleteRows: [] });
     await expect(svc.deleteCollector(db, 'int-1', 'h1')).resolves.toBe(false);
   });
+
+  it('getCollectorOwnerDeviceId returns the owning device id, or null when unknown', async () => {
+    const dbWith = (rows: any[]) => ({
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: () => rows }) }) })),
+    } as unknown as svc.DbExecutor);
+    await expect(svc.getCollectorOwnerDeviceId(dbWith([{ collectorDeviceId: 'dev-7' }]), 'c1')).resolves.toBe('dev-7');
+    await expect(svc.getCollectorOwnerDeviceId(dbWith([]), 'c1')).resolves.toBeNull();
+  });
 });
