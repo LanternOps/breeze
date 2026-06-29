@@ -393,7 +393,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <input
                   type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
                   data-testid="contract-form-start"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
                 />
               </label>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -401,7 +401,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <input
                   type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); if (!e.target.value) setAutoRenew(false); }}
                   data-testid="contract-form-end"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
                 />
               </label>
               <label className="flex items-center gap-2 text-sm sm:col-span-2">

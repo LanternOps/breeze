@@ -8,7 +8,6 @@ import {
   generateContractInvoice,
   getContractEstimate,
   formatCadence,
-  CONTRACT_STATUS_COLORS,
   CONTRACT_STATUS_LABELS,
   type ContractDetail as ContractDetailData,
   type ContractEstimate,
@@ -64,6 +63,10 @@ export default function ContractDetail({ detail, onChanged }: Props) {
 
   const [busy, setBusy] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
+  // Cancel is terminal (no transition out of `cancelled`), so it routes through a
+  // confirm step — matching the bulk-list Cancel. Pause/resume/activate are
+  // reversible and fire immediately.
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
 
   useEffect(() => {
@@ -183,7 +186,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                       {contract.renewalNoticeDays != null ? <> · {contract.renewalNoticeDays}-day notice</> : null}
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Does not auto-renew</span>
+                    <span>Does not auto-renew</span>
                   )}
                 </dd>
               </div>
@@ -289,16 +292,13 @@ export default function ContractDetail({ detail, onChanged }: Props) {
 
         {/* ── status + lifecycle + generate ─────────────────────────────── */}
         <div className="space-y-4">
+          {/* The status badge + cadence already lead the page header, so this card
+              carries only the one thing the header can't: what the buttons below
+              will do. data-testid kept for the suites that assert state here. */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-detail-summary">
-            <div className="mb-3 flex items-center justify-between">
-              <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[contract.status]}`}
-                data-testid="contract-detail-status"
-              >
-                {CONTRACT_STATUS_LABELS[contract.status]}
-              </span>
-              <span className="text-xs text-muted-foreground">{formatCadence(contract.intervalMonths)}</span>
-            </div>
+            <span className="sr-only" data-testid="contract-detail-status">
+              {CONTRACT_STATUS_LABELS[contract.status]}
+            </span>
             <p className="text-sm text-muted-foreground">
               {canGenerate
                 ? 'This contract is active and will generate invoices on its cadence.'
@@ -315,7 +315,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                   <button
                     key={verb}
                     type="button"
-                    onClick={() => void transition(verb)}
+                    onClick={destructive ? () => setCancelOpen(true) : () => void transition(verb)}
                     disabled={busy}
                     data-testid={`contract-${verb}-btn`}
                     className={`inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
@@ -359,6 +359,17 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        onConfirm={() => { setCancelOpen(false); void transition('cancel'); }}
+        isLoading={busy}
+        title="Cancel this contract?"
+        message="Cancelling stops all future invoicing on this contract. This can’t be undone — you’d have to create a new contract to resume billing."
+        confirmLabel="Cancel contract"
+        confirmTestId="contract-cancel-confirm"
+      />
 
       <ConfirmDialog
         open={delOpen}

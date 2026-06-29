@@ -151,6 +151,17 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   const rows = useMemo(() => contracts, [contracts]);
 
+  // Only DRAFT contracts can be bulk-deleted, so the action is offered only when
+  // the selection actually contains one — otherwise it's a confusing no-op.
+  const selectedDraftCount = useMemo(
+    () => contracts.filter((c) => c.status === 'draft' && bulk.selectedIds.has(c.id)).length,
+    [contracts, bulk.selectedIds],
+  );
+
+  // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
+  // first-run empty state (offer "create your first contract").
+  const hasActiveFilters = Boolean(filters.status) || (!lockedOrgId && Boolean(filters.orgId));
+
   // Estimated monthly recurring across active contracts (normalized by cadence).
   const mrr = useMemo(() => {
     const active = contracts.filter((c) => c.status === 'active');
@@ -276,12 +287,40 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
             </div>
           </div>
         ) : rows.length === 0 ? (
-          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="contracts-empty">
-            No contracts match these filters.
-          </div>
+          hasActiveFilters ? (
+            <div className="px-4 py-12 text-center" data-testid="contracts-empty">
+              <p className="text-sm text-muted-foreground">No contracts match these filters.</p>
+              <button
+                type="button"
+                onClick={() => applyFilter(lockedOrgId ? { status: '' } : { status: '', orgId: '' })}
+                data-testid="contracts-clear-filters"
+                className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              >
+                Clear filters
+              </button>
+            </div>
+          ) : (
+            <div className="px-6 py-14 text-center" data-testid="contracts-empty">
+              <h3 className="text-sm font-semibold">No contracts yet</h3>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Contracts bill an organization on a repeating cadence and auto-generate the invoices for you.
+              </p>
+              {can('contracts', 'write') && (
+                <a
+                  href={newContractHref}
+                  data-testid="contracts-empty-cta"
+                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                >
+                  Create your first contract
+                </a>
+              )}
+            </div>
+          )
         ) : (
           <div className="relative">
-            <div className="overflow-x-auto">
+            {/* Reserve space below the rows while selected so the absolute
+                bulk bar floats in blank space instead of covering the rows. */}
+            <div className={`overflow-x-auto ${bulk.size > 0 ? 'pb-14' : ''}`}>
               <table className="w-full text-sm" data-testid="contracts-list">
                 <thead>
                   <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -295,7 +334,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                       />
                     </th>
                     <th className="px-3 py-3 font-medium">Name</th>
-                    <th className="px-3 py-3 font-medium">Organization</th>
+                    {!lockedOrgId && <th className="px-3 py-3 font-medium">Organization</th>}
                     <th className="px-3 py-3 font-medium">Status</th>
                     <th className="px-3 py-3 font-medium">Cadence</th>
                     <th className="px-3 py-3 font-medium">Next bill</th>
@@ -320,7 +359,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                         />
                       </td>
                       <td className="px-3 py-3 font-medium">{ctr.name}</td>
-                      <td className="px-3 py-3">{orgName(ctr.orgId)}</td>
+                      {!lockedOrgId && <td className="px-3 py-3">{orgName(ctr.orgId)}</td>}
                       <td className="px-3 py-3">
                         <span
                           className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[ctr.status]}`}
@@ -345,7 +384,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
               testIdPrefix="contracts"
               actions={[
                 ...(can('contracts', 'manage') ? [{ key: 'cancel', label: 'Cancel', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setCancelOpen(true) }] : []),
-                ...(can('contracts', 'write') ? [{ key: 'delete', label: 'Delete drafts', variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
+                ...(can('contracts', 'write') && selectedDraftCount > 0 ? [{ key: 'delete', label: `Delete draft${selectedDraftCount === 1 ? '' : 's'}`, variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />
           </div>
@@ -367,7 +406,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => { setDeleteOpen(false); void runBulkContracts('/contracts/bulk-delete', 'deleted'); }}
         title="Delete draft contracts"
-        message={`Delete ${bulk.size} selected contract(s)? Only DRAFT contracts will be deleted; this cannot be undone.`}
+        message={`Delete ${selectedDraftCount} draft contract${selectedDraftCount === 1 ? '' : 's'}? Only drafts are deleted${bulk.size > selectedDraftCount ? ' — any active or paused contracts in your selection are left untouched' : ''}; this cannot be undone.`}
         confirmLabel="Delete drafts"
         confirmTestId="contracts-bulk-delete-confirm"
       />
