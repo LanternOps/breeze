@@ -478,16 +478,19 @@ function stubSelect(rows: unknown[]) {
   selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve(rows) }) });
 }
 
-// Helper to stub `db.insert(...).values(...).returning()` returning `row`.
-function stubInsertReturning(rowsInOrder: unknown[][]) {
+// Captures the object passed to each `db.insert(...).values(OBJ)` call, in order,
+// without any production-code instrumentation.
+const valuesSpy = vi.fn();
+function stubInserts(rowsInOrder: unknown[][]) {
   let call = 0;
   insertMock.mockImplementation(() => ({
-    values: () => ({ returning: () => Promise.resolve(rowsInOrder[call++] ?? []) }),
+    values: (v: unknown) => { valuesSpy(v); return { returning: () => Promise.resolve(rowsInOrder[call++] ?? []) }; },
   }));
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  valuesSpy.mockClear();
   getConnectionMock.mockResolvedValue(connectedConn());
   getValidAccessTokenMock.mockResolvedValue('fresh-token');
 });
@@ -542,7 +545,7 @@ describe('importQuickbooksCustomers', () => {
       shipAddr: { line1: '2 Ship Rd', city: 'Dallas' },
     }]);
     stubSelect([]); // no existing orgs
-    stubInsertReturning([[{ id: 'org-1', name: 'Acme Co', partnerId: 'p1' }], [{ id: 'site-1', orgId: 'org-1', name: 'Acme Co' }]]);
+    stubInserts([[{ id: 'org-1', name: 'Acme Co', partnerId: 'p1' }], [{ id: 'site-1', orgId: 'org-1', name: 'Acme Co' }]]);
 
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
 
@@ -550,10 +553,8 @@ describe('importQuickbooksCustomers', () => {
     expect(summary.skipped).toEqual([]);
     expect(summary.errors).toEqual([]);
 
-    // Org insert got billing address + accounting link.
-    const orgValues = (insertMock.mock.results[0]!.value.values as any);
-    // (Assert via the recorded call below.)
-    const orgInsertArg = insertCalls()[0];
+    // Org insert (first values() call) got billing address + accounting link.
+    const orgInsertArg = valuesSpy.mock.calls[0]![0];
     expect(orgInsertArg).toMatchObject({
       partnerId: 'p1', name: 'Acme Co', slug: 'acme-co',
       accountingProvider: 'quickbooks', accountingExternalId: '1',
@@ -561,8 +562,8 @@ describe('importQuickbooksCustomers', () => {
       billingAddressLine1: '1 Bill St', billingAddressCity: 'Austin',
       billingAddressRegion: 'TX', billingAddressPostalCode: '78701', billingAddressCountry: 'US',
     });
-    // Site insert used shipping address.
-    const siteInsertArg = insertCalls()[1];
+    // Site insert (second values() call) used shipping address.
+    const siteInsertArg = valuesSpy.mock.calls[1]![0];
     expect(siteInsertArg).toMatchObject({
       orgId: 'org-1', name: 'Acme Co',
       address: { addressLine1: '2 Ship Rd', city: 'Dallas' },
@@ -573,9 +574,9 @@ describe('importQuickbooksCustomers', () => {
   it('falls back to billing address for the site when shipping is absent', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme', billAddr: { line1: '1 Bill St', city: 'Austin' } }]);
     stubSelect([]);
-    stubInsertReturning([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
+    stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
-    expect(insertCalls()[1]).toMatchObject({ address: { addressLine1: '1 Bill St', city: 'Austin' } });
+    expect(valuesSpy.mock.calls[1]![0]).toMatchObject({ address: { addressLine1: '1 Bill St', city: 'Austin' } });
   });
 
   it('skips customers already linked to an org', async () => {
@@ -590,9 +591,9 @@ describe('importQuickbooksCustomers', () => {
   it('suffixes the slug when the base collides with an existing org slug', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubSelect([{ id: 'org-x', accountingExternalId: '99', slug: 'acme' }]);
-    stubInsertReturning([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
+    stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
-    expect(insertCalls()[0]).toMatchObject({ slug: 'acme-2' });
+    expect(valuesSpy.mock.calls[0]![0]).toMatchObject({ slug: 'acme-2' });
   });
 
   it('records a per-customer error and continues with the rest (partial success)', async () => {
@@ -617,22 +618,13 @@ describe('importQuickbooksCustomers', () => {
   it('reports requested ids not present in QuickBooks as errors', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubSelect([]);
-    stubInsertReturning([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
+    stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', 'missing'] });
     expect(summary.errors).toContainEqual({ customerId: 'missing', error: 'Customer not found in QuickBooks' });
     expect(summary.imported).toHaveLength(1);
   });
 });
-
-// Records the object passed to each `db.insert(...).values(OBJ)` call, in order.
-function insertCalls(): any[] {
-  return insertMock.mock.calls.length
-    ? (insertMock.mock.results.map((r: any) => r.value.__values).filter(Boolean))
-    : [];
-}
 ```
-
-> Note on `insertCalls()`: the implementation below stores the values object on the chain (`__values`) so tests can assert it. Keep that shim in the impl.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -782,7 +774,7 @@ export async function importQuickbooksCustomers(
 
       const { orgId, siteId } = await runOutsideDbContext(() =>
         withSystemDbAccessContext(async () => {
-          const [org] = await insertReturning(db.insert(organizations), {
+          const [org] = await db.insert(organizations).values({
             partnerId,
             name: customer.displayName,
             slug,
@@ -796,13 +788,13 @@ export async function importQuickbooksCustomers(
             billingAddressCountry: customer.billAddr?.country ?? null,
             accountingProvider: PROVIDER,
             accountingExternalId: customerId,
-          });
-          const [site] = await insertReturning(db.insert(sites), {
+          }).returning();
+          const [site] = await db.insert(sites).values({
             orgId: org!.id,
             name: customer.displayName,
             address: siteAddressFrom(customer.shipAddr ?? customer.billAddr),
             contact,
-          });
+          }).returning();
           return { orgId: org!.id as string, siteId: site!.id as string };
         })
       );
@@ -816,17 +808,7 @@ export async function importQuickbooksCustomers(
 
   return summary;
 }
-
-// Thin wrapper around Drizzle's `.values(v).returning()` that also stamps the
-// values object onto the chain so unit tests can assert what was inserted.
-function insertReturning(chain: { values: (v: unknown) => { returning: () => Promise<any[]> } }, values: Record<string, unknown>) {
-  const next = chain.values(values);
-  (next as unknown as { __values?: unknown }).__values = values;
-  return next.returning();
-}
 ```
-
-> Note: the test's `insertCalls()` reads `__values` off the chain returned by `db.insert(...).values(...)`. The impl's `insertReturning` stamps it there. In production Drizzle, the extra property is harmless.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
