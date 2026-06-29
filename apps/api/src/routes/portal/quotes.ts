@@ -13,6 +13,7 @@ import { createQuotePayLink } from '../../services/quotePay';
 import { computeQuoteTotals, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
+import { toCustomerLines } from '../../services/quoteService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
@@ -39,7 +40,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
-  const lines = (await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible);
+  const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
   try { await markQuoteViewed(id, auth.user.orgId); } catch (err) { console.error('[portal] quote markViewed failed', { id, err }); }
   // Derive the amount accept actually invoices (one-time only) so the customer
   // sees an accurate "due on acceptance" instead of the recurring-inclusive total.
@@ -53,7 +54,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
-  const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
+  const lines = toCustomerLines(await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder));
   // partners is a partner-axis RLS table — the portal request runs in ORG scope,
   // where breeze_has_partner_access is false. A bare read returns 0 rows with NO
   // error (the #1375 class), causing buildSellerSnapshot(undefined) to produce an

@@ -40,6 +40,7 @@ import {
   removeLine,
   updateQuote,
   deleteDraftQuote,
+  toCustomerLines,
 } from '../../services/quoteService';
 import { createCatalogItem, getCatalogItem, type CatalogActor } from '../../services/catalogService';
 import { type QuoteActor } from '../../services/quoteTypes';
@@ -101,6 +102,8 @@ async function seedCatalogItem(
       commitmentTermMonths: values.commitmentTermMonths ?? null,
       taxable: values.taxable ?? true,
       isBundle: false,
+      costBasis: values.costBasis ?? null,
+      sku: values.sku ?? null,
     }).returning({ id: catalogItems.id });
     return { id: row!.id };
   });
@@ -559,5 +562,55 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(line.unitPrice).toBe('10.00');
     expect(line.description).toBe('Own SKU');
     expect(line.lineTotal).toBe('30.00'); // 3 * 10.00
+  });
+
+  // ---------------------------------------------------------------------------
+  // Task 5: cost/sku snapshot on add + no-leak serializer.
+  // ---------------------------------------------------------------------------
+
+  runDb('addCatalogLine snapshots unitCost and sku from the catalog item', async () => {
+    const fx = await seedFixture();
+    // Catalog item with a cost basis of 100.00 and a sell price of 130.00.
+    const item = await seedCatalogItem(fx.partnerA.id, {
+      name: 'Security Suite',
+      unitPrice: '130.00',
+      costBasis: '100.00',
+      sku: 'SKU-1',
+      billingType: 'one_time',
+      taxable: true,
+    });
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const line = await withDbAccessContext(fx.ctxA, () =>
+      addCatalogLine(quote.id, item.id, 1, undefined, fx.actorA)
+    );
+    // Cost and SKU are snapshotted from the catalog item at add-time.
+    expect(line.unitCost).toBe('100.00');
+    expect(line.sku).toBe('SKU-1');
+    // Sell price is unchanged.
+    expect(line.unitPrice).toBe('130.00');
+  });
+
+  // No-DB required: toCustomerLines is a pure transformation — tests that the
+  // public/portal serializer strips unitCost before returning data to the customer.
+  it('toCustomerLines strips unitCost from the customer payload (never leaks unit_cost)', () => {
+    const rawLine = {
+      id: 'test-id',
+      unitCost: '100.00',
+      sku: 'SKU-1',
+      partNumber: 'P-001',
+      name: 'Security Suite',
+      unitPrice: '130.00',
+      lineTotal: '130.00',
+    };
+    const [stripped] = toCustomerLines([rawLine]);
+    const json = JSON.stringify({ lines: [stripped] });
+    expect(json).not.toContain('unit_cost');
+    expect(json).not.toContain('unitCost');
+    expect(stripped).not.toHaveProperty('unitCost');
+    // sku and partNumber are acceptable on the customer document.
+    expect(stripped).toHaveProperty('sku', 'SKU-1');
+    expect(stripped).toHaveProperty('partNumber', 'P-001');
   });
 });

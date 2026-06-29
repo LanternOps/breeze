@@ -17,6 +17,16 @@ import type {
 // bare `db` proxy directly; it never opens its own context.
 // ---------------------------------------------------------------------------
 
+/**
+ * Strip internal-only economics (unitCost/unit_cost) from quote lines before
+ * returning them to customer-facing surfaces (public quote URL, portal, PDF).
+ * sku and partNumber are acceptable on the customer document; unitCost is NOT,
+ * and markup/net must never be derived from it on the customer side.
+ */
+export function toCustomerLines<T extends { unitCost: unknown }>(lines: T[]): Omit<T, 'unitCost'>[] {
+  return lines.map(({ unitCost: _cost, ...rest }) => rest as Omit<T, 'unitCost'>);
+}
+
 function resolvePartner(actor: QuoteActor): string {
   if (!actor.partnerId) {
     throw new QuoteServiceError('Partner could not be resolved', 403, 'PARTNER_UNRESOLVABLE');
@@ -272,6 +282,9 @@ export async function addManualLine(quoteId: string, input: QuoteLineInput, acto
     recurrence: input.recurrence,
     termMonths: input.termMonths ?? null,
     billingFrequency: input.billingFrequency ?? null,
+    unitCost: input.unitCost != null ? Number(input.unitCost).toFixed(2) : null,
+    sku: input.sku ?? null,
+    partNumber: input.partNumber ?? null,
     sortOrder,
   }).returning();
   await recomputeAndPersist(quoteId);
@@ -290,7 +303,8 @@ export async function addCatalogLine(
   catalogItemId: string,
   quantity: number,
   blockId: string | undefined,
-  actor: QuoteActor
+  actor: QuoteActor,
+  options?: { partNumber?: string | null }
 ) {
   const q = await loadDraft(quoteId, actor);
   // Scope the catalog lookup to the quote's OWN partner. catalog_items is
@@ -329,6 +343,11 @@ export async function addCatalogLine(
     recurrence,
     termMonths: item.commitmentTermMonths ?? null,
     billingFrequency: item.billingFrequency ?? null,
+    // Snapshot internal economics from the catalog item at add-time so a later
+    // catalog edit never mutates existing quote line cost/sku data.
+    unitCost: item.costBasis ?? null,
+    sku: item.sku ?? null,
+    partNumber: options?.partNumber ?? null,
     sortOrder,
   }).returning();
   await recomputeAndPersist(quoteId);
@@ -343,6 +362,7 @@ export async function updateLine(
     taxable?: boolean; customerVisible?: boolean;
     recurrence?: 'one_time' | 'monthly' | 'annual';
     termMonths?: number | null; sortOrder?: number;
+    unitCost?: number | null; sku?: string | null; partNumber?: string | null;
   },
   actor: QuoteActor
 ) {
@@ -366,6 +386,9 @@ export async function updateLine(
   };
   if (input.termMonths !== undefined) set.termMonths = input.termMonths;
   if (input.sortOrder !== undefined) set.sortOrder = input.sortOrder;
+  if (input.unitCost !== undefined) set.unitCost = input.unitCost != null ? Number(input.unitCost).toFixed(2) : null;
+  if (input.sku !== undefined) set.sku = input.sku;
+  if (input.partNumber !== undefined) set.partNumber = input.partNumber;
   await db.update(quoteLines).set(set).where(eq(quoteLines.id, lineId));
   await recomputeAndPersist(quoteId);
   const [updated] = await db.select().from(quoteLines).where(eq(quoteLines.id, lineId)).limit(1);

@@ -89,7 +89,7 @@ quoteCrudRoutes.post('/:id/lines', scopes, writePerm, zValidator('param', idPara
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.post('/:id/lines/catalog', scopes, writePerm, zValidator('param', idParam), zValidator('json', catalogQuoteLineSchema), async (c) => {
-  try { const b = c.req.valid('json'); return c.json({ data: await addCatalogLine(c.req.valid('param').id, b.catalogItemId, b.quantity, b.blockId, quoteActorFrom(c)) }); }
+  try { const b = c.req.valid('json'); return c.json({ data: await addCatalogLine(c.req.valid('param').id, b.catalogItemId, b.quantity, b.blockId, quoteActorFrom(c), { partNumber: b.partNumber ?? null }) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), zValidator('json', updateQuoteLineSchema), async (c) => {
