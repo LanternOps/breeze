@@ -5,6 +5,7 @@ import type {
   InboundEmailProvider,
   NormalizedInboundEmail,
   SenderAuth,
+  SenderAuthDiagnostic,
   SenderAuthVerdict
 } from './types';
 
@@ -59,6 +60,7 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
       precedence: parseHeader(b['message-headers'], 'Precedence'),
       senderAuth: extractSenderAuth(b),
+      senderAuthDiagnostic: senderAuthGap(b['message-headers']),
       attachments: [],
       raw: b
     };
@@ -133,6 +135,22 @@ function mailgunAuthResults(headersJson: string | undefined): string[] {
     if (isMailgunAuthservId(authservId)) trusted.push(raw);
   }
   return trusted;
+}
+
+// Diagnose WHY no usable Mailgun verdict could be read, for observability (see
+// SenderAuthDiagnostic). Returns undefined when at least one Mailgun-authoritative A-R header
+// is present — that's a real verdict (pass OR fail), not a gap. A present-but-non-JSON-array
+// payload is flagged distinctly from an outright-missing Mailgun header so a payload-format
+// regression is greppable apart from a host-format one.
+function senderAuthGap(headersJson: string | undefined): SenderAuthDiagnostic | undefined {
+  if (headersJson) {
+    try {
+      if (!Array.isArray(JSON.parse(headersJson))) return 'headers-unparseable';
+    } catch {
+      return 'headers-unparseable';
+    }
+  }
+  return mailgunAuthResults(headersJson).length === 0 ? 'no-mailgun-authserv' : undefined;
 }
 
 // Collapse a mechanism's verdict across all trusted Mailgun A-R headers into a single raw

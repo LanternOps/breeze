@@ -231,6 +231,48 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n.senderAuth!.verified).toBe(false);
   });
 
+  // senderAuthDiagnostic distinguishes the SILENT-quarantine failure modes (no usable Mailgun
+  // verdict) from an ordinary DMARC fail, so a Mailgun host/format change is observable instead
+  // of looking like routine spam rejection.
+  it('sets no diagnostic when a genuine Mailgun DMARC verdict was read (pass)', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([['Authentication-Results', 'mxa.mailgun.org; dmarc=pass']])
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBeUndefined();
+  });
+
+  it('sets no diagnostic on a genuine Mailgun DMARC fail (real verdict, not a gap)', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([['Authentication-Results', 'mxa.mailgun.org; dmarc=fail']])
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBeUndefined();
+  });
+
+  it('flags no-mailgun-authserv when no Mailgun-family Authentication-Results header is present', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([['Authentication-Results', 'protection.outlook.com; dmarc=pass']])
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBe('no-mailgun-authserv');
+  });
+
+  it('flags no-mailgun-authserv when message-headers is absent', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      recipient: 'acme@tickets.example.com', sender: 'jane@customer.com', subject: 'x', 'stripped-text': 'y'
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBe('no-mailgun-authserv');
+  });
+
+  it('flags headers-unparseable when message-headers is present but not valid JSON', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': '{not valid json'
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBe('headers-unparseable');
+  });
+
   it('treats absent verdicts as NOT verified (fail closed)', async () => {
     const n = await provider.parse({ parseBody: async () => ({
       recipient: 'acme@tickets.example.com',
