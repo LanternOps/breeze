@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { unifiCollectors } from '../../db/schema';
 import { encryptSecret, decryptForColumn } from '../secretCrypto';
 import type { DbExecutor } from './unifiConnectionService';
@@ -15,7 +15,7 @@ export interface UnifiCollector {
   integrationId: string;
   orgId: string;
   siteId: string;
-  unifiHostId: string;
+  unifiHostId: string | null;
   collectorDeviceId: string;
   controllerUrl: string;
   isEnabled: boolean;
@@ -29,7 +29,7 @@ export interface UnifiCollector {
 
 export interface AgentCollectorConfig {
   collectorId: string;
-  unifiHostId: string;
+  unifiHostId: string | null;
   controllerUrl: string;
   apiKey: string;
   pollIntervalSeconds: number;
@@ -104,6 +104,53 @@ export async function upsertCollector(
     })
     .returning();
   if (!rows[0]) throw new Error('upsertCollector returned no unifi_collectors row');
+  return toCollector(rows[0]);
+}
+
+export async function upsertSelfHostedController(
+  db: DbExecutor,
+  fields: {
+    integrationId: string;
+    orgId: string;
+    siteId: string;
+    collectorDeviceId: string;
+    controllerUrl: string;
+    apiKey: string;
+    pollIntervalSeconds?: number;
+    createdBy?: string | null;
+  },
+): Promise<UnifiCollector> {
+  const localApiKeyEncrypted = encryptSecret(fields.apiKey, { aad: 'unifi_collectors.local_api_key_encrypted' });
+  const rows = await db
+    .insert(unifiCollectors)
+    .values({
+      integrationId: fields.integrationId,
+      orgId: fields.orgId,
+      siteId: fields.siteId,
+      unifiHostId: null,
+      collectorDeviceId: fields.collectorDeviceId,
+      controllerUrl: fields.controllerUrl,
+      localApiKeyEncrypted,
+      pollIntervalSeconds: fields.pollIntervalSeconds ?? 60,
+      createdBy: fields.createdBy ?? null,
+      status: 'pending',
+    })
+    .onConflictDoUpdate({
+      target: [unifiCollectors.integrationId, unifiCollectors.controllerUrl],
+      targetWhere: sql`${unifiCollectors.unifiHostId} IS NULL`,
+      set: {
+        orgId: fields.orgId,
+        siteId: fields.siteId,
+        collectorDeviceId: fields.collectorDeviceId,
+        localApiKeyEncrypted,
+        pollIntervalSeconds: fields.pollIntervalSeconds ?? 60,
+        status: 'pending',
+        lastPollError: null,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  if (!rows[0]) throw new Error('upsertSelfHostedController returned no unifi_collectors row');
   return toCollector(rows[0]);
 }
 

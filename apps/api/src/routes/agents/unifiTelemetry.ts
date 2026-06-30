@@ -58,6 +58,7 @@ const telemetrySchema = z.object({
   firmwareOk: z.boolean(),
   devices: z.array(deviceDto),
   clients: z.array(clientDto),
+  sites: z.array(z.object({ id: z.string().min(1), name: z.string().nullable().optional() })).optional(),
   error: z.string().optional(),
 });
 

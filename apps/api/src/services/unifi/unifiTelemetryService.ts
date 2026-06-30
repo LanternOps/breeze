@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
+import { upsertControllerSites } from './unifiControllerSiteService';
 
 // Fields the wire schema marks optional are `T | null | undefined` here, matching
 // what the zod validator infers (the agent omits zero-value fields via omitempty).
@@ -20,6 +21,7 @@ export interface TelemetryClientDto {
 export interface TelemetryPayload {
   collectorId: string; polledAt: string; firmwareOk: boolean;
   devices: TelemetryDeviceDto[]; clients: TelemetryClientDto[]; error?: string;
+  sites?: Array<{ id: string; name?: string | null }>;
   // Server-authoritative: the posting agent's token-resolved deviceId, stamped by
   // the ingest route. The worker rejects the payload unless it matches the
   // collector's collector_device_id, so an agent cannot write another org's
@@ -35,6 +37,65 @@ function normalizeMac(mac: string): string {
   return mac.trim().toLowerCase().replace(/-/g, ':');
 }
 
+// Extract IP from a telemetry device's raw payload.
+// UniFi device JSON uses `ipAddress`; guard against other field names too.
+function deviceIp(raw: unknown): string | null {
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    const ip = r.ipAddress ?? r.ip;
+    if (typeof ip === 'string' && ip.length > 0) return ip;
+  }
+  return null;
+}
+
+// Find-or-create a discovered_assets row for a telemetry device; return its id.
+// Mirrors reconcileDiscoveredAsset in unifiSyncService.ts but uses the telemetry
+// device DTO which exposes IP only inside `raw`.
+async function linkTelemetryDeviceToAsset(
+  db: DbExecutor,
+  orgId: string,
+  siteId: string,
+  device: TelemetryDeviceDto,
+): Promise<string | null> {
+  const ip = deviceIp(device.raw);
+  if (!ip) return null;
+
+  const enrich = {
+    macAddress: device.mac ?? undefined,
+    hostname: device.name ?? undefined,
+    manufacturer: 'Ubiquiti',
+    isOnline: true,
+    lastSeenAt: new Date(),
+  };
+
+  // 1. Match by (org_id, mac) first — the stable identifier.
+  let existing: { id: string } | null = null;
+  if (device.mac) {
+    const byMac = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(discoveredAssets.macAddress, device.mac))).limit(1);
+    existing = byMac[0] ?? null;
+  }
+
+  // 2. Fall back to the (org_id, ip_address) unique key.
+  if (!existing) {
+    const byIp = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(discoveredAssets.ipAddress, ip))).limit(1);
+    existing = byIp[0] ?? null;
+  }
+
+  if (existing) {
+    await db.update(discoveredAssets).set(enrich).where(eq(discoveredAssets.id, existing.id));
+    return existing.id;
+  }
+
+  // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
+  const inserted = await db.insert(discoveredAssets)
+    .values({ orgId, siteId, ipAddress: ip, ...enrich })
+    .onConflictDoUpdate({ target: [discoveredAssets.orgId, discoveredAssets.ipAddress], set: enrich })
+    .returning({ id: discoveredAssets.id });
+  return inserted[0]?.id ?? null;
+}
+
 export async function reconcileTelemetry(
   db: DbExecutor,
   payload: TelemetryPayload,
@@ -47,16 +108,26 @@ export async function reconcileTelemetry(
 
   const [collector] = await db.select({
     id: unifiCollectors.id, orgId: unifiCollectors.orgId, siteId: unifiCollectors.siteId,
-    integrationId: unifiCollectors.integrationId,
+    integrationId: unifiCollectors.integrationId, unifiHostId: unifiCollectors.unifiHostId,
   }).from(unifiCollectors).where(eq(unifiCollectors.id, payload.collectorId)).limit(1);
   if (!collector) throw new Error(`reconcileTelemetry: unknown collector ${payload.collectorId}`);
 
-  // Build unifiSiteId -> {orgId, siteId} from the Phase 1 mappings for this integration.
+  if (payload.sites && payload.sites.length > 0) {
+    await upsertControllerSites(db, collector.id, collector.orgId, payload.sites);
+  }
+
+  // Build unifiSiteId -> {orgId, siteId} from the Phase 1 mappings for this integration,
+  // scoped to this collector's host axis so that identical local site ids on different
+  // self-hosted controllers (e.g. every controller has a "default" site) cannot collide.
+  // Cloud collectors carry a real unifiHostId; self-hosted collectors have NULL and their
+  // mapping rows use the sentinel unifi_host_id = collector.id.
+  const hostKey = collector.unifiHostId ?? collector.id;
   const mappings = await db.select({
-    unifiSiteId: unifiSiteMappings.unifiSiteId, siteId: unifiSiteMappings.siteId, orgId: unifiSiteMappings.orgId,
+    unifiSiteId: unifiSiteMappings.unifiSiteId, siteId: unifiSiteMappings.siteId,
+    orgId: unifiSiteMappings.orgId, unifiHostId: unifiSiteMappings.unifiHostId,
   }).from(unifiSiteMappings).where(eq(unifiSiteMappings.integrationId, collector.integrationId));
   const siteByUnifi = new Map<string, { orgId: string; siteId: string }>();
-  for (const m of mappings) if (m.unifiSiteId) siteByUnifi.set(m.unifiSiteId, { orgId: m.orgId, siteId: m.siteId });
+  for (const m of mappings) if (m.unifiSiteId && m.unifiHostId === hostKey) siteByUnifi.set(m.unifiSiteId, { orgId: m.orgId, siteId: m.siteId });
   // Fallback to the collector's own org/site when a device reports no/unknown unifi site.
   const resolveSite = (unifiSiteId: string | null | undefined) =>
     (unifiSiteId && siteByUnifi.get(unifiSiteId)) || { orgId: collector.orgId, siteId: collector.siteId };
@@ -76,16 +147,17 @@ export async function reconcileTelemetry(
   for (const d of payload.devices) {
     seenDeviceIds.add(d.unifiDeviceId);
     const { orgId, siteId } = resolveSite(d.unifiSiteId);
+    const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d);
     await db.insert(unifiDeviceTelemetry).values({
       collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac: d.mac, name: d.name,
       uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct, txBytes: d.txBytes, rxBytes: d.rxBytes,
-      numClients: d.numClients, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
+      numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiDeviceTelemetry.collectorId, unifiDeviceTelemetry.unifiDeviceId],
       set: {
         orgId, siteId, mac: d.mac, name: d.name, uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct,
-        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
+        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
         isStale: false, lastSeenAt: seenAt, lastSyncedAt: now, updatedAt: now,
       },
     });

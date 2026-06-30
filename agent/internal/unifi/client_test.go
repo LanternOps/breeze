@@ -2,8 +2,10 @@ package unifi
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -69,6 +71,27 @@ func TestPollParsesDevicesAndClients(t *testing.T) {
 	}
 	if len(snap.Clients) != 1 || snap.Clients[0].Mac != "cc:dd" || snap.Clients[0].SiteID != "s1" {
 		t.Fatalf("unexpected clients: %+v", snap.Clients)
+	}
+}
+
+func TestPoll_ReportsSitesWithNames(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sites"):
+			io.WriteString(w, `{"data":[{"id":"s1","name":"HQ"},{"id":"s2","name":"Branch"}]}`)
+		default:
+			io.WriteString(w, `{"data":[]}`)
+		}
+	}))
+	defer srv.Close()
+	c := NewAPIClient(srv.URL, "k", srv.Client())
+	snap, err := c.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(snap.Sites) != 2 || snap.Sites[0].ID != "s1" || snap.Sites[0].Name != "HQ" {
+		t.Fatalf("got sites %+v", snap.Sites)
 	}
 }
 

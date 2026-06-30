@@ -15,6 +15,7 @@ export type IntegrationStatus = 'pending' | 'connected' | 'reauth_required' | 'e
 export interface UnifiConnection {
   id: string;
   partnerId: string;
+  connectionType: 'cloud' | 'self_hosted';
   baseUrl: string;
   accountLabel: string | null;
   isActive: boolean;
@@ -28,6 +29,7 @@ function toConnection(row: any): UnifiConnection {
   return {
     id: row.id,
     partnerId: row.partnerId,
+    connectionType: row.connectionType === 'self_hosted' ? 'self_hosted' : 'cloud',
     baseUrl: row.baseUrl,
     accountLabel: row.accountLabel ?? null,
     isActive: row.isActive,
@@ -105,6 +107,7 @@ export async function upsertConnection(
       target: unifiIntegrations.partnerId,
       targetWhere: eq(unifiIntegrations.isActive, true),
       set: {
+        connectionType: 'cloud',
         baseUrl: fields.baseUrl,
         apiKeyEncrypted,
         accountLabel: fields.accountLabel ?? null,
@@ -116,6 +119,37 @@ export async function upsertConnection(
     .returning();
   if (!inserted[0]) throw new Error('upsertConnection returned no unifi_integrations row');
   return toConnection(inserted[0]);
+}
+
+export async function createSelfHostedIntegration(
+  db: DbExecutor,
+  partnerId: string,
+  fields: { accountLabel?: string | null; createdBy?: string | null },
+): Promise<{ id: string; connectionType: 'self_hosted' }> {
+  const rows = await db
+    .insert(unifiIntegrations)
+    .values({
+      partnerId,
+      connectionType: 'self_hosted',
+      apiKeyEncrypted: null,
+      accountLabel: fields.accountLabel ?? null,
+      createdBy: fields.createdBy ?? null,
+      status: 'connected',
+      isActive: true,
+    })
+    .onConflictDoUpdate({
+      target: unifiIntegrations.partnerId,
+      targetWhere: eq(unifiIntegrations.isActive, true),
+      set: {
+        connectionType: 'self_hosted',
+        accountLabel: fields.accountLabel ?? null,
+        status: 'connected',
+        updatedAt: new Date(),
+      },
+    })
+    .returning({ id: unifiIntegrations.id, connectionType: unifiIntegrations.connectionType });
+  if (!rows[0]) throw new Error('createSelfHostedIntegration returned no row');
+  return { id: rows[0].id, connectionType: 'self_hosted' };
 }
 
 export async function markStatus(

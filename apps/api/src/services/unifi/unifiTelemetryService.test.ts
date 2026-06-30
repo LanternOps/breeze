@@ -7,7 +7,9 @@ type WriteRecord = { table: any; values: any; conflict?: any };
 
 // Build a DbExecutor that returns canned select rows per table and records inserts/updates.
 function scriptedDb(opts: {
-  collector: any; mappings: any[]; existingDevices?: any[]; existingClients?: any[]; assetByMac?: Record<string, any>;
+  collector: any; mappings: any[]; existingDevices?: any[]; existingClients?: any[];
+  assetByMac?: Record<string, any>;
+  assetInsertReturn?: { id: string }; // canned return for discoveredAssets insert().returning()
 }) {
   const writes = { inserts: [] as WriteRecord[], updates: [] as WriteRecord[] };
 
@@ -40,6 +42,7 @@ function scriptedDb(opts: {
     insertValues?: any;
     setValues?: any;
     conflict?: any;
+    returning?: boolean;
   }) {
     const chain: any = {
       from(table: any) {
@@ -61,6 +64,10 @@ function scriptedDb(opts: {
         ctx.conflict = conflict;
         return chain;
       },
+      returning(_col: any) {
+        ctx.returning = true;
+        return chain;
+      },
       set(v: any) {
         ctx.setValues = v;
         return chain;
@@ -69,7 +76,11 @@ function scriptedDb(opts: {
         try {
           if (ctx.op === 'insert' && ctx.insertValues !== undefined) {
             writes.inserts.push({ table: ctx.table, values: ctx.insertValues, conflict: ctx.conflict });
-            resolve([]);
+            if (ctx.table === discoveredAssets && opts.assetInsertReturn) {
+              resolve([opts.assetInsertReturn]);
+            } else {
+              resolve([]);
+            }
             return;
           }
           if (ctx.op === 'update' && ctx.setValues !== undefined) {
@@ -99,8 +110,9 @@ function scriptedDb(opts: {
 describe('reconcileTelemetry', () => {
   it('upserts device + client telemetry and resolves site via mapping', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-fallback', siteId: 'site-fallback', integrationId: 'int-1' },
-      mappings: [{ unifiSiteId: 's1', siteId: 'site-mapped', orgId: 'org-mapped' }],
+      // unifiHostId: null = self-hosted; sentinel mapping row carries unifiHostId = collector.id ('c1').
+      collector: { id: 'c1', orgId: 'org-fallback', siteId: 'site-fallback', integrationId: 'int-1', unifiHostId: null },
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-mapped', orgId: 'org-mapped', unifiHostId: 'c1' }],
       assetByMac: { 'cc:dd': { id: 'asset-1' } },
     });
 
@@ -218,5 +230,78 @@ describe('reconcileTelemetry', () => {
     // Stored canonical (lowercase, colon-separated) and linked despite the source casing.
     expect(clientInserts[0]!.values.mac).toBe('aa:bb:cc:dd:ee:ff');
     expect(clientInserts[0]!.values.discoveredAssetId).toBe('asset-9');
+  });
+
+  it('reconciles device ip+mac into discovered_assets and stamps discoveredAssetId on the telemetry row', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetInsertReturn: { id: 'asset-new-1' },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'AA:BB:CC:00:11:22', raw: { ipAddress: '10.0.0.5', name: 'sw1' } }],
+      clients: [],
+    });
+
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(1);
+    expect(assetInserts[0]!.values.orgId).toBe('org-a');
+    expect(assetInserts[0]!.values.ipAddress).toBe('10.0.0.5');
+    expect(assetInserts[0]!.values.manufacturer).toBe('Ubiquiti');
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-new-1');
+    expect(deviceInserts[0]!.conflict.set.discoveredAssetId).toBe('asset-new-1');
+  });
+
+  it('REGRESSION: per-controller isolation — identical local site id on two self-hosted controllers routes to the correct org', async () => {
+    // Pre-fix: siteByUnifi.set("default", …) is called for BOTH mapping rows; last-write-wins
+    // picks collA's row (it is last in iteration order), so collB's device is mis-routed to org-A.
+    // Post-fix: the filter `m.unifiHostId === hostKey` limits the map to collB's own row only.
+    //
+    // Mapping rows ordered [B first, A last] so that without the host-axis filter the last write
+    // (A) wins — proving the test is RED on pre-fix code.
+    const { db, writes } = scriptedDb({
+      collector: { id: 'collB', orgId: 'org-Bhome', siteId: 'site-Bhome', integrationId: 'int-1', unifiHostId: null },
+      mappings: [
+        { unifiHostId: 'collB', unifiSiteId: 'default', orgId: 'org-B', siteId: 'site-B' },
+        { unifiHostId: 'collA', unifiSiteId: 'default', orgId: 'org-A', siteId: 'site-A' },
+      ],
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'collB', polledAt: '2026-06-30T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'dev-1', unifiSiteId: 'default', raw: {} }],
+      clients: [],
+    });
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    // Must resolve to collB's org/site, NOT collA's — cross-tenant mis-routing would write org-A here.
+    expect(deviceInserts[0]!.values.orgId).toBe('org-B');
+    expect(deviceInserts[0]!.values.siteId).toBe('site-B');
+  });
+
+  it('skips asset creation and leaves discoveredAssetId null when device raw has no ip', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'AA:BB:CC:00:11:22', raw: { name: 'sw1' } }],
+      clients: [],
+    });
+
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(0);
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBeNull();
   });
 });

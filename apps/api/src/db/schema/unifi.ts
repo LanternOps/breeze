@@ -22,8 +22,9 @@ import { devices } from './devices';
 export const unifiIntegrations = pgTable('unifi_integrations', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  connectionType: text('connection_type').notNull().default('cloud'),
   baseUrl: text('base_url').notNull().default('https://api.ui.com'),
-  apiKeyEncrypted: text('api_key_encrypted').notNull(),
+  apiKeyEncrypted: text('api_key_encrypted'),
   accountLabel: text('account_label'),
   isActive: boolean('is_active').notNull().default(true),
   status: varchar('status', { length: 20 }).notNull().default('connected'),
@@ -111,7 +112,7 @@ export const unifiCollectors = pgTable('unifi_collectors', {
   integrationId: uuid('integration_id').notNull().references(() => unifiIntegrations.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
-  unifiHostId: text('unifi_host_id').notNull(),
+  unifiHostId: text('unifi_host_id'),
   collectorDeviceId: uuid('collector_device_id').notNull().references(() => devices.id),
   controllerUrl: text('controller_url').notNull(),
   localApiKeyEncrypted: text('local_api_key_encrypted').notNull(),
@@ -126,7 +127,12 @@ export const unifiCollectors = pgTable('unifi_collectors', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
-  integrationHostIdx: uniqueIndex('unifi_collectors_integration_host_idx').on(table.integrationId, table.unifiHostId),
+  integrationHostIdx: uniqueIndex('unifi_collectors_integration_host_idx')
+    .on(table.integrationId, table.unifiHostId)
+    .where(sql`${table.unifiHostId} IS NOT NULL`),
+  integrationUrlIdx: uniqueIndex('unifi_collectors_integration_url_idx')
+    .on(table.integrationId, table.controllerUrl)
+    .where(sql`${table.unifiHostId} IS NULL`),
   deviceIdx: index('unifi_collectors_device_idx').on(table.collectorDeviceId).where(sql`${table.isEnabled}`),
 }));
 
@@ -144,6 +150,7 @@ export const unifiDeviceTelemetry = pgTable('unifi_device_telemetry', {
   txBytes: bigint('tx_bytes', { mode: 'number' }),
   rxBytes: bigint('rx_bytes', { mode: 'number' }),
   numClients: integer('num_clients'),
+  discoveredAssetId: uuid('discovered_asset_id').references(() => discoveredAssets.id),
   poePorts: jsonb('poe_ports'),
   raw: jsonb('raw').notNull(),
   isStale: boolean('is_stale').notNull().default(false),
@@ -184,4 +191,18 @@ export const unifiClients = pgTable('unifi_clients', {
 }, (table) => ({
   collectorMacIdx: uniqueIndex('unifi_clients_collector_mac_idx').on(table.collectorId, table.mac),
   orgMacIdx: index('unifi_clients_org_mac_idx').on(table.orgId, table.mac),
+}));
+
+export const unifiControllerSites = pgTable('unifi_controller_sites', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  collectorId: uuid('collector_id').notNull().references(() => unifiCollectors.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  localSiteId: text('local_site_id').notNull(),
+  name: text('name'),
+  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  collectorSiteIdx: uniqueIndex('unifi_controller_sites_collector_site_idx')
+    .on(table.collectorId, table.localSiteId),
 }));

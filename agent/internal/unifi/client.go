@@ -55,9 +55,15 @@ type Client struct {
 	Raw               json.RawMessage `json:"raw"`
 }
 
+type SiteRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type Snapshot struct {
 	Devices    []Device
 	Clients    []Client
+	Sites      []SiteRef
 	FirmwareOK bool
 }
 
@@ -158,12 +164,11 @@ func (c *APIClient) Poll(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return snap, err
 	}
-	var sites []struct {
-		ID string `json:"id"`
-	}
+	var sites []SiteRef
 	if err := json.Unmarshal(sitesData, &sites); err != nil {
 		return snap, fmt.Errorf("decode sites: %w", err)
 	}
+	snap.Sites = sites
 
 	var firstErr error
 	var errCount int

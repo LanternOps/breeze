@@ -55,3 +55,28 @@ describe('unifiCollectorService', () => {
     await expect(svc.getCollectorOwnerDeviceId(dbWith([]), 'c1')).resolves.toBeNull();
   });
 });
+
+function mockInsertDb(returning: any[]) {
+  const onConflictDoUpdate = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(returning) });
+  const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+  const insert = vi.fn().mockReturnValue({ values });
+  return { db: { insert } as any, insert, values, onConflictDoUpdate };
+}
+
+describe('upsertSelfHostedController', () => {
+  it('inserts a collector with null host id keyed on controller_url', async () => {
+    const { db, values } = mockInsertDb([{
+      id: 'col-1', integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', unifiHostId: null,
+      collectorDeviceId: 'dev-1', controllerUrl: 'https://192.168.1.1', isEnabled: true,
+      pollIntervalSeconds: 60, status: 'pending', firmwareOk: null, lastPollAt: null, lastPollStatus: null, lastPollError: null,
+    }]);
+    const out = await svc.upsertSelfHostedController(db, {
+      integrationId: 'int-1', orgId: 'org-1', siteId: 'site-1', collectorDeviceId: 'dev-1',
+      controllerUrl: 'https://192.168.1.1', apiKey: 'secret',
+    });
+    expect(out.id).toBe('col-1');
+    const inserted = values.mock.calls[0]![0];
+    expect(inserted.unifiHostId ?? null).toBeNull();
+    expect(inserted.localApiKeyEncrypted).toBe('ENC');
+  });
+});
