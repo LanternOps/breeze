@@ -117,11 +117,23 @@ describe('findOrCreateEmailContact', () => {
 });
 
 describe('loadPartnerInboundPolicy', () => {
-  it('reads triage flags from partners.settings JSONB, defaulting absent to off', async () => {
+  it('reads routing policy from partners.settings JSONB, defaulting absent to quarantine', async () => {
     const { p } = await seedPartnerOrg();
     const defaults = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(defaults).toEqual({ triageUnknownSenders: false, defaultTriageOrgId: null });
+    expect(defaults).toEqual({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 
+    const adminDb = getTestDb() as any;
+    await adminDb
+      .update(partners)
+      .set({ settings: { ticketing: { inbound: { unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true } } } })
+      .where(eq(partners.id, p.id));
+
+    const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
+    expect(set).toEqual({ unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true });
+  });
+
+  it('maps the legacy triageUnknownSenders boolean to unknownSenderMode for back-compat', async () => {
+    const { p } = await seedPartnerOrg();
     const adminDb = getTestDb() as any;
     await adminDb
       .update(partners)
@@ -129,6 +141,6 @@ describe('loadPartnerInboundPolicy', () => {
       .where(eq(partners.id, p.id));
 
     const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(set).toEqual({ triageUnknownSenders: true, defaultTriageOrgId: 'org-triage' });
+    expect(set).toEqual({ unknownSenderMode: 'triage', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: false });
   });
 });

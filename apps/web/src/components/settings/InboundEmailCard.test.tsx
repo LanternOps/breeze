@@ -14,6 +14,8 @@ vi.mock('../../lib/runAction', () => ({
   },
   handleActionError: vi.fn(),
 }));
+// CustomerDomainsCard does its own fetches; stub it out — not under test here.
+vi.mock('./CustomerDomainsCard', () => ({ CustomerDomainsCard: () => null }));
 
 import InboundEmailCard from './InboundEmailCard';
 
@@ -28,7 +30,8 @@ interface CfgShape {
   addressOverride: string | null;
   defaultTriageOrgId: string | null;
   autoresponderEnabled: boolean;
-  triageUnknownSenders: boolean;
+  unknownSenderMode: 'quarantine' | 'triage' | 'drop';
+  dropUnverifiedSenders: boolean;
   autoresponseSubject: string | null;
   autoresponseBody: string | null;
   slug: string;
@@ -42,25 +45,27 @@ const CFG: CfgShape = {
   addressOverride: null,
   defaultTriageOrgId: null,
   autoresponderEnabled: true,
-  triageUnknownSenders: false,
+  unknownSenderMode: 'quarantine',
+  dropUnverifiedSenders: false,
   autoresponseSubject: null,
   autoresponseBody: null,
   slug: 'acme',
   domainConfigured: true,
 };
 
-function routeFetch(queue: unknown[], cfg: CfgShape = CFG) {
+function routeFetch(cfg: CfgShape = CFG) {
   fetchWithAuth.mockImplementation((url: string) => {
     if (url === '/ticket-config') return Promise.resolve(jsonRes({ data: { inbound: cfg } }));
-    if (url.startsWith('/ticket-config/email-inbound?'))
-      return Promise.resolve(jsonRes({ data: queue, pagination: { page: 1, limit: 50, total: queue.length } }));
     if (url === '/orgs/organizations?limit=100')
       return Promise.resolve(jsonRes({ data: [{ id: 'o-1', name: 'Acme Org' }] }));
-    if (url.includes('/convert')) return Promise.resolve(jsonRes({ data: { id: 'r-1', parseStatus: 'created' } }));
-    if (url.includes('/dismiss')) return Promise.resolve(jsonRes({ data: { id: 'r-1', parseStatus: 'ignored' } }));
     if (url === '/orgs/partners/me') return Promise.resolve(jsonRes({ id: 'p-1' }));
     return Promise.resolve(jsonRes({ data: [] }));
   });
+}
+
+function lastInboundPatch() {
+  const call = fetchWithAuth.mock.calls.find((c) => c[0] === '/orgs/partners/me')!;
+  return JSON.parse((call[1] as { body: string }).body).settings.ticketing.inbound;
 }
 
 beforeEach(() => {
@@ -68,109 +73,86 @@ beforeEach(() => {
 });
 
 describe('InboundEmailCard', () => {
-  it('renders the inbound address and review queue', async () => {
-    routeFetch([
-      {
-        id: 'r-1',
-        fromAddress: 'jane@x.com',
-        subject: 'printer',
-        parseStatus: 'quarantined',
-        error: null,
-        ticketId: null,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
+  it('renders the inbound address and the unknown-sender mode control', async () => {
+    routeFetch();
     render(<InboundEmailCard />);
     expect(await screen.findByTestId('inbound-email-card')).toBeTruthy();
     expect((screen.getByTestId('inbound-localpart') as HTMLInputElement).value).toBe('acme');
-    expect(screen.getByTestId('inbound-row-r-1')).toBeTruthy();
+    expect(screen.getByTestId('inbound-unknown-sender-mode')).toBeTruthy();
+    // The review queue no longer lives in settings (moved to the Tickets area).
+    expect(screen.queryByTestId('inbound-review-queue')).toBeNull();
+  });
+
+  it('quarantine is selected by default; triage is disabled until a triage org is set', async () => {
+    routeFetch();
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    expect((screen.getByTestId('inbound-unknown-quarantine') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('inbound-unknown-triage') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('triage becomes selectable once a default triage org is configured', async () => {
+    routeFetch({ ...CFG, defaultTriageOrgId: 'o-1', unknownSenderMode: 'triage' });
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    expect((screen.getByTestId('inbound-unknown-triage') as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByTestId('inbound-unknown-triage') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('selecting "Drop silently" PATCHes unknownSenderMode=drop in the complete inbound object', async () => {
+    routeFetch();
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    fireEvent.click(screen.getByTestId('inbound-unknown-drop'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    const inbound = lastInboundPatch();
+    expect(inbound.unknownSenderMode).toBe('drop');
+    expect(inbound).not.toHaveProperty('triageUnknownSenders'); // legacy key retired
+    expect(inbound).toHaveProperty('dropUnverifiedSenders');
+  });
+
+  it('toggling "drop unverified senders" PATCHes dropUnverifiedSenders=true', async () => {
+    routeFetch();
+    render(<InboundEmailCard />);
+    await screen.findByTestId('inbound-email-card');
+    fireEvent.click(screen.getByTestId('inbound-drop-unverified-toggle'));
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
+    );
+    expect(lastInboundPatch().dropUnverifiedSenders).toBe(true);
   });
 
   it('toggling enable PATCHes /orgs/partners/me with the COMPLETE ticketing.inbound (no address when override is null)', async () => {
-    routeFetch([]);
+    routeFetch();
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
     fireEvent.click(screen.getByTestId('inbound-enabled-toggle'));
     await waitFor(() =>
       expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
     );
-    const body = JSON.parse(
-      (fetchWithAuth.mock.calls.find((c) => c[0] === '/orgs/partners/me')![1] as { body: string }).body,
-    );
-    expect(body.settings.ticketing.inbound.enabled).toBe(true);
-    expect(body.settings.ticketing.inbound).toHaveProperty('defaultTriageOrgId');
-    expect(body.settings.ticketing.inbound).toHaveProperty('autoresponderEnabled');
-    expect(body.settings.ticketing.inbound).not.toHaveProperty('address'); // derived address is NOT re-sent as an override
+    const inbound = lastInboundPatch();
+    expect(inbound.enabled).toBe(true);
+    expect(inbound).toHaveProperty('defaultTriageOrgId');
+    expect(inbound).toHaveProperty('autoresponderEnabled');
+    expect(inbound).toHaveProperty('unknownSenderMode');
+    expect(inbound).not.toHaveProperty('address'); // derived address is NOT re-sent as an override
   });
 
   it('re-sends a self-hosted address override on save so the merge does not destroy it (blocker #1)', async () => {
-    routeFetch([], { ...CFG, address: 'support@tickets.acme.com', addressOverride: 'support@tickets.acme.com' });
+    routeFetch({ ...CFG, address: 'support@tickets.acme.com', addressOverride: 'support@tickets.acme.com' });
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
     fireEvent.click(screen.getByTestId('inbound-autoresponder-toggle'));
     await waitFor(() =>
       expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
     );
-    const body = JSON.parse(
-      (fetchWithAuth.mock.calls.find((c) => c[0] === '/orgs/partners/me')![1] as { body: string }).body,
-    );
-    expect(body.settings.ticketing.inbound.address).toBe('support@tickets.acme.com');
-  });
-
-  it('Convert opens the org picker and POSTs convert with the chosen orgId', async () => {
-    routeFetch([
-      {
-        id: 'r-1',
-        fromAddress: 'jane@x.com',
-        subject: 'printer',
-        parseStatus: 'quarantined',
-        error: null,
-        ticketId: null,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    render(<InboundEmailCard />);
-    await screen.findByTestId('inbound-row-r-1');
-    fireEvent.click(screen.getByTestId('inbound-convert-r-1'));
-    fireEvent.change(screen.getByTestId('inbound-convert-org-r-1'), { target: { value: 'o-1' } });
-    fireEvent.click(screen.getByTestId('inbound-convert-submit-r-1'));
-    await waitFor(() =>
-      expect(fetchWithAuth).toHaveBeenCalledWith(
-        '/ticket-config/email-inbound/r-1/convert',
-        expect.objectContaining({ method: 'POST' }),
-      ),
-    );
-    const body = JSON.parse(
-      (fetchWithAuth.mock.calls.find((c) => String(c[0]).includes('/convert'))![1] as { body: string }).body,
-    );
-    expect(body.orgId).toBe('o-1');
-  });
-
-  it('Dismiss PATCHes the dismiss route and refetches', async () => {
-    routeFetch([
-      {
-        id: 'r-1',
-        fromAddress: 'jane@x.com',
-        subject: 'printer',
-        parseStatus: 'failed',
-        error: 'boom',
-        ticketId: null,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    render(<InboundEmailCard />);
-    await screen.findByTestId('inbound-row-r-1');
-    fireEvent.click(screen.getByTestId('inbound-dismiss-r-1'));
-    await waitFor(() =>
-      expect(fetchWithAuth).toHaveBeenCalledWith(
-        '/ticket-config/email-inbound/r-1/dismiss',
-        expect.objectContaining({ method: 'PATCH' }),
-      ),
-    );
+    expect(lastInboundPatch().address).toBe('support@tickets.acme.com');
   });
 
   it('shows a live preview of the custom auto-reply body with sample variables', async () => {
-    routeFetch([], { ...CFG, autoresponseBody: 'Hi {{requester_name}}' });
+    routeFetch({ ...CFG, autoresponseBody: 'Hi {{requester_name}}' });
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
     const preview = await screen.findByTestId('inbound-autoreply-preview');
@@ -178,7 +160,7 @@ describe('InboundEmailCard', () => {
   });
 
   it('saves the complete inbound object including auto-reply subject + body', async () => {
-    routeFetch([]);
+    routeFetch();
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
     fireEvent.change(screen.getByTestId('inbound-autoreply-subject'), {
@@ -191,42 +173,26 @@ describe('InboundEmailCard', () => {
     await waitFor(() =>
       expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
     );
-    const body = JSON.parse(
-      (fetchWithAuth.mock.calls.find((c) => c[0] === '/orgs/partners/me')![1] as { body: string }).body,
-    );
-    const inbound = body.settings.ticketing.inbound;
+    const inbound = lastInboundPatch();
     expect(inbound.autoresponseSubject).toBe('Re: {{ticket_subject}}');
     expect(inbound.autoresponseBody).toBe('Thanks {{requester_name}}');
     // No sibling field destroyed by the shallow-replace of `ticketing`.
     expect(inbound).toHaveProperty('enabled');
     expect(inbound).toHaveProperty('autoresponderEnabled');
-    expect(inbound).toHaveProperty('triageUnknownSenders');
+    expect(inbound).toHaveProperty('unknownSenderMode');
+    expect(inbound).toHaveProperty('dropUnverifiedSenders');
   });
 
   it('hides the auto-reply editor when the autoresponder is disabled', async () => {
-    routeFetch([], { ...CFG, autoresponderEnabled: false });
+    routeFetch({ ...CFG, autoresponderEnabled: false });
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
     expect(screen.queryByTestId('inbound-autoreply-body')).toBeNull();
   });
 
   it('shows the unconfigured-domain hint when domainConfigured is false', async () => {
-    routeFetch([], { ...CFG, address: '', domainConfigured: false });
+    routeFetch({ ...CFG, address: '', domainConfigured: false });
     render(<InboundEmailCard />);
     expect(await screen.findByTestId('inbound-address-unconfigured')).toBeTruthy();
-  });
-
-  it('renders the admin-only notice when the queue fetch 403s but keeps settings usable', async () => {
-    fetchWithAuth.mockImplementation((url: string) => {
-      if (url === '/ticket-config') return Promise.resolve(jsonRes({ data: { inbound: CFG } }));
-      if (url.startsWith('/ticket-config/email-inbound?'))
-        return Promise.resolve(jsonRes({ error: 'admin' }, false, 403));
-      if (url === '/orgs/organizations?limit=100') return Promise.resolve(jsonRes({ data: [] }));
-      return Promise.resolve(jsonRes({ data: [] }));
-    });
-    render(<InboundEmailCard />);
-    expect(await screen.findByTestId('inbound-email-card')).toBeTruthy();
-    expect(screen.getByTestId('inbound-review-forbidden')).toBeTruthy();
-    expect(screen.getByTestId('inbound-enabled-toggle')).toBeTruthy(); // settings still rendered
   });
 });

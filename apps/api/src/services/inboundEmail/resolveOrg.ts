@@ -74,12 +74,41 @@ export async function findOrCreateEmailContact(
 }
 
 /**
- * Read the partner's inbound triage policy from partners.settings JSONB
- * (settings.ticketing.inbound). Absent fields read as disabled.
+ * How an inbound email from an UNKNOWN sender (no live thread, no closed-ticket
+ * reply, no portal user, no mapped customer domain) is handled:
+ *  - 'quarantine' — route to the review queue for manual convert/dismiss (default)
+ *  - 'triage'     — auto-create a ticket in the partner's default triage org
+ *                   (only effective when defaultTriageOrgId is set)
+ *  - 'drop'       — silently ignore: no ticket, no review-queue row, no
+ *                   autoresponse (an 'ignored' audit row is still written)
+ */
+export type UnknownSenderMode = 'quarantine' | 'triage' | 'drop';
+
+const UNKNOWN_SENDER_MODES: readonly UnknownSenderMode[] = ['quarantine', 'triage', 'drop'];
+
+export interface PartnerInboundPolicy {
+  unknownSenderMode: UnknownSenderMode;
+  defaultTriageOrgId: string | null;
+  /**
+   * When true, an inbound email whose sender fails the SPF/DKIM/DMARC gate is
+   * silently dropped ('ignored' audit row) instead of quarantined. Applies to
+   * ALL unverified senders (known or not), since the auth gate runs before any
+   * sender matching. Default false (preserves the quarantine-for-review behavior).
+   */
+  dropUnverifiedSenders: boolean;
+}
+
+/**
+ * Read the partner's inbound routing policy from partners.settings JSONB
+ * (settings.ticketing.inbound). Absent fields read as the safe default
+ * (quarantine; never drop). Back-compat: a partner that only has the legacy
+ * `triageUnknownSenders` boolean (set before the 3-way mode existed) maps
+ * true -> 'triage', false/absent -> 'quarantine'. The first save from the UI
+ * replaces the inbound object wholesale, retiring the legacy key.
  */
 export async function loadPartnerInboundPolicy(
   partnerId: string,
-): Promise<{ triageUnknownSenders: boolean; defaultTriageOrgId: string | null }> {
+): Promise<PartnerInboundPolicy> {
   const rows = await db
     .select({ settings: partners.settings })
     .from(partners)
@@ -88,10 +117,25 @@ export async function loadPartnerInboundPolicy(
   const settings = (rows[0]?.settings ?? {}) as Record<string, unknown>;
   const inbound =
     (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
-      | { defaultTriageOrgId?: string | null; triageUnknownSenders?: boolean }
+      | {
+          defaultTriageOrgId?: string | null;
+          triageUnknownSenders?: boolean;
+          unknownSenderMode?: string;
+          dropUnverifiedSenders?: boolean;
+        }
       | undefined) ?? {};
+
+  // Prefer the explicit 3-way mode; fall back to the legacy boolean. An
+  // unrecognized stored value falls through to the safe 'quarantine' default.
+  const mode = UNKNOWN_SENDER_MODES.includes(inbound.unknownSenderMode as UnknownSenderMode)
+    ? (inbound.unknownSenderMode as UnknownSenderMode)
+    : inbound.triageUnknownSenders === true
+      ? 'triage'
+      : 'quarantine';
+
   return {
-    triageUnknownSenders: inbound.triageUnknownSenders === true,
+    unknownSenderMode: mode,
     defaultTriageOrgId: inbound.defaultTriageOrgId ?? null,
+    dropUnverifiedSenders: inbound.dropUnverifiedSenders === true,
   };
 }

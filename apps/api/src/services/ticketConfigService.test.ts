@@ -269,6 +269,26 @@ describe('getTicketConfig inbound block', () => {
     expect(cfg.inbound.domainConfigured).toBe(false);
     expect(cfg.inbound.address).toBe('');
   });
+  it('defaults unknownSenderMode=quarantine and dropUnverifiedSenders=false when absent', async () => {
+    enqueueForInbound({ slug: 'acme', settings: {} });
+    const cfg = await getTicketConfig('p-1');
+    expect(cfg.inbound.unknownSenderMode).toBe('quarantine');
+    expect(cfg.inbound.dropUnverifiedSenders).toBe(false);
+    expect(cfg.inbound.triageUnknownSenders).toBe(false);
+  });
+  it('surfaces an explicit unknownSenderMode=drop and dropUnverifiedSenders=true', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { unknownSenderMode: 'drop', dropUnverifiedSenders: true } } } });
+    const cfg = await getTicketConfig(PARTNER);
+    expect(cfg.inbound.unknownSenderMode).toBe('drop');
+    expect(cfg.inbound.dropUnverifiedSenders).toBe(true);
+    expect(cfg.inbound.triageUnknownSenders).toBe(false);
+  });
+  it('maps legacy triageUnknownSenders=true -> unknownSenderMode=triage (back-compat)', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { triageUnknownSenders: true } } } });
+    const cfg = await getTicketConfig(PARTNER);
+    expect(cfg.inbound.unknownSenderMode).toBe('triage');
+    expect(cfg.inbound.triageUnknownSenders).toBe(true);
+  });
 });
 
 describe('createTicketStatus', () => {

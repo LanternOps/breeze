@@ -171,7 +171,17 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
     // boundary (aligned SPF+DKIM, or DMARC pass). When NOT verified, route the message to
     // the EXISTING quarantine/review path instead of auto-acting — mail is never dropped.
     if (!n.senderAuth?.verified) {
-      await logInbound(n, partnerId, 'quarantined', null, 'unverified sender (SPF/DKIM/DMARC)');
+      // Default: route to the review queue. If the partner opted into dropping
+      // unverified mail, silently ignore it instead (audit row only, no review
+      // queue, no autoresponse). This gate runs before any sender matching, so
+      // the drop applies to ALL unverified senders — known or not (see
+      // PartnerInboundPolicy.dropUnverifiedSenders).
+      const policy = await loadPartnerInboundPolicy(partnerId);
+      if (policy.dropUnverifiedSenders) {
+        await logInbound(n, partnerId, 'ignored', null, 'drop: unverified sender (SPF/DKIM/DMARC)');
+      } else {
+        await logInbound(n, partnerId, 'quarantined', null, 'unverified sender (SPF/DKIM/DMARC)');
+      }
       return;
     }
 
@@ -230,17 +240,28 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
       return;
     }
 
-    // (7) Triage fallback for unknown senders, only if the partner opted in
-    // (settings.ticketing.inbound). No contact is onboarded — the customer is
-    // unknown. Default-off: absent settings keep the Phase 4 quarantine behavior.
+    // (7) Unknown sender (no thread, no portal user, no mapped domain). The
+    // partner's policy (settings.ticketing.inbound) decides the fate. No contact
+    // is onboarded — the customer is unknown. Default-off: absent settings keep
+    // the Phase 4 quarantine behavior.
     const policy = await loadPartnerInboundPolicy(partnerId);
-    if (policy.triageUnknownSenders && policy.defaultTriageOrgId) {
+
+    // 'drop' — silently ignore: no ticket, no review-queue row, no autoresponse.
+    // Distinct from quarantine so unmapped spam doesn't fill the review queue.
+    if (policy.unknownSenderMode === 'drop') {
+      await logInbound(n, partnerId, 'ignored', null, 'drop: unknown sender');
+      return;
+    }
+
+    // 'triage' — auto-create in the partner's default triage org (only when one
+    // is configured; otherwise fall through to quarantine).
+    if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
       const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null);
       await logInbound(n, partnerId, 'created', t.id);
       return;
     }
 
-    // (8) Nothing matched -> quarantine for manual review.
+    // (8) 'quarantine' (default) -> review queue for manual handling.
     await logInbound(n, partnerId, 'quarantined', null);
   } catch (err) {
     // (9) Any guard/error -> failed, logged under the RESOLVED partner (or null if

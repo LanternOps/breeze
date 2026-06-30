@@ -227,7 +227,7 @@ beforeEach(() => {
   resolveOrgMock.mockResolvedValue(null);
   findOrCreateContactMock.mockReset();
   loadPolicyMock.mockReset();
-  loadPolicyMock.mockResolvedValue({ triageUnknownSenders: false, defaultTriageOrgId: null });
+  loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 });
 
 describe('processInboundEmail', () => {
@@ -721,6 +721,22 @@ describe('processInboundEmail', () => {
     expect(log[0]!.parseStatus).toBe('quarantined');
   });
 
+  it('R4: dropUnverifiedSenders DROPS an unverified sender instead of quarantining (audit row only)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [];
+    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: true });
+
+    await processInboundEmail(email({ senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false } }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(log[0]!.ticketId).toBeNull();
+  });
+
   it('R4: a VERIFIED sender still appends/reopens, and stamps authorName from the stored portal-user name', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
@@ -763,9 +779,9 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     resolveOrgMock.mockReset();
     findOrCreateContactMock.mockReset();
     loadPolicyMock.mockReset();
-    // Safe defaults: no domain match, triage off.
+    // Safe defaults: no domain match, quarantine unknown senders.
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ triageUnknownSenders: false, defaultTriageOrgId: null });
+    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
   });
 
   it('routes a mapped domain (autoCreateContact true) -> creates ticket in the org + onboards a contact', async () => {
@@ -801,7 +817,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
   it('falls back to the triage org when enabled and no domain matches (no contact onboarding)', async () => {
     state.selectRows['organizations'] = [{ id: 'o-triage' }];
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ triageUnknownSenders: true, defaultTriageOrgId: 'o-triage' });
+    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'triage', defaultTriageOrgId: 'o-triage', dropUnverifiedSenders: false });
     createTicketMock.mockResolvedValue({ id: 't-t', internalNumber: 'T-2026-0100' });
 
     await processInboundEmail(email());
@@ -812,14 +828,37 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     expect(inboundOf()[0]!.parseStatus).toBe('created');
   });
 
-  it('quarantines when nothing matches and triage is disabled', async () => {
+  it('quarantines when nothing matches and mode is quarantine (default)', async () => {
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ triageUnknownSenders: false, defaultTriageOrgId: null });
+    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 
     await processInboundEmail(email());
 
     expect(createTicketMock).not.toHaveBeenCalled();
     expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('triage mode with NO triage org configured falls through to quarantine (never a no-org create)', async () => {
+    resolveOrgMock.mockResolvedValue(null);
+    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'triage', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+
+    await processInboundEmail(email());
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it("'drop' mode silently ignores an unknown sender — no ticket, no quarantine (audit row only)", async () => {
+    resolveOrgMock.mockResolvedValue(null);
+    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'drop', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+
+    await processInboundEmail(email());
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const rows = inboundOf();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.parseStatus).toBe('ignored');
+    expect(rows[0]!.ticketId).toBeNull();
   });
 
   it('does NOT reach domain routing for an unverified sender (existing DMARC gate wins)', async () => {

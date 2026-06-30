@@ -368,6 +368,7 @@ export async function getTicketConfig(partnerId: string) {
     {
       enabled?: boolean; address?: string; defaultTriageOrgId?: string | null;
       autoresponderEnabled?: boolean; triageUnknownSenders?: boolean;
+      unknownSenderMode?: string; dropUnverifiedSenders?: boolean;
       autoresponseSubject?: string | null; autoresponseBody?: string | null;
     } | undefined) ?? {};
   const domain = getConfig().TICKETS_INBOUND_DOMAIN ?? '';
@@ -376,13 +377,26 @@ export async function getTicketConfig(partnerId: string) {
   const derived = domainConfigured && effectiveLocalPart ? `${effectiveLocalPart}@${domain}` : '';
   const addressOverride = (inboundCfg.address && inboundCfg.address.length > 0) ? inboundCfg.address : null;
 
+  // Resolve the 3-way unknown-sender mode with the same back-compat rule as
+  // loadPartnerInboundPolicy: explicit mode wins, else the legacy boolean maps
+  // true→'triage', else 'quarantine'. `triageUnknownSenders` is still emitted
+  // (derived) so any older client keeps working.
+  const unknownSenderMode: 'quarantine' | 'triage' | 'drop' =
+    inboundCfg.unknownSenderMode === 'triage' || inboundCfg.unknownSenderMode === 'drop' || inboundCfg.unknownSenderMode === 'quarantine'
+      ? inboundCfg.unknownSenderMode
+      : inboundCfg.triageUnknownSenders === true
+        ? 'triage'
+        : 'quarantine';
+
   const inbound = {
     enabled: inboundCfg.enabled ?? false,
     address: addressOverride ?? derived,
     addressOverride,
     defaultTriageOrgId: inboundCfg.defaultTriageOrgId ?? null,
     autoresponderEnabled: inboundCfg.autoresponderEnabled ?? true,
-    triageUnknownSenders: inboundCfg.triageUnknownSenders ?? false,
+    unknownSenderMode,
+    triageUnknownSenders: unknownSenderMode === 'triage',
+    dropUnverifiedSenders: inboundCfg.dropUnverifiedSenders ?? false,
     autoresponseSubject: inboundCfg.autoresponseSubject ?? null,
     autoresponseBody: inboundCfg.autoresponseBody ?? null,
     slug,

@@ -8,6 +8,7 @@ import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketWorkbench from './TicketWorkbench';
+import InboundReviewQueue from './InboundReviewQueue';
 import { useQueueKeyboard } from './useQueueKeyboard';
 import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { fetchTicketConfig, priorityLabel, statusLabel, type TicketConfig } from '../../lib/ticketConfigApi';
@@ -23,7 +24,10 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   OTHER: 'other errors'
 };
 
-type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed';
+// 'review' is the inbound email review queue — a sibling surface, not a ticket
+// query. It renders InboundReviewQueue instead of the queue/workbench split, and
+// is only present for admins (visibility gated by a 200 from the queue endpoint).
+type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed' | 'review';
 type TicketSort = 'triage' | 'newest' | 'oldest' | 'due';
 
 const SORT_OPTIONS: Array<{ value: TicketSort; label: string }> = [
@@ -50,7 +54,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'closed', label: 'Closed' }
 ];
 
-function tabQuery(tab: Tab): string {
+function tabQuery(tab: Exclude<Tab, 'review'>): string {
   switch (tab) {
     case 'mine': return 'statusGroup=open&assignee=me';
     case 'unassigned': return 'statusGroup=open&assignee=unassigned';
@@ -125,6 +129,11 @@ export default function TicketsPage() {
   // Ticket config (custom statuses + priority labels). null = not loaded / fetch
   // failed; chips and bulk-status options fall back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
+  // Inbound review queue: only admins can read it, so the tab is hidden unless a
+  // probe of the queue endpoint returns 200 (non-admins / org-scoped users 403).
+  // `reviewTotal` drives the tab's pending-count badge.
+  const [reviewAvailable, setReviewAvailable] = useState(false);
+  const [reviewTotal, setReviewTotal] = useState(0);
   const fetchSeq = useRef(0);
 
   // 'mine'/'unassigned' tabs already pin the assignee param; the filter select is locked there.
@@ -175,6 +184,9 @@ export default function TicketsPage() {
   }, []);
 
   const fetchTickets = useCallback(async () => {
+    // The review tab isn't a ticket query — it renders InboundReviewQueue, which
+    // loads its own data. Skip the /tickets fetch so tabQuery never sees 'review'.
+    if (tab === 'review') { setLoading(false); return; }
     const seq = ++fetchSeq.current;
     setLoading(true);
     setError(undefined);
@@ -255,6 +267,23 @@ export default function TicketsPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // Probe the inbound review queue once: a 200 means the caller is an admin who
+  // can act on it, so we reveal the tab + seed its badge count. A 403 (non-admin
+  // / org-scoped) or any error leaves the tab hidden. This is UX-only gating —
+  // the endpoint re-enforces admin access server-side.
+  const refreshReviewBadge = useCallback(async () => {
+    try {
+      const res = await fetchWithAuth('/ticket-config/email-inbound?page=1&limit=1');
+      if (!res.ok) return;
+      setReviewAvailable(true);
+      const body = (await res.json()) as { pagination?: { total?: number } };
+      setReviewTotal(body.pagination?.total ?? 0);
+    } catch {
+      // Network error — leave the tab hidden rather than risk a broken surface.
+    }
+  }, []);
+  useEffect(() => { void refreshReviewBadge(); }, [refreshReviewBadge]);
+
   // Selection survives tab switches (POST /tickets/bulk takes raw ids; the bar's
   // count chip reports off-view rows) but clears when a filter or the search
   // changes — those genuinely change what the result set means.
@@ -286,13 +315,14 @@ export default function TicketsPage() {
 
   // Auto-select first row when nothing valid is selected (UI brief: no-selection state auto-selects)
   useEffect(() => {
+    if (tab === 'review') return; // the review tab has no ticket selection
     if (!loading && tickets.length > 0 && !selected) {
       const first = tickets[0];
       const key = first.internalNumber ?? first.id;
       writeHash(key, sort);
       setSelectedNumber(key);
     }
-  }, [loading, tickets, selected, sort, writeHash]);
+  }, [tab, loading, tickets, selected, sort, writeHash]);
 
   const select = useCallback((t: TicketSummary) => {
     // Below the split-pane breakpoint the workbench pane is hidden; navigate
@@ -403,6 +433,8 @@ export default function TicketsPage() {
   });
 
   const tabCount = (id: Tab): number | null => {
+    // The review badge is independent of /tickets/stats; show it only when non-empty.
+    if (id === 'review') return reviewTotal > 0 ? reviewTotal : null;
     if (!stats) return null;
     if (id === 'mine') return stats.mine;
     if (id === 'unassigned') return stats.unassigned;
@@ -453,6 +485,24 @@ export default function TicketsPage() {
             {tabCount(t.id) !== null && <span className="ml-1.5 text-xs text-muted-foreground">{tabCount(t.id)}</span>}
           </button>
         ))}
+        {reviewAvailable && (
+          <button
+            type="button"
+            onClick={() => setTab('review')}
+            data-testid="tickets-tab-review"
+            className={cn(
+              'border-b-2 px-3 py-2 text-sm font-medium -mb-px',
+              tab === 'review' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Review queue
+            {tabCount('review') !== null && (
+              <span className="ml-1.5 rounded-full bg-amber-500/20 px-1.5 text-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200" data-testid="tickets-tab-review-badge">
+                {tabCount('review')}
+              </span>
+            )}
+          </button>
+        )}
         <input
           type="search"
           value={search}
@@ -463,6 +513,7 @@ export default function TicketsPage() {
         />
       </div>
 
+      {tab !== 'review' && (
       <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="tickets-filter-bar">
         {!orgScoped && orgs.length > 1 && (
           <select
@@ -535,8 +586,13 @@ export default function TicketsPage() {
           ))}
         </select>
       </div>
+      )}
 
-      {trueEmpty ? (
+      {tab === 'review' ? (
+        <div className="min-h-0 flex-1 overflow-y-auto" data-testid="tickets-review-pane">
+          <InboundReviewQueue onTotalChange={setReviewTotal} />
+        </div>
+      ) : trueEmpty ? (
         <div className="flex flex-1 flex-col items-center justify-center text-center" data-testid="tickets-empty">
           <h2 className="text-base font-medium">No tickets yet</h2>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
