@@ -24,6 +24,7 @@ export const securityProviderEnum = pgEnum('security_provider', [
   'malwarebytes',
   'eset',
   'kaspersky',
+  'elastic_defend',
   'other'
 ]);
 

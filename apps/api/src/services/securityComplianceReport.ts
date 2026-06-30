@@ -69,7 +69,8 @@ function prettyProvider(p: string): string {
     sophos: 'Sophos',
     malwarebytes: 'Malwarebytes',
     eset: 'ESET',
-    kaspersky: 'Kaspersky'
+    kaspersky: 'Kaspersky',
+    elastic_defend: 'Elastic Defend'
   };
   return map[p] ?? p;
 }

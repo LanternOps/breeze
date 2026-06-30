@@ -217,6 +217,11 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
       return 'eset';
     case 'kaspersky':
       return 'kaspersky';
+    case 'elastic_defend':
+    case 'elastic_endpoint':
+    case 'elastic_agent':
+    case 'elastic':
+      return 'elastic_defend';
     default:
       return 'other';
   }

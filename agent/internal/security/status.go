@@ -101,6 +101,11 @@ func defaultDataDir() string {
 func providerFromName(name string) string {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	switch {
+	// Elastic Defend (Elastic Agent / Elastic Endpoint Security) registers with
+	// Windows Security Center. Match before the broad "defender" case so an
+	// "Elastic Defender"-style name isn't misread as Microsoft Defender (#2018).
+	case strings.Contains(lower, "elastic"):
+		return "elastic_defend"
 	case strings.Contains(lower, "defender"):
 		return "windows_defender"
 	case strings.Contains(lower, "bitdefender"):

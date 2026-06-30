@@ -10,6 +10,7 @@ export const providerCatalog = {
   malwarebytes: { id: 'malwarebytes', name: 'Malwarebytes', vendor: 'Malwarebytes' },
   eset: { id: 'eset', name: 'ESET', vendor: 'ESET' },
   kaspersky: { id: 'kaspersky', name: 'Kaspersky', vendor: 'Kaspersky' },
+  elastic_defend: { id: 'elastic_defend', name: 'Elastic Defend', vendor: 'Elastic' },
   other: { id: 'other', name: 'Other', vendor: 'Other' }
 } as const;
 

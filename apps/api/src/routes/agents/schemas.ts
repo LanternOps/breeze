@@ -258,6 +258,7 @@ export const securityProviderValues = [
   'malwarebytes',
   'eset',
   'kaspersky',
+  'elastic_defend',
   'other'
 ] as const;
 
