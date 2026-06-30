@@ -102,6 +102,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     };
   }, []);
 
+  // Clear any stale "Connection failed" error once the button becomes disabled
+  // (e.g. the device just went offline). Otherwise the leftover error label and
+  // title would mask the `disabledTitle` ("Device is offline") tooltip.
+  useEffect(() => {
+    if (disabled) setError(null);
+  }, [disabled]);
+
   const endSession = useCallback((sessionId: string) => {
     fetchWithAuth(`/remote/sessions/${sessionId}/end`, { method: 'POST' }).catch(() => {});
   }, []);

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceActions from './DeviceActions';
@@ -99,6 +99,33 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       const wake = button(/^wake$/i);
       expect(wake).toBeInTheDocument();
       expect(wake).not.toBeDisabled();
+    });
+  });
+
+  // The compact variant duplicates the gating logic in its own menu, so it gets
+  // its own coverage. The menu is collapsed until the trigger is clicked.
+  describe('compact variant', () => {
+    it('disables Connect Desktop when offline (with the offline tooltip) but keeps Wake enabled', () => {
+      render(<DeviceActions device={offlineDevice} compact />);
+
+      // Only the MoreHorizontal trigger is rendered until the menu opens.
+      fireEvent.click(screen.getByRole('button'));
+
+      const connect = button(/^connect desktop$/i);
+      expect(connect).toBeDisabled();
+      expect(connect).toHaveAttribute('title', 'Device is offline');
+
+      const wake = button(/^wake$/i);
+      expect(wake).toBeInTheDocument();
+      expect(wake).not.toBeDisabled();
+    });
+
+    it('leaves Connect Desktop enabled when online', () => {
+      render(<DeviceActions device={onlineDevice} compact />);
+
+      fireEvent.click(screen.getByRole('button'));
+
+      expect(button(/^connect desktop$/i)).not.toBeDisabled();
     });
   });
 });

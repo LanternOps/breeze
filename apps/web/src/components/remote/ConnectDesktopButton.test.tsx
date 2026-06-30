@@ -171,4 +171,31 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
     render(<ConnectDesktopButton deviceId="dev-on" disabledTitle="Device is offline" />);
     expect(screen.getByRole('button', { name: /connect desktop/i })).not.toBeDisabled();
   });
+
+  it('clears a stale "Connection failed" error and shows the offline tooltip when the device goes offline', async () => {
+    // GET /devices/:id (no launcher), then the sessions POST fails — drives the
+    // button into its error state while it is still enabled.
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: 'no_provider_configured',
+    }));
+    fetchMock.mockResolvedValue(jsonRes({ error: 'Device is not online' }, false));
+
+    const { rerender } = render(
+      <ConnectDesktopButton deviceId="dev-x" disabledTitle="Device is offline" />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /connection failed/i })).toBeInTheDocument(),
+    );
+
+    // Device flips offline → disabled. The stale error must clear so the offline
+    // tooltip is visible rather than the leftover "Connection failed" title.
+    rerender(<ConnectDesktopButton deviceId="dev-x" disabled disabledTitle="Device is offline" />);
+    const btn = screen.getByRole('button');
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('title', 'Device is offline');
+    expect(screen.queryByText(/connection failed/i)).toBeNull();
+  });
 });
