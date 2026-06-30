@@ -108,14 +108,14 @@ export default function TicketPrioritiesTab() {
             method: 'PUT',
             body: JSON.stringify({ priorities: buildPayload(draft) }),
           }),
-        errorFallback: 'Failed to save priority settings. Retry.',
-        successMessage: 'Priority settings saved',
+        errorFallback: "Couldn't save priorities and SLAs. Retry.",
+        successMessage: 'Priorities and SLAs saved',
         onUnauthorized: UNAUTHORIZED,
       });
       invalidateTicketConfig();
       void load();
     } catch (err) {
-      handleActionError(err, 'Failed to save priority settings. Retry.');
+      handleActionError(err, "Couldn't save priorities and SLAs. Retry.");
     }
     setSaving(false);
   }, [draft, load]);
@@ -123,9 +123,9 @@ export default function TicketPrioritiesTab() {
   return (
     <div className="max-w-3xl" data-testid="ticket-priorities-tab">
       <div>
-        <h2 className="text-lg font-semibold">Ticket Priorities</h2>
+        <h2 className="text-lg font-semibold">Priorities &amp; SLAs</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Customize priority labels and set default SLA response and resolution times.
+          Rename ticket priorities and set the default response and resolution SLAs. These apply to new tickets across every organization you manage.
         </p>
       </div>
 
@@ -200,7 +200,7 @@ export default function TicketPrioritiesTab() {
             </table>
 
             <p className="mt-3 text-xs text-muted-foreground">
-              Order of precedence: category SLA → org override → these defaults.
+              These are your partner-wide SLA defaults. Each ticket uses the most specific SLA that applies — a per-ticket override, then its category, then an organization override — and falls back to these defaults otherwise. Leave a field blank to use the built-in default (Urgent and High only).
             </p>
 
             <div className="mt-4">

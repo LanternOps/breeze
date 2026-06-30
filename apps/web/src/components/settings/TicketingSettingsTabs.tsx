@@ -19,7 +19,7 @@ type Tab = (typeof VALID_TABS)[number];
 // backstop that hides the queue for non-admins reached directly via hash.
 const BASE_TABS: Array<{ id: Tab; label: string }> = [
   { id: 'statuses', label: 'Statuses' },
-  { id: 'priorities', label: 'Priorities' },
+  { id: 'priorities', label: 'Priorities & SLAs' },
   { id: 'categories', label: 'Categories' },
   { id: 'export', label: 'Export' }
 ];

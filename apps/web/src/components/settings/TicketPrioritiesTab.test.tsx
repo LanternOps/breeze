@@ -121,7 +121,7 @@ describe('TicketPrioritiesTab', () => {
       render(<TicketPrioritiesTab />);
 
       await screen.findByTestId('priorities-save');
-      expect(screen.getByText(/Order of precedence: category SLA → org override → these defaults/)).toBeInTheDocument();
+      expect(screen.getByText(/These are your partner-wide SLA defaults/)).toBeInTheDocument();
     });
   });
 
