@@ -67,9 +67,14 @@ const defaultValues: DefaultsData = {
     requireApproval: false,
     sendWelcome: true
   },
-  agentUpdatePolicy: 'staged',
+  // The UI exposes only "Automatic" and "Manual" — the legacy 'staged' value is
+  // behaviourally identical to 'auto' (both are gated by the maintenance window;
+  // there is no rings/canaries machinery behind it — see issue #1962), so we
+  // default unconfigured orgs to 'auto' and fold any stored 'staged' into it on
+  // load (the backend still accepts 'staged' for back-compat).
+  agentUpdatePolicy: 'auto',
   // Default to the explicit "always" state so an unconfigured org matches the
-  // backend's permissive default (staged + no window = update anytime) instead
+  // backend's permissive default (auto + no window = update anytime) instead
   // of silently committing to a Sunday window the first time defaults are saved.
   maintenanceWindow: MAINTENANCE_WINDOW_ALWAYS
 };
@@ -94,7 +99,13 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
   const [deviceGroup, setDeviceGroup] = useState(initialData.deviceGroup || defaultValues.deviceGroup!);
   const [alertThreshold, setAlertThreshold] = useState(initialData.alertThreshold || defaultValues.alertThreshold!);
   const [autoEnrollment, setAutoEnrollment] = useState(initialData.autoEnrollment || defaultValues.autoEnrollment!);
-  const [agentUpdatePolicy, setAgentUpdatePolicy] = useState(initialData.agentUpdatePolicy || defaultValues.agentUpdatePolicy!);
+  // Fold the legacy 'staged' value into 'auto' (identical behaviour; see #1962)
+  // so the select shows a valid selection rather than falling back to no match.
+  const [agentUpdatePolicy, setAgentUpdatePolicy] = useState(
+    (initialData.agentUpdatePolicy ?? defaultValues.agentUpdatePolicy!) === 'staged'
+      ? 'auto'
+      : initialData.agentUpdatePolicy || defaultValues.agentUpdatePolicy!
+  );
   const initialWindow = deriveWindowState(initialData.maintenanceWindow);
   // A stored value that is neither the always-state nor a parseable window was
   // silently reset to seeded defaults by deriveWindowState. Surface that so the
@@ -307,10 +318,14 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
-            <option value="auto">Automatic updates</option>
-            <option value="staged">Staged rollout</option>
-            <option value="manual">Manual approval</option>
+            <option value="auto">Automatic</option>
+            <option value="manual">Manual (block automatic updates)</option>
           </select>
+          <p className="text-xs text-muted-foreground">
+            <strong>Automatic</strong> installs agent updates during the maintenance window below
+            (or at any time when set to 24/7). <strong>Manual</strong> blocks automatic updates
+            entirely — agents stay on their current version until you update them yourself.
+          </p>
           <div className="space-y-3">
             <span className="text-xs font-medium uppercase text-muted-foreground">
               Maintenance window

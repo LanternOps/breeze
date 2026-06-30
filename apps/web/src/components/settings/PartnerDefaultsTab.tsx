@@ -23,14 +23,17 @@ export default function PartnerDefaultsTab({ data, onChange }: Props) {
         <div className="space-y-2">
           <label className="text-sm font-medium">Agent Update Policy</label>
           <select
-            value={data.agentUpdatePolicy ?? ''}
+            // Fold the legacy 'staged' value into 'auto' for display — they are
+            // behaviourally identical (both maintenance-window gated; no real
+            // staged rollout exists, see #1962). The backend still accepts
+            // 'staged' for back-compat.
+            value={data.agentUpdatePolicy === 'staged' ? 'auto' : (data.agentUpdatePolicy ?? '')}
             onChange={e => set({ agentUpdatePolicy: e.target.value || undefined })}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
             <option value="">{PLACEHOLDER}</option>
-            <option value="auto">Auto-update</option>
-            <option value="manual">Manual</option>
-            <option value="staged">Staged rollout</option>
+            <option value="auto">Automatic</option>
+            <option value="manual">Manual (block automatic updates)</option>
           </select>
         </div>
 
