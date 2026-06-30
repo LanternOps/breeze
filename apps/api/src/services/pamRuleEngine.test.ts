@@ -8,6 +8,7 @@ import {
   evaluatePamToolActionRules,
   isWithinTimeWindow,
   type PamRuleCandidate,
+  type SignerGroupResolver,
 } from './pamRuleEngine';
 
 let seq = 0;
@@ -22,6 +23,7 @@ function rule(overrides: Partial<PamRule>): PamRule {
     enabled: true,
     priority: 100,
     matchSigner: null,
+    matchSignerThumbprint: null,
     matchSignerGroupId: null,
     matchHash: null,
     matchPathGlob: null,
@@ -421,8 +423,16 @@ describe('rule negation (match_negate)', () => {
 
 describe('signer group matching (matchSignerGroupId)', () => {
   const GROUP_ID = '11111111-1111-1111-1111-111111111111';
-  const groups = new Map<string, readonly string[]>([
-    [GROUP_ID, ['Intuit Inc.', 'Microsoft Corporation', 'TeamViewer GmbH']],
+  // CN-only (weak/legacy) entries — the back-compat shape after normalization.
+  const groups: SignerGroupResolver = new Map([
+    [
+      GROUP_ID,
+      [
+        { subjectCn: 'Intuit Inc.' },
+        { subjectCn: 'Microsoft Corporation' },
+        { subjectCn: 'TeamViewer GmbH' },
+      ],
+    ],
   ]);
 
   it('matches when the candidate signer is any member of the group', () => {
@@ -451,7 +461,7 @@ describe('signer group matching (matchSignerGroupId)', () => {
       evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Intuit Inc.' }),
     ).toBeNull();
     // empty group → no match
-    const empty = new Map<string, readonly string[]>([[GROUP_ID, []]]);
+    const empty: SignerGroupResolver = new Map([[GROUP_ID, []]]);
     expect(
       evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Intuit Inc.' }, empty),
     ).toBeNull();
@@ -507,5 +517,151 @@ describe('signer group matching (matchSignerGroupId)', () => {
       evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Random LLC', targetExecutablePath: 'C:\\a.exe' }, groups)
         ?.verdict,
     ).toBe('auto_deny');
+  });
+});
+
+describe('signer thumbprint pinning (#1776)', () => {
+  const GROUP_ID = '22222222-2222-2222-2222-222222222222';
+  const REAL_TP = 'a'.repeat(64); // the trusted publisher's real leaf-cert SHA-256
+  const FORGED_TP = 'b'.repeat(64); // a forged cert that copied the CN but not the key
+
+  describe('direct matchSignerThumbprint criterion', () => {
+    it('matches only the exact thumbprint, case-insensitively', () => {
+      const r = rule({ matchSignerThumbprint: REAL_TP, verdict: 'auto_approve' });
+      expect(
+        evaluatePamRules([r], { ...candidate, targetExecutableSignerThumbprint: REAL_TP })?.verdict,
+      ).toBe('auto_approve');
+      // pin stored lowercase; candidate may report uppercase hex → still matches
+      expect(
+        evaluatePamRules([r], {
+          ...candidate,
+          targetExecutableSignerThumbprint: REAL_TP.toUpperCase(),
+        }),
+      ).not.toBeNull();
+    });
+
+    it('REJECTS a forged cert: right CN, wrong thumbprint (the core property)', () => {
+      // A thumbprint-pinned rule must NOT match a binary whose signer CN equals
+      // the trusted CN but whose cert thumbprint differs — that is exactly the
+      // CN-spoofing elevation-of-privilege #1776 closes.
+      const r = rule({ matchSignerThumbprint: REAL_TP, verdict: 'auto_approve' });
+      expect(
+        evaluatePamRules([r], {
+          ...candidate,
+          targetExecutableSigner: candidate.targetExecutableSigner, // trusted CN present
+          targetExecutableSignerThumbprint: FORGED_TP, // but a different key
+        }),
+      ).toBeNull();
+    });
+
+    it('fails closed when the candidate carries no thumbprint (older agent)', () => {
+      const r = rule({ matchSignerThumbprint: REAL_TP, verdict: 'auto_approve' });
+      expect(evaluatePamRules([r], { ...candidate })).toBeNull();
+    });
+
+    it('ANDs with matchSigner: both CN and thumbprint must match (max strength)', () => {
+      const r = rule({
+        matchSigner: 'Vendor Inc.',
+        matchSignerThumbprint: REAL_TP,
+        verdict: 'auto_approve',
+      });
+      // both match
+      expect(
+        evaluatePamRules([r], {
+          ...candidate,
+          targetExecutableSigner: 'Vendor Inc.',
+          targetExecutableSignerThumbprint: REAL_TP,
+        }),
+      ).not.toBeNull();
+      // correct CN but wrong thumbprint → no match
+      expect(
+        evaluatePamRules([r], {
+          ...candidate,
+          targetExecutableSigner: 'Vendor Inc.',
+          targetExecutableSignerThumbprint: FORGED_TP,
+        }),
+      ).toBeNull();
+    });
+  });
+
+  describe('signer-group entry pinning', () => {
+    it('thumbprint-only entry matches only the pinned thumbprint', () => {
+      const groups: SignerGroupResolver = new Map([[GROUP_ID, [{ thumbprint: REAL_TP }]]]);
+      const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+      expect(
+        evaluatePamRules(
+          [r],
+          { ...candidate, targetExecutableSignerThumbprint: REAL_TP },
+          groups,
+        )?.verdict,
+      ).toBe('auto_approve');
+      // forged thumbprint → no match (even though the candidate CN is set)
+      expect(
+        evaluatePamRules(
+          [r],
+          { ...candidate, targetExecutableSignerThumbprint: FORGED_TP },
+          groups,
+        ),
+      ).toBeNull();
+    });
+
+    it('a thumbprint-pinned entry NEVER falls through to a CN match', () => {
+      // Entry pins BOTH the CN and the real thumbprint. A forged cert with the
+      // matching CN but the wrong thumbprint must be rejected — it must not
+      // match on CN alone.
+      const groups: SignerGroupResolver = new Map([
+        [GROUP_ID, [{ subjectCn: 'Acme Corp', thumbprint: REAL_TP }]],
+      ]);
+      const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+      // legitimate publisher: right CN + right thumbprint → match
+      expect(
+        evaluatePamRules(
+          [r],
+          { ...candidate, targetExecutableSigner: 'Acme Corp', targetExecutableSignerThumbprint: REAL_TP },
+          groups,
+        ),
+      ).not.toBeNull();
+      // forged "Acme Corp" cert: right CN, wrong thumbprint → REJECTED
+      expect(
+        evaluatePamRules(
+          [r],
+          { ...candidate, targetExecutableSigner: 'Acme Corp', targetExecutableSignerThumbprint: FORGED_TP },
+          groups,
+        ),
+      ).toBeNull();
+      // forged "Acme Corp" cert with NO thumbprint reported → REJECTED (fail closed)
+      expect(
+        evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Acme Corp' }, groups),
+      ).toBeNull();
+    });
+
+    it('mixes weak (CN) and strong (thumbprint) entries in one group', () => {
+      // A group can carry a legacy CN-only entry alongside a pinned entry; each
+      // entry keeps its own tier. The CN-only entry still matches on CN (weak).
+      const groups: SignerGroupResolver = new Map([
+        [GROUP_ID, [{ subjectCn: 'Legacy Vendor' }, { thumbprint: REAL_TP }]],
+      ]);
+      const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+      // matches the weak CN entry
+      expect(
+        evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Legacy Vendor' }, groups),
+      ).not.toBeNull();
+      // matches the strong thumbprint entry
+      expect(
+        evaluatePamRules(
+          [r],
+          { ...candidate, targetExecutableSigner: 'Whoever', targetExecutableSignerThumbprint: REAL_TP },
+          groups,
+        ),
+      ).not.toBeNull();
+      // matches neither → no match
+      expect(
+        evaluatePamRules(
+          [r],
+          { ...candidate, targetExecutableSigner: 'Whoever', targetExecutableSignerThumbprint: FORGED_TP },
+          groups,
+        ),
+      ).toBeNull();
+    });
   });
 });

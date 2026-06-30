@@ -30,7 +30,13 @@
  *   evaluated via evaluatePamToolActionRules, which only considers rules
  *   carrying a tool-action criterion.
  */
-import type { PamRule, PamRuleNegateKey, PamRuleTimeWindow } from '../db/schema/pam';
+import { timingSafeEqual } from 'node:crypto';
+import type {
+  PamRule,
+  PamRuleNegateKey,
+  PamRuleTimeWindow,
+  SignerGroupEntry,
+} from '../db/schema/pam';
 import { matchPathGlob } from './pamBridge';
 
 export interface PamRuleCandidate {
@@ -38,6 +44,13 @@ export interface PamRuleCandidate {
   targetExecutablePath?: string;
   targetExecutableHash?: string;
   targetExecutableSigner?: string;
+  /**
+   * SHA-256 Authenticode leaf-cert thumbprint (64-hex, case-insensitive) the
+   * agent measured from the on-disk binary. The STRONG signer signal (#1776):
+   * a thumbprint-pinned rule/group entry matches ONLY when this is present and
+   * exact. Absent (older agents / unsigned) → thumbprint criteria fail closed.
+   */
+  targetExecutableSignerThumbprint?: string;
   subjectUsername: string;
   parentImage?: string;
   /** Launched process command line, when the agent captured it. */
@@ -61,13 +74,60 @@ export interface PamRuleMatch {
 
 const eqCi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
+const THUMBPRINT_RE = /^[0-9a-f]{64}$/;
+
 /**
- * Resolved signer groups: groupId → member signer patterns. The caller
- * (ingest / preview) fetches the org's referenced pam_signer_groups and passes
- * this map so the pure engine can evaluate matchSignerGroupId without DB access.
+ * Constant-time, case-insensitive equality for SHA-256 cert thumbprints (#1776).
+ * Both operands must be present and valid 64-hex; anything else is a non-match
+ * (fail closed — a malformed pin or an absent candidate thumbprint never
+ * matches). Uses timingSafeEqual on the normalized lowercase bytes so the
+ * compare doesn't leak how many leading chars of a pinned thumbprint a probe
+ * guessed. (CN matching stays eqCi — a CN is not a secret.)
+ */
+function thumbprintEq(pinned: string | undefined, candidate: string | undefined): boolean {
+  if (!pinned || !candidate) return false;
+  const a = pinned.toLowerCase();
+  const b = candidate.toLowerCase();
+  if (!THUMBPRINT_RE.test(a) || !THUMBPRINT_RE.test(b)) return false;
+  // Both are exactly 64 ASCII chars here, so the buffers are equal-length and
+  // timingSafeEqual won't throw.
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+/**
+ * Does a single signer-group entry match the candidate (#1776)? ALL fields the
+ * entry carries must match (AND), and a present thumbprint is checked first and
+ * present-gated:
+ *   - thumbprint-only entry → matches iff the candidate's thumbprint is present
+ *     and equal (STRONG). Never falls through to CN.
+ *   - CN-only entry         → matches iff the candidate's signer CN is present
+ *     and eqCi (WEAK / legacy).
+ *   - both                  → BOTH must match (STRONGest — the candidate must
+ *     carry the pinned key AND the expected CN).
+ * An entry with neither field is treated as no-match (fail closed).
+ */
+function signerEntryMatches(entry: SignerGroupEntry, candidate: PamRuleCandidate): boolean {
+  const cn = 'subjectCn' in entry ? entry.subjectCn : undefined;
+  const thumbprint = entry.thumbprint;
+  if (!cn && !thumbprint) return false;
+  if (thumbprint && !thumbprintEq(thumbprint, candidate.targetExecutableSignerThumbprint)) {
+    return false;
+  }
+  if (cn) {
+    if (candidate.targetExecutableSigner == null) return false;
+    if (!eqCi(cn, candidate.targetExecutableSigner)) return false;
+  }
+  return true;
+}
+
+/**
+ * Resolved signer groups: groupId → normalized member entries. The caller
+ * (ingest / preview) fetches the org's referenced pam_signer_groups, runs the
+ * stored `signers` jsonb through normalizeSignerGroupEntries, and passes this
+ * map so the pure engine can evaluate matchSignerGroupId without DB access.
  * A rule whose group is absent from the map (or has no members) fails closed.
  */
-export type SignerGroupResolver = ReadonlyMap<string, readonly string[]>;
+export type SignerGroupResolver = ReadonlyMap<string, readonly SignerGroupEntry[]>;
 
 // A time window NARROWS a rule; it is not an identifying criterion on its
 // own. A rule whose only "criterion" is a time window would match every
@@ -76,6 +136,7 @@ export type SignerGroupResolver = ReadonlyMap<string, readonly string[]>;
 function hasAnyCriteria(rule: PamRule): boolean {
   return Boolean(
     rule.matchSigner ||
+      rule.matchSignerThumbprint ||
       rule.matchSignerGroupId ||
       rule.matchHash ||
       rule.matchPathGlob ||
@@ -171,15 +232,28 @@ function ruleMatches(
     const positive = present && eqCi(rule.matchSigner, candidate.targetExecutableSigner!);
     if (!satisfied('signer', present, positive)) return false;
   }
-  if (rule.matchSignerGroupId) {
-    // Match the candidate signer against ANY member of the resolved group.
-    // Unresolvable (group missing from the map or empty) or no candidate signer
-    // → not present → fails closed, even when negated.
-    const members = signerGroups?.get(rule.matchSignerGroupId);
-    const present =
-      candidate.targetExecutableSigner != null && members != null && members.length > 0;
+  if (rule.matchSignerThumbprint) {
+    // STRONG signer pin (#1776): present-gated + constant-time. A candidate
+    // without a thumbprint (older agent / unsigned) never satisfies this, so a
+    // thumbprint-pinned auto_approve rule fails closed rather than matching on
+    // CN alone. Negation can't turn absent data into a grant (satisfied()).
+    const present = candidate.targetExecutableSignerThumbprint != null;
     const positive =
-      present && members!.some((s) => eqCi(s, candidate.targetExecutableSigner!));
+      present && thumbprintEq(rule.matchSignerThumbprint, candidate.targetExecutableSignerThumbprint);
+    if (!satisfied('signerThumbprint', present, positive)) return false;
+  }
+  if (rule.matchSignerGroupId) {
+    // Match the candidate against ANY entry of the resolved group (#1776).
+    // Entries may pin a CN (weak), a thumbprint (strong), or both — see
+    // signerEntryMatches. Unresolvable (group missing/empty) or a candidate
+    // carrying neither a signer CN nor a thumbprint → not present → fails
+    // closed, even when negated (absent data can't become a grant).
+    const members = signerGroups?.get(rule.matchSignerGroupId);
+    const candidateHasSignal =
+      candidate.targetExecutableSigner != null ||
+      candidate.targetExecutableSignerThumbprint != null;
+    const present = candidateHasSignal && members != null && members.length > 0;
+    const positive = present && members!.some((e) => signerEntryMatches(e, candidate));
     if (!satisfied('signerGroup', present, positive)) return false;
   }
   if (rule.matchPathGlob) {

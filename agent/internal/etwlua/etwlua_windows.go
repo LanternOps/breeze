@@ -181,8 +181,15 @@ func decodeConsentRequest(raw []byte) (Event, bool) {
 	if hash, err := hashFile(targetPath); err == nil {
 		ev.TargetExecutableHash = hash
 	}
-	// Authenticode signer extraction is deferred (WinTrust/CryptoAPI) — see
-	// #1776. The server schema accepts a NULL signer.
+	// Authenticode signer extraction is still deferred (WinTrust/CryptoAPI) —
+	// see #1776. When wired in, this must populate BOTH the subject CN
+	// (ev.TargetExecutableSigner, weak tier) and the SHA-256 leaf-cert
+	// thumbprint (ev.TargetExecutableSignerThumbprint, strong tier) via
+	// NormalizeThumbprint; the server/payload fields and matching already
+	// accept the thumbprint. The actual extraction needs a Windows CI runner to
+	// validate (same blocker as #1771), so it remains a follow-up. The server
+	// schema accepts a NULL signer and a NULL thumbprint, and a thumbprint-pinned
+	// rule fails closed until the agent emits one.
 	return ev, true
 }
 

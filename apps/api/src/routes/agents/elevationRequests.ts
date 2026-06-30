@@ -9,9 +9,11 @@ import {
   devices,
   elevationAudit,
   elevationRequests,
+  normalizeSignerGroupEntries,
   pamOrgConfig,
   pamRules,
   pamSignerGroups,
+  type SignerGroupEntry,
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
@@ -95,6 +97,15 @@ export const elevationRequestSchema = z.object({
   target_executable_path: z.string().min(1).max(4096),
   target_executable_hash: z.string().max(128).optional(),
   target_executable_signer: z.string().max(255).optional(),
+  // STRONG signer signal (#1776): SHA-256 Authenticode leaf-cert thumbprint,
+  // 64-hex. Optional — older agents and the current Windows extraction (which
+  // still defers WinTrust, see agent/internal/etwlua) don't send it yet, so the
+  // engine treats absence as "no thumbprint" (thumbprint-pinned rules fail
+  // closed). Validated as exactly 64 hex chars when present.
+  target_executable_signer_thumbprint: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .optional(),
   pid: z.number().int().min(0).max(2 ** 32 - 1).optional(),
   parent_image: z.string().max(4096).optional(),
   command_line: z.string().max(8192).optional(),
@@ -376,7 +387,7 @@ elevationRequestsRoutes.post(
               .filter((x): x is string => x != null),
           ),
         ];
-        let signerGroups: Map<string, string[]> | undefined;
+        let signerGroups: Map<string, SignerGroupEntry[]> | undefined;
         if (signerGroupIds.length > 0) {
           const groups = await db
             .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
@@ -387,7 +398,9 @@ elevationRequestsRoutes.post(
                 inArray(pamSignerGroups.id, signerGroupIds),
               ),
             );
-          signerGroups = new Map(groups.map((g) => [g.id, g.signers]));
+          // Normalize the stored jsonb (legacy bare CNs and/or new entry
+          // objects) to canonical entries the engine matches against (#1776).
+          signerGroups = new Map(groups.map((g) => [g.id, normalizeSignerGroupEntries(g.signers)]));
         }
         const ruleMatch = evaluatePamRules(
           orgRules,
@@ -395,6 +408,7 @@ elevationRequestsRoutes.post(
             targetExecutablePath: payload.target_executable_path,
             targetExecutableHash: payload.target_executable_hash,
             targetExecutableSigner: payload.target_executable_signer,
+            targetExecutableSignerThumbprint: payload.target_executable_signer_thumbprint,
             subjectUsername: payload.subject_username,
             parentImage: payload.parent_image,
             commandLine: payload.command_line,

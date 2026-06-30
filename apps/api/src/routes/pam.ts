@@ -31,10 +31,13 @@ import {
   devices,
   elevationAudit,
   elevationRequests,
+  normalizeSignerGroupEntries,
   PAM_RULE_NEGATE_KEYS,
   pamOrgConfig,
   pamRules,
   pamSignerGroups,
+  type SignerGroupEntry,
+  type StoredSignerEntry,
   sites,
   softwarePolicies,
   users,
@@ -804,6 +807,7 @@ pamRoutes.post(
 
 const ruleCriteriaFields = [
   'matchSigner',
+  'matchSignerThumbprint',
   'matchSignerGroupId',
   'matchHash',
   'matchPathGlob',
@@ -825,6 +829,12 @@ const timeWindowSchema = z.object({
 const ruleCriteriaValidators = {
   siteId: z.string().guid().nullable().optional(),
   matchSigner: z.string().min(1).max(255).nullable().optional(),
+  matchSignerThumbprint: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-fA-F]{64}$/, 'must be a sha256 hex thumbprint')
+    .nullable()
+    .optional(),
   matchSignerGroupId: z.string().guid().nullable().optional(),
   matchHash: z
     .string()
@@ -861,6 +871,7 @@ const ruleBaseSchema = z.object({
 
 type RuleCriteriaShape = {
   matchSigner?: string | null;
+  matchSignerThumbprint?: string | null;
   matchSignerGroupId?: string | null;
   matchHash?: string | null;
   matchPathGlob?: string | null;
@@ -884,6 +895,7 @@ function hasAnyCriterion(rule: RuleCriteriaShape): boolean {
 // group/time only narrow; they don't identify a binary).
 const executableCriteriaFields = [
   'matchSigner',
+  'matchSignerThumbprint',
   'matchSignerGroupId',
   'matchHash',
   'matchPathGlob',
@@ -912,8 +924,8 @@ function validateRuleShape(rule: RuleCriteriaShape): string | null {
   if (hasExecutableShapeCriteria(rule) && hasToolActionCriteria(rule)) {
     return 'A rule cannot mix executable criteria with tool-action criteria';
   }
-  if (rule.matchSigner && rule.matchSignerGroupId) {
-    return 'A rule cannot set both matchSigner and matchSignerGroupId — use one or the other';
+  if ((rule.matchSigner || rule.matchSignerThumbprint) && rule.matchSignerGroupId) {
+    return 'A rule cannot combine matchSignerGroupId with matchSigner/matchSignerThumbprint — use a group or a direct signer match, not both';
   }
   if (hasToolActionCriteria(rule) && rule.verdict === 'ignore') {
     return "verdict 'ignore' is not valid for tool-action rules — a tool action must be decided";
@@ -999,6 +1011,9 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
       enabled: payload.enabled ?? true,
       priority: payload.priority ?? 100,
       matchSigner: payload.matchSigner ?? null,
+      matchSignerThumbprint: payload.matchSignerThumbprint
+        ? payload.matchSignerThumbprint.toLowerCase()
+        : null,
       matchSignerGroupId: payload.matchSignerGroupId ?? null,
       matchHash: payload.matchHash ? payload.matchHash.toLowerCase() : null,
       matchPathGlob: payload.matchPathGlob ?? null,
@@ -1101,6 +1116,9 @@ pamRoutes.post(
       createdAt: new Date(),
       updatedAt: new Date(),
       matchSigner: body.matchSigner ?? null,
+      matchSignerThumbprint: body.matchSignerThumbprint
+        ? body.matchSignerThumbprint.toLowerCase()
+        : null,
       matchSignerGroupId: body.matchSignerGroupId ?? null,
       matchHash: body.matchHash ? body.matchHash.toLowerCase() : null,
       matchPathGlob: body.matchPathGlob ?? null,
@@ -1117,14 +1135,18 @@ pamRoutes.post(
     // Resolve the draft's signer group (if any) so the preview can match it.
     // Org-scoped by RLS — a group the caller can't see yields no resolution
     // and the draft's group criterion fails closed.
-    let previewSignerGroups: Map<string, string[]> | undefined;
+    // NOTE: historical elevation_requests rows do not store a signer
+    // thumbprint, so a draft pinning a thumbprint (direct or via a group entry)
+    // reports 0 matches in preview — the candidate below carries no thumbprint.
+    // Same known limitation as matchAdGroup (criteria are ANDed / present-gated).
+    let previewSignerGroups: Map<string, SignerGroupEntry[]> | undefined;
     if (draftRule.matchSignerGroupId) {
       const [grp] = await db
         .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
         .from(pamSignerGroups)
         .where(eq(pamSignerGroups.id, draftRule.matchSignerGroupId))
         .limit(1);
-      if (grp) previewSignerGroups = new Map([[grp.id, grp.signers]]);
+      if (grp) previewSignerGroups = new Map([[grp.id, normalizeSignerGroupEntries(grp.signers)]]);
     }
 
     let totalMatched = 0;
@@ -1227,6 +1249,13 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
       ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
       ...(payload.priority !== undefined ? { priority: payload.priority } : {}),
       ...(payload.matchSigner !== undefined ? { matchSigner: payload.matchSigner } : {}),
+      ...(payload.matchSignerThumbprint !== undefined
+        ? {
+            matchSignerThumbprint: payload.matchSignerThumbprint
+              ? payload.matchSignerThumbprint.toLowerCase()
+              : null,
+          }
+        : {}),
       ...(payload.matchSignerGroupId !== undefined
         ? { matchSignerGroupId: payload.matchSignerGroupId }
         : {}),
@@ -1385,18 +1414,52 @@ pamRoutes.put(
 // ============================================================
 // A named, org-scoped set of signer (subject CN) patterns referenced from
 // rules via matchSignerGroupId. Manage vendors once, reference everywhere.
+// A signer-group entry is EITHER a bare subject-CN string (legacy / weak tier,
+// stored as-is for backward-compatibility) OR an object pinning a SHA-256
+// thumbprint (strong tier) and/or a CN (#1776). At least one field is required
+// on the object form. Stored shape stays read-compatible with the legacy
+// string[] — see normalizeSignerGroupEntries / StoredSignerEntry.
+const signerEntryObjectSchema = z
+  .object({
+    subjectCn: z.string().trim().min(1).max(255).optional(),
+    thumbprint: z
+      .string()
+      .trim()
+      .regex(/^[0-9a-fA-F]{64}$/, 'must be a sha256 hex thumbprint')
+      .optional(),
+  })
+  .refine((e) => Boolean(e.subjectCn) || Boolean(e.thumbprint), {
+    message: 'each signer entry needs a subjectCn or a thumbprint',
+  });
+
 const signerListSchema = z
-  .array(z.string().trim().min(1).max(255))
+  .array(z.union([z.string().trim().min(1).max(255), signerEntryObjectSchema]))
   .max(500)
-  // Drop blanks and de-duplicate case-insensitively, preserving first spelling.
+  // Normalize to the stored form (bare CN strings stay strings; pins become
+  // objects with a lowercased thumbprint) and de-duplicate, preserving the
+  // first spelling.
   .transform((arr) => {
     const seen = new Set<string>();
-    const out: string[] = [];
-    for (const s of arr) {
-      const key = s.toLowerCase();
-      if (!seen.has(key)) {
+    const out: StoredSignerEntry[] = [];
+    for (const el of arr) {
+      if (typeof el === 'string') {
+        const cn = el.trim();
+        const key = `cn:${cn.toLowerCase()}`;
+        if (cn && !seen.has(key)) {
+          seen.add(key);
+          out.push(cn);
+        }
+        continue;
+      }
+      const cn = el.subjectCn?.trim();
+      const thumbprint = el.thumbprint?.trim().toLowerCase();
+      const key = `obj:${cn?.toLowerCase() ?? ''}|${thumbprint ?? ''}`;
+      if ((cn || thumbprint) && !seen.has(key)) {
         seen.add(key);
-        out.push(s);
+        const entry: { subjectCn?: string; thumbprint?: string } = {};
+        if (cn) entry.subjectCn = cn;
+        if (thumbprint) entry.thumbprint = thumbprint;
+        out.push(entry);
       }
     }
     return out;

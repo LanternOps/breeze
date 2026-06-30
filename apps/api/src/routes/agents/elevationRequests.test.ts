@@ -11,7 +11,13 @@ vi.mock('../../db', () => ({
   },
 }));
 
-vi.mock('../../db/schema', () => ({
+vi.mock('../../db/schema', async () => ({
+  // Real, pure normalizer (#1776) — the route maps signer-group jsonb through
+  // it before matching. Pulled from the actual module so the test can't drift
+  // from production behavior; the drizzle tables stay mocked below.
+  normalizeSignerGroupEntries: (
+    await vi.importActual<typeof import('../../db/schema')>('../../db/schema')
+  ).normalizeSignerGroupEntries,
   devices: {
     id: 'id',
     orgId: 'orgId',
@@ -193,7 +199,7 @@ function mockSelectsWithConfig(
 function mockSelectsWithSignerGroups(
   deviceRows: Array<{ id: string; orgId: string; siteId: string | null }>,
   ruleRows: unknown[],
-  groupRows: Array<{ id: string; signers: string[] }>,
+  groupRows: Array<{ id: string; signers: unknown[] }>,
 ) {
   let call = 0;
   vi.mocked(db.select).mockImplementation(() => {
@@ -565,6 +571,81 @@ describe('ingest decisioning (#1163)', () => {
       expect.objectContaining({ elevationRequestId: 'req-sg' }),
       'pam-ingest',
     );
+  });
+
+  it('thumbprint-pinned signer group: auto_approves only with the matching thumbprint (#1776)', async () => {
+    const REAL_TP = 'a'.repeat(64);
+    const rule = {
+      id: 'rule-tp',
+      orgId: 'org-1',
+      siteId: null,
+      name: 'Pinned vendor',
+      description: null,
+      enabled: true,
+      priority: 10,
+      matchSigner: null,
+      matchSignerThumbprint: null,
+      matchSignerGroupId: 'grp-tp',
+      matchHash: null,
+      matchPathGlob: null,
+      matchParentImage: null,
+      matchCommandLine: null,
+      matchUser: null,
+      matchAdGroup: null,
+      matchToolName: null,
+      matchRiskTier: null,
+      matchNegate: null,
+      timeWindow: null,
+      verdict: 'auto_approve',
+      approvalDurationMinutes: null,
+      createdByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    // Group entry pins both the trusted CN and its real leaf-cert thumbprint.
+    mockSelectsWithSignerGroups(
+      [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }],
+      [rule],
+      [{ id: 'grp-tp', signers: [{ subjectCn: 'Acme Corp', thumbprint: REAL_TP }] }],
+    );
+    const { values } = happyPathInsert([{ id: 'req-tp', status: 'auto_approved' }]);
+
+    // A forged "Acme Corp" cert (matching CN, NO thumbprint reported) must NOT
+    // auto-approve — it falls through to pending.
+    const forged = await buildApp().request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...goodPayload, target_executable_signer: 'Acme Corp' }),
+    });
+    expect(forged.status).toBe(201);
+    expect(
+      vi
+        .mocked(values)
+        .mock.calls.find((args) => (args[0] as { status?: string }).status === 'auto_approved'),
+    ).toBeUndefined();
+
+    // The legitimate publisher (matching CN + matching thumbprint) auto-approves.
+    vi.mocked(values).mockClear();
+    mockSelectsWithSignerGroups(
+      [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }],
+      [rule],
+      [{ id: 'grp-tp', signers: [{ subjectCn: 'Acme Corp', thumbprint: REAL_TP }] }],
+    );
+    const ok = await buildApp().request('/agents/agent-123/elevation-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...goodPayload,
+        target_executable_signer: 'Acme Corp',
+        target_executable_signer_thumbprint: REAL_TP,
+      }),
+    });
+    expect(ok.status).toBe(201);
+    expect(
+      vi
+        .mocked(values)
+        .mock.calls.find((args) => (args[0] as { status?: string }).status === 'auto_approved'),
+    ).toBeTruthy();
   });
 
   it('pam rule ignore -> no insert, 200 ignored', async () => {

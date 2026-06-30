@@ -68,6 +68,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -107,9 +108,20 @@ type Event struct {
 	// nullable hash.
 	TargetExecutableHash string `json:"target_executable_hash,omitempty"`
 
-	// TargetExecutableSigner is the Authenticode subject (best-effort).
-	// Empty when unsigned or read failed.
+	// TargetExecutableSigner is the Authenticode subject CN (best-effort).
+	// Empty when unsigned or read failed. WEAK signer tier on the server: a
+	// subject CN is attacker-choosable, so CN-only matching is spoofable.
 	TargetExecutableSigner string `json:"target_executable_signer,omitempty"`
+
+	// TargetExecutableSignerThumbprint is the SHA-256 Authenticode leaf-cert
+	// thumbprint as lowercase 64-char hex (#1776). STRONG signer tier: the
+	// server pins this for tamper-proof publisher matching (a forged cert with
+	// a trusted CN but a different key has a different thumbprint and is
+	// rejected). Empty when unsigned, on read failure, or until the Windows
+	// extraction lands — the server treats absence as "no thumbprint" and a
+	// thumbprint-pinned rule then fails closed. Normalize via
+	// NormalizeThumbprint before populating.
+	TargetExecutableSignerThumbprint string `json:"target_executable_signer_thumbprint,omitempty"`
 
 	// PID, ParentImage, CommandLine are process metadata included for
 	// forensics. CommandLine is best-effort and may be empty on locked-
@@ -349,6 +361,38 @@ func handleEvent(ctx context.Context, ev Event, limiter *ipc.RateLimiter, hb Hea
 			log.Debug("etwlua: opportunistic drain failed", "error", err.Error())
 		}
 	}
+}
+
+// NormalizeThumbprint canonicalizes a raw SHA-256 certificate thumbprint into
+// the lowercase 64-char hex form the server matches on (#1776). It drops the
+// separators Windows/CryptoAPI and PowerShell render between byte pairs (spaces,
+// colons, dashes, tabs/newlines, NUL padding) and lowercases A-F. It returns
+// ("", false) unless the result is EXACTLY 64 hex chars, and rejects any other
+// character outright — a malformed or wrong-length value is never sent, so the
+// server can't match on a half-formed pin (fail closed). The Windows
+// Authenticode extraction (still deferred — see etwlua_windows.go) will pass
+// its computed thumbprint through this before assigning Event.TargetExecutableSignerThumbprint.
+func NormalizeThumbprint(raw string) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range raw {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'F':
+			b.WriteRune(r + ('a' - 'A'))
+		case r == ' ' || r == ':' || r == '-' || r == '\t' || r == '\n' || r == '\r' || r == 0x00:
+			// separator / whitespace / NUL padding between byte pairs — skip
+		default:
+			// Any other character makes the whole value suspect → reject.
+			return "", false
+		}
+	}
+	s := b.String()
+	if len(s) != 64 {
+		return "", false
+	}
+	return s, true
 }
 
 // dedupeKey returns sha256(exe_path) + ":" + subject_username. Hashing the

@@ -54,6 +54,7 @@ export interface PamRuleTimeWindow {
  */
 export const PAM_RULE_NEGATE_KEYS = [
   'signer',
+  'signerThumbprint',
   'signerGroup',
   'hash',
   'pathGlob',
@@ -65,6 +66,62 @@ export const PAM_RULE_NEGATE_KEYS = [
   'riskTier',
 ] as const;
 export type PamRuleNegateKey = (typeof PAM_RULE_NEGATE_KEYS)[number];
+
+/**
+ * Signer-group catalog entry (#1776). A group pins a publisher by:
+ *   - subject CN only (WEAK tier — attacker-choosable, kept for back-compat);
+ *   - SHA-256 Authenticode leaf-cert thumbprint only (STRONG tier — bound to a
+ *     specific key, not forgeable without the private key); or
+ *   - both (STRONG — the engine requires BOTH to match; see pamRuleEngine).
+ * `thumbprint` is lowercase 64-char hex. A thumbprint-pinned entry NEVER falls
+ * through to a CN match, so a forged cert bearing a trusted CN but a different
+ * thumbprint is rejected — the elevation-of-privilege threat #1776 closes.
+ */
+export type SignerGroupEntry =
+  | { subjectCn: string; thumbprint?: string }
+  | { thumbprint: string };
+
+/**
+ * As persisted in pam_signer_groups.signers (jsonb). Backward-compatible with
+ * the legacy `string[]` form: a bare string is a subject-CN-only entry. New
+ * writes use the object form. normalizeSignerGroupEntries() maps either to the
+ * canonical SignerGroupEntry the engine consumes — existing rows need no data
+ * migration. The stored object form is intentionally looser than
+ * SignerGroupEntry (both fields optional) so a malformed/partial row can't be a
+ * type error on read; the normalizer drops entries with neither field.
+ */
+export type StoredSignerEntry = string | { subjectCn?: string; thumbprint?: string };
+
+const SIGNER_THUMBPRINT_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Normalize the persisted `signers` array (legacy bare CNs and/or new entry
+ * objects) into the canonical SignerGroupEntry[] the engine matches against.
+ * Defensive: tolerates arbitrary jsonb (returns [] for non-arrays), trims, and
+ * drops entries that carry neither a usable CN nor a valid 64-hex thumbprint
+ * (fail closed — a junk entry must never widen a match).
+ */
+export function normalizeSignerGroupEntries(raw: unknown): SignerGroupEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SignerGroupEntry[] = [];
+  for (const el of raw) {
+    if (typeof el === 'string') {
+      const cn = el.trim();
+      if (cn) out.push({ subjectCn: cn });
+      continue;
+    }
+    if (el && typeof el === 'object') {
+      const rec = el as { subjectCn?: unknown; thumbprint?: unknown };
+      const cn = typeof rec.subjectCn === 'string' ? rec.subjectCn.trim() : '';
+      const tpRaw = typeof rec.thumbprint === 'string' ? rec.thumbprint.trim().toLowerCase() : '';
+      const tp = SIGNER_THUMBPRINT_RE.test(tpRaw) ? tpRaw : '';
+      if (cn && tp) out.push({ subjectCn: cn, thumbprint: tp });
+      else if (tp) out.push({ thumbprint: tp });
+      else if (cn) out.push({ subjectCn: cn });
+    }
+  }
+  return out;
+}
 
 /** Default verdict applied when no software policy or PAM rule matches. */
 export const pamUnmatchedVerdictEnum = pgEnum('pam_unmatched_verdict', [
@@ -91,9 +148,12 @@ export const pamSignerGroups = pgTable(
       .references(() => organizations.id, { onDelete: 'cascade' }),
     name: varchar('name', { length: 255 }).notNull(),
     description: text('description'),
-    // Signer subject-CN patterns; matched case-insensitively, exact (same
-    // semantics as pam_rules.match_signer). Empty = matches nothing.
-    signers: jsonb('signers').$type<string[]>().notNull().default([]),
+    // Signer catalog entries (#1776). Legacy rows hold a `string[]` of subject
+    // CNs (weak tier); new rows may hold entry objects pinning a SHA-256
+    // thumbprint (strong tier). Read via normalizeSignerGroupEntries(); the
+    // engine resolves these to SignerGroupEntry[] and matches per the
+    // strong/weak precedence. Empty = matches nothing.
+    signers: jsonb('signers').$type<StoredSignerEntry[]>().notNull().default([]),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
@@ -130,9 +190,17 @@ export const pamRules = pgTable(
     // Match criteria — all provided criteria must match (AND). A rule with
     // no criteria matches nothing (guarded at the API layer).
     matchSigner: varchar('match_signer', { length: 255 }),
+    // STRONG-tier signer pin (#1776): SHA-256 Authenticode leaf-cert thumbprint,
+    // lowercase 64-char hex. Present-gated + constant-time compared in the
+    // engine — a rule pinning a thumbprint matches ONLY when the candidate
+    // carries that exact thumbprint (fail closed when absent), closing the
+    // CN-spoofing elevation-of-privilege gap. ANDs with matchSigner when both
+    // are set (max strength); mutually exclusive with matchSignerGroupId.
+    matchSignerThumbprint: varchar('match_signer_thumbprint', { length: 64 }),
     // Alternative to matchSigner: match the candidate signer against ANY member
     // of a reusable signer group (pam_signer_groups). Mutually exclusive with
-    // matchSigner (the API rejects setting both). Resolved server-side.
+    // matchSigner / matchSignerThumbprint (the API rejects combining them).
+    // Resolved server-side.
     matchSignerGroupId: uuid('match_signer_group_id').references(
       () => pamSignerGroups.id,
       { onDelete: 'restrict' },

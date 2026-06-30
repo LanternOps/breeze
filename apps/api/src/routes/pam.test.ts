@@ -43,7 +43,12 @@ vi.mock('../db', () => ({
   },
 }));
 
-vi.mock('../db/schema', () => ({
+vi.mock('../db/schema', async () => ({
+  // Real, pure normalizer (#1776) — the preview handler maps signer-group jsonb
+  // through it. Pulled from the actual module so it can't drift; tables mocked.
+  normalizeSignerGroupEntries: (
+    await vi.importActual<typeof import('../db/schema')>('../db/schema')
+  ).normalizeSignerGroupEntries,
   devices: { id: 'id', hostname: 'hostname' },
   sites: { id: 'id', name: 'name' },
   users: { id: 'id', name: 'name' },
@@ -2210,6 +2215,80 @@ describe('Signer groups', () => {
         name: 'conflicting signer rule',
         verdict: 'auto_approve',
         matchSigner: 'Acme Corp',
+        matchSignerGroupId: GROUP_ID,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('POST /signer-groups stores a thumbprint-pinned entry with a lowercased thumbprint (#1776)', async () => {
+    const TP = 'A'.repeat(64);
+    const returning = vi
+      .fn()
+      .mockResolvedValue([{ id: GROUP_ID, name: 'Pinned', signers: [{ subjectCn: 'Acme Corp' }] }]);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn(() => ({ returning })) } as any);
+
+    const res = await app().request('/pam/signer-groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Pinned',
+        // Mixed: a legacy bare CN (weak) + a pinned entry (strong, uppercase hex).
+        signers: ['Legacy Vendor', { subjectCn: 'Acme Corp', thumbprint: TP }],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { signers: unknown[] };
+    expect(valuesArg.signers).toEqual([
+      'Legacy Vendor',
+      { subjectCn: 'Acme Corp', thumbprint: TP.toLowerCase() },
+    ]);
+  });
+
+  it('POST /signer-groups rejects an entry object with neither subjectCn nor thumbprint (400)', async () => {
+    const res = await app().request('/pam/signer-groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', signers: [{}] }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('POST /rules accepts matchSignerThumbprint and stores it lowercased (#1776)', async () => {
+    const TP = 'A'.repeat(64);
+    const returning = vi
+      .fn()
+      .mockResolvedValue([{ id: 'rule-tp', name: 'pinned', verdict: 'auto_approve', priority: 100 }]);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn(() => ({ returning })) } as any);
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'pinned',
+        verdict: 'auto_approve',
+        matchSignerThumbprint: TP,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const valuesArg = (vi.mocked(db.insert).mock.results[0]!.value.values as any).mock
+      .calls[0][0] as { matchSignerThumbprint: string };
+    expect(valuesArg.matchSignerThumbprint).toBe(TP.toLowerCase());
+  });
+
+  it('POST /rules rejects combining matchSignerThumbprint with matchSignerGroupId (400)', async () => {
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'conflicting',
+        verdict: 'auto_approve',
+        matchSignerThumbprint: 'a'.repeat(64),
         matchSignerGroupId: GROUP_ID,
       }),
     });
