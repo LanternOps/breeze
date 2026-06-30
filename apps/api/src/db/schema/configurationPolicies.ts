@@ -182,6 +182,10 @@ export const configPolicyPatchSettings = pgTable('config_policy_patch_settings',
   scheduleDayOfWeek: varchar('schedule_day_of_week', { length: 10 }).default('sun'),
   scheduleDayOfMonth: integer('schedule_day_of_month').default(1),
   rebootPolicy: varchar('reboot_policy', { length: 20 }).notNull().default('if_required'),
+  // #1872: when true, the Windows agent suppresses the native Windows Update
+  // automatic-install channel (NoAutoUpdate=1) so patches flow only through
+  // Breeze. Breeze's own WUA-driven installs are unaffected.
+  exclusiveWindowsUpdate: boolean('exclusive_windows_update').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

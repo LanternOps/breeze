@@ -139,6 +139,41 @@ describe('PatchTab', () => {
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
   });
 
+  // #1872: sole-patch-source enforcement toggle.
+  it('renders the exclusive Windows Update toggle, off by default', async () => {
+    render(<PatchTab {...baseProps} />);
+    const toggle = await screen.findByTestId('patch-exclusive-windows-update-toggle');
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText('Manage Windows Update exclusively through Breeze')).toBeInTheDocument();
+  });
+
+  it('persists exclusiveWindowsUpdate=true in the save payload when toggled on', async () => {
+    render(<PatchTab {...baseProps} />);
+    fireEvent.click(await screen.findByTestId('patch-exclusive-windows-update-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0];
+    expect(payload.inlineSettings.exclusiveWindowsUpdate).toBe(true);
+  });
+
+  it('hydrates the toggle from a stored exclusiveWindowsUpdate value', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os'], exclusiveWindowsUpdate: true },
+        }}
+      />
+    );
+    const toggle = await screen.findByTestId('patch-exclusive-windows-update-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+
   describe('inline ring editor', () => {
     it('creates a ring inline, refetches, and auto-selects it', async () => {
       fetchMock.mockImplementation((_url: any, opts: any) => {

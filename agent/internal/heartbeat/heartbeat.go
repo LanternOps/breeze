@@ -1648,6 +1648,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		}
 	}
 
+	// Apply patch_source_settings if present (#1872): enforce/revert Breeze as
+	// the sole Windows Update source. No-op on non-Windows.
+	psRaw, hasPS := update["patch_source_settings"]
+	if !hasPS {
+		psRaw, hasPS = update["patchSourceSettings"]
+	}
+	if hasPS {
+		h.applyPatchSourceConfig(psRaw)
+	}
+
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {
 		registryRaw, hasRegistry = update["policyRegistryStateProbes"]

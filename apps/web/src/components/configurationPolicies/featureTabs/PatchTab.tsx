@@ -29,6 +29,7 @@ type PatchDeploymentSettings = {
   scheduleDayOfWeek: string;
   scheduleDayOfMonth: number;
   rebootPolicy: RebootPolicy;
+  exclusiveWindowsUpdate: boolean;
 };
 
 const defaults: PatchDeploymentSettings = {
@@ -42,6 +43,7 @@ const defaults: PatchDeploymentSettings = {
   scheduleDayOfWeek: 'sun',
   scheduleDayOfMonth: 1,
   rebootPolicy: 'if_required',
+  exclusiveWindowsUpdate: false,
 };
 
 const OS_VALUE_ALIASES = new Set(['os', 'microsoft', 'apple', 'linux']);
@@ -417,6 +419,40 @@ export default function PatchTab({ policyId, existingLink, onLinkChanged, linked
               <span className="text-xs text-muted-foreground">{option.description}</span>
             </label>
           ))}
+        </div>
+      </div>
+
+      {/* Windows Update source enforcement (#1872) */}
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold">Windows Update Source</h3>
+        <div className="mt-2 flex items-center justify-between rounded-md border bg-background px-4 py-3">
+          <div className="pr-4">
+            <p className="text-sm font-medium">Manage Windows Update exclusively through Breeze</p>
+            <p className="text-xs text-muted-foreground">
+              Suppresses the endpoint&apos;s native Windows Update automatic-install channel so updates only
+              flow through Breeze&apos;s approval rings — preventing unexpected reboots and patches outside
+              your schedule. Windows-only; Breeze&apos;s own scan/approve/install path is unaffected. Reverts
+              cleanly when disabled (a pre-existing admin Group Policy is left untouched).
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.exclusiveWindowsUpdate}
+            data-testid="patch-exclusive-windows-update-toggle"
+            onClick={() => update('exclusiveWindowsUpdate', !settings.exclusiveWindowsUpdate)}
+            className={cn(
+              'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition',
+              settings.exclusiveWindowsUpdate ? 'bg-emerald-500/80' : 'bg-muted'
+            )}
+          >
+            <span
+              className={cn(
+                'inline-block h-5 w-5 rounded-full bg-white transition',
+                settings.exclusiveWindowsUpdate ? 'translate-x-5' : 'translate-x-1'
+              )}
+            />
+          </button>
         </div>
       </div>
 

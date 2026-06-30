@@ -23,6 +23,7 @@ import {
   buildHelperConfigUpdate,
   buildPamConfigUpdate,
   buildOnedriveHelperConfigUpdate,
+  buildPatchSourceConfigUpdate,
   getOrgAgentUpdatePolicy,
   type OnedriveConfigUpdate,
 } from './helpers';
@@ -714,8 +715,19 @@ if (latestHelper) {
     captureException(err);
   }
 
+  // #1872: sole-patch-source enforcement. Omit the block on a resolver error so
+  // a transient failure never reverts an endpoint already under enforcement;
+  // a successful resolve with no patch policy returns false → agent reverts.
+  let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
+  try {
+    patchSourceSettings = await buildPatchSourceConfigUpdate(device.id);
+  } catch (err) {
+    console.error(`[agents] failed to build patch_source config update for ${agentId}:`, err);
+    captureException(err);
+  }
+
   let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (configUpdate || eventLogSettings || monitoringSettings || onedriveSettings) {
+  if (configUpdate || eventLogSettings || monitoringSettings || onedriveSettings || patchSourceSettings) {
     mergedConfigUpdate = { ...(configUpdate ?? {}) };
     if (eventLogSettings) {
       mergedConfigUpdate.event_log_settings = eventLogSettings;
@@ -725,6 +737,9 @@ if (latestHelper) {
     }
     if (onedriveSettings) {
       mergedConfigUpdate.onedrive_helper_settings = onedriveSettings;
+    }
+    if (patchSourceSettings) {
+      mergedConfigUpdate.patch_source_settings = patchSourceSettings;
     }
   }
 

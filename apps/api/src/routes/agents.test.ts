@@ -869,7 +869,8 @@ describe('agent routes', () => {
         ],
         policy_config_state_probes: [
           { file_path: '/etc/ssh/sshd_config', config_key: 'PermitRootLogin' }
-        ]
+        ],
+        patch_source_settings: { exclusiveWindowsUpdate: false }
       });
     });
 
@@ -979,7 +980,8 @@ describe('agent routes', () => {
           collection_interval_minutes: 5,
         },
         policy_registry_state_probes: [],
-        policy_config_state_probes: []
+        policy_config_state_probes: [],
+        patch_source_settings: { exclusiveWindowsUpdate: false }
       });
       expect(insertValues).toHaveBeenCalledWith(
         expect.objectContaining({
