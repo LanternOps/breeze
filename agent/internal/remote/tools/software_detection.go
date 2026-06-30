@@ -1,7 +1,10 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -81,10 +84,23 @@ func detectionStringField(m map[string]any, key string) string {
 	return ""
 }
 
-// fileExists returns true if path exists as a file or directory.
-func fileExists(path string) bool {
+// evaluateFileExists reports whether path exists as a file or directory.
+//
+// A stat error is NOT blindly read as "absent": only a genuine not-exist error
+// counts as a clean negative (matched=false, supported=true). Any other error
+// (permission denied, transient I/O) means we cannot determine presence, so we
+// report supported=false and let the caller fall back to exit-code behavior
+// rather than mis-reporting an installed package as missing (#2022).
+func evaluateFileExists(path string) (matched bool, supported bool) {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true, true
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, true
+	}
+	slog.Warn("detection: cannot stat path, treating as undeterminable", "path", path, "error", err.Error())
+	return false, false
 }
 
 // EvaluateDetectionRules evaluates a slice of DetectionRule clauses (AND
@@ -134,7 +150,7 @@ func EvaluateDetectionRules(rules []DetectionRule) DetectionOutcome {
 func evaluateClause(rule DetectionRule) (matched bool, supported bool) {
 	switch rule.Type {
 	case "file_exists":
-		return fileExists(rule.Path), true
+		return evaluateFileExists(rule.Path)
 	case "registry":
 		return evaluateRegistryRule(rule)
 	case "msi_product_code":

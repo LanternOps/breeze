@@ -3,11 +3,22 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/windows/registry"
 )
+
+// registryKeyMissing reports whether an OpenKey error means the key simply does
+// not exist (a clean negative) rather than an error we couldn't interpret (e.g.
+// ACCESS_DENIED), which must NOT be read as "absent". OpenKey returns the raw
+// syscall errno, so this checks the Windows not-found codes directly.
+func registryKeyMissing(err error) bool {
+	return errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) || errors.Is(err, syscall.ERROR_PATH_NOT_FOUND)
+}
 
 // evaluateRegistryRule checks whether a registry key (and optionally a value
 // and its data) exists on Windows.
@@ -21,14 +32,20 @@ func evaluateRegistryRule(rule DetectionRule) (matched bool, supported bool) {
 
 	root, err := resolveDetectionRegistryRoot(hive)
 	if err != nil {
-		// Unknown hive — treat as not matched but still supported.
-		return false, true
+		// Unknown hive — we can't evaluate, so report unsupported (fall back to
+		// exit-code) rather than a false negative.
+		slog.Warn("detection: unknown registry hive", "hive", hive)
+		return false, false
 	}
 
 	key, err := registry.OpenKey(root, rule.Path, registry.QUERY_VALUE|registry.READ)
 	if err != nil {
-		// Key absent.
-		return false, true
+		if registryKeyMissing(err) {
+			return false, true // key genuinely absent → clean negative
+		}
+		// ACCESS_DENIED / unexpected — can't determine presence.
+		slog.Warn("detection: cannot open registry key", "hive", hive, "path", rule.Path, "error", err.Error())
+		return false, false
 	}
 	defer key.Close()
 
@@ -37,14 +54,23 @@ func evaluateRegistryRule(rule DetectionRule) (matched bool, supported bool) {
 		return true, true
 	}
 
-	// Read the value as a string; fall back to integer.
+	// Read the value as a string; a wrong-type value falls back to integer.
 	strVal, _, err := key.GetStringValue(rule.ValueName)
 	if err != nil {
-		// Try integer.
+		if errors.Is(err, registry.ErrNotExist) {
+			return false, true // value genuinely absent → clean negative
+		}
+		// Wrong type (e.g. DWORD) or other — try reading it as an integer.
 		intVal, _, intErr := key.GetIntegerValue(rule.ValueName)
 		if intErr != nil {
-			// Value absent.
-			return false, true
+			if errors.Is(intErr, registry.ErrNotExist) {
+				return false, true
+			}
+			// A value type we don't handle (binary/multi-string) or an access
+			// error — can't compare it, so report unsupported.
+			slog.Warn("detection: cannot read registry value",
+				"hive", hive, "path", rule.Path, "value", rule.ValueName, "error", intErr.Error())
+			return false, false
 		}
 		strVal = fmt.Sprintf("%d", intVal)
 	}
@@ -74,14 +100,25 @@ func evaluateMsiProductCodeRule(rule DetectionRule) (matched bool, supported boo
 		`SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\` + code,
 	}
 
+	sawUndeterminable := false
 	for _, path := range paths {
 		key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
 		if err == nil {
 			key.Close()
 			return true, true
 		}
+		if !registryKeyMissing(err) {
+			// Not a clean "not found" — couldn't determine for this path.
+			slog.Warn("detection: cannot open MSI uninstall key", "path", path, "error", err.Error())
+			sawUndeterminable = true
+		}
 	}
 
+	if sawUndeterminable {
+		// Neither path matched, but at least one couldn't be evaluated — don't
+		// claim the product is absent; fall back to exit-code behavior.
+		return false, false
+	}
 	return false, true
 }
 

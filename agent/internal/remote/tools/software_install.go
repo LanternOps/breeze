@@ -127,11 +127,6 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 		return result
 	}
 
-	// Post-install verification (#2022): when a detection rule is configured, the
-	// device's real state — not the installer exit code — decides success. An
-	// installer can exit 0 yet leave nothing installed; that must report failed.
-	// Unsupported rule types on this platform can't be evaluated, so we keep the
-	// exit-code result and note that detection was skipped.
 	successPayload := map[string]any{
 		"softwareName": softwareName,
 		"version":      version,
@@ -145,29 +140,47 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 		successPayload["outputTruncated"] = true
 	}
 
-	if len(detectionRules) > 0 {
-		post := EvaluateDetectionRules(detectionRules)
-		if post.Supported {
-			successPayload["detectionPerformed"] = true
-			successPayload["detectionSatisfied"] = post.Detected
-			if !post.Detected {
-				// Installer reported success but the app isn't actually present.
-				return CommandResult{
-					Status:     "failed",
-					ExitCode:   exitCode,
-					Stdout:     output,
-					Error:      "installer reported success but detection rule was not satisfied: " + post.Detail,
-					DurationMs: time.Since(startTime).Milliseconds(),
-				}
-			}
-			successPayload["detail"] = post.Detail
-		} else {
-			successPayload["detectionPerformed"] = false
-			successPayload["detail"] = post.Detail
-		}
+	return applyPostInstallDetection(successPayload, exitCode, output, detectionRules, time.Since(startTime).Milliseconds())
+}
+
+// applyPostInstallDetection decides the final install result from the device's
+// REAL state when detection rules are configured (#2022). The installer's exit
+// code alone is not trusted: an installer can exit 0 yet leave nothing behind.
+//
+// Three outcomes:
+//   - supported + detected   → success (the install verified).
+//   - supported + !detected  → failed ("reported success but detection rule
+//     was not satisfied") — the marquee guarantee of this feature.
+//   - unsupported on platform → keep the exit-code success result and note that
+//     detection was not performed (never silently flip to pass/fail).
+//
+// With no rules it is a plain exit-code success. successPayload is mutated with
+// detection metadata for the success/unsupported paths.
+func applyPostInstallDetection(successPayload map[string]any, exitCode int, output string, rules []DetectionRule, durationMs int64) CommandResult {
+	if len(rules) == 0 {
+		return NewSuccessResult(successPayload, durationMs)
 	}
 
-	return NewSuccessResult(successPayload, time.Since(startTime).Milliseconds())
+	post := EvaluateDetectionRules(rules)
+	if !post.Supported {
+		successPayload["detectionPerformed"] = false
+		successPayload["detail"] = post.Detail
+		return NewSuccessResult(successPayload, durationMs)
+	}
+
+	successPayload["detectionPerformed"] = true
+	successPayload["detectionSatisfied"] = post.Detected
+	if !post.Detected {
+		return CommandResult{
+			Status:     "failed",
+			ExitCode:   exitCode,
+			Stdout:     output,
+			Error:      "installer reported success but detection rule was not satisfied: " + post.Detail,
+			DurationMs: durationMs,
+		}
+	}
+	successPayload["detail"] = post.Detail
+	return NewSuccessResult(successPayload, durationMs)
 }
 
 func validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, softwareName, version string) (string, string, string, string, string, string, error) {

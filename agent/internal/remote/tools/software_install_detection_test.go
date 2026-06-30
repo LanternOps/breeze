@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -39,6 +41,60 @@ func TestInstallerExitIndicatesSuccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApplyPostInstallDetection(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	present := filepath.Join(dir, "present.txt")
+	if err := os.WriteFile(present, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write present: %v", err)
+	}
+	absent := filepath.Join(dir, "absent.txt")
+
+	t.Run("no rules → plain exit-code success", func(t *testing.T) {
+		r := applyPostInstallDetection(map[string]any{"success": true}, 0, "out", nil, 0)
+		if r.Status != "completed" {
+			t.Fatalf("want completed, got %q", r.Status)
+		}
+	})
+
+	t.Run("supported + detected → success", func(t *testing.T) {
+		rules := []DetectionRule{{Type: "file_exists", Path: present}}
+		r := applyPostInstallDetection(map[string]any{"success": true}, 0, "out", rules, 0)
+		if r.Status != "completed" {
+			t.Fatalf("want completed, got %q (err=%q)", r.Status, r.Error)
+		}
+	})
+
+	t.Run("supported + not detected → failed", func(t *testing.T) {
+		rules := []DetectionRule{{Type: "file_exists", Path: absent}}
+		r := applyPostInstallDetection(map[string]any{"success": true}, 0, "out", rules, 0)
+		if r.Status != "failed" {
+			t.Fatalf("want failed, got %q", r.Status)
+		}
+		if !strings.Contains(r.Error, "detection rule was not satisfied") {
+			t.Fatalf("expected detection-not-satisfied error, got %q", r.Error)
+		}
+	})
+
+	t.Run("unsupported on this platform → keep exit-code success", func(t *testing.T) {
+		// A registry clause is unsupported on the non-Windows CI host, so the
+		// install must remain a success and report detectionPerformed=false.
+		if runtime.GOOS == "windows" {
+			t.Skip("registry clause is supported on Windows")
+		}
+		payload := map[string]any{"success": true}
+		rules := []DetectionRule{{Type: "registry", Path: `SOFTWARE\Acme\App`}}
+		r := applyPostInstallDetection(payload, 0, "out", rules, 0)
+		if r.Status != "completed" {
+			t.Fatalf("want completed, got %q", r.Status)
+		}
+		if payload["detectionPerformed"] != false {
+			t.Fatalf("want detectionPerformed=false, got %v", payload["detectionPerformed"])
+		}
+	})
 }
 
 // When a detection rule already matches the device state, InstallSoftware must
