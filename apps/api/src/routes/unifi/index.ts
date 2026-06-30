@@ -7,7 +7,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { db } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
-import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection } from '../../services/unifi/unifiConnectionService';
+import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
 import { listCollectors, upsertCollector, deleteCollector } from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
 
@@ -72,6 +72,7 @@ unifiRoutes.get('/', partnerScopes, readPerm, async (c) => {
   if (!conn) return c.json({ connected: false });
   return c.json({
     connected: true,
+    connectionType: conn.connectionType,
     status: conn.status,
     accountLabel: conn.accountLabel,
     lastSyncAt: conn.lastSyncAt,
@@ -106,6 +107,23 @@ unifiRoutes.post('/connect', partnerScopes, writePerm, requireMfa(), zValidator(
     createdBy: auth.user.id,
   });
   return c.json({ connected: true, status: conn.status });
+});
+
+const connectSelfHostedSchema = z.object({
+  accountLabel: z.string().max(200).optional(),
+});
+
+// POST /unifi/connect-self-hosted — create a self-hosted integration (no cloud key)
+unifiRoutes.post('/connect-self-hosted', partnerScopes, writePerm, requireMfa(), zValidator('json', connectSelfHostedSchema), async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const { accountLabel } = c.req.valid('json');
+  const integration = await createSelfHostedIntegration(db, partner.partnerId, {
+    accountLabel: accountLabel ?? null,
+    createdBy: auth.user.id,
+  });
+  return c.json({ connected: true, connectionType: integration.connectionType });
 });
 
 // POST /unifi/test — live connection test against stored credentials
