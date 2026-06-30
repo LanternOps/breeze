@@ -58,7 +58,12 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
     // Sets the permissions context the same way the real requirePermission does.
     // An `x-test-allowed-sites` header (comma-separated) opts the session into a
     // site allowlist so the site-scope branch in loadAccessibleDevice runs.
+    // `x-test-drop-perms` simulates a (hypothetical) bug where a session reaches
+    // the handler WITHOUT a permissions context — to prove the fail-closed guard.
     requirePermission: vi.fn(() => async (c: any, next: any) => {
+      if (c.req.header('x-test-drop-perms')) {
+        return next();
+      }
       const allowedSiteIds = c.req.header('x-test-allowed-sites')
         ? (c.req.header('x-test-allowed-sites') as string).split(',')
         : undefined;
@@ -324,6 +329,28 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    it('fails closed if a SESSION reaches the handler with no permissions context (403, no write)', async () => {
+      // Simulates a dropped requirePermission gate on the JWT path. A user caller
+      // with no permissions context must be denied, never silently skip the site
+      // check — only org-scoped API keys legitimately carry no permissions.
+      rigDeviceLookup(makeDevice({ siteId: SITE_OUT }));
+      const updateSpy = rigUpdate(makeDevice({ siteId: SITE_OUT }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer session-token',
+          'x-test-drop-perms': '1',
+        },
+        body: JSON.stringify({ note: 'hi' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
     });
 
     it('allows a PATCH when the device site is inside the allowlist', async () => {
