@@ -64,9 +64,11 @@ interface SyncRun {
 }
 
 // Per-console deep-telemetry collector config (from GET /unifi/collectors).
+// `unifiHostId` is null for self-hosted controllers (no cloud host) — they're
+// keyed on their own row id instead.
 interface UnifiCollector {
   id: string;
-  unifiHostId: string;
+  unifiHostId: string | null;
   siteId: string;
   collectorDeviceId: string;
   controllerUrl: string;
@@ -91,6 +93,12 @@ interface TelemetryClient {
 }
 // Per-host draft for the collector config form.
 interface CollectorDraft { siteId: string; collectorDeviceId: string; controllerUrl: string; apiKey: string }
+// Agent-discovered local site on a self-hosted controller (from GET /unifi/controller-sites).
+// `collectorId` is the unifi_collectors row id, used as the sentinel host id when mapping.
+interface ControllerSite { collectorId: string; localSiteId: string; name: string | null; mapped: boolean }
+// Registration draft for a self-hosted controller (Task D2).
+interface ControllerDraft { controllerUrl: string; collectorDeviceId: string; siteId: string; apiKey: string }
+const emptyControllerDraft: ControllerDraft = { controllerUrl: '', collectorDeviceId: '', siteId: '', apiKey: '' };
 
 // Stable key for a discovered UniFi site within a host (host ids repeat across hosts otherwise).
 const mapKey = (hostId: string, unifiSiteId: string) => `${hostId}::${unifiSiteId}`;
@@ -126,6 +134,14 @@ export default function UnifiIntegration() {
   const [agents, setAgents] = useState<AgentDevice[]>([]);
   const [collectorDrafts, setCollectorDrafts] = useState<Record<string, CollectorDraft>>({});
   const [savingCollector, setSavingCollector] = useState<string | null>(null);
+
+  // Self-hosted controller state (Task D2): registered controllers, agent-discovered
+  // local sites to map, and the registration form draft.
+  const [selfHostedCollectors, setSelfHostedCollectors] = useState<UnifiCollector[]>([]);
+  const [controllerSites, setControllerSites] = useState<ControllerSite[] | null>(null);
+  const [controllerDraft, setControllerDraft] = useState<ControllerDraft>(emptyControllerDraft);
+  const [registeringController, setRegisteringController] = useState(false);
+  const [savingControllerMappings, setSavingControllerMappings] = useState(false);
   // Telemetry viewer state.
   const [telemetrySite, setTelemetrySite] = useState<string>('');
   const [telemetry, setTelemetry] = useState<{ devices: TelemetryDevice[]; clients: TelemetryClient[] } | null>(null);
@@ -247,11 +263,17 @@ export default function UnifiIntegration() {
       const collectorsJson = await collectorsRes.json().catch(() => ({}));
       if (collectorsRes.ok) {
         const list = (collectorsJson as { collectors?: UnifiCollector[] }).collectors ?? [];
-        setCollectors(Object.fromEntries(list.map((col) => [col.unifiHostId, col])));
+        // These maps are keyed by UniFi host id (cloud collectors only). Self-hosted
+        // collectors have a null host id and are managed by the Controllers card, so
+        // exclude them here to keep the cloud collectors card behaving as before.
+        const cloudList = list.filter(
+          (col): col is UnifiCollector & { unifiHostId: string } => col.unifiHostId != null,
+        );
+        setCollectors(Object.fromEntries(cloudList.map((col) => [col.unifiHostId, col])));
         // Pre-fill each host's draft from its saved collector (key stays blank — never echoed back).
         setCollectorDrafts((prev) => {
           const next = { ...prev };
-          for (const col of list) {
+          for (const col of cloudList) {
             next[col.unifiHostId] = {
               siteId: col.siteId,
               collectorDeviceId: col.collectorDeviceId,
@@ -280,12 +302,64 @@ export default function UnifiIntegration() {
     }
   }, [onUnauthorized, loadHosts]);
 
+  // Self-hosted controller view: load the Breeze sites/orgs (for the pickers), agents
+  // (for the collector select), registered controllers, saved mappings, and the
+  // agent-discovered controller sites. No live api.ui.com /hosts call — sites come from
+  // the on-network agent's poll (GET /unifi/controller-sites).
+  const loadSelfHosted = useCallback(async () => {
+    setDetailsError(null);
+    try {
+      const [sitesRes, orgsRes, mappingsRes, collectorsRes, devicesRes, controllerSitesRes] = await Promise.all([
+        fetchWithAuth('/orgs/sites?limit=500'),
+        fetchWithAuth('/orgs/organizations?limit=500'),
+        fetchWithAuth('/unifi/mappings'),
+        fetchWithAuth('/unifi/collectors'),
+        fetchWithAuth('/devices?limit=500'),
+        fetchWithAuth('/unifi/controller-sites'),
+      ]);
+      if ([sitesRes, orgsRes, mappingsRes, collectorsRes, devicesRes, controllerSitesRes].some((r) => r.status === 401)) {
+        onUnauthorized();
+        return;
+      }
+      const failed: string[] = [];
+      const sitesJson = await sitesRes.json().catch(() => ({}));
+      if (sitesRes.ok) setBreezeSites((sitesJson as { data?: BreezeSiteOption[] }).data ?? []); else failed.push('sites');
+      const orgsJson = await orgsRes.json().catch(() => ({}));
+      if (orgsRes.ok) setOrgs((orgsJson as { data?: OrgOption[] }).data ?? []); else failed.push('organizations');
+      const mappingsJson = await mappingsRes.json().catch(() => ({}));
+      if (mappingsRes.ok) {
+        const saved = (mappingsJson as { mappings?: SavedMapping[] }).mappings ?? [];
+        setSelection(Object.fromEntries(saved.map((m) => [mapKey(m.unifiHostId, m.unifiSiteId), m.siteId])));
+      } else failed.push('mappings');
+      const collectorsJson = await collectorsRes.json().catch(() => ({}));
+      if (collectorsRes.ok) setSelfHostedCollectors((collectorsJson as { collectors?: UnifiCollector[] }).collectors ?? []); else failed.push('controllers');
+      const devicesJson = await devicesRes.json().catch(() => ({}));
+      if (devicesRes.ok) {
+        const list = (devicesJson as { data?: AgentDevice[]; devices?: AgentDevice[] }).data
+          ?? (devicesJson as { devices?: AgentDevice[] }).devices
+          ?? (Array.isArray(devicesJson) ? (devicesJson as AgentDevice[]) : []);
+        setAgents(list);
+      } else failed.push('agent devices');
+      const controllerSitesJson = await controllerSitesRes.json().catch(() => ({}));
+      if (controllerSitesRes.ok) setControllerSites((controllerSitesJson as { sites?: ControllerSite[] }).sites ?? []); else failed.push('controller sites');
+      if (failed.length > 0) {
+        setDetailsError(`Some UniFi configuration data failed to load (${failed.join(', ')}). Refresh to retry.`);
+      }
+    } catch {
+      setDetailsError('Could not load UniFi configuration data. Check your connection and refresh.');
+    }
+  }, [onUnauthorized]);
+
   // Load mapping/history detail once the connection status resolves to connected.
   // Only cloud connections have api.ui.com hosts/sites to map — the self-hosted
   // controller view (Task D2) is driven separately, so skip the cloud fetches.
   useEffect(() => {
     if (status?.connected === true && status?.connectionType !== 'self_hosted') void loadDetails();
   }, [status?.connected, status?.connectionType, loadDetails]);
+
+  useEffect(() => {
+    if (status?.connected === true && status?.connectionType === 'self_hosted') void loadSelfHosted();
+  }, [status?.connected, status?.connectionType, loadSelfHosted]);
 
   const handleSaveMappings = useCallback(async () => {
     if (!hosts) return;
@@ -312,6 +386,66 @@ export default function UnifiIntegration() {
       setSavingMappings(false);
     }
   }, [hosts, selection, onUnauthorized, loadDetails]);
+
+  // Register/update a self-hosted controller, then reload collectors + controller sites.
+  const handleRegisterController = useCallback(async () => {
+    const { controllerUrl, collectorDeviceId, siteId, apiKey } = controllerDraft;
+    if (!siteId || !collectorDeviceId || !controllerUrl.trim() || !apiKey.trim()) {
+      setLoadError('Pick the site this controller serves, a collector agent, and enter the controller URL and local API key.');
+      return;
+    }
+    setRegisteringController(true);
+    setLoadError(null);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/unifi/controllers', {
+          method: 'PUT',
+          body: JSON.stringify({
+            siteId,
+            collectorDeviceId,
+            controllerUrl: controllerUrl.trim(),
+            apiKey: apiKey.trim(),
+          }),
+        }),
+        errorFallback: 'Failed to register the controller.',
+        successMessage: 'Controller registered',
+        onUnauthorized,
+      });
+      setControllerDraft(emptyControllerDraft);
+      await loadSelfHosted();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) handleActionError(err, 'Failed to register the controller.');
+    } finally {
+      setRegisteringController(false);
+    }
+  }, [controllerDraft, onUnauthorized, loadSelfHosted]);
+
+  // Map each agent-discovered controller site to a Breeze site via the shared
+  // PUT /unifi/mappings, using the collector id as the sentinel unifiHostId.
+  const handleSaveControllerMappings = useCallback(async () => {
+    if (!controllerSites) return;
+    const mappings = controllerSites.flatMap((s) => {
+      const siteId = selection[mapKey(s.collectorId, s.localSiteId)];
+      if (!siteId) return [];
+      return [{ unifiHostId: s.collectorId, unifiSiteId: s.localSiteId, unifiSiteName: s.name ?? undefined, siteId }];
+    });
+    setSavingControllerMappings(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/unifi/mappings', { method: 'PUT', body: JSON.stringify({ mappings }) }),
+        errorFallback: 'Failed to save site mappings.',
+        successMessage: 'Site mappings saved',
+        onUnauthorized,
+      });
+      await loadSelfHosted();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) handleActionError(err, 'Failed to save site mappings.');
+    } finally {
+      setSavingControllerMappings(false);
+    }
+  }, [controllerSites, selection, onUnauthorized, loadSelfHosted]);
 
   const updateDraft = useCallback((hostId: string, patch: Partial<CollectorDraft>) => {
     setCollectorDrafts((prev) => {
@@ -716,6 +850,189 @@ export default function UnifiIntegration() {
               Disconnect
             </button>
           </div>
+        </div>
+      )}
+
+      {isSelfHosted && (
+        <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-controllers-card">
+          <h2 className="text-lg font-semibold">Controllers</h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Register each self-hosted UniFi Network controller. A Breeze agent on the controller&apos;s
+            network polls its local Integration API (firmware&nbsp;≥&nbsp;9.3) directly — no UniFi cloud account
+            needed. The local API key is stored encrypted and pushed to the chosen agent.
+          </p>
+
+          {selfHostedCollectors.length > 0 && (
+            <ul className="mb-4 space-y-2" data-testid="unifi-controller-list">
+              {selfHostedCollectors.map((col) => (
+                <li key={col.id} className="flex items-center gap-2 rounded-lg border p-3 text-sm" data-testid="unifi-controller-item">
+                  <span className="font-medium break-all">{col.controllerUrl}</span>
+                  <span
+                    className={`ml-auto inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${collectorStatusClasses(col.status)}`}
+                    title={col.lastPollError ?? undefined}
+                    data-testid="unifi-controller-status"
+                  >
+                    {col.status}
+                    {col.lastPollAt ? ` · ${formatDateTime(col.lastPollAt)}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="rounded-lg border p-4" data-testid="unifi-controller-form">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-sm">
+                <span className="text-muted-foreground">Controller URL</span>
+                <input
+                  type="text"
+                  value={controllerDraft.controllerUrl}
+                  onChange={(e) => setControllerDraft((prev) => ({ ...prev, controllerUrl: e.target.value }))}
+                  placeholder="https://192.168.1.1"
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                  data-testid="unifi-controller-url"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="text-muted-foreground">Site this controller serves</span>
+                <select
+                  value={controllerDraft.siteId}
+                  onChange={(e) => setControllerDraft((prev) => ({ ...prev, siteId: e.target.value, collectorDeviceId: '' }))}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                  data-testid="unifi-controller-site"
+                >
+                  <option value="">— Select site —</option>
+                  {sitesByOrg.map((group) => (
+                    <optgroup key={group.id} label={group.name}>
+                      {group.sites.map((site) => (
+                        <option key={site.id} value={site.id}>{site.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm">
+                <span className="text-muted-foreground">Collector agent</span>
+                <select
+                  value={controllerDraft.collectorDeviceId}
+                  onChange={(e) => setControllerDraft((prev) => ({ ...prev, collectorDeviceId: e.target.value }))}
+                  disabled={!controllerDraft.siteId}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm disabled:opacity-50"
+                  data-testid="unifi-controller-agent"
+                >
+                  <option value="">{controllerDraft.siteId ? '— Select agent —' : 'Pick a site first'}</option>
+                  {agents.filter((a) => !controllerDraft.siteId || a.siteId === controllerDraft.siteId).map((a) => (
+                    <option key={a.id} value={a.id}>{a.name ?? a.id}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm">
+                <span className="text-muted-foreground">Local API key</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={controllerDraft.apiKey}
+                  onChange={(e) => setControllerDraft((prev) => ({ ...prev, apiKey: e.target.value }))}
+                  placeholder="Network Integration API key"
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                  data-testid="unifi-controller-key"
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleRegisterController()}
+              disabled={registeringController}
+              className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              data-testid="unifi-controller-register"
+            >
+              {registeringController ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+              Register controller
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isSelfHosted && (
+        <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-controller-mapping-card">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold">Site mapping</h2>
+            <button
+              type="button"
+              onClick={() => void loadSelfHosted()}
+              className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium hover:bg-muted"
+              data-testid="unifi-controller-mapping-refresh"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Refresh
+            </button>
+          </div>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Map each agent-discovered controller site to a Breeze site. Devices polled from that site are
+            reconciled into the chosen site&apos;s discovered assets.
+          </p>
+
+          {!controllerSites || controllerSites.length === 0 ? (
+            <p className="py-6 text-sm text-muted-foreground" data-testid="unifi-controller-mapping-empty">
+              No sites discovered yet. Once the assigned agent reaches the controller (within ~1 minute), its
+              sites appear here to map.
+            </p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y text-sm" data-testid="unifi-controller-mapping-table">
+                  <thead>
+                    <tr className="text-left text-muted-foreground">
+                      <th className="px-3 py-2 font-medium">Controller site</th>
+                      <th className="px-3 py-2 font-medium">Breeze site</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {controllerSites.map((s) => {
+                      const key = mapKey(s.collectorId, s.localSiteId);
+                      return (
+                        <tr key={key} data-testid="unifi-controller-mapping-row">
+                          <td className="px-3 py-2">
+                            <span className="font-medium">{s.name ?? s.localSiteId}</span>
+                            <span className="ml-1 text-xs text-muted-foreground">{s.localSiteId}</span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <select
+                              value={selection[key] ?? ''}
+                              onChange={(e) => setSelection((prev) => ({ ...prev, [key]: e.target.value }))}
+                              className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm"
+                              data-testid="unifi-controller-mapping-select"
+                            >
+                              <option value="">— Not mapped —</option>
+                              {sitesByOrg.map((group) => (
+                                <optgroup key={group.id} label={group.name}>
+                                  {group.sites.map((site) => (
+                                    <option key={site.id} value={site.id}>{site.name}</option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-4 flex items-center gap-3 border-t pt-4">
+                <button
+                  type="button"
+                  onClick={() => void handleSaveControllerMappings()}
+                  disabled={savingControllerMappings}
+                  className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  data-testid="unifi-controller-mapping-save"
+                >
+                  {savingControllerMappings ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                  Save mappings
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
