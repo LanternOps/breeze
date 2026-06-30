@@ -4,6 +4,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/winupdate"
 )
 
+// applyWinUpdate is the seam to the (Windows-only) enforcement. A package var so
+// tests can capture the resolved enforce bool on any platform — the dispatch +
+// payload-parse path is where a key-name regression would silently disable the
+// whole feature, so it must be unit-tested even though the registry I/O cannot
+// run on the CI agent.
+var applyWinUpdate = winupdate.Apply
+
 // applyPatchSourceConfig handles the patch_source_settings block from the
 // heartbeat config update (#1872). When exclusiveWindowsUpdate is true the
 // Windows agent suppresses the native Windows Update automatic-install channel;
@@ -30,7 +37,7 @@ func (h *Heartbeat) applyPatchSourceConfig(raw any) {
 		return
 	}
 
-	res, err := winupdate.Apply(enforce)
+	res, err := applyWinUpdate(enforce)
 	if err != nil {
 		log.Error("failed to apply Windows Update source enforcement",
 			"enforce", enforce, "error", err.Error())
