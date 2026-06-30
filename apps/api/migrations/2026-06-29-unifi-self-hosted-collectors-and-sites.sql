@@ -1,5 +1,5 @@
--- UniFi self-hosted controllers (part b): one collector row per controller (no
--- cloud host id), plus the agent-reported controller-site discovery table.
+-- UniFi self-hosted controllers: one collector row per controller (no cloud
+-- host id), plus the agent-reported controller-site discovery table.
 
 -- 1. Collector host id becomes nullable; a self-hosted controller has no cloud host.
 ALTER TABLE unifi_collectors ALTER COLUMN unifi_host_id DROP NOT NULL;
