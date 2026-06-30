@@ -43,9 +43,18 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('./incidents.helpers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./incidents.helpers')>();
+  return {
+    ...actual,
+    buildIncidentFeed: vi.fn(),
+  };
+});
+
 import { db } from '../db';
 import { incidentRoutes } from './incidents';
 import { publishEvent } from '../services/eventBus';
+import { buildIncidentFeed, FeedScopeError } from './incidents.helpers';
 
 function mockSelectSingle(row: unknown) {
   return {
@@ -482,6 +491,47 @@ describe('incidentRoutes', () => {
       'incidents-route',
       expect.any(Object),
     );
+  });
+
+  it('GET /incidents/feed returns the unified union with pagination', async () => {
+    vi.mocked(buildIncidentFeed).mockResolvedValueOnce({
+      rows: [
+        {
+          kind: 'tracked',
+          source: 'breeze',
+          sourceId: 'i-1',
+          title: 'Test incident',
+          severity: 'p1',
+          edrStatus: null,
+          status: 'detected',
+          deviceId: null,
+          detectedAt: new Date().toISOString(),
+          trackedIncidentId: 'i-1',
+        },
+      ],
+      total: 1,
+    });
+
+    const res = await app.request('/incidents/feed?limit=25', {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      data: expect.any(Array),
+      pagination: { page: 1, limit: 25 },
+    });
+  });
+
+  it('GET /incidents/feed surfaces scope errors as their status', async () => {
+    vi.mocked(buildIncidentFeed).mockRejectedValueOnce(
+      new FeedScopeError(403, 'Access to this organization denied')
+    );
+
+    const res = await app.request('/incidents/feed?orgId=00000000-0000-0000-0000-000000000999', {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(403);
   });
 
   it('builds incident report with evidence and action summaries', async () => {

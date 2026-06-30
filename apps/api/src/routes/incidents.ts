@@ -15,13 +15,16 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import {
   createIncidentSchema,
+  listIncidentFeedSchema,
   listIncidentsSchema,
   uuidParamSchema,
   closeIncidentSchema,
 } from './incidents.validation';
 import {
+  buildIncidentFeed,
   canTransitionStatus,
   appendTimeline,
+  FeedScopeError,
   normalizeTimelineWithSort,
   getPagination,
   resolveOrgFilter,
@@ -201,6 +204,38 @@ incidentRoutes.get(
         total: Number(countRows[0]?.count ?? 0),
       },
     });
+  }
+);
+
+incidentRoutes.get(
+  '/feed',
+  requireScope('organization', 'partner', 'system'),
+  requireIncidentRead,
+  zValidator('query', listIncidentFeedSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const limit = query.limit;
+    const offset = (query.page - 1) * limit;
+
+    try {
+      const { rows, total } = await buildIncidentFeed(auth, {
+        orgId: query.orgId,
+        kind: query.kind,
+        source: query.source,
+        limit,
+        offset,
+      });
+      return c.json({
+        data: rows,
+        pagination: { page: query.page, limit, total },
+      });
+    } catch (err) {
+      if (err instanceof FeedScopeError) {
+        return c.json({ error: err.message }, err.status as ContentfulStatusCode);
+      }
+      throw err;
+    }
   }
 );
 

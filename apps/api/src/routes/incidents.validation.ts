@@ -39,6 +39,14 @@ export const listIncidentsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(250).optional(),
 });
 
+export const listIncidentFeedSchema = z.object({
+  orgId: z.string().guid().optional(),
+  kind: z.enum(['tracked', 'finding']).optional(),
+  source: z.enum(['breeze', 'huntress', 's1']).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+
 export const containIncidentSchema = z.object({
   actionType: z.string().min(2).max(40),
   description: z.string().min(3).max(10_000),
