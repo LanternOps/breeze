@@ -68,7 +68,9 @@ const statusConfig: Record<string, { label: string; color: string }> = {
   archived: { label: 'Archived', color: 'bg-muted text-muted-foreground border-border' },
 };
 
-const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
+// Exhaustive over FeatureType (full Record, not Partial) so a new canonical
+// feature type fails to compile until it gets a tab-bar icon. (#2004)
+const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   patch: <PackageCheck className="h-4 w-4" />,
   alert_rule: <Bell className="h-4 w-4" />,
   backup: <HardDrive className="h-4 w-4" />,
@@ -88,7 +90,13 @@ const featureTabIcons: Partial<Record<FeatureType, React.ReactNode>> = {
   vulnerability: <ShieldAlert className="h-4 w-4" />,
 };
 
-const FEATURE_TYPES: FeatureType[] = ['patch', 'alert_rule', 'backup', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'vulnerability'];
+// Which feature tabs the editor renders, in display order. Derived from
+// FEATURE_META keys (not a hand-listed subset) so it stays in lockstep with the
+// canonical registry and can't silently omit a tab — previously this was a hand
+// list that had drifted, dropping `security` so SecurityTab was unreachable even
+// though it's imported, wired into renderFeatureTab, and has a baseline. (#2004)
+// featureTypeParity.test.ts asserts this equals canonical minus the exclusions.
+export const FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
