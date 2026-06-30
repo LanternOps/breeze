@@ -332,7 +332,6 @@ export function buildIncidentFeedQueries(
 
   // Build UNION ALL explicitly per active combination so Drizzle can infer
   // each call's table-name union type (dynamic `legs[]` array spreads lose it).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const baseQ: any =
     includeTracked && includeHuntress && includeS1
       ? unionAll(trackedQ, huntressQ, s1Q)
@@ -347,7 +346,6 @@ export function buildIncidentFeedQueries(
               : includeHuntress
                 ? huntressQ
                 : s1Q;
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const sub = baseQ.as('feed');
 
   const countQuery = db.select({ count: sql<number>`count(*)` }).from(sub);
@@ -358,7 +356,6 @@ export function buildIncidentFeedQueries(
     // first), `detectedAt` descending. Referencing `sub.rank`/`sub.detectedAt`
     // emits correctly-quoted identifiers — raw unquoted `detected_at` would
     // fold to lowercase and fail (`column "detected_at" does not exist`).
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     .orderBy(asc(sub.rank), desc(sub.detectedAt))
     .limit(params.limit)
     .offset(params.offset);
