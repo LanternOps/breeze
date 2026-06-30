@@ -4,6 +4,7 @@ import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
+type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
 type IncidentKind = 'tracked' | 'finding';
 type IncidentSource = 'breeze' | 'huntress' | 's1';
 type FeedFilter = '' | IncidentKind;
@@ -46,7 +47,15 @@ const sourceBadge: Record<IncidentSource, string> = {
   s1: 'bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300',
 };
 
-const statusBadge = 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300';
+const statusColors: Record<IncidentStatus, string> = {
+  detected: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+  analyzing: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
+  contained: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+  recovering: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
+  closed: 'bg-gray-100 text-gray-800 dark:bg-gray-700/30 dark:text-gray-300',
+};
+
+const fallbackStatusBadge = 'bg-gray-100 text-gray-800 dark:bg-gray-700/40 dark:text-gray-200';
 
 export default function IncidentsPage() {
   const [rows, setRows] = useState<IncidentFeedRow[]>([]);
@@ -54,7 +63,6 @@ export default function IncidentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [kindFilter, setKindFilter] = useState<FeedFilter>('');
-  const [severityFilter, setSeverityFilter] = useState<IncidentSeverity | ''>('');
 
   const fetchFeed = useCallback(async (page = 1) => {
     try {
@@ -99,9 +107,6 @@ export default function IncidentsPage() {
     const totalPages = Math.ceil(pagination.total / pagination.limit);
     if (pagination.page < totalPages) fetchFeed(pagination.page + 1);
   };
-
-  // Client-side severity narrowing — the feed endpoint does not support a severity param.
-  const visibleRows = severityFilter ? rows.filter((r) => r.severity === severityFilter) : rows;
 
   if (loading) {
     return (
@@ -159,24 +164,13 @@ export default function IncidentsPage() {
           <option value="tracked">Tracked</option>
           <option value="finding">Findings</option>
         </select>
-        <select
-          value={severityFilter}
-          onChange={(e) => setSeverityFilter(e.target.value as IncidentSeverity | '')}
-          className="rounded-md border bg-background px-3 py-2 text-sm text-foreground"
-        >
-          <option value="">All severities</option>
-          <option value="p1">P1 - Critical</option>
-          <option value="p2">P2 - High</option>
-          <option value="p3">P3 - Medium</option>
-          <option value="p4">P4 - Low</option>
-        </select>
       </div>
 
-      {visibleRows.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <h2 className="text-lg font-semibold text-foreground mb-1">No incidents found</h2>
           <p className="text-sm text-muted-foreground max-w-md">
-            {kindFilter || severityFilter
+            {kindFilter
               ? 'No incidents match the current filters.'
               : 'No tracked incidents or EDR findings have been recorded yet.'}
           </p>
@@ -195,7 +189,7 @@ export default function IncidentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {visibleRows.map((row) => {
+                {rows.map((row) => {
                   const isTracked = row.kind === 'tracked';
                   return (
                     <tr
@@ -219,7 +213,7 @@ export default function IncidentsPage() {
                       <td className="px-4 py-3">
                         {isTracked ? (
                           row.status ? (
-                            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusBadge}`}>
+                            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusColors[row.status as IncidentStatus] ?? fallbackStatusBadge}`}>
                               {row.status}
                             </span>
                           ) : (
