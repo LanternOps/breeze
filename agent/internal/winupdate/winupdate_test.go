@@ -1,6 +1,115 @@
 package winupdate
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+var (
+	errFakeNotExist     = errors.New("value not present")
+	errFakeAccessDenied = errors.New("access denied")
+)
+
+func fakeIsNotExist(err error) bool { return errors.Is(err, errFakeNotExist) }
+
+// fakeRegKey implements regKey so executeRevert's safety logic runs on any OS.
+type fakeRegKey struct {
+	deleteErr     map[string]error // per-value-name error returned by DeleteValue
+	deleted       []string
+	valueNames    []string
+	valueNamesErr error
+	subKeys       []string
+	subKeysErr    error
+}
+
+func (f *fakeRegKey) DeleteValue(name string) error {
+	if e := f.deleteErr[name]; e != nil {
+		return e
+	}
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+func (f *fakeRegKey) ReadValueNames(int) ([]string, error)  { return f.valueNames, f.valueNamesErr }
+func (f *fakeRegKey) ReadSubKeyNames(int) ([]string, error) { return f.subKeys, f.subKeysErr }
+
+func TestExecuteRevert(t *testing.T) {
+	t.Run("deletes all managed values and removes a confirmed-empty Breeze-created key", func(t *testing.T) {
+		k := &fakeRegKey{valueNames: []string{}, subKeys: []string{}}
+		removeKey, err := executeRevert(k, true, fakeIsNotExist)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !removeKey {
+			t.Errorf("removeKey = false, want true for a confirmed-empty created key")
+		}
+		if len(k.deleted) != 3 {
+			t.Errorf("deleted %v values, want 3 (NoAutoUpdate + 2 sentinels)", k.deleted)
+		}
+	})
+
+	t.Run("tolerates not-present values (idempotent revert)", func(t *testing.T) {
+		k := &fakeRegKey{
+			deleteErr:  map[string]error{noAutoUpdateValue: errFakeNotExist, breezeManagedValue: errFakeNotExist},
+			valueNames: []string{}, subKeys: []string{},
+		}
+		removeKey, err := executeRevert(k, true, fakeIsNotExist)
+		if err != nil {
+			t.Fatalf("unexpected error for not-present values: %v", err)
+		}
+		if !removeKey {
+			t.Errorf("removeKey = false, want true")
+		}
+	})
+
+	t.Run("propagates a real delete error instead of reporting a clean revert", func(t *testing.T) {
+		// ACCESS_DENIED on the ownership sentinel must surface — otherwise the
+		// sentinel persists while the caller reports Reverted:true.
+		k := &fakeRegKey{deleteErr: map[string]error{breezeManagedValue: errFakeAccessDenied}}
+		removeKey, err := executeRevert(k, true, fakeIsNotExist)
+		if err == nil {
+			t.Fatalf("expected error to propagate, got nil")
+		}
+		if !errors.Is(err, errFakeAccessDenied) {
+			t.Errorf("error = %v, want it to wrap access-denied", err)
+		}
+		if removeKey {
+			t.Errorf("removeKey = true after a failed delete; must be false")
+		}
+	})
+
+	t.Run("does NOT delete the key when emptiness cannot be confirmed (read error)", func(t *testing.T) {
+		k := &fakeRegKey{valueNamesErr: errFakeAccessDenied}
+		removeKey, err := executeRevert(k, true, fakeIsNotExist)
+		if err != nil {
+			t.Fatalf("read error should not fail the revert: %v", err)
+		}
+		if removeKey {
+			t.Errorf("removeKey = true on a read error; a transient failure must never delete the key")
+		}
+	})
+
+	t.Run("does NOT delete the key when other values remain", func(t *testing.T) {
+		k := &fakeRegKey{valueNames: []string{"SomeAdminValue"}, subKeys: []string{}}
+		removeKey, err := executeRevert(k, true, fakeIsNotExist)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if removeKey {
+			t.Errorf("removeKey = true with a surviving admin value; must be false")
+		}
+	})
+
+	t.Run("never deletes the key when deleteKeyIfEmpty is false", func(t *testing.T) {
+		k := &fakeRegKey{valueNames: []string{}, subKeys: []string{}}
+		removeKey, err := executeRevert(k, false, fakeIsNotExist)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if removeKey {
+			t.Errorf("removeKey = true with deleteKeyIfEmpty=false; must be false")
+		}
+	})
+}
 
 // planAction is platform-independent, so these run on the Linux CI agent even
 // though the registry I/O in winupdate_windows.go does not.

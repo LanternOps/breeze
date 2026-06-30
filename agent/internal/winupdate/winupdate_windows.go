@@ -9,20 +9,10 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const (
-	// auKeyPath is the documented Group Policy location for the Automatic
-	// Updates client, relative to HKLM.
-	auKeyPath = `SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`
-	// noAutoUpdateValue=1 disables the unattended Automatic Updates install
-	// channel (does not affect Breeze's WUA COM-driven installs).
-	noAutoUpdateValue = "NoAutoUpdate"
-	// breezeManagedValue marks the NoAutoUpdate value as Breeze-owned so revert
-	// never clobbers a pre-existing admin GPO.
-	breezeManagedValue = "BreezeManagedNoAutoUpdate"
-	// breezeCreatedKeyValue marks that Breeze created the AU key itself, so a
-	// revert can remove the key again if nothing else remains.
-	breezeCreatedKeyValue = "BreezeCreatedAUKey"
-)
+// auKeyPath is the documented Group Policy location for the Automatic Updates
+// client, relative to HKLM. (The value-name constants are shared with the
+// platform-independent revert logic in winupdate.go.)
+const auKeyPath = `SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`
 
 // readState observes the current AU policy key without mutating it.
 func readState() (regState, error) {
@@ -94,25 +84,19 @@ func Apply(enforce bool) (Result, error) {
 		if e != nil {
 			return Result{Supported: true}, fmt.Errorf("open WindowsUpdate AU key for revert: %w", e)
 		}
-		// Delete our managed value and sentinels. Missing values are not an error
-		// (idempotent revert).
-		if e := k.DeleteValue(noAutoUpdateValue); e != nil && !errors.Is(e, registry.ErrNotExist) {
-			k.Close()
-			return Result{Supported: true}, fmt.Errorf("delete NoAutoUpdate: %w", e)
-		}
-		_ = k.DeleteValue(breezeManagedValue)
-		_ = k.DeleteValue(breezeCreatedKeyValue)
-
-		// If Breeze created the key and nothing else remains, remove it to fully
-		// restore the prior state. Leaving an empty key is harmless, so any
-		// failure here is non-fatal.
-		removeKey := false
-		if p.deleteKeyIfEmpty {
-			valueNames, _ := k.ReadValueNames(-1)
-			subKeys, _ := k.ReadSubKeyNames(-1)
-			removeKey = len(valueNames) == 0 && len(subKeys) == 0
-		}
+		// Delete our managed value + sentinels (idempotent: missing values are
+		// tolerated, real errors propagate) and decide whether the AU key itself
+		// should be removed. See executeRevert for the safety guarantees.
+		removeKey, rerr := executeRevert(k, p.deleteKeyIfEmpty, func(err error) bool {
+			return errors.Is(err, registry.ErrNotExist)
+		})
 		k.Close()
+		if rerr != nil {
+			return Result{Supported: true}, rerr
+		}
+		// If Breeze created the key and it is confirmed empty, remove it to fully
+		// restore the prior state. A leftover empty key is harmless, so a delete
+		// failure here is non-fatal.
 		if removeKey {
 			_ = registry.DeleteKey(registry.LOCAL_MACHINE, auKeyPath)
 		}

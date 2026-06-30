@@ -19,6 +19,71 @@
 // no-op stub for other platforms in winupdate_stub.go.
 package winupdate
 
+import "fmt"
+
+const (
+	// noAutoUpdateValue=1 disables the unattended Automatic Updates install
+	// channel (does not affect Breeze's WUA COM-driven installs).
+	noAutoUpdateValue = "NoAutoUpdate"
+	// breezeManagedValue marks the NoAutoUpdate value as Breeze-owned so revert
+	// never clobbers a pre-existing admin GPO.
+	breezeManagedValue = "BreezeManagedNoAutoUpdate"
+	// breezeCreatedKeyValue marks that Breeze created the AU key itself, so a
+	// revert can remove the key again if nothing else remains.
+	breezeCreatedKeyValue = "BreezeCreatedAUKey"
+)
+
+// regKey is the subset of registry key operations the revert path needs. It is
+// satisfied by golang.org/x/sys/windows/registry.Key (Windows) and by a fake in
+// tests, so executeRevert's safety logic is unit-tested on the Linux CI agent
+// where the real registry I/O cannot run.
+type regKey interface {
+	DeleteValue(name string) error
+	ReadValueNames(n int) ([]string, error)
+	ReadSubKeyNames(n int) ([]string, error)
+}
+
+// executeRevert deletes Breeze's managed value + ownership sentinels from an
+// already-open AU key, then reports whether the caller should delete the key
+// itself. It is pure registry-sequence logic with two safety guarantees:
+//
+//   - A delete that fails for any reason other than "value not present"
+//     (isNotExist) is propagated, not swallowed — otherwise a real ACCESS_DENIED
+//     would leave the ownership sentinel behind while the caller reported a
+//     successful revert (state divergence).
+//   - The AU key is only reported deletable when its emptiness is positively
+//     confirmed. A read error returns removeKey=false so a transient failure can
+//     never delete the key (and any admin-added values under it); the harmless
+//     empty key is left in place instead.
+func executeRevert(k regKey, deleteKeyIfEmpty bool, isNotExist func(error) bool) (removeKey bool, err error) {
+	del := func(name string) error {
+		if e := k.DeleteValue(name); e != nil && !isNotExist(e) {
+			return e
+		}
+		return nil
+	}
+	if e := del(noAutoUpdateValue); e != nil {
+		return false, fmt.Errorf("delete NoAutoUpdate: %w", e)
+	}
+	if e := del(breezeManagedValue); e != nil {
+		return false, fmt.Errorf("delete Breeze ownership sentinel: %w", e)
+	}
+	if e := del(breezeCreatedKeyValue); e != nil {
+		return false, fmt.Errorf("delete Breeze created-key sentinel: %w", e)
+	}
+
+	if !deleteKeyIfEmpty {
+		return false, nil
+	}
+	valueNames, vErr := k.ReadValueNames(-1)
+	subKeys, sErr := k.ReadSubKeyNames(-1)
+	if vErr != nil || sErr != nil {
+		// Cannot confirm the key is empty — do not delete it.
+		return false, nil
+	}
+	return len(valueNames) == 0 && len(subKeys) == 0, nil
+}
+
 // Result reports the outcome of an Apply call, for logging.
 type Result struct {
 	// Supported is false on non-Windows platforms (Apply is a no-op there).
