@@ -26,6 +26,14 @@ export interface DnsProvider {
   removeBlocklistDomain(domain: string): Promise<void>;
   addAllowlistDomain(domain: string): Promise<void>;
   removeAllowlistDomain(domain: string): Promise<void>;
+  /**
+   * Optional teardown — release any session/connection the provider holds.
+   * Stateless providers (v5 Pi-hole token, AdGuard HTTP Basic, cloud APIs) omit
+   * it; the session-based Pi-hole v6 client implements it to free its seat.
+   * Callers must treat it as best-effort and not let it mask the operation
+   * result. Invoked once after a sync run / mutation batch completes.
+   */
+  dispose?(): Promise<void>;
 }
 
 export interface DnsProviderFactoryInput {

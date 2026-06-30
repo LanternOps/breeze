@@ -64,6 +64,18 @@ describe('PiHoleV6Provider', () => {
     await expect(newProvider().addBlocklistDomain('bad.example')).rejects.toThrow(/authentication failed/i);
   });
 
+  it('maps a 429 no_seats auth failure to a distinct, actionable error', async () => {
+    requestJsonMock.mockRejectedValueOnce(
+      new DnsProviderHttpError(429, 'Too Many Requests', '{"error":{"key":"no_seats"}}')
+    );
+    await expect(newProvider().syncEvents(new Date(0), new Date())).rejects.toThrow(/session seats are in use/i);
+  });
+
+  it('propagates a generic (non-no_seats) 429 auth failure unchanged', async () => {
+    requestJsonMock.mockRejectedValueOnce(new DnsProviderHttpError(429, 'Too Many Requests', 'rate limited'));
+    await expect(newProvider().syncEvents(new Date(0), new Date())).rejects.toThrow(DnsProviderHttpError);
+  });
+
   it('maps blocked statuses to action=blocked and parses domain/time/client', async () => {
     queueResponses([
       AUTH_OK,
@@ -234,5 +246,125 @@ describe('PiHoleV6Provider', () => {
       .mockRejectedValueOnce(new DnsProviderHttpError(500, 'Server Error', ''));
 
     await expect(newProvider().removeBlocklistDomain('boom.example')).rejects.toThrow(DnsProviderHttpError);
+  });
+
+  it('removeAllowlistDomain DELETEs the allow list url-encoded', async () => {
+    queueResponses([AUTH_OK, {}]);
+
+    await newProvider().removeAllowlistDomain('safe sub.example');
+
+    const [url, init] = requestJsonMock.mock.calls[1]! as [string, RequestInit];
+    expect(init.method).toBe('DELETE');
+    expect(url).toBe('https://pi.hole.local/api/domains/allow/exact/safe%20sub.example');
+  });
+
+  it('returns [] and bounds the window with from/until/length on the query call', async () => {
+    queueResponses([AUTH_OK, { queries: [] }]);
+
+    const events = await newProvider().syncEvents(
+      new Date(1_700_000_000 * 1000),
+      new Date(1_700_001_000 * 1000)
+    );
+
+    expect(events).toEqual([]);
+    const queryUrl = new URL(requestJsonMock.mock.calls[1]![0] as string);
+    expect(queryUrl.searchParams.get('from')).toBe('1700000000');
+    expect(queryUrl.searchParams.get('until')).toBe('1700001000');
+    expect(queryUrl.searchParams.get('length')).toBe('1000');
+  });
+
+  it('synthesizes a composite providerEventId when the row has no id', async () => {
+    queueResponses([
+      AUTH_OK,
+      {
+        queries: [
+          { time: 1_700_000_100, type: 'A', domain: 'noid.example', status: 'FORWARDED', client: { ip: '10.0.0.9' } },
+          // No id AND no client.ip → falls back to the 'unknown' source tail.
+          { time: 1_700_000_200, type: 'A', domain: 'noip.example', status: 'FORWARDED', client: {} }
+        ]
+      }
+    ]);
+
+    const events = await newProvider().syncEvents(
+      new Date(1_700_000_000 * 1000),
+      new Date(1_700_001_000 * 1000)
+    );
+
+    expect(events[0]!.providerEventId).toBe('1700000100-noid.example-10.0.0.9');
+    expect(events[1]!.providerEventId).toBe('1700000200-noip.example-unknown');
+  });
+
+  it('drops malformed rows (missing domain/time) while keeping valid ones', async () => {
+    queueResponses([
+      AUTH_OK,
+      {
+        queries: [
+          { id: 1, time: 1_700_000_100, type: 'A', domain: 'good.example', status: 'FORWARDED', client: { ip: '10.0.0.1' } },
+          { id: 2, time: 1_700_000_110, type: 'A', status: 'FORWARDED', client: { ip: '10.0.0.1' } }, // no domain
+          { id: 3, type: 'A', domain: 'notime.example', status: 'FORWARDED', client: { ip: '10.0.0.1' } } // no time
+        ]
+      }
+    ]);
+
+    const events = await newProvider().syncEvents(
+      new Date(1_700_000_000 * 1000),
+      new Date(1_700_001_000 * 1000)
+    );
+
+    expect(events.map((e) => e.domain)).toEqual(['good.example']);
+  });
+
+  it('stops paging when the server repeats the same cursor (no infinite loop)', async () => {
+    const page = Array.from({ length: 1000 }, (_, i) => ({
+      id: 2000 - i,
+      time: 1_700_000_500,
+      type: 'A',
+      domain: `d${i}.example`,
+      status: 'FORWARDED',
+      client: { ip: '10.0.0.1' }
+    }));
+    // Both full pages report the SAME cursor — the guard must stop after page 2.
+    queueResponses([
+      AUTH_OK,
+      { queries: page, cursor: 555 },
+      { queries: page, cursor: 555 }
+    ]);
+
+    await newProvider().syncEvents(
+      new Date(1_700_000_000 * 1000),
+      new Date(1_700_001_000 * 1000)
+    );
+
+    // auth + 2 query pages, then it stops rather than re-requesting cursor=555.
+    expect(requestJsonMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('dispose() releases the session via DELETE /api/auth with the SID', async () => {
+    queueResponses([AUTH_OK, {}, {}]);
+    const provider = newProvider();
+
+    await provider.addBlocklistDomain('bad.example'); // establishes the session
+    await provider.dispose();
+
+    const [url, init] = requestJsonMock.mock.calls[2]! as [string, RequestInit];
+    expect(url).toBe('https://pi.hole.local/api/auth');
+    expect(init.method).toBe('DELETE');
+    expect((init.headers as Record<string, string>)['X-FTL-SID']).toBe('SID-123');
+  });
+
+  it('dispose() is a no-op when no session was established', async () => {
+    await newProvider().dispose();
+    expect(requestJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('dispose() swallows a logout failure (best-effort)', async () => {
+    requestJsonMock
+      .mockResolvedValueOnce(AUTH_OK as never)
+      .mockResolvedValueOnce({} as never)
+      .mockRejectedValueOnce(new DnsProviderHttpError(401, 'Unauthorized', ''));
+    const provider = newProvider();
+
+    await provider.addBlocklistDomain('bad.example');
+    await expect(provider.dispose()).resolves.toBeUndefined();
   });
 });

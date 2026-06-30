@@ -44,12 +44,31 @@ export class PiHoleV6Provider implements DnsProvider {
 
   // POST /api/auth { password } → { session: { valid, sid, validity, … } }.
   private async authenticate(): Promise<string> {
-    const payload = await requestJson<Record<string, unknown>>(`${this.baseUrl()}/api/auth`, {
-      method: 'POST',
-      allowPrivateNetwork: this.allowPrivateNetwork,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: this.appPassword })
-    });
+    let payload: Record<string, unknown>;
+    try {
+      payload = await requestJson<Record<string, unknown>>(`${this.baseUrl()}/api/auth`, {
+        method: 'POST',
+        allowPrivateNetwork: this.allowPrivateNetwork,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: this.appPassword })
+      });
+    } catch (error) {
+      // Pi-hole has a finite pool of session seats and returns 429 with a
+      // `no_seats` error body when they're exhausted. That is NOT a transient
+      // rate-limit — retrying won't free a seat on this timescale — so surface
+      // a distinct, actionable message instead of a generic HTTP 429. (We only
+      // INSPECT responseBody server-side to pick the message; it is never
+      // reflected to the tenant — see DnsProviderHttpError.) dispose() releasing
+      // sessions after each run is what keeps this from happening in the first
+      // place.
+      if (error instanceof DnsProviderHttpError && error.status === 429 && error.responseBody.includes('no_seats')) {
+        throw new Error(
+          'Pi-hole v6 authentication failed: all session seats are in use (HTTP 429 no_seats). ' +
+          'Existing sessions must expire or be released before a new sync can authenticate.'
+        );
+      }
+      throw error;
+    }
 
     const session = asRecord(payload.session);
     const sid = asString(session?.sid);
@@ -97,6 +116,10 @@ export class PiHoleV6Provider implements DnsProvider {
     const perPage = 1000;
     const maxPages = 50;
     const events: DnsEvent[] = [];
+    // Count rows we drop as unparseable (NOT in-window trims) so a silent
+    // upstream shape drift — which would otherwise return [] and be recorded as
+    // a healthy "success" sync — is observable in the server logs.
+    let skipped = 0;
     let cursor: number | undefined;
 
     for (let page = 0; page < maxPages; page++) {
@@ -112,14 +135,16 @@ export class PiHoleV6Provider implements DnsProvider {
 
       for (const entry of rows) {
         const record = asRecord(entry);
-        if (!record) continue;
+        if (!record) { skipped++; continue; }
 
         const epoch = asNumber(record.time);
         const domain = asString(record.domain);
-        if (!epoch || !domain) continue;
+        if (!epoch || !domain) { skipped++; continue; }
 
         const timestamp = new Date(epoch * 1000);
-        if (Number.isNaN(timestamp.getTime())) continue;
+        if (Number.isNaN(timestamp.getTime())) { skipped++; continue; }
+        // In-window trim is expected (defensive double-check of the server-side
+        // from/until bound), not malformed data — don't count it as skipped.
         if (timestamp < since || timestamp > until) continue;
 
         const status = asString(record.status) ?? '';
@@ -143,10 +168,24 @@ export class PiHoleV6Provider implements DnsProvider {
       }
 
       // Advance to the next (older) page. Stop when the server reports no
-      // further cursor, returns a short page, or we hit the page cap.
+      // further cursor, returns a short page, or repeats the cursor (a
+      // pagination quirk that would otherwise spin).
       const nextCursor = asNumber(payload.cursor);
       if (rows.length < perPage || nextCursor === undefined || nextCursor === cursor) break;
       cursor = nextCursor;
+      if (page === maxPages - 1) {
+        // Hit the page budget with a further cursor still available: older
+        // in-window events were NOT fetched. The next run's `since` advances to
+        // this run's `until`, so they would be lost silently — surface it.
+        console.warn(
+          `[PiHoleV6] query sync reached the ${maxPages}-page cap with more results available; ` +
+          'some older in-window events were not fetched this run.'
+        );
+      }
+    }
+
+    if (skipped > 0) {
+      console.warn(`[PiHoleV6] query sync skipped ${skipped} unparseable row(s) (possible API shape drift).`);
     }
 
     return events;
@@ -190,5 +229,22 @@ export class PiHoleV6Provider implements DnsProvider {
 
   async removeAllowlistDomain(domain: string): Promise<void> {
     await this.removeDomain('allow', domain);
+  }
+
+  // Release the session (DELETE /api/auth) so it doesn't occupy one of Pi-hole's
+  // finite session seats until it ages out. v6 auth is stateful and seat-limited
+  // (POST /api/auth can return 429 `no_seats`), so a sync that runs every few
+  // minutes against a 30-minute session lifetime would otherwise accumulate
+  // orphaned sessions. Best-effort: a failed logout just lets the session age
+  // out on its own, so this never throws and never masks the sync result.
+  async dispose(): Promise<void> {
+    const sid = this.sid;
+    if (!sid) return;
+    this.sid = null;
+    try {
+      await this.callWithSid('/api/auth', sid, { method: 'DELETE' });
+    } catch (error) {
+      console.warn('[PiHoleV6] failed to release session:', error instanceof Error ? error.message : error);
+    }
   }
 }
