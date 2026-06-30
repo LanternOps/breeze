@@ -30,9 +30,10 @@
 import './setup';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { getTestDb } from './setup';
-import { createPartner, createOrganization } from './db-utils';
+import { createPartner, createOrganization, createSite } from './db-utils';
 import { withDbAccessContext } from '../../db';
 import {
+  devices,
   incidents,
   huntressIncidents,
   huntressIntegrations,
@@ -193,5 +194,63 @@ describe('buildIncidentFeed (real Postgres)', () => {
     // The huntress finding is suppressed; only the tracked incident remains.
     expect(rows.some((r) => r.kind === 'finding' && r.sourceId === 'H-A-PROMOTED')).toBe(false);
     expect(rows.some((r) => r.kind === 'tracked' && r.title === 'Promoted incident')).toBe(true);
+  });
+
+  // FIX 1 (CRITICAL): site-level RBAC on the EDR legs. A finding bound to a
+  // device in a site OUTSIDE the caller's allowlist must be excluded, while a
+  // provider-level (null-device) finding stays visible. Site is an app-layer
+  // authz axis RLS does not defend, so the feed pushes the allowed-device-id
+  // predicate (resolved by the route via resolveSiteAllowedDeviceIds) onto the
+  // huntress/s1 legs. Here the caller is restricted to a site with no devices
+  // (allowedDeviceIds = []), so only the null-device finding survives.
+  runDb('excludes EDR findings on devices outside the caller site allowlist', async () => {
+    const db = getTestDb();
+
+    // A device in orgA's site that the site-restricted caller may NOT see.
+    const site = await createSite({ orgId: orgA.orgId, name: 'Disallowed Site' });
+    const [device] = await db
+      .insert(devices)
+      .values({
+        orgId: orgA.orgId,
+        siteId: site!.id,
+        agentId: `agent-${Date.now()}`,
+        hostname: 'secret-host',
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x64',
+        agentVersion: '1.0.0',
+      })
+      .returning({ id: devices.id });
+
+    // Device-bound finding (must be excluded) + provider-level finding (kept).
+    await db.insert(huntressIncidents).values({
+      orgId: orgA.orgId,
+      integrationId: orgA.huntressIntegrationId,
+      huntressIncidentId: 'H-A-DEVICE',
+      severity: 'critical',
+      title: 'Finding on secret-host',
+      status: 'sent',
+      deviceId: device!.id,
+      reportedAt: new Date('2026-06-06T00:00:00Z'),
+    });
+    await db.insert(huntressIncidents).values({
+      orgId: orgA.orgId,
+      integrationId: orgA.huntressIntegrationId,
+      huntressIncidentId: 'H-A-NODEVICE',
+      severity: 'high',
+      title: 'Provider-level finding',
+      status: 'sent',
+      reportedAt: new Date('2026-06-06T01:00:00Z'),
+    });
+
+    // Site-restricted caller with an empty allowed-device set.
+    const { rows } = await runFeed(orgA.orgId, {
+      ...FEED_PARAMS,
+      hasDevicesRead: true,
+      allowedDeviceIds: [],
+    });
+
+    expect(rows.some((r) => r.sourceId === 'H-A-DEVICE')).toBe(false);
+    expect(rows.some((r) => r.sourceId === 'H-A-NODEVICE')).toBe(true);
   });
 });
