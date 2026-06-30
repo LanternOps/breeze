@@ -23,6 +23,8 @@ export const createIncidentSchema = z.object({
   assignedTo: z.string().guid().optional(),
   detectedAt: z.string().datetime({ offset: true }).optional(),
   status: z.enum(['detected', 'analyzing']).optional(),
+  sourceType: z.enum(['huntress_incident', 's1_threat']).optional(),
+  sourceRef: z.string().min(1).max(128).optional(),
 });
 
 export const listIncidentsSchema = z.object({

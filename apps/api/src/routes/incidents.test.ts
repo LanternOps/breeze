@@ -208,6 +208,49 @@ describe('incidentRoutes', () => {
     );
   });
 
+  it('persists sourceType/sourceRef when promoting an EDR finding', async () => {
+    const valuesMock = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          orgId: '22222222-2222-4222-8222-222222222222',
+          title: 'Huntress: Suspicious login',
+          classification: 'huntress-incident',
+          severity: 'p1',
+          status: 'detected',
+          relatedAlerts: [],
+          affectedDevices: [],
+          sourceType: 'huntress_incident',
+          sourceRef: 'hunt-abc-123',
+        },
+      ]),
+    });
+    vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+    const res = await app.request('/incidents', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+      },
+      body: JSON.stringify({
+        title: 'Huntress: Suspicious login',
+        classification: 'huntress-incident',
+        severity: 'p1',
+        sourceType: 'huntress_incident',
+        sourceRef: 'hunt-abc-123',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceType: 'huntress_incident',
+        sourceRef: 'hunt-abc-123',
+      })
+    );
+  });
+
   it('rejects high-risk containment without approvalRef', async () => {
     const res = await app.request('/incidents/33333333-3333-4333-8333-333333333333/contain', {
       method: 'POST',

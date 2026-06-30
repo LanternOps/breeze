@@ -89,6 +89,8 @@ incidentRoutes.post(
         timeline: initialTimeline,
         assignedTo: data.assignedTo,
         detectedAt,
+        sourceType: data.sourceType,
+        sourceRef: data.sourceRef,
       })
       .returning();
 
