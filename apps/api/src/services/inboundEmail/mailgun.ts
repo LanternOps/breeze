@@ -65,14 +65,25 @@ export class MailgunInboundProvider implements InboundEmailProvider {
   }
 }
 
-// Mailgun's receiving MX host, used as the authserv-id (the leading token before the
-// first ';') of the Authentication-Results header it stamps. An external sender can put
-// an `Authentication-Results: anything; dmarc=pass` header into their OWN message, so we
-// only trust an Authentication-Results header whose authserv-id is Mailgun's own host —
-// a header with a foreign or absent authserv-id is treated as attacker-controlled and
-// ignored entirely. ASSUMPTION: Mailgun stamps `mx.mailgun.org`; a human should confirm
-// against a live inbound sample and adjust if the actual MX host differs.
-const MAILGUN_AUTHSERV_ID = 'mx.mailgun.org';
+// Mailgun stamps its receiving MX host as the authserv-id (the leading token before the
+// first ';') of the Authentication-Results header it adds. Those hosts are `mxa.mailgun.org`
+// / `mxb.mailgun.org` (US) and `mxa.eu.mailgun.org` / `mxb.eu.mailgun.org` (EU) — NOT the
+// bare apex `mx.mailgun.org` (the earlier hardcoded value, which matched no real inbound
+// host and quarantined every DMARC-pass message). An external sender can put an
+// `Authentication-Results: anything; dmarc=pass` header into their OWN message, so we only
+// trust a header whose authserv-id host is `mailgun.org` or a subdomain of it. The match is
+// on a LABEL boundary (apex, or `.mailgun.org` suffix) so lookalikes like `evilmailgun.org`
+// or `mailgun.org.attacker.com` are rejected. This is safe against an attacker forging
+// `mxa.mailgun.org; dmarc=pass` in their own message because, per RFC 8601, the receiving
+// ADMD (Mailgun) strips inbound Authentication-Results headers bearing its own authserv-id
+// before adding its genuine one — so the only mailgun.org-authserv header that survives is
+// Mailgun's.
+const MAILGUN_AUTHSERV_DOMAIN = 'mailgun.org';
+
+function isMailgunAuthservId(authservId: string): boolean {
+  const host = authservId.toLowerCase();
+  return host === MAILGUN_AUTHSERV_DOMAIN || host.endsWith(`.${MAILGUN_AUTHSERV_DOMAIN}`);
+}
 
 // Read Mailgun's already-computed sender-authentication verdicts (R4). Mailgun
 // evaluates SPF/DKIM/DMARC at its MX boundary and surfaces them via:
@@ -102,15 +113,18 @@ function extractSenderAuth(b: Record<string, string>): SenderAuth {
   return { spf, dkim, dmarc, verified };
 }
 
-// Return the Authentication-Results header value ONLY if it carries Mailgun's own
-// authserv-id (the token before the first ';'); otherwise return '' so no mechanism is
-// read out of an attacker-supplied header. authserv-id comparison is case-insensitive and
-// tolerant of an optional trailing version digit (e.g. "mx.mailgun.org 1").
+// Return the first Authentication-Results header value carrying Mailgun's own authserv-id
+// (the token before the first ';'); otherwise return '' so no mechanism is read out of an
+// attacker-supplied header. A relay chain (e.g. M365 → Mailgun) carries MULTIPLE
+// Authentication-Results headers — M365's own plus Mailgun's — so we scan ALL of them rather
+// than only the first, which may be the foreign-authserv-id one. authserv-id comparison is
+// case-insensitive and tolerant of an optional trailing version digit (e.g. "mxa.mailgun.org 1").
 function mailgunAuthResults(headersJson: string | undefined): string {
-  const raw = parseHeader(headersJson, 'Authentication-Results');
-  if (!raw) return '';
-  const authservId = (raw.split(';')[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase();
-  return authservId === MAILGUN_AUTHSERV_ID ? raw : '';
+  for (const raw of parseHeaderAll(headersJson, 'Authentication-Results')) {
+    const authservId = (raw.split(';')[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+    if (isMailgunAuthservId(authservId)) return raw;
+  }
+  return '';
 }
 
 // Pull `<mechanism>=<result>` out of an Authentication-Results header value, e.g.
@@ -154,4 +168,14 @@ function parseHeader(headersJson: string | undefined, name: string): string | un
     const hit = arr.find(([k]) => k.toLowerCase() === name.toLowerCase());
     return hit?.[1];
   } catch { return undefined; }
+}
+
+// Like parseHeader but returns EVERY value for a header name (in array order). Needed for
+// Authentication-Results, which legitimately appears multiple times on a relayed message.
+function parseHeaderAll(headersJson: string | undefined, name: string): string[] {
+  if (!headersJson) return [];
+  try {
+    const arr = JSON.parse(headersJson) as [string, string][];
+    return arr.filter(([k]) => k.toLowerCase() === name.toLowerCase()).map(([, v]) => v);
+  } catch { return []; }
 }

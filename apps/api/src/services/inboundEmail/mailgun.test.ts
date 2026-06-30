@@ -138,6 +138,55 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n.senderAuth!.verified).toBe(true);
   });
 
+  // Mailgun's standard inbound MX hosts are mxa/mxb.mailgun.org (US) and
+  // mxa/mxb.eu.mailgun.org (EU) — NOT the bare `mx.mailgun.org`. A genuine verdict
+  // stamped under any of these must be trusted (issue: inbound DMARC-pass quarantined).
+  it.each([
+    'mxa.mailgun.org',
+    'mxb.mailgun.org',
+    'mxa.eu.mailgun.org',
+    'mxb.eu.mailgun.org',
+  ])('trusts a DMARC pass stamped by Mailgun receiving host %s', async (authservId) => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', `${authservId}; dkim=pass header.d=customer.com; dmarc=pass`],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.dmarc).toBe('pass');
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
+  // M365 → Mailgun relays carry TWO Authentication-Results headers: M365 stamps its own
+  // (foreign authserv-id) and Mailgun stamps its own. We must scan ALL A-R headers for the
+  // Mailgun-authoritative one, not just the first — RFC 8601 guarantees Mailgun strips any
+  // inbound A-R bearing its own authserv-id, so only its genuine header survives.
+  it('finds the Mailgun verdict when an M365 Authentication-Results header precedes it', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'protection.outlook.com; dmarc=none; spf=fail'],
+        ['Authentication-Results', 'mxa.mailgun.org; dkim=pass header.d=customer.com; dmarc=pass'],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.dmarc).toBe('pass');
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
+  it('does NOT trust a mailgun.org-lookalike authserv-id', async () => {
+    // `evilmailgun.org` and `mailgun.org.attacker.com` are NOT subdomains of mailgun.org;
+    // the label-boundary check must reject both.
+    for (const forged of ['evilmailgun.org', 'mailgun.org.attacker.com', 'notmailgun.org']) {
+      const n = await provider.parse({ parseBody: async () => ({
+        ...fields,
+        'message-headers': JSON.stringify([
+          ['Authentication-Results', `${forged}; dmarc=pass; spf=pass; dkim=pass`],
+        ])
+      }) } as any);
+      expect(n.senderAuth!.verified).toBe(false);
+    }
+  });
+
   it('does NOT trust a forged Authentication-Results header with a foreign authserv-id', async () => {
     // An external sender stuffs their own Authentication-Results header claiming a
     // DMARC/SPF/DKIM pass. The authserv-id ("evil.example") is NOT Mailgun's receiving
