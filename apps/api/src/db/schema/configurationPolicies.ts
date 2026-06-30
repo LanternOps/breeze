@@ -199,6 +199,7 @@ export const configPolicyMaintenanceSettings = pgTable('config_policy_maintenanc
   suppressPatching: boolean('suppress_patching').notNull().default(false),
   suppressAutomations: boolean('suppress_automations').notNull().default(false),
   suppressScripts: boolean('suppress_scripts').notNull().default(false),
+  rebootIfPending: boolean('reboot_if_pending').notNull().default(false),
   notifyBeforeMinutes: integer('notify_before_minutes').default(15),
   notifyOnStart: boolean('notify_on_start').notNull().default(true),
   notifyOnEnd: boolean('notify_on_end').notNull().default(true),

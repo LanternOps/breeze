@@ -181,6 +181,7 @@ describe('patchJobService', () => {
         suppressPatching: true,
         suppressAutomations: false,
         suppressScripts: false,
+        rebootIfPending: false,
       });
 
       const result = await createPatchJobForDeviceFromPolicy('dev-1', 'org-1');
@@ -195,6 +196,7 @@ describe('patchJobService', () => {
         suppressPatching: false,
         suppressAutomations: false,
         suppressScripts: false,
+        rebootIfPending: false,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(null);
 
@@ -209,6 +211,7 @@ describe('patchJobService', () => {
         suppressPatching: false,
         suppressAutomations: false,
         suppressScripts: false,
+        rebootIfPending: false,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -226,6 +229,7 @@ describe('patchJobService', () => {
         suppressPatching: false,
         suppressAutomations: false,
         suppressScripts: false,
+        rebootIfPending: false,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -248,6 +252,7 @@ describe('patchJobService', () => {
         suppressPatching: false,
         suppressAutomations: true,
         suppressScripts: true,
+        rebootIfPending: false,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -266,6 +271,7 @@ describe('patchJobService', () => {
         suppressPatching: false,
         suppressAutomations: false,
         suppressScripts: false,
+        rebootIfPending: false,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
 
@@ -279,7 +285,7 @@ describe('patchJobService', () => {
     it('propagates error when DB insert returns empty in inner createPatchJobFromConfigPolicy', async () => {
       vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
         active: false, suppressAlerts: false, suppressPatching: false,
-        suppressAutomations: false, suppressScripts: false,
+        suppressAutomations: false, suppressScripts: false, rebootIfPending: false,
       });
       vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
       mockDbSelectChain([{ configPolicyId: 'cp-1' }]);
@@ -301,7 +307,7 @@ describe('patchJobService', () => {
     it('propagates error when resolvePatchConfigForDevice rejects', async () => {
       vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
         active: false, suppressAlerts: false, suppressPatching: false,
-        suppressAutomations: false, suppressScripts: false,
+        suppressAutomations: false, suppressScripts: false, rebootIfPending: false,
       });
       vi.mocked(resolvePatchConfigForDevice).mockRejectedValue(new Error('DB connection lost'));
 

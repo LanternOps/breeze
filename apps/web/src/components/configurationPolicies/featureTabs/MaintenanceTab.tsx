@@ -15,6 +15,7 @@ type MaintenanceSettings = {
   suppressPatching: boolean;
   suppressAutomations: boolean;
   suppressScripts: boolean;
+  rebootIfPending: boolean;
   notifyBeforeMinutes: number;
   notifyOnStart: boolean;
   notifyOnEnd: boolean;
@@ -29,6 +30,7 @@ const defaults: MaintenanceSettings = {
   suppressPatching: false,
   suppressAutomations: false,
   suppressScripts: false,
+  rebootIfPending: false,
   notifyBeforeMinutes: 15,
   notifyOnStart: true,
   notifyOnEnd: true,
@@ -49,8 +51,8 @@ const timezoneOptions = [
   'Australia/Sydney', 'UTC',
 ];
 
-function ToggleRow({ label, description, checked, onChange }: {
-  label: string; description: string; checked: boolean; onChange: (v: boolean) => void;
+function ToggleRow({ label, description, checked, onChange, testId }: {
+  label: string; description: string; checked: boolean; onChange: (v: boolean) => void; testId?: string;
 }) {
   return (
     <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
@@ -60,6 +62,7 @@ function ToggleRow({ label, description, checked, onChange }: {
       </div>
       <button
         type="button"
+        data-testid={testId}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? 'bg-emerald-500/80' : 'bg-muted'}`}
       >
@@ -213,6 +216,18 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
         <ToggleRow label="Suppress patching" description="Delay patch installations during window." checked={settings.suppressPatching} onChange={(v) => update('suppressPatching', v)} />
         <ToggleRow label="Suppress automations" description="Pause automation runs during window." checked={settings.suppressAutomations} onChange={(v) => update('suppressAutomations', v)} />
         <ToggleRow label="Suppress scripts" description="Pause script execution during window." checked={settings.suppressScripts} onChange={(v) => update('suppressScripts', v)} />
+      </div>
+
+      {/* Actions during window */}
+      <div className="mt-6 space-y-3">
+        <h3 className="text-sm font-semibold">Actions During Window</h3>
+        <ToggleRow
+          label="Reboot if a reboot is pending"
+          description="During the window, reboot devices that have a pending reboot. Windows warns the signed-in user ~5 minutes before rebooting; Linux schedules the reboot 15 minutes out with a warning to signed-in users. macOS is not supported."
+          checked={settings.rebootIfPending}
+          onChange={(v) => update('rebootIfPending', v)}
+          testId="maintenance-reboot-if-pending-toggle"
+        />
       </div>
 
       {/* Notification toggles */}

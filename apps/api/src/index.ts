@@ -211,6 +211,7 @@ import { initializeS1SyncJob, shutdownS1SyncJob } from './jobs/s1Sync';
 import { initializeLogForwardingWorker, shutdownLogForwardingWorker } from './jobs/logForwardingWorker';
 import { initializePatchJobWorkers, shutdownPatchJobWorkers } from './jobs/patchJobExecutor';
 import { initializePatchSchedulerWorker, shutdownPatchSchedulerWorker } from './jobs/patchSchedulerWorker';
+import { initializeMaintenanceRebootWorker, shutdownMaintenanceRebootWorker } from './jobs/maintenanceRebootWorker';
 import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorker';
 import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
@@ -1170,6 +1171,7 @@ async function initializeWorkers(): Promise<void> {
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
+    ['maintenanceRebootWorker', initializeMaintenanceRebootWorker],
     ['backupWorker', initializeBackupWorker],
     ['sensitiveDataWorker', initializeSensitiveDataWorkers],
     ['peripheralJobs', initializePeripheralJobs],
@@ -1303,6 +1305,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownRecoveryMediaWorker,
     shutdownRecoveryBootMediaWorker,
     shutdownPatchSchedulerWorker,
+    shutdownMaintenanceRebootWorker,
     shutdownSensitiveDataWorkers,
     shutdownPeripheralJobs,
     shutdownWarrantyWorker,
