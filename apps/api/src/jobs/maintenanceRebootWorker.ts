@@ -1,0 +1,228 @@
+/**
+ * Maintenance Reboot Worker
+ *
+ * Maintenance windows are pull-based — nothing fires when a window opens. This
+ * repeatable worker is the tick: every 10 minutes it finds online devices that
+ * have a pending reboot, and for any whose effective maintenance policy is in an
+ * active window with `rebootIfPending` enabled, it issues a reboot.
+ *
+ * Windows gets the rich warn-then-reboot manager (schedule_reboot: staged toasts
+ * + circuit-breaker). Linux gets an OS-scheduled reboot (`shutdown -r +5`, which
+ * broadcasts a wall warning) because the warn-then-reboot manager is Windows-only.
+ * macOS is never rebooted — the agent cannot detect a pending reboot there.
+ */
+
+import { Worker, Queue, Job } from 'bullmq';
+import * as dbModule from '../db';
+import { devices, deviceCommands } from '../db/schema';
+import { and, eq, gt, inArray, sql } from 'drizzle-orm';
+import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
+import {
+  resolveMaintenanceConfigForDevice,
+  isInMaintenanceWindow,
+} from '../services/featureConfigResolver';
+import { queueCommandForExecution } from '../services/commandQueue';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
+
+const REBOOT_QUEUE = 'maintenance-reboot';
+export const MAINTENANCE_REBOOT_GRACE_MINUTES = 5;
+const DEDUP_WINDOW_MINUTES = 60;
+const REBOOT_COMMAND_TYPES = ['reboot', 'schedule_reboot', 'reboot_safe_mode'];
+
+type SweepJobData = { type: 'sweep' };
+
+export type RebootCandidate = {
+  id: string;
+  orgId: string;
+  osType: 'windows' | 'macos' | 'linux';
+};
+
+export type RebootDecision = { type: string; payload: Record<string, unknown> } | null;
+
+// ── Pure decision logic ──────────────────────────────────────────────────────
+
+export function decideRebootCommand(params: {
+  rebootIfPending: boolean;
+  windowActive: boolean;
+  osType: 'windows' | 'macos' | 'linux';
+}): RebootDecision {
+  const { rebootIfPending, windowActive, osType } = params;
+  if (!rebootIfPending || !windowActive) return null;
+  if (osType === 'windows') {
+    return {
+      type: 'schedule_reboot',
+      payload: {
+        delayMinutes: MAINTENANCE_REBOOT_GRACE_MINUTES,
+        reason: 'Pending reboot — maintenance window',
+        source: 'maintenance_window',
+      },
+    };
+  }
+  if (osType === 'linux') {
+    return { type: 'reboot', payload: { delay: MAINTENANCE_REBOOT_GRACE_MINUTES } };
+  }
+  return null; // macOS / unknown — never rebooted
+}
+
+// ── DB-backed helpers ────────────────────────────────────────────────────────
+
+export async function getRebootCandidates(): Promise<RebootCandidate[]> {
+  const rows = await db
+    .select({ id: devices.id, orgId: devices.orgId, osType: devices.osType })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.pendingReboot, true),
+        eq(devices.status, 'online'),
+        inArray(devices.osType, ['windows', 'linux']),
+      ),
+    );
+  return rows as RebootCandidate[];
+}
+
+export async function hasRecentRebootCommand(deviceId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: deviceCommands.id })
+    .from(deviceCommands)
+    .where(
+      and(
+        eq(deviceCommands.deviceId, deviceId),
+        inArray(deviceCommands.type, REBOOT_COMMAND_TYPES),
+        inArray(deviceCommands.status, ['pending', 'sent']),
+        gt(deviceCommands.createdAt, sql`now() - (${DEDUP_WINDOW_MINUTES} * interval '1 minute')`),
+      ),
+    )
+    .limit(1);
+  return !!row;
+}
+
+// ── Per-device processing (deps injectable for testing) ──────────────────────
+
+export async function processRebootCandidate(
+  device: RebootCandidate,
+  deps = {
+    resolveMaintenanceConfigForDevice,
+    isInMaintenanceWindow,
+    hasRecentRebootCommand,
+    queueCommandForExecution,
+  },
+): Promise<{ issued: boolean; reason: string }> {
+  const settings = await deps.resolveMaintenanceConfigForDevice(device.id);
+  if (!settings) return { issued: false, reason: 'no-maintenance-policy' };
+
+  const windowActive = deps.isInMaintenanceWindow(settings).active;
+  const decision = decideRebootCommand({
+    rebootIfPending: settings.rebootIfPending,
+    windowActive,
+    osType: device.osType,
+  });
+  if (!decision) return { issued: false, reason: 'no-action' };
+
+  if (await deps.hasRecentRebootCommand(device.id)) {
+    return { issued: false, reason: 'recent-reboot-command' };
+  }
+
+  const result = await deps.queueCommandForExecution(device.id, decision.type, decision.payload, {
+    expectedOrgId: device.orgId,
+  });
+  if (result.error) {
+    console.warn(`[MaintenanceReboot] device ${device.id}: ${result.error}`);
+    return { issued: false, reason: result.error };
+  }
+  console.log(`[MaintenanceReboot] issued ${decision.type} to device ${device.id} (${device.osType})`);
+  return { issued: true, reason: 'issued' };
+}
+
+// ── Sweep ────────────────────────────────────────────────────────────────────
+
+export async function runMaintenanceRebootSweep(): Promise<{ issued: number; checked: number }> {
+  const candidates = await runWithSystemDbAccess(() => getRebootCandidates());
+  let issued = 0;
+  for (const device of candidates) {
+    try {
+      const res = await runWithSystemDbAccess(() => processRebootCandidate(device));
+      if (res.issued) issued++;
+    } catch (err) {
+      console.error(`[MaintenanceReboot] error processing device ${device.id}:`, err);
+    }
+  }
+  if (candidates.length > 0) {
+    console.log(`[MaintenanceReboot] sweep: ${issued}/${candidates.length} reboot(s) issued`);
+  }
+  return { issued, checked: candidates.length };
+}
+
+// ── Queue / Worker / Lifecycle (mirrors backupSlaWorker.ts) ──────────────────
+
+let rebootQueue: Queue | null = null;
+function getRebootQueue(): Queue {
+  if (!rebootQueue) {
+    rebootQueue = new Queue(REBOOT_QUEUE, { connection: getBullMQConnection() });
+  }
+  return rebootQueue;
+}
+
+function createRebootWorker(): Worker<SweepJobData> {
+  return new Worker<SweepJobData>(
+    REBOOT_QUEUE,
+    async (_job: Job<SweepJobData>) => runMaintenanceRebootSweep(),
+    { connection: getBullMQConnection(), concurrency: 1, lockDuration: 120_000 },
+  );
+}
+
+let rebootWorkerInstance: Worker<SweepJobData> | null = null;
+
+export async function initializeMaintenanceRebootWorker(): Promise<void> {
+  try {
+    rebootWorkerInstance = createRebootWorker();
+    attachWorkerObservability(rebootWorkerInstance, 'maintenanceRebootWorker');
+
+    rebootWorkerInstance.on('error', (error) => {
+      console.error('[MaintenanceReboot] Worker error:', error);
+    });
+    rebootWorkerInstance.on('failed', (job, error) => {
+      console.error(`[MaintenanceReboot] Job ${job?.id} failed:`, error);
+    });
+
+    const queue = getRebootQueue();
+    const sweepJob = await queue.add(
+      'sweep',
+      { type: 'sweep' as const },
+      {
+        repeat: { every: 10 * 60_000 },
+        removeOnComplete: { count: 10 },
+        removeOnFail: { count: 20 },
+      },
+    );
+
+    const repeatable = await queue.getRepeatableJobs();
+    for (const job of repeatable) {
+      if (job.name === 'sweep' && job.key !== sweepJob.repeatJobKey) {
+        await queue.removeRepeatableByKey(job.key);
+      }
+    }
+
+    console.log('[MaintenanceReboot] Maintenance reboot worker initialized');
+  } catch (error) {
+    console.error('[MaintenanceReboot] Failed to initialize:', error);
+    throw error;
+  }
+}
+
+export async function shutdownMaintenanceRebootWorker(): Promise<void> {
+  if (rebootWorkerInstance) {
+    await rebootWorkerInstance.close();
+    rebootWorkerInstance = null;
+  }
+  if (rebootQueue) {
+    await rebootQueue.close();
+    rebootQueue = null;
+  }
+  console.log('[MaintenanceReboot] Maintenance reboot worker shut down');
+}
