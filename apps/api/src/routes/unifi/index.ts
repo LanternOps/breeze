@@ -8,7 +8,7 @@ import { db } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
-import { listCollectors, upsertCollector, deleteCollector } from '../../services/unifi/unifiCollectorService';
+import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
 
 export const unifiRoutes = new Hono();
@@ -282,6 +282,44 @@ unifiRoutes.put('/collectors', partnerScopes, writePerm, requireMfa(), zValidato
     orgId: site.orgId,
     siteId: site.id,
     unifiHostId: body.unifiHostId,
+    collectorDeviceId: body.collectorDeviceId,
+    controllerUrl: body.controllerUrl,
+    apiKey: body.apiKey,
+    pollIntervalSeconds: body.pollIntervalSeconds,
+    createdBy: auth.user.id,
+  });
+  return c.json({ success: true, collectorId: collector.id });
+});
+
+const controllerSchema = z.object({
+  siteId: z.string().guid(),
+  collectorDeviceId: z.string().guid(),
+  controllerUrl: z.string().url().max(300),
+  apiKey: z.string().min(1),
+  pollIntervalSeconds: z.number().int().min(15).max(3600).optional(),
+});
+
+// PUT /unifi/controllers — register/update a self-hosted controller (no cloud host)
+unifiRoutes.put('/controllers', partnerScopes, writePerm, requireMfa(), zValidator('json', controllerSchema), async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const conn = await getConnection(db, partner.partnerId);
+  if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
+  if (conn.connectionType !== 'self_hosted') {
+    return c.json({ success: false, message: 'Controllers can only be registered on a self-hosted integration' }, 400);
+  }
+  const body = c.req.valid('json');
+  const [site] = await db.select({ id: sites.id, orgId: sites.orgId }).from(sites).where(eq(sites.id, body.siteId)).limit(1);
+  if (!site) return c.json({ success: false, message: `Unknown Breeze site: ${body.siteId}` }, 400);
+  if (!auth.canAccessOrg(site.orgId)) return c.json({ success: false, message: 'Access to target organization denied' }, 403);
+  const [dev] = await db.select({ id: devices.id, orgId: devices.orgId }).from(devices).where(eq(devices.id, body.collectorDeviceId)).limit(1);
+  if (!dev) return c.json({ success: false, message: 'Unknown collector agent' }, 400);
+  if (dev.orgId !== site.orgId) return c.json({ success: false, message: 'Collector agent must belong to the site\'s organization' }, 400);
+  const collector = await upsertSelfHostedController(db, {
+    integrationId: conn.id,
+    orgId: site.orgId,
+    siteId: site.id,
     collectorDeviceId: body.collectorDeviceId,
     controllerUrl: body.controllerUrl,
     apiKey: body.apiKey,
