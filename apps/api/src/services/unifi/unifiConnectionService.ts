@@ -107,6 +107,7 @@ export async function upsertConnection(
       target: unifiIntegrations.partnerId,
       targetWhere: eq(unifiIntegrations.isActive, true),
       set: {
+        connectionType: 'cloud',
         baseUrl: fields.baseUrl,
         apiKeyEncrypted,
         accountLabel: fields.accountLabel ?? null,
