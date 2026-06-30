@@ -15,6 +15,7 @@ type MaintenanceSettings = {
   suppressPatching: boolean;
   suppressAutomations: boolean;
   suppressScripts: boolean;
+  rebootIfPending: boolean;
   notifyBeforeMinutes: number;
   notifyOnStart: boolean;
   notifyOnEnd: boolean;
@@ -29,6 +30,7 @@ const defaults: MaintenanceSettings = {
   suppressPatching: false,
   suppressAutomations: false,
   suppressScripts: false,
+  rebootIfPending: false,
   notifyBeforeMinutes: 15,
   notifyOnStart: true,
   notifyOnEnd: true,
@@ -213,6 +215,17 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
         <ToggleRow label="Suppress patching" description="Delay patch installations during window." checked={settings.suppressPatching} onChange={(v) => update('suppressPatching', v)} />
         <ToggleRow label="Suppress automations" description="Pause automation runs during window." checked={settings.suppressAutomations} onChange={(v) => update('suppressAutomations', v)} />
         <ToggleRow label="Suppress scripts" description="Pause script execution during window." checked={settings.suppressScripts} onChange={(v) => update('suppressScripts', v)} />
+      </div>
+
+      {/* Actions during window */}
+      <div className="mt-6 space-y-3">
+        <h3 className="text-sm font-semibold">Actions During Window</h3>
+        <ToggleRow
+          label="Reboot if a reboot is pending"
+          description="During the window, reboot devices that have a pending reboot. Windows shows a countdown warning; Linux reboots via the OS with a warning to signed-in users. macOS is not supported."
+          checked={settings.rebootIfPending}
+          onChange={(v) => update('rebootIfPending', v)}
+        />
       </div>
 
       {/* Notification toggles */}
