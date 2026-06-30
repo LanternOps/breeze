@@ -146,6 +146,90 @@ describe('createSoftwareDeployment', () => {
     expect(sendCommandMock.mock.calls[0]![1].type).toBe('software_install');
   });
 
+  it('threads detection rules and forceReinstall into the dispatched install payload', async () => {
+    const detectionRules = [
+      { type: 'registry', path: 'SOFTWARE\\Acme\\App' },
+      { type: 'file_exists', path: 'C:\\Program Files\\Acme\\app.exe' },
+    ];
+    const versionRecord = {
+      id: 'ver-det',
+      catalogId: 'cat-1',
+      s3Key: 'pkg.key',
+      downloadUrl: null,
+      checksum: null,
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: '/S',
+      version: '1.0.0',
+      detectionRules,
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-det', orgId: 'org-1' };
+    const targetDevices = [{ id: 'dev-1', agentId: 'agent-1' }];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices));
+    insertMock
+      .mockReturnValueOnce(insWithReturning([deployment]))
+      .mockReturnValueOnce(ins());
+
+    await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-det',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+      options: { forceReinstall: true },
+    });
+
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    const dispatched = sendCommandMock.mock.calls[0]![1];
+    expect(dispatched.payload.detectionRules).toEqual(detectionRules);
+    expect(dispatched.payload.forceReinstall).toBe(true);
+  });
+
+  it('omits detectionRules and defaults forceReinstall false when version has none', async () => {
+    const versionRecord = {
+      id: 'ver-none',
+      catalogId: 'cat-1',
+      s3Key: 'pkg.key',
+      downloadUrl: null,
+      checksum: null,
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: null,
+      version: '1.0.0',
+      detectionRules: null,
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-none', orgId: 'org-1' };
+    const targetDevices = [{ id: 'dev-1', agentId: 'agent-1' }];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices));
+    insertMock
+      .mockReturnValueOnce(insWithReturning([deployment]))
+      .mockReturnValueOnce(ins());
+
+    await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-none',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    const dispatched = sendCommandMock.mock.calls[0]![1];
+    expect(dispatched.payload.detectionRules).toBeUndefined();
+    expect(dispatched.payload.forceReinstall).toBe(false);
+  });
+
   it('returns status "failed" with a message when no installer URL is available', async () => {
     // Version has null s3Key AND null downloadUrl — no binary to dispatch
     const versionRecord = {

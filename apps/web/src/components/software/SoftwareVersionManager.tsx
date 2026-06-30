@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Download, Loader2, Plus, Sparkles, CheckCircle, Upload } from 'lucide-react';
+import type { DetectionRule } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import DetectionRulesEditor from './DetectionRulesEditor';
 
 type Architecture = 'x64' | 'arm64' | 'x86';
 
@@ -77,6 +79,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
     silentUninstallArgs: '',
     downloadUrl: '',
     supportedOs: [] as string[],
+    detectionRules: [] as DetectionRule[],
     file: null as File | null,
     fileName: ''
   });
@@ -207,6 +210,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         if (formState.silentUninstallArgs) formData.append('silentUninstallArgs', formState.silentUninstallArgs);
         if (formState.downloadUrl) formData.append('downloadUrl', formState.downloadUrl);
         if (formState.supportedOs.length > 0) formData.append('supportedOs', JSON.stringify(formState.supportedOs));
+        if (formState.detectionRules.length > 0) formData.append('detectionRules', JSON.stringify(formState.detectionRules));
 
         setUploadProgress(10);
 
@@ -242,6 +246,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
             silentUninstallArgs: formState.silentUninstallArgs || undefined,
             downloadUrl: formState.downloadUrl || undefined,
             supportedOs: formState.supportedOs.length > 0 ? formState.supportedOs : undefined,
+            detectionRules: formState.detectionRules.length > 0 ? formState.detectionRules : undefined,
           })
         });
 
@@ -255,7 +260,7 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
         setSelectedVersionId(newVersion.id);
       }
 
-      setFormState({ version: '', architecture: 'x64', notes: '', silentInstallArgs: '', silentUninstallArgs: '', downloadUrl: '', supportedOs: [], file: null, fileName: '' });
+      setFormState({ version: '', architecture: 'x64', notes: '', silentInstallArgs: '', silentUninstallArgs: '', downloadUrl: '', supportedOs: [], detectionRules: [], file: null, fileName: '' });
       if (fileInputRef.current) fileInputRef.current.value = '';
       setIsFormOpen(false);
     } catch (err) {
@@ -427,6 +432,11 @@ export default function SoftwareVersionManager({ timezone, catalogId: propCatalo
               />
             </div>
           </div>
+
+          <DetectionRulesEditor
+            rules={formState.detectionRules}
+            onChange={(detectionRules) => setFormState(prev => ({ ...prev, detectionRules }))}
+          />
 
           <div className="mt-4">
             <label className="text-xs font-semibold uppercase text-muted-foreground">Release Notes</label>

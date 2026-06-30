@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { createSoftwareDeployment } from '../services/softwareDeployment';
+import { detectionRulesSchema } from '@breeze/shared';
 
 export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -359,7 +360,8 @@ const createVersionSchema = z.object({
   silentInstallArgs: z.string().max(2000).optional(),
   silentUninstallArgs: z.string().max(2000).optional(),
   preInstallScript: z.string().optional(),
-  postInstallScript: z.string().optional()
+  postInstallScript: z.string().optional(),
+  detectionRules: detectionRulesSchema.optional()
 });
 
 const listDeploymentsSchema = z.object({
@@ -724,6 +726,7 @@ softwareRoutes.post(
       silentUninstallArgs: payload.silentUninstallArgs ?? null,
       preInstallScript: payload.preInstallScript ?? null,
       postInstallScript: payload.postInstallScript ?? null,
+      detectionRules: payload.detectionRules ?? null,
     });
 
     if (!version) {
@@ -826,6 +829,25 @@ softwareRoutes.post(
       let silentUninstallArgs = typeof fields.silentUninstallArgs === 'string' ? fields.silentUninstallArgs : null;
       const preInstallScript = typeof fields.preInstallScript === 'string' ? fields.preInstallScript : null;
       const postInstallScript = typeof fields.postInstallScript === 'string' ? fields.postInstallScript : null;
+      // Detection rules arrive as a JSON-encoded field. Unlike supportedOs we do
+      // NOT silently drop a malformed value: detection rules are a deliberate
+      // install-safety config, so a parse/validation failure must surface as a
+      // 400 rather than quietly shipping a version that can't verify itself.
+      let detectionRules: unknown = null;
+      if (typeof fields.detectionRules === 'string' && fields.detectionRules.trim() !== '') {
+        let rawDetection: unknown;
+        try {
+          rawDetection = JSON.parse(fields.detectionRules);
+        } catch {
+          return c.json({ error: 'detectionRules must be valid JSON' }, 400);
+        }
+        const parsedDetection = detectionRulesSchema.safeParse(rawDetection);
+        if (!parsedDetection.success) {
+          return c.json({ error: 'detectionRules is invalid', details: parsedDetection.error.issues }, 400);
+        }
+        detectionRules = parsedDetection.data;
+      }
+
       let supportedOs: string[] | null = null;
       if (typeof fields.supportedOs === 'string') {
         try {
@@ -875,6 +897,7 @@ softwareRoutes.post(
         silentUninstallArgs,
         preInstallScript,
         postInstallScript,
+        detectionRules,
       });
 
       if (!versionRecord) {
@@ -1259,6 +1282,14 @@ softwareRoutes.post(
             inArray(devices.id, resolvedDeviceIds),
           ));
 
+        // Carry detection rules (#2022) so the agent can skip-if-present and
+        // verify real state. This legacy route exposes no force-reinstall toggle,
+        // so forceReinstall is always false here (the canonical /deployments path
+        // honors options.forceReinstall via the softwareDeployment service).
+        const detectionRules = Array.isArray(versionRecord.detectionRules)
+          ? versionRecord.detectionRules
+          : undefined;
+
         for (const device of targetDevices) {
           const command: AgentCommand = {
             id: `sw-install-${deployment!.id}-${device.id}`,
@@ -1272,6 +1303,8 @@ softwareRoutes.post(
               silentInstallArgs: finalSilentInstallArgs,
               softwareName: catalogItem.name,
               version: versionRecord.version,
+              ...(detectionRules ? { detectionRules } : {}),
+              forceReinstall: false,
             },
           };
           sendCommandToAgent(device.agentId, command);

@@ -206,6 +206,15 @@ export async function createSoftwareDeployment(
         ),
       );
 
+    // Detection rules (#2022) and the force-reinstall toggle ride along with the
+    // install command so the agent can skip-if-already-present and verify the
+    // real end state. forceReinstall is a per-deployment option (default off);
+    // when set the agent installs even if the package is already detected.
+    const detectionRules = Array.isArray(versionRecord.detectionRules)
+      ? versionRecord.detectionRules
+      : undefined;
+    const forceReinstall = options?.forceReinstall === true;
+
     const dispatchedDeviceIds: string[] = [];
     for (const device of targetDevices) {
       const command: AgentCommand = {
@@ -221,6 +230,8 @@ export async function createSoftwareDeployment(
           silentInstallArgs: finalSilentInstallArgs,
           softwareName: catalogItem.name,
           version: versionRecord.version,
+          ...(detectionRules ? { detectionRules } : {}),
+          forceReinstall,
         },
       };
       sendCommandToAgent(device.agentId, command);

@@ -141,6 +141,9 @@ export default function DeploymentWizard() {
   const [selectedDevices, setSelectedDevices] = useState<Set<string>>(new Set());
   const [scheduleType, setScheduleType] = useState<'immediate' | 'scheduled' | 'maintenance'>('immediate');
   const [scheduledAt, setScheduledAt] = useState('');
+  // When true, the agent installs even if the package's detection rule already
+  // matches (i.e. bypasses skip-if-already-installed). Default off (#2022).
+  const [forceReinstall, setForceReinstall] = useState(false);
   const [targetMode, setTargetMode] = useState<'tree' | 'advanced'>('tree');
   const [targetConfig, setTargetConfig] = useState<DeploymentTargetConfig>({ type: 'devices', deviceIds: [] });
 
@@ -399,6 +402,7 @@ export default function DeploymentWizard() {
               targetFilter: targetConfig.type === 'filter' ? targetConfig.filter : undefined,
               scheduleType,
               scheduledAt: scheduleType === 'scheduled' ? new Date(scheduledAt).toISOString() : undefined,
+              options: forceReinstall ? { forceReinstall: true } : undefined,
             }
           : {
               name: `${selectedSoftware?.name ?? 'Software'} ${selectedVersion?.version ?? ''}`.trim(),
@@ -408,6 +412,7 @@ export default function DeploymentWizard() {
               targetIds: Array.from(selectedDevices),
               scheduleType,
               scheduledAt: scheduleType === 'scheduled' ? new Date(scheduledAt).toISOString() : undefined,
+              options: forceReinstall ? { forceReinstall: true } : undefined,
             };
 
       const result = await runAction<{ id?: string; status?: string; message?: string }>({
@@ -768,6 +773,20 @@ export default function DeploymentWizard() {
               Devices will be queued for the next available maintenance window.
             </div>
           )}
+          <label className="mt-4 flex items-start gap-2 text-sm" data-testid="force-reinstall-toggle">
+            <input
+              type="checkbox"
+              checked={forceReinstall}
+              onChange={(event) => setForceReinstall(event.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Reinstall even if already present
+              <span className="block text-xs text-muted-foreground">
+                Bypasses the package&apos;s detection rule (skip-if-already-installed). Only applies to packages with detection rules.
+              </span>
+            </span>
+          </label>
         </div>
       );
     }

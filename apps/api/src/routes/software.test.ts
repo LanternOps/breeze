@@ -419,6 +419,79 @@ describe('software routes', () => {
       expect(uploadBinary).not.toHaveBeenCalled();
     });
 
+    it('rejects malformed detectionRules JSON with a 400 (no silent drop)', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append('detectionRules', '{not json');
+      fd.append('file', new File(['payload'], 'pkg.exe', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(400);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('rejects schema-invalid detectionRules with a 400', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      // Valid JSON but a bad clause (non-GUID product code).
+      fd.append('detectionRules', JSON.stringify([{ type: 'msi_product_code', productCode: 'nope' }]));
+      fd.append('file', new File(['payload'], 'pkg.exe', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(400);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('accepts a valid detectionRules array on upload (201)', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+      );
+      vi.mocked(db.transaction).mockResolvedValueOnce({
+        id: 'ver-det', catalogId, version: '1.0.0', isLatest: true,
+      } as any);
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append(
+        'detectionRules',
+        JSON.stringify([
+          { type: 'registry', path: 'SOFTWARE\\Acme\\App' },
+          { type: 'file_exists', path: 'C:\\Program Files\\Acme\\app.exe' },
+        ]),
+      );
+      fd.append('file', new File(['payload'], 'pkg.exe', { type: 'application/octet-stream' }));
+
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+        body: fd,
+      });
+
+      expect(res.status).toBe(201);
+      expect(uploadBinary).toHaveBeenCalledTimes(1);
+    });
+
     it('maps a non-MultipartError parse failure to a 500 (not a blank crash)', async () => {
       vi.mocked(isS3Configured).mockReturnValueOnce(true);
       vi.mocked(db.select).mockReturnValueOnce(

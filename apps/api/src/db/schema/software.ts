@@ -63,6 +63,11 @@ export const softwareVersions = pgTable('software_versions', {
   silentUninstallArgs: text('silent_uninstall_args'),
   preInstallScript: text('pre_install_script'),
   postInstallScript: text('post_install_script'),
+  // Detection rules (issue #2022): an array of clauses the agent evaluates
+  // against the device's real state to confirm whether the package is actually
+  // present — independent of the installer exit code. Shape validated by
+  // detectionRulesSchema in @breeze/shared. Null/empty = exit-code behavior only.
+  detectionRules: jsonb('detection_rules'),
   isLatest: boolean('is_latest').notNull().default(false)
 }, (table) => ({
   catalogIdx: index('software_versions_catalog_id_idx').on(table.catalogId),
