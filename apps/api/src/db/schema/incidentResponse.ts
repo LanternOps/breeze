@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   index,
@@ -6,6 +7,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -56,6 +58,9 @@ export const incidents = pgTable('incidents', {
   summary: text('summary'),
   relatedAlerts: jsonb('related_alerts').$type<string[]>().notNull().default([]),
   affectedDevices: jsonb('affected_devices').$type<string[]>().notNull().default([]),
+  sourceType: text('source_type'),
+  sourceRef: text('source_ref'),
+  affectedUsers: jsonb('affected_users').$type<string[]>().notNull().default([]),
   timeline: jsonb('timeline').$type<IncidentTimelineEntry[]>().notNull().default([]),
   assignedTo: uuid('assigned_to').references(() => users.id),
   detectedAt: timestamp('detected_at').notNull(),
@@ -69,6 +74,9 @@ export const incidents = pgTable('incidents', {
   severityIdx: index('incidents_severity_idx').on(table.severity),
   assignedToIdx: index('incidents_assigned_to_idx').on(table.assignedTo),
   detectedAtIdx: index('incidents_detected_at_idx').on(table.detectedAt),
+  sourceRefIdx: uniqueIndex('incidents_source_ref_unique')
+    .on(table.orgId, table.sourceType, table.sourceRef)
+    .where(sql`source_ref IS NOT NULL`),
 }));
 
 export const incidentEvidence = pgTable('incident_evidence', {
