@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Layers, FilePlus2, Link as LinkIcon } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import PolicyLinkSelector from './featureTabs/PolicyLinkSelector';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
@@ -19,11 +20,30 @@ const createPolicySchema = z.object({
 type CreatePolicyValues = z.infer<typeof createPolicySchema>;
 type CreateMode = 'new' | 'linked';
 
+type OwnerScope = 'organization' | 'partner';
+
 export default function ConfigPolicyCreatePage() {
   const [error, setError] = useState<string>();
   const [mode, setMode] = useState<CreateMode | null>(null);
   const [linkedPolicyId, setLinkedPolicyId] = useState<string | null>(null);
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  const organizations = useOrgStore((s) => s.organizations);
+
+  // Ownership axis (#1724). A partner-scope creator may own the policy at their
+  // own partner (partner-wide / all-orgs, org_id NULL) OR scope it to a single
+  // org. The partner is ALWAYS derived server-side from the caller's token; we
+  // only send the intent. Org-scope creators never see this — their policy is
+  // always owned by their one org. Mirrors AlertTemplateEditor's availability
+  // picker (gate on partner scope from the JWT, not useOrgStore().partners).
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  // Default to partner-wide when the user is viewing the All-orgs scope (no
+  // concrete org selected); otherwise default to the org they're focused on.
+  const [ownerScope, setOwnerScope] = useState<OwnerScope>(
+    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'
+  );
+  const [ownerOrgId, setOwnerOrgId] = useState<string>(currentOrgId ?? '');
 
   const {
     register,
@@ -38,12 +58,21 @@ export default function ConfigPolicyCreatePage() {
     },
   });
 
+  const usePartnerOwner = isPartnerScope && ownerScope === 'partner';
+  const effectiveOrgId = ownerOrgId || currentOrgId || '';
+
   const onSubmit = async (values: CreatePolicyValues) => {
     try {
       setError(undefined);
+      // Partner-wide: send ownerScope only — the server derives the partner from
+      // the caller's token and ignores any client-supplied org/partner id. Org-
+      // scoped: send the concrete org id (the classic shape).
+      const body = usePartnerOwner
+        ? { ...values, ownerScope: 'partner' as const }
+        : { ...values, orgId: effectiveOrgId };
       const response = await fetchWithAuth('/configuration-policies', {
         method: 'POST',
-        body: JSON.stringify({ ...values, orgId: currentOrgId }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -194,6 +223,59 @@ export default function ConfigPolicyCreatePage() {
                 <option value="inactive">Inactive</option>
               </select>
             </div>
+
+            {isPartnerScope && (
+              <fieldset className="space-y-2 rounded-md border p-4" data-testid="policy-owner">
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Apply to</legend>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="ownerScope"
+                    value="partner"
+                    checked={ownerScope === 'partner'}
+                    onChange={() => setOwnerScope('partner')}
+                    data-testid="policy-owner-partner"
+                  />
+                  All organizations <span className="text-muted-foreground">(partner-wide)</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="ownerScope"
+                    value="organization"
+                    checked={ownerScope === 'organization'}
+                    onChange={() => setOwnerScope('organization')}
+                    data-testid="policy-owner-org"
+                  />
+                  A specific organization
+                </label>
+                {ownerScope === 'organization' && (
+                  <div className="mt-2 space-y-1 pl-6">
+                    <label className="text-xs font-medium text-muted-foreground" htmlFor="policy-owner-org-select">
+                      Organization
+                    </label>
+                    <select
+                      id="policy-owner-org-select"
+                      value={ownerOrgId}
+                      onChange={(e) => setOwnerOrgId(e.target.value)}
+                      data-testid="policy-owner-org-select"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-72"
+                    >
+                      <option value="">Select an organization</option>
+                      {organizations.map((org) => (
+                        <option key={org.id} value={org.id}>{org.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {ownerScope === 'partner' && (
+                  <p className="pl-6 text-xs text-muted-foreground">
+                    Applies to every organization under your partner. Backup settings aren&apos;t available on
+                    partner-wide policies.
+                  </p>
+                )}
+              </fieldset>
+            )}
           </div>
         </div>
 
@@ -214,7 +296,7 @@ export default function ConfigPolicyCreatePage() {
             </a>
             <button
               type="submit"
-              disabled={isSubmitting || (mode === 'linked' && !linkedPolicyId)}
+              disabled={isSubmitting || (mode === 'linked' && !linkedPolicyId) || (!usePartnerOwner && !effectiveOrgId)}
               className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
               {isSubmitting ? 'Creating...' : 'Create Policy'}
