@@ -31,6 +31,7 @@ import {
   getIncidentWithOrgCheck,
 } from './incidents.helpers';
 import { incidentActionRoutes } from './incidentActions';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const incidentRoutes = new Hono();
 const requireIncidentRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -78,24 +79,35 @@ incidentRoutes.post(
       },
     }];
 
-    const [incident] = await db
-      .insert(incidents)
-      .values({
-        orgId: orgId!,
-        title: data.title,
-        classification: data.classification,
-        severity: data.severity,
-        status: data.status ?? 'detected',
-        summary: data.summary,
-        relatedAlerts: data.relatedAlerts ?? [],
-        affectedDevices: data.affectedDevices ?? [],
-        timeline: initialTimeline,
-        assignedTo: data.assignedTo,
-        detectedAt,
-        sourceType: data.sourceType,
-        sourceRef: data.sourceRef,
-      })
-      .returning();
+    let incident;
+    try {
+      [incident] = await db
+        .insert(incidents)
+        .values({
+          orgId: orgId!,
+          title: data.title,
+          classification: data.classification,
+          severity: data.severity,
+          status: data.status ?? 'detected',
+          summary: data.summary,
+          relatedAlerts: data.relatedAlerts ?? [],
+          affectedDevices: data.affectedDevices ?? [],
+          timeline: initialTimeline,
+          assignedTo: data.assignedTo,
+          detectedAt,
+          sourceType: data.sourceType,
+          sourceRef: data.sourceRef,
+        })
+        .returning();
+    } catch (err) {
+      // Promoting the same EDR finding twice collides on the partial unique
+      // index (org_id, source_type, source_ref). Surface a clean 409 instead
+      // of leaking the raw Postgres 23505 as a 500.
+      if (isPgUniqueViolation(err)) {
+        return c.json({ error: 'This finding has already been promoted to an incident' }, 409);
+      }
+      throw err;
+    }
 
     if (!incident) {
       return c.json({ error: 'Failed to create incident' }, 500);

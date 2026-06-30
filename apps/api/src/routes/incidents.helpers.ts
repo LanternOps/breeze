@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { unionAll } from 'drizzle-orm/pg-core';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { createHash } from 'node:crypto';
@@ -187,16 +187,28 @@ function nativeSeverityRank(): SQL<number> {
     WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 WHEN 'p4' THEN 4 ELSE 3 END`;
 }
 
-export async function buildIncidentFeed(
+export type IncidentFeedParams = {
+  orgId?: string;
+  kind?: 'tracked' | 'finding';
+  source?: 'breeze' | 'huntress' | 's1';
+  limit: number;
+  offset: number;
+};
+
+/**
+ * Build the feed's count + rows queries WITHOUT executing them. Returns null
+ * when the requested kind/source filters exclude every union leg (empty feed).
+ *
+ * Splitting construction from execution lets a DB-less unit test call
+ * `.toSQL()` on the rows query to assert the union legs carry `.as()` aliases
+ * and the ORDER BY references the case-sensitive `"detectedAt"` column —
+ * exactly the two failure modes that made `GET /incidents/feed` throw at
+ * query-build time. May throw {@link FeedScopeError} for an invalid org scope.
+ */
+export function buildIncidentFeedQueries(
   auth: AuthContext,
-  params: {
-    orgId?: string;
-    kind?: 'tracked' | 'finding';
-    source?: 'breeze' | 'huntress' | 's1';
-    limit: number;
-    offset: number;
-  }
-): Promise<{ rows: IncidentFeedRow[]; total: number }> {
+  params: IncidentFeedParams
+) {
   const orgIncidents = resolveOrgFilter(auth, params.orgId, incidents.orgId);
   const orgHuntress = resolveOrgFilter(auth, params.orgId, huntressIncidents.orgId);
   const orgS1 = resolveOrgFilter(auth, params.orgId, s1Threats.orgId);
@@ -204,20 +216,22 @@ export async function buildIncidentFeed(
     throw new FeedScopeError(orgIncidents.error.status, orgIncidents.error.message);
   }
 
-  // Native tracked incidents.
+  // Native tracked incidents. Every raw sql<...> value carries `.as('<key>')`
+  // matching its object key — drizzle requires aliases to reference subquery
+  // fields, and the alias set/order must be identical across all three legs.
   const trackedQ = db
     .select({
-      kind: sql<string>`'tracked'`,
-      source: sql<string>`'breeze'`,
-      sourceId: sql<string>`${incidents.id}::text`,
-      title: sql<string>`${incidents.title}`,
-      rank: nativeSeverityRank(),
-      edrStatus: sql<string | null>`null::text`,
-      status: sql<string | null>`${incidents.status}::text`,
-      deviceId: sql<string | null>`(${incidents.affectedDevices}->>0)`,
-      detectedAt: sql<Date>`${incidents.detectedAt}`,
-      trackedIncidentId: sql<string | null>`${incidents.id}::text`,
-      details: sql<unknown>`null::jsonb`,
+      kind: sql<string>`'tracked'`.as('kind'),
+      source: sql<string>`'breeze'`.as('source'),
+      sourceId: sql<string>`${incidents.id}::text`.as('sourceId'),
+      title: sql<string>`${incidents.title}`.as('title'),
+      rank: nativeSeverityRank().as('rank'),
+      edrStatus: sql<string | null>`null::text`.as('edrStatus'),
+      status: sql<string | null>`${incidents.status}::text`.as('status'),
+      deviceId: sql<string | null>`(${incidents.affectedDevices}->>0)`.as('deviceId'),
+      detectedAt: sql<Date>`${incidents.detectedAt}`.as('detectedAt'),
+      trackedIncidentId: sql<string | null>`${incidents.id}::text`.as('trackedIncidentId'),
+      details: sql<unknown>`null::jsonb`.as('details'),
     })
     .from(incidents)
     .where(orgIncidents.condition);
@@ -225,17 +239,17 @@ export async function buildIncidentFeed(
   // Huntress findings NOT already promoted.
   const huntressQ = db
     .select({
-      kind: sql<string>`'finding'`,
-      source: sql<string>`'huntress'`,
-      sourceId: sql<string>`${huntressIncidents.huntressIncidentId}`,
-      title: sql<string>`${huntressIncidents.title}`,
-      rank: edrSeverityRank(huntressIncidents.severity),
-      edrStatus: sql<string | null>`${huntressIncidents.status}`,
-      status: sql<string | null>`null::text`,
-      deviceId: sql<string | null>`${huntressIncidents.deviceId}::text`,
-      detectedAt: sql<Date>`coalesce(${huntressIncidents.reportedAt}, ${huntressIncidents.createdAt})`,
-      trackedIncidentId: sql<string | null>`null::text`,
-      details: sql<unknown>`${huntressIncidents.details}`,
+      kind: sql<string>`'finding'`.as('kind'),
+      source: sql<string>`'huntress'`.as('source'),
+      sourceId: sql<string>`${huntressIncidents.huntressIncidentId}`.as('sourceId'),
+      title: sql<string>`${huntressIncidents.title}`.as('title'),
+      rank: edrSeverityRank(huntressIncidents.severity).as('rank'),
+      edrStatus: sql<string | null>`${huntressIncidents.status}`.as('edrStatus'),
+      status: sql<string | null>`null::text`.as('status'),
+      deviceId: sql<string | null>`${huntressIncidents.deviceId}::text`.as('deviceId'),
+      detectedAt: sql<Date>`coalesce(${huntressIncidents.reportedAt}, ${huntressIncidents.createdAt})`.as('detectedAt'),
+      trackedIncidentId: sql<string | null>`null::text`.as('trackedIncidentId'),
+      details: sql<unknown>`${huntressIncidents.details}`.as('details'),
     })
     .from(huntressIncidents)
     .where(
@@ -249,17 +263,17 @@ export async function buildIncidentFeed(
   // S1 findings NOT already promoted.
   const s1Q = db
     .select({
-      kind: sql<string>`'finding'`,
-      source: sql<string>`'s1'`,
-      sourceId: sql<string>`${s1Threats.s1ThreatId}`,
-      title: sql<string>`coalesce(${s1Threats.threatName}, 'SentinelOne threat')`,
-      rank: edrSeverityRank(s1Threats.severity),
-      edrStatus: sql<string | null>`${s1Threats.status}`,
-      status: sql<string | null>`null::text`,
-      deviceId: sql<string | null>`${s1Threats.deviceId}::text`,
-      detectedAt: sql<Date>`coalesce(${s1Threats.detectedAt}, ${s1Threats.createdAt})`,
-      trackedIncidentId: sql<string | null>`null::text`,
-      details: sql<unknown>`${s1Threats.details}`,
+      kind: sql<string>`'finding'`.as('kind'),
+      source: sql<string>`'s1'`.as('source'),
+      sourceId: sql<string>`${s1Threats.s1ThreatId}`.as('sourceId'),
+      title: sql<string>`coalesce(${s1Threats.threatName}, 'SentinelOne threat')`.as('title'),
+      rank: edrSeverityRank(s1Threats.severity).as('rank'),
+      edrStatus: sql<string | null>`${s1Threats.status}`.as('edrStatus'),
+      status: sql<string | null>`null::text`.as('status'),
+      deviceId: sql<string | null>`${s1Threats.deviceId}::text`.as('deviceId'),
+      detectedAt: sql<Date>`coalesce(${s1Threats.detectedAt}, ${s1Threats.createdAt})`.as('detectedAt'),
+      trackedIncidentId: sql<string | null>`null::text`.as('trackedIncidentId'),
+      details: sql<unknown>`${s1Threats.details}`.as('details'),
     })
     .from(s1Threats)
     .where(
@@ -274,7 +288,7 @@ export async function buildIncidentFeed(
   const includeTracked = params.kind !== 'finding' && params.source !== 'huntress' && params.source !== 's1';
   const includeHuntress = params.kind !== 'tracked' && (params.source === undefined || params.source === 'huntress');
   const includeS1 = params.kind !== 'tracked' && (params.source === undefined || params.source === 's1');
-  if (!includeTracked && !includeHuntress && !includeS1) return { rows: [], total: 0 };
+  if (!includeTracked && !includeHuntress && !includeS1) return null;
 
   // Build UNION ALL explicitly per active combination so Drizzle can infer
   // each call's table-name union type (dynamic `legs[]` array spreads lose it).
@@ -296,15 +310,30 @@ export async function buildIncidentFeed(
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   const sub = baseQ.as('feed');
 
-  const [countRows, rows] = await Promise.all([
-    db.select({ count: sql<number>`count(*)` }).from(sub),
-    db
-      .select()
-      .from(sub)
-      .orderBy(sql`rank asc`, sql`detected_at desc`)
-      .limit(params.limit)
-      .offset(params.offset),
-  ]);
+  const countQuery = db.select({ count: sql<number>`count(*)` }).from(sub);
+  const rowsQuery = db
+    .select()
+    .from(sub)
+    // Order by the actual aliased subquery columns. `rank` ascending (p1
+    // first), `detectedAt` descending. Referencing `sub.rank`/`sub.detectedAt`
+    // emits correctly-quoted identifiers — raw unquoted `detected_at` would
+    // fold to lowercase and fail (`column "detected_at" does not exist`).
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    .orderBy(asc(sub.rank), desc(sub.detectedAt))
+    .limit(params.limit)
+    .offset(params.offset);
+
+  return { countQuery, rowsQuery };
+}
+
+export async function buildIncidentFeed(
+  auth: AuthContext,
+  params: IncidentFeedParams
+): Promise<{ rows: IncidentFeedRow[]; total: number }> {
+  const built = buildIncidentFeedQueries(auth, params);
+  if (!built) return { rows: [], total: 0 };
+
+  const [countRows, rows] = await Promise.all([built.countQuery, built.rowsQuery]);
 
   return {
     rows: rows.map((r) => {
