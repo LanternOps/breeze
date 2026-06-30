@@ -76,7 +76,7 @@ export default function UpdateIndicator() {
       className={`fixed top-3 left-1/2 -translate-x-1/2 z-50 max-w-[90vw]
                  flex flex-col gap-1 px-3 py-2 rounded-lg shadow-lg
                  bg-gray-800/95 border border-gray-700 text-gray-100
-                 backdrop-blur-sm ${status.phase === 'ready' ? 'pointer-events-auto' : 'pointer-events-none'}`}
+                 backdrop-blur-xs ${status.phase === 'ready' ? 'pointer-events-auto' : 'pointer-events-none'}`}
     >
       <div className="flex items-center gap-2 text-xs">
         <Icon

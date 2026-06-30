@@ -1,3 +1,25 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/*
+ * Tailwind v4 auto-detects templates relative to this app, but not the shared
+ * @breeze/office-addin-core package one level up. List every template source
+ * explicitly (mirrors the v3 tailwind.config.js `content` globs).
+ */
+@source "../taskpane.html";
+@source "../src/**/*.{ts,tsx}";
+@source "../../../packages/office-addin-core/src/**/*.{ts,tsx}";
+
+/*
+ * Tailwind v4 changed the default `border-*`/`divide-*` color from gray-200 to
+ * currentColor. office-addin-core uses bare `border`/`border-b`/`border-t`, so
+ * preserve the v3 gray-200 default to keep the add-ins rendering identically.
+ */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
