@@ -17,7 +17,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 import LinkSubscriptionPicker from './LinkSubscriptionPicker';
 
 const ok = (data: unknown) => new Response(JSON.stringify({ data }), { status: 200 });
-const sub = { id: 'sub-1', orgId: 'org-1', productName: 'Microsoft 365 E3', quantity: 5 };
+const sub = { id: 'sub-1', orgId: 'org-1', productName: 'Microsoft 365 E3', quantity: 5, unitPrice: null };
 
 beforeEach(() => {
   listContracts.mockReset(); getContract.mockReset(); addContractLine.mockReset(); fetchWithAuth.mockReset();
@@ -76,6 +76,42 @@ describe('LinkSubscriptionPicker', () => {
     // A valid 2-decimal value enables submit.
     fireEvent.change(screen.getByTestId('pax8-link-new-price'), { target: { value: '36.00' } });
     expect((screen.getByTestId('pax8-link-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('prefills the new-line price from the Pax8 subscription sell price', async () => {
+    render(<LinkSubscriptionPicker integrationId="int-1" subscription={{ ...sub, unitPrice: '42.5' }} onDone={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('pax8-link-contract'));
+    fireEvent.change(screen.getByTestId('pax8-link-contract'), { target: { value: 'c1' } });
+    await waitFor(() => screen.getByTestId('pax8-link-line'));
+    fireEvent.change(screen.getByTestId('pax8-link-line'), { target: { value: '__new__' } });
+    // Seeded to a clean 2-decimal value and submit is immediately enabled.
+    expect((screen.getByTestId('pax8-link-new-price') as HTMLInputElement).value).toBe('42.50');
+    expect((screen.getByTestId('pax8-link-submit') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('pax8-link-submit'));
+    await waitFor(() => expect(addContractLine).toHaveBeenCalled());
+    expect(addContractLine.mock.calls[0][1]).toMatchObject({ unitPrice: '42.50' });
+  });
+
+  it('leaves the new-line price blank for a zero sell price and keeps submit disabled', async () => {
+    render(<LinkSubscriptionPicker integrationId="int-1" subscription={{ ...sub, unitPrice: '0.00' }} onDone={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('pax8-link-contract'));
+    fireEvent.change(screen.getByTestId('pax8-link-contract'), { target: { value: 'c1' } });
+    await waitFor(() => screen.getByTestId('pax8-link-line'));
+    fireEvent.change(screen.getByTestId('pax8-link-line'), { target: { value: '__new__' } });
+    // A zero (or negative) Pax8 price is not a real sell price — blank it so the
+    // partner must enter one, rather than seeding a $0.00 line.
+    expect((screen.getByTestId('pax8-link-new-price') as HTMLInputElement).value).toBe('');
+    expect((screen.getByTestId('pax8-link-submit') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('leaves the new-line price blank when the subscription has no sell price', async () => {
+    render(<LinkSubscriptionPicker integrationId="int-1" subscription={{ ...sub, unitPrice: null }} onDone={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByTestId('pax8-link-contract'));
+    fireEvent.change(screen.getByTestId('pax8-link-contract'), { target: { value: 'c1' } });
+    await waitFor(() => screen.getByTestId('pax8-link-line'));
+    fireEvent.change(screen.getByTestId('pax8-link-line'), { target: { value: '__new__' } });
+    expect((screen.getByTestId('pax8-link-new-price') as HTMLInputElement).value).toBe('');
+    expect((screen.getByTestId('pax8-link-submit') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('surfaces an inline error when the contract list fails to load', async () => {

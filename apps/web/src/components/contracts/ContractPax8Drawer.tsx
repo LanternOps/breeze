@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
 import LinkSubscriptionPicker from '../integrations/LinkSubscriptionPicker';
 
 interface Pax8Subscription {
@@ -9,7 +9,20 @@ interface Pax8Subscription {
   productName: string | null;
   vendorName: string | null;
   quantity: number | null;
+  unitPrice: string | null;
+  currencyCode: string | null;
   contractLineId: string | null;
+}
+
+/** Format the Pax8 sell price for the pick list so the numeric value shown is the
+ *  same 2-decimal value the link form prefills (see toPriceInput in
+ *  LinkSubscriptionPicker), wrapped with the currency for display. Omitted
+ *  entirely for missing, zero, or unparseable prices. */
+function sellPriceLabel(unitPrice: string | null, currencyCode: string | null): string | null {
+  if (unitPrice == null) return null;
+  const n = Number.parseFloat(unitPrice);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return `${currencyCode ?? 'USD'} ${n.toFixed(2)}/ea`;
 }
 
 interface Props {
@@ -44,10 +57,18 @@ export default function ContractPax8Drawer({ open, orgId, integrationId, onClose
   useEffect(() => {
     if (!open) { setSubs(null); setError(null); setPicked(null); return; }
     void (async () => {
-      const res = await fetchWithAuth(`/pax8/subscriptions?orgId=${encodeURIComponent(orgId)}&limit=100`);
-      if (!res.ok) { setError('Could not load Pax8 subscriptions for this organization.'); setSubs([]); return; }
-      const body = (await res.json().catch(() => null)) as { data?: Pax8Subscription[] } | null;
-      setSubs(body?.data ?? []);
+      try {
+        const res = await fetchWithAuth(`/pax8/subscriptions?orgId=${encodeURIComponent(orgId)}&limit=100`);
+        if (!res.ok) { setError('Could not load Pax8 subscriptions for this organization.'); setSubs([]); return; }
+        const body = (await res.json().catch(() => null)) as { data?: Pax8Subscription[] } | null;
+        setSubs(body?.data ?? []);
+      } catch (err) {
+        // A thrown fetch (network failure) must fail loud, not strand the drawer on
+        // "Loading subscriptions…" forever. Auth expiry self-redirects, so skip it.
+        if (err instanceof AuthSessionExpiredError) return;
+        setError('Could not load Pax8 subscriptions for this organization.');
+        setSubs([]);
+      }
     })();
   }, [open, orgId]);
 
@@ -83,8 +104,9 @@ export default function ContractPax8Drawer({ open, orgId, integrationId, onClose
         <div className="p-5">
           {picked ? (
             <LinkSubscriptionPicker
+              key={picked.id}
               integrationId={integrationId}
-              subscription={{ id: picked.id, orgId: picked.orgId ?? orgId, productName: picked.productName, quantity: picked.quantity }}
+              subscription={{ id: picked.id, orgId: picked.orgId ?? orgId, productName: picked.productName, quantity: picked.quantity, unitPrice: picked.unitPrice }}
               onDone={onDone}
               onCancel={() => setPicked(null)}
             />
@@ -102,9 +124,13 @@ export default function ContractPax8Drawer({ open, orgId, integrationId, onClose
                 <li key={s.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{s.productName ?? 'Pax8 subscription'}</div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {s.vendorName ? `${s.vendorName} · ` : ''}{s.quantity != null ? `qty ${s.quantity}` : ''}
-                      {s.contractLineId ? ' · already linked' : ''}
+                    <div className="truncate text-xs text-muted-foreground" data-testid={`contract-pax8-meta-${s.id}`}>
+                      {[
+                        s.vendorName,
+                        s.quantity != null ? `qty ${s.quantity}` : null,
+                        sellPriceLabel(s.unitPrice, s.currencyCode),
+                        s.contractLineId ? 'already linked' : null,
+                      ].filter(Boolean).join(' · ')}
                     </div>
                   </div>
                   <button

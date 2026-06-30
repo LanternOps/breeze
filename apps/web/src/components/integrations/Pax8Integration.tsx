@@ -679,7 +679,7 @@ export default function Pax8Integration() {
             <LinkSubscriptionPicker
               key={linkingSub.id}
               integrationId={integration.id}
-              subscription={{ id: linkingSub.id, orgId: linkingSub.orgId, productName: linkingSub.productName, quantity: linkingSub.quantity }}
+              subscription={{ id: linkingSub.id, orgId: linkingSub.orgId, productName: linkingSub.productName, quantity: linkingSub.quantity, unitPrice: linkingSub.unitPrice }}
               onDone={() => { setLinkingSub(null); void reloadSubscriptions(); }}
               onCancel={() => setLinkingSub(null)}
             />

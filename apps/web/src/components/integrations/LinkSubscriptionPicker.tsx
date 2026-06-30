@@ -14,9 +14,20 @@ function isMfaError(err: unknown): boolean {
   return err instanceof ActionError && err.status === 403 && /mfa required/i.test(err.message);
 }
 
+/** Seed the new-line "Unit price" from the Pax8 subscription's sell price, which
+ *  the partner sets per-subscription in Pax8 and is the accurate price to bill.
+ *  The snapshot stores it as a numeric(12,2) string; coerce to a clean 2-decimal
+ *  value that satisfies MONEY_RE, falling back to blank for missing, zero, or
+ *  unparseable prices. */
+function toPriceInput(value: string | null): string {
+  if (value == null) return '';
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) && n > 0 ? n.toFixed(2) : '';
+}
+
 interface LinkSubscriptionPickerProps {
   integrationId: string;
-  subscription: { id: string; orgId: string; productName: string | null; quantity: number | null };
+  subscription: { id: string; orgId: string; productName: string | null; quantity: number | null; unitPrice: string | null };
   onDone: () => void;
   onCancel: () => void;
 }
@@ -27,7 +38,7 @@ export default function LinkSubscriptionPicker({ integrationId, subscription, on
   const [lines, setLines] = useState<ContractLine[]>([]);
   const [lineId, setLineId] = useState('');
   const [newDesc, setNewDesc] = useState(subscription.productName ?? '');
-  const [newPrice, setNewPrice] = useState('');
+  const [newPrice, setNewPrice] = useState(() => toPriceInput(subscription.unitPrice));
   const [syncEnabled, setSyncEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
