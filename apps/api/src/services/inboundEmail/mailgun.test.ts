@@ -187,6 +187,34 @@ describe('MailgunInboundProvider.parse', () => {
     }
   });
 
+  // Sibling-host forgery: RFC 8601 only guarantees Mailgun strips inbound A-R headers bearing
+  // the RECEIVING instance's own authserv-id. A message relayed through mxa is NOT guaranteed
+  // to have a forged `mxb.mailgun.org` header stripped. If the attacker positions that forged
+  // DMARC=pass header before the genuine mxa DMARC=fail verdict, first-match selection would
+  // wrongly verify a spoofed sender. We must fail closed when trusted verdicts disagree.
+  it('does NOT verify when a forged sibling-host DMARC pass conflicts with a genuine DMARC fail', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'mxb.mailgun.org; dmarc=pass'], // attacker-embedded, not stripped by mxa
+        ['Authentication-Results', 'mxa.mailgun.org; dkim=fail; dmarc=fail'], // genuine receiving-host verdict
+      ])
+    }) } as any);
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  // Two genuine-looking Mailgun headers that AGREE on pass stay verified (e.g. benign duplication).
+  it('verifies when multiple Mailgun-authoritative headers all report DMARC pass', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass'],
+        ['Authentication-Results', 'mxb.mailgun.org; dmarc=pass'],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
   it('does NOT trust a forged Authentication-Results header with a foreign authserv-id', async () => {
     // An external sender stuffs their own Authentication-Results header claiming a
     // DMARC/SPF/DKIM pass. The authserv-id ("evil.example") is NOT Mailgun's receiving

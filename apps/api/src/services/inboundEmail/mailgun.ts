@@ -73,11 +73,16 @@ export class MailgunInboundProvider implements InboundEmailProvider {
 // `Authentication-Results: anything; dmarc=pass` header into their OWN message, so we only
 // trust a header whose authserv-id host is `mailgun.org` or a subdomain of it. The match is
 // on a LABEL boundary (apex, or `.mailgun.org` suffix) so lookalikes like `evilmailgun.org`
-// or `mailgun.org.attacker.com` are rejected. This is safe against an attacker forging
-// `mxa.mailgun.org; dmarc=pass` in their own message because, per RFC 8601, the receiving
-// ADMD (Mailgun) strips inbound Authentication-Results headers bearing its own authserv-id
-// before adding its genuine one — so the only mailgun.org-authserv header that survives is
-// Mailgun's.
+// or `mailgun.org.attacker.com` are rejected.
+//
+// Forgery model: RFC 8601 §5 has the receiving ADMD strip inbound Authentication-Results
+// headers bearing the RECEIVING INSTANCE's own authserv-id before stamping its genuine one.
+// That guarantee is per-exact-authserv-id, NOT fleet-wide — a message relayed through
+// `mxa.mailgun.org` is only guaranteed to have forged `mxa.mailgun.org` headers stripped, so
+// an attacker could embed a sibling-host `mxb.mailgun.org; dmarc=pass` header that survives.
+// Because we trust the whole `*.mailgun.org` family, we therefore do NOT trust the first
+// matching header blindly: `extractSenderAuth` requires every trusted header's DMARC verdict
+// to agree on pass and fails closed on any disagreement (see mechanismVerdict).
 const MAILGUN_AUTHSERV_DOMAIN = 'mailgun.org';
 
 function isMailgunAuthservId(authservId: string): boolean {
@@ -100,35 +105,52 @@ function isMailgunAuthservId(authservId: string): boolean {
 // its own proves alignment to the (spoofable) From domain. Any absent/foreign verdict is
 // NOT a pass (fail closed).
 function extractSenderAuth(b: Record<string, string>): SenderAuth {
-  // Only an Authentication-Results header stamped by Mailgun's own MX is trustworthy.
-  const trustedAuthResults = mailgunAuthResults(b['message-headers']);
-  const spf = normalizeVerdict(b['X-Mailgun-Spf'] ?? extractMechanism(trustedAuthResults, 'spf'));
-  const dkim = normalizeVerdict(
-    b['X-Mailgun-Dkim-Check-Result'] ?? extractMechanism(trustedAuthResults, 'dkim')
-  );
-  const dmarc = normalizeVerdict(extractMechanism(trustedAuthResults, 'dmarc'));
+  // Every Authentication-Results header stamped with a Mailgun-family authserv-id. Normally
+  // exactly one (the receiving instance's); more than one means either benign duplication or a
+  // surviving forged sibling-host header — mechanismVerdict resolves that by requiring agreement.
+  const trusted = mailgunAuthResults(b['message-headers']);
+  // Mailgun's own namespaced fields are authoritative and take precedence; fall back to the
+  // trusted header(s) only when the field is absent (`?? undefined` preserves the prior
+  // "present-but-empty stays as-is" semantics).
+  const spf = normalizeVerdict(b['X-Mailgun-Spf'] ?? mechanismVerdict(trusted, 'spf'));
+  const dkim = normalizeVerdict(b['X-Mailgun-Dkim-Check-Result'] ?? mechanismVerdict(trusted, 'dkim'));
+  const dmarc = normalizeVerdict(mechanismVerdict(trusted, 'dmarc'));
   // DMARC pass (asserted via Mailgun's authserv-id) is the only From-domain-aligned
   // trust signal; a standalone SPF+DKIM pass is NOT treated as verified.
   const verified = dmarc === 'pass';
   return { spf, dkim, dmarc, verified };
 }
 
-// Return the first Authentication-Results header value carrying Mailgun's own authserv-id
-// (the token before the first ';'); otherwise return '' so no mechanism is read out of an
-// attacker-supplied header. A relay chain (e.g. M365 → Mailgun) carries MULTIPLE
+// Return EVERY Authentication-Results header value carrying a Mailgun-family authserv-id (the
+// token before the first ';'). A relay chain (e.g. M365 → Mailgun) carries multiple
 // Authentication-Results headers — M365's own plus Mailgun's — so we scan ALL of them rather
 // than only the first, which may be the foreign-authserv-id one. authserv-id comparison is
 // case-insensitive and tolerant of an optional trailing version digit (e.g. "mxa.mailgun.org 1").
-function mailgunAuthResults(headersJson: string | undefined): string {
+function mailgunAuthResults(headersJson: string | undefined): string[] {
+  const trusted: string[] = [];
   for (const raw of parseHeaderAll(headersJson, 'Authentication-Results')) {
     const authservId = (raw.split(';')[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
-    if (isMailgunAuthservId(authservId)) return raw;
+    if (isMailgunAuthservId(authservId)) trusted.push(raw);
   }
-  return '';
+  return trusted;
+}
+
+// Collapse a mechanism's verdict across all trusted Mailgun A-R headers into a single raw
+// token, failing closed on disagreement. Returns 'pass' ONLY when at least one trusted header
+// asserts the mechanism and every header that asserts it says pass; returns 'fail' if any
+// trusted header reports a non-pass verdict for it (so a forged sibling-host pass cannot
+// override a genuine fail); returns undefined when no trusted header mentions the mechanism.
+function mechanismVerdict(trusted: string[], mechanism: string): string | undefined {
+  const verdicts = trusted
+    .map((h) => extractMechanism(h, mechanism))
+    .filter((v): v is string => v !== undefined)
+    .map((v) => v.toLowerCase());
+  if (verdicts.length === 0) return undefined;
+  return verdicts.every((v) => v === 'pass') ? 'pass' : 'fail';
 }
 
 // Pull `<mechanism>=<result>` out of an Authentication-Results header value, e.g.
-// "mx.mailgun.org; dkim=pass header.d=x.com; dmarc=fail" -> for 'dkim' returns 'pass'.
+// "mxa.mailgun.org; dkim=pass header.d=x.com; dmarc=fail" -> for 'dkim' returns 'pass'.
 function extractMechanism(authResults: string, mechanism: string): string | undefined {
   const m = new RegExp(`\\b${mechanism}\\s*=\\s*([a-zA-Z]+)`, 'i').exec(authResults);
   return m?.[1];
