@@ -162,6 +162,14 @@ async function loadAccessibleDevice(
   if (!device) return null;
 
   const perms = access.permissions;
+  // Fail closed for SESSION callers: the JWT branch always runs requirePermission,
+  // which sets the permissions context, so a missing context on a user path means
+  // a site gate was dropped — deny rather than silently skip the allowlist check
+  // (mirrors the fail-loud stance of getDeviceWithOrgAndSiteCheck). An absent
+  // context is legitimate ONLY for org-scoped API keys.
+  if (access.audit.actorType !== 'api_key' && !perms) {
+    return SITE_DENIED;
+  }
   if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
     return SITE_DENIED;
   }
