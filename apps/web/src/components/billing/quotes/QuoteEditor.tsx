@@ -1698,6 +1698,15 @@ function EditableLineRow({
   //     value (e.g. 9.999 → 10.00), clearing the dirty ring and the optimism.
   const nameEdited = useRef(false);
   const descEdited = useRef(false);
+  // Auto-grow the (full-width) description textarea to fit its content, while
+  // still allowing the user to drag the resize handle for a bigger/smaller box.
+  const descRef = useRef<HTMLTextAreaElement>(null);
+  const autoGrowDesc = () => {
+    const el = descRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
   const qtyEdited = useRef(false);
   const priceEdited = useRef(false);
   const costEdited = useRef(false);
@@ -1705,6 +1714,8 @@ function EditableLineRow({
   const partEdited = useRef(false);
   useEffect(() => { if (!nameEdited.current) setName(line.name ?? ''); }, [line.name]);
   useEffect(() => { if (!descEdited.current) setDesc(line.description ?? ''); }, [line.description]);
+  // Re-fit the description box after any value change (typing or server resync).
+  useEffect(() => { autoGrowDesc(); }, [desc]);
   useEffect(() => { if (!qtyEdited.current) setQty(line.quantity); }, [line.quantity]);
   useEffect(() => { if (!priceEdited.current) setPrice(line.unitPrice); }, [line.unitPrice]);
   useEffect(() => { if (!costEdited.current) setCost(line.unitCost ?? ''); }, [line.unitCost]);
@@ -1889,17 +1900,6 @@ function EditableLineRow({
               data-testid={`quote-line-name-${line.id}`}
               className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
             />
-            <textarea
-              value={desc}
-              aria-label="Line description"
-              placeholder="Description (optional)"
-              onChange={(e) => { setDesc(e.target.value); descEdited.current = true; }}
-              onBlur={commitDesc}
-              rows={2}
-              disabled={busy}
-              data-testid={`quote-line-desc-${line.id}`}
-              className={`min-h-9 w-full resize-y rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
-            />
           </div>
         </div>
       </td>
@@ -1988,6 +1988,24 @@ function EditableLineRow({
             Remove
           </button>
         </div>
+      </td>
+    </tr>
+    {/* Full-width description row, so writers get a roomy, expandable box instead
+        of a cramped textarea squeezed into the narrow Description column. */}
+    <tr className="border-0" data-testid={`quote-line-desc-row-${line.id}`}>
+      <td colSpan={8} className="px-2 pb-2">
+        <textarea
+          ref={descRef}
+          value={desc}
+          aria-label="Line description"
+          placeholder="Description (optional)"
+          onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
+          onBlur={commitDesc}
+          rows={2}
+          disabled={busy}
+          data-testid={`quote-line-desc-${line.id}`}
+          className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
+        />
       </td>
     </tr>
     {/* Internal-only cost/markup/profit band — never shown to the customer.

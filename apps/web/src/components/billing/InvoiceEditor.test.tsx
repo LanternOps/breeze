@@ -64,7 +64,9 @@ describe('InvoiceEditor', () => {
     render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
     expect(screen.getByTestId('invoice-issue')).not.toBeDisabled();
-    expect(screen.getByTestId('invoice-line-line-1')).toHaveTextContent('Consulting');
+    // Name/description are now editable inputs (full-width description row) rather
+    // than static text; the legacy name-less line shows its description in the box.
+    expect(screen.getByTestId('invoice-line-desc-line-1')).toHaveValue('Consulting');
   });
 
   it('warns when a line is taxable but no tax rate is configured', async () => {
