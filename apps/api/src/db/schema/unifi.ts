@@ -22,8 +22,9 @@ import { devices } from './devices';
 export const unifiIntegrations = pgTable('unifi_integrations', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  connectionType: text('connection_type').notNull().default('cloud'),
   baseUrl: text('base_url').notNull().default('https://api.ui.com'),
-  apiKeyEncrypted: text('api_key_encrypted').notNull(),
+  apiKeyEncrypted: text('api_key_encrypted'),
   accountLabel: text('account_label'),
   isActive: boolean('is_active').notNull().default(true),
   status: varchar('status', { length: 20 }).notNull().default('connected'),
