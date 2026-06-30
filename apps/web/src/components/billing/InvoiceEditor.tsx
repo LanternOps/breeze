@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -11,7 +11,6 @@ import {
   type InvoiceLine,
   formatMoney,
   lineTitle,
-  lineBlurb,
   computeInvoiceProfit,
 } from './invoiceTypes';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
@@ -543,16 +542,66 @@ function LineRow({
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
   const editDisabled = disabled || !canWrite;
+  const [name, setName] = useState(line.name ?? '');
+  const [desc, setDesc] = useState(line.description ?? '');
   const [qty, setQty] = useState(line.quantity);
   const [price, setPrice] = useState(line.unitPrice);
+  // Guard an in-progress name/description edit from being clobbered by a server
+  // resync mid-type (mirrors the quote editor's EditableLineRow pattern).
+  const nameEdited = useRef(false);
+  const descEdited = useRef(false);
+  // Auto-grow the (full-width) description textarea to fit its content, while
+  // still letting the user drag the resize handle for a bigger/smaller box.
+  const descRef = useRef<HTMLTextAreaElement>(null);
+  const autoGrowDesc = () => {
+    const el = descRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  useEffect(() => { if (!nameEdited.current) setName(line.name ?? ''); }, [line.name]);
+  useEffect(() => { if (!descEdited.current) setDesc(line.description ?? ''); }, [line.description]);
+  useEffect(() => { autoGrowDesc(); }, [desc]);
   useEffect(() => { setQty(line.quantity); setPrice(line.unitPrice); }, [line.quantity, line.unitPrice]);
+
+  const commitName = () => {
+    if (!canWrite) return;
+    const next = name.trim();
+    nameEdited.current = false; // committing — let the server value re-adopt next
+    if (next === (line.name ?? '')) { setName(line.name ?? ''); return; }
+    // A line can't have both name and description blank (mirrors the manual-add rule).
+    if (!next && !(line.description ?? '').trim()) {
+      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      setName(line.name ?? '');
+      return;
+    }
+    onPatch(line.id, { name: next || null });
+  };
+  const commitDesc = () => {
+    if (!canWrite) return;
+    const next = desc.trim();
+    descEdited.current = false;
+    if (next === (line.description ?? '')) { setDesc(line.description ?? ''); return; }
+    if (!next && !(line.name ?? '').trim()) {
+      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      setDesc(line.description ?? '');
+      return;
+    }
+    onPatch(line.id, { description: next || null });
+  };
 
   return (
     <>
       <tr className="border-t" data-testid={`invoice-line-${line.id}`}>
         <td className="px-3 py-2">
-          <div className="font-medium text-foreground">{lineTitle(line)}</div>
-          {lineBlurb(line) && <div className="text-xs text-muted-foreground">{lineBlurb(line)}</div>}
+          <input
+            type="text" value={name} disabled={editDisabled}
+            aria-label="Line name" placeholder="Name"
+            onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
+            onBlur={commitName}
+            data-testid={`invoice-line-name-${line.id}`}
+            className="h-8 w-full rounded-md border bg-background px-2 text-sm font-medium focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+          />
         </td>
         <td className="px-3 py-2 text-right">
           <input
@@ -597,6 +646,24 @@ function LineRow({
               Remove
             </button>
           )}
+        </td>
+      </tr>
+      {/* Full-width description row, so writers get a roomy, expandable box
+          instead of a cramped cell — matches the quote editor. */}
+      <tr className="border-0" data-testid={`invoice-line-desc-row-${line.id}`}>
+        <td colSpan={7} className="px-3 pb-2 pt-0">
+          <textarea
+            ref={descRef}
+            value={desc}
+            disabled={editDisabled}
+            aria-label="Line description"
+            placeholder="Description (optional)"
+            onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
+            onBlur={commitDesc}
+            rows={2}
+            data-testid={`invoice-line-desc-${line.id}`}
+            className="min-h-8 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+          />
         </td>
       </tr>
       {children.map((ch) => (
