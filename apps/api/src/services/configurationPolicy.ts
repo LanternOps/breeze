@@ -384,6 +384,7 @@ async function decomposeInlineSettings(
         scheduleDayOfWeek: parsed.scheduleDayOfWeek,
         scheduleDayOfMonth: parsed.scheduleDayOfMonth,
         rebootPolicy: parsed.rebootPolicy,
+        exclusiveWindowsUpdate: parsed.exclusiveWindowsUpdate,
       });
       break;
     }
@@ -711,6 +712,7 @@ async function assembleInlineSettings(
         scheduleDayOfWeek: row.scheduleDayOfWeek,
         scheduleDayOfMonth: row.scheduleDayOfMonth,
         rebootPolicy: row.rebootPolicy,
+        exclusiveWindowsUpdate: row.exclusiveWindowsUpdate,
       };
     }
 

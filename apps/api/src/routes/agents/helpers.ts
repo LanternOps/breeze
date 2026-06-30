@@ -51,6 +51,7 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
 import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
@@ -2392,6 +2393,34 @@ export async function buildPamConfigUpdate(deviceId: string): Promise<PamSetting
   }
 
   return settings;
+}
+
+// ============================================
+// Patch Source Enforcement Config (#1872)
+// ============================================
+
+export interface PatchSourceSettings {
+  /**
+   * When true the Windows agent suppresses the native Windows Update
+   * automatic-install channel (NoAutoUpdate=1) so updates flow only through
+   * Breeze's approval rings. False explicitly tells the agent to revert any
+   * enforcement Breeze previously applied (a pre-existing admin GPO is left
+   * untouched, agent-side). Breeze's own WUA-driven install path is unaffected.
+   */
+  exclusiveWindowsUpdate: boolean;
+}
+
+/**
+ * Resolves the patch feature link for the device and surfaces the
+ * sole-source-enforcement flag for the heartbeat config push. A device with no
+ * patch policy assigned resolves to `false`, which the agent treats as "revert
+ * any prior Breeze enforcement" — so removing the policy cleanly reverts the
+ * endpoint. The caller (heartbeat) omits the block entirely on a resolver error
+ * so a transient failure never triggers an unintended revert.
+ */
+export async function buildPatchSourceConfigUpdate(deviceId: string): Promise<PatchSourceSettings> {
+  const patch = await resolvePatchConfigForDevice(deviceId);
+  return { exclusiveWindowsUpdate: patch?.exclusiveWindowsUpdate ?? false };
 }
 
 // ============================================

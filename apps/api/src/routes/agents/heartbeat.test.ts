@@ -95,6 +95,7 @@ vi.mock('./helpers', () => ({
   buildMonitoringConfigUpdate: vi.fn(() => undefined),
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
+  buildPatchSourceConfigUpdate: vi.fn(async () => ({ exclusiveWindowsUpdate: false })),
   // Permissive default (staged + no window = upgrade anytime) so the upgrade
   // gating is transparent to tests that don't care about the org policy.
   getOrgAgentUpdatePolicy: vi.fn(async () => ({ policy: 'staged', maintenanceWindow: null })),
@@ -1034,6 +1035,38 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.uacInterceptionEnabled).toBe(false);
+  });
+
+  it('includes patch_source_settings in configUpdate when enforcement is enabled (#1872)', async () => {
+    const { buildPatchSourceConfigUpdate } = await import('./helpers');
+    vi.mocked(buildPatchSourceConfigUpdate).mockResolvedValueOnce({ exclusiveWindowsUpdate: true });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+  });
+
+  it('omits patch_source_settings when the patch resolver throws (no unintended revert)', async () => {
+    const { buildPatchSourceConfigUpdate } = await import('./helpers');
+    vi.mocked(buildPatchSourceConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.patch_source_settings).toBeUndefined();
   });
 });
 

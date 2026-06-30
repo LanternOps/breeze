@@ -84,6 +84,7 @@ describe('normalizePatchInlineSettings', () => {
       scheduleDayOfWeek: 'mon',
       scheduleDayOfMonth: 15,
       rebootPolicy: 'always',
+      exclusiveWindowsUpdate: true,
     };
 
     const result = normalizePatchInlineSettings(input);
@@ -96,6 +97,7 @@ describe('normalizePatchInlineSettings', () => {
     expect(result.scheduleDayOfWeek).toBe('mon');
     expect(result.scheduleDayOfMonth).toBe(15);
     expect(result.rebootPolicy).toBe('always');
+    expect(result.exclusiveWindowsUpdate).toBe(true);
   });
 
   it('returns defaults when given empty object', () => {
@@ -109,6 +111,8 @@ describe('normalizePatchInlineSettings', () => {
     expect(result.scheduleDayOfWeek).toBe('sun');
     expect(result.scheduleDayOfMonth).toBe(1);
     expect(result.rebootPolicy).toBe('if_required');
+    // #1872: sole-patch-source enforcement is opt-in (off by default).
+    expect(result.exclusiveWindowsUpdate).toBe(false);
   });
 
   it('returns defaults when given null', () => {
@@ -235,6 +239,32 @@ describe('loadPolicyLocalPatchConfig', () => {
     expect(result?.settings.apps).toEqual([
       { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
     ]);
+  });
+
+  it('surfaces exclusiveWindowsUpdate from the normalized column (#1872)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
+      configPolicyId: 'policy-1',
+      configPolicyName: 'Policy 1',
+      orgId: 'org-1',
+      featureLinkId: 'link-1',
+      featurePolicyId: null,
+      storedInlineSettings: { sources: ['os'] },
+      patchSettings: {
+        sources: ['os'],
+        autoApprove: false,
+        autoApproveSeverities: [],
+        scheduleFrequency: 'weekly',
+        scheduleTime: '02:00',
+        scheduleDayOfWeek: 'sun',
+        scheduleDayOfMonth: 1,
+        rebootPolicy: 'if_required',
+        exclusiveWindowsUpdate: true,
+      },
+    }]) as any);
+
+    const result = await loadPolicyLocalPatchConfig('policy-1');
+
+    expect(result?.settings.exclusiveWindowsUpdate).toBe(true);
   });
 
   it('salvages valid app rules and deferral when stored inline JSON is malformed, with warn + Sentry', async () => {
