@@ -5,12 +5,14 @@ const mocks = vi.hoisted(() => ({
   createPax8ClientForIntegration: vi.fn(),
   createCatalogItem: vi.fn(),
   getRedis: vi.fn(() => null),
+  enrichDistributorListing: vi.fn(),
 }));
 
 vi.mock('../db', () => ({ db: mocks.db }));
 vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: mocks.createPax8ClientForIntegration }));
 vi.mock('./catalogService', async (orig) => ({ ...(await orig<typeof import('./catalogService')>()), createCatalogItem: mocks.createCatalogItem }));
 vi.mock('./redis', () => ({ getRedis: mocks.getRedis }));
+vi.mock('./catalogEnrichmentService', () => ({ enrichDistributorListing: mocks.enrichDistributorListing }));
 
 import { searchPax8Products, importPax8CatalogItem, getPax8CatalogStatus, getPax8ProductPricing, Pax8CatalogError } from './pax8CatalogService';
 import { CatalogServiceError } from './catalogService';
@@ -29,6 +31,7 @@ beforeEach(() => {
   mocks.db.select.mockReset(); mocks.db.insert.mockReset();
   mocks.createPax8ClientForIntegration.mockReset(); mocks.createCatalogItem.mockReset();
   mocks.getRedis.mockReturnValue(null);
+  mocks.enrichDistributorListing.mockReset();
 });
 
 describe('searchPax8Products', () => {
@@ -76,6 +79,44 @@ describe('importPax8CatalogItem', () => {
     expect(arg).toMatchObject({ itemType: 'software', billingType: 'recurring', billingFrequency: 'monthly', unitPrice: 22, costBasis: 18.5 });
     expect((arg.attributes as any).pax8.pax8ProductId).toBe('p1');
     expect(mocks.db.insert).toHaveBeenCalled();
+    expect(mocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
+  });
+
+  it('web-enriches name + description when aiCleanup is set', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([integration]));
+    mocks.createCatalogItem.mockResolvedValue({ id: 'item-2', name: 'x' });
+    mocks.db.insert.mockReturnValueOnce(insertChain());
+    mocks.enrichDistributorListing.mockResolvedValueOnce({
+      name: 'Microsoft 365 Business Premium (annual)',
+      description: 'Office apps + Teams + Intune + Defender, per user / month.',
+      itemType: 'software',
+      priceGuidance: null,
+      provenance: { source: 'ai_enrich', model: 'm', query: 'q', suggestion: {}, enrichedAt: 't', enrichedBy: 'u1' },
+    });
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'M365 BP', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw: {} };
+    await importPax8CatalogItem({ product, item: { name: 'M365 BP', sku: 'CFQ7', unitPrice: 22 }, aiCleanup: true }, actor);
+    const [query, hint] = mocks.enrichDistributorListing.mock.calls[0]!;
+    expect(query).toContain('Microsoft');
+    expect(hint).toBe('software');
+    const arg = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(arg.name).toBe('Microsoft 365 Business Premium (annual)');
+    expect(arg.description).toMatch(/Defender/);
+    expect((arg.attributes as any).pax8.aiEnriched).toBe(true);
+    expect((arg.attributes as any).pax8.rawName).toBe('M365 BP');
+  });
+
+  it('keeps raw values and marks aiEnriched=false when enrichment is unavailable', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([integration]));
+    mocks.createCatalogItem.mockResolvedValue({ id: 'item-3', name: 'x' });
+    mocks.db.insert.mockReturnValueOnce(insertChain());
+    mocks.enrichDistributorListing.mockResolvedValueOnce(null); // budget/rate/timeout
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'M365 BP', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw: {} };
+    await importPax8CatalogItem({ product, item: { name: 'M365 BP', sku: 'CFQ7', unitPrice: 22, description: 'raw desc' }, aiCleanup: true }, actor);
+    const arg = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(arg.name).toBe('M365 BP'); // unchanged
+    expect(arg.description).toBe('raw desc');
+    expect((arg.attributes as any).pax8.aiEnriched).toBe(false);
+    expect((arg.attributes as any).pax8.aiProvenance).toBeUndefined();
   });
 });
 

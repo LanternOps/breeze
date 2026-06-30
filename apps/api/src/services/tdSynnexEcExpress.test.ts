@@ -17,12 +17,15 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+const enrichMocks = vi.hoisted(() => ({ enrichDistributorListing: vi.fn() }));
+
 vi.mock('../db', () => ({ db: mocks.db }));
 vi.mock('./secretCrypto', () => ({
   encryptSecret: mocks.encryptSecret,
   decryptForColumn: mocks.decryptForColumn,
 }));
 vi.mock('./urlSafety', () => ({ safeFetch: (...args: unknown[]) => mocks.safeFetch(...args) }));
+vi.mock('./catalogEnrichmentService', () => ({ enrichDistributorListing: enrichMocks.enrichDistributorListing }));
 
 import {
   getEcExpressStatus,
@@ -410,6 +413,45 @@ it('imports a product into the catalog with a distributor snapshot', async () =>
   expect(arg).toMatchObject({ itemType: 'hardware', name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35 });
   expect((arg.attributes as any).distributor.source).toBe('td_synnex_ec_express');
   expect((arg.attributes as any).distributor.synnexSku).toBe('8938995');
+  expect(enrichMocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
+});
+
+it('web-enriches the listing when aiCleanup is set (clean name + technical description + provenance)', async () => {
+  const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item2' } as any);
+  enrichMocks.enrichDistributorListing.mockResolvedValueOnce({
+    name: 'Dell UltraSharp U2724D 27" QHD Monitor',
+    description: '27-inch QHD (2560x1440) IPS, 120Hz, USB-C hub.',
+    itemType: 'hardware',
+    priceGuidance: 'typically $380–550',
+    provenance: { source: 'ai_enrich', model: 'm', query: 'q', suggestion: {}, enrichedAt: 't', enrichedBy: 'u1' },
+  });
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: null, currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
+  await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor);
+
+  // Query is anchored on the manufacturer part number for an accurate web lookup.
+  const [query, hint] = enrichMocks.enrichDistributorListing.mock.calls.at(-1)!;
+  expect(query).toContain('DELL-U2724D');
+  expect(hint).toBe('hardware');
+
+  // These tests are top-level (outside the clearAllMocks describe) so calls
+  // accumulate — assert on the most recent createCatalogItem call.
+  const arg = createSpy.mock.calls.at(-1)![0];
+  expect(arg.name).toBe('Dell UltraSharp U2724D 27" QHD Monitor');
+  expect(arg.description).toMatch(/QHD/);
+  expect((arg.attributes as any).distributor.aiEnriched).toBe(true);
+  expect((arg.attributes as any).distributor.aiProvenance.source).toBe('ai_enrich');
+  expect((arg.attributes as any).distributor.rawName).toBe('SPL Dell U2724D DISTI');
+});
+
+it('falls back to the raw values when aiCleanup is set but enrichment is unavailable', async () => {
+  const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item3' } as any);
+  enrichMocks.enrichDistributorListing.mockResolvedValueOnce(null); // rate-limited / down
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: 'raw desc', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
+  await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor);
+  const arg = createSpy.mock.calls.at(-1)![0];
+  expect(arg.name).toBe('SPL Dell U2724D DISTI'); // unchanged raw name
+  expect((arg.attributes as any).distributor.aiEnriched).toBe(false);
+  expect((arg.attributes as any).distributor.aiProvenance).toBeUndefined();
 });
 
 it('maps a one-p <parcelShipable> tag to parcelShippable', () => {

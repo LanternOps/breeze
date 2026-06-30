@@ -23,6 +23,7 @@ import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem 
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
+import PolishButton from '../../catalog/PolishButton';
 import DistributorLookup from './DistributorLookup';
 import Pax8ProductLookup from './Pax8ProductLookup';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
@@ -621,6 +622,9 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
               name: product.name.slice(0, 255), sku: product.vendorSku, description: product.shortDescription,
               unitPrice: sellPrice, costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
             },
+            // Match the EC Express add-line and the settings drawers: web-enrich
+            // the raw vendor listing on import (best-effort; falls back to raw).
+            aiCleanup: true,
           }),
           errorFallback: 'Could not import the Pax8 product.',
           onUnauthorized: UNAUTHORIZED,
@@ -1482,15 +1486,27 @@ function BlockCard({
                 )
               ) : (
                 <div className="space-y-2">
-                  <CatalogEnrichButton
-                    idSuffix={`quote-${block.id}`}
-                    onApply={(result) => {
-                      const d = result.draft;
-                      setName(d.name);
-                      setDesc(d.description ?? '');
-                      setTaxable(d.taxable);
-                    }}
-                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CatalogEnrichButton
+                      idSuffix={`quote-${block.id}`}
+                      onApply={(result) => {
+                        const d = result.draft;
+                        setName(d.name);
+                        setDesc(d.description ?? '');
+                        setTaxable(d.taxable);
+                      }}
+                    />
+                    {(name.trim() || desc.trim()) && (
+                      <PolishButton
+                        idSuffix={`quote-manual-${block.id}`}
+                        getText={() => ({ name, description: desc })}
+                        onApply={(r) => {
+                          if (r.name !== null) setName(r.name);
+                          if (r.description !== null) setDesc(r.description);
+                        }}
+                      />
+                    )}
+                  </div>
                   <input
                     type="text" placeholder="Name" aria-label="Line name" value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -2006,6 +2022,19 @@ function EditableLineRow({
           data-testid={`quote-line-desc-${line.id}`}
           className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
         />
+        {(name.trim() || desc.trim()) && !busy && (
+          <PolishButton
+            idSuffix={`quote-line-${line.id}`}
+            compact
+            getText={() => ({ name, description: desc })}
+            onApply={(r) => {
+              const patch: { name?: string | null; description?: string | null } = {};
+              if (r.name !== null) { setName(r.name); nameEdited.current = false; patch.name = r.name || null; }
+              if (r.description !== null) { setDesc(r.description); descEdited.current = false; patch.description = r.description || null; }
+              if (Object.keys(patch).length) void edit(patch);
+            }}
+          />
+        )}
       </td>
     </tr>
     {/* Internal-only cost/markup/profit band — never shown to the customer.

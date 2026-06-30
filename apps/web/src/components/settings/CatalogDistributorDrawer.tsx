@@ -22,8 +22,9 @@ interface Props {
  * Modal that brings the quote editor's TD SYNNEX EC Express lookup into the
  * catalog itself, so distributor items can be added to the catalog directly
  * (the import endpoint already existed; only the catalog entry point was
- * missing). Imports run the same best-effort AI title clean-up as the quote
- * flow (aiCleanup), so the saved item gets a readable name + description.
+ * missing). Imports run the same best-effort AI enrichment as the quote flow
+ * (aiCleanup), so the saved item gets a clean, readable name + a real,
+ * web-sourced technical description rather than the raw distributor title.
  */
 export default function CatalogDistributorDrawer({ open, onClose, onImported }: Props) {
   const [busy, setBusy] = useState(false);
@@ -59,7 +60,14 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
         });
-        showToast({ message: `Imported "${saved.name}" to the catalog`, type: 'success' });
+        // We always request aiCleanup; if the server couldn't run it (budget,
+        // rate limit, timeout) it stores aiEnriched:false and keeps the raw
+        // title — tell the user rather than imply the AI tidied it.
+        const aiEnriched = (saved as { attributes?: { distributor?: { aiEnriched?: boolean } } })
+          .attributes?.distributor?.aiEnriched === true;
+        showToast(aiEnriched
+          ? { message: `Imported "${saved.name}" to the catalog`, type: 'success' }
+          : { message: `Imported "${saved.name}" — AI clean-up was unavailable, kept the original title.`, type: 'warning' });
         onImported(saved);
         onClose();
       } catch (err) {
@@ -83,7 +91,7 @@ export default function CatalogDistributorDrawer({ open, onClose, onImported }: 
           <div>
             <h2 className="text-base font-semibold">Import from TD SYNNEX</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Search EC Express by SKU or mfg part #, set your sell price, and add it to the catalog. The title is cleaned up for you.
+              Search EC Express by SKU or mfg part #, set your sell price, and add it to the catalog. AI fills in a clean name and a technical description for you.
             </p>
           </div>
           <button

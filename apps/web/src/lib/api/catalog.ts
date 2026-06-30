@@ -11,6 +11,7 @@
 // (USD) via lib/timeFormat.formatMoney.
 
 import { fetchWithAuth } from '../../stores/auth';
+import type { PolishTextResponse } from '@breeze/shared';
 
 export type CatalogItemType = 'hardware' | 'software' | 'service';
 export type CatalogBillingType = 'one_time' | 'recurring';
@@ -152,6 +153,22 @@ export function enrichCatalogItemRequest(
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ query, ...(hint ? { hint } : {}) }),
+  });
+}
+
+/** Shape of `POST /catalog/polish` — `{ data: PolishResult }`. Derived from the
+ *  shared schema so the web contract can't silently drift from the API's. */
+export type PolishResult = PolishTextResponse;
+
+/** Presentation-only AI polish of a name and/or description. Send only the
+ *  fields you want polished; omitted/blank fields come back null. */
+export function polishTextRequest(
+  input: { name?: string | null; description?: string | null },
+): Promise<Response> {
+  return fetchWithAuth('/catalog/polish', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(input),
   });
 }
 

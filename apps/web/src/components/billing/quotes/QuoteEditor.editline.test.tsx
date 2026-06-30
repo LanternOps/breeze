@@ -25,6 +25,10 @@ vi.mock('../../../lib/api/catalog', () => ({
     { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: [] }) } as unknown as Response,
   ),
   createCatalogItem: vi.fn(),
+  polishTextRequest: vi.fn().mockResolvedValue(
+    { ok: true, status: 200, statusText: 'OK',
+      json: vi.fn().mockResolvedValue({ data: { name: null, description: 'Premium managed support.', changed: true } }) } as unknown as Response,
+  ),
 }));
 
 vi.mock('../../../lib/api/quotes', () => ({
@@ -129,6 +133,19 @@ describe('QuoteEditor — inline line editing', () => {
     await waitFor(() => expect(screen.getByTestId('quote-line-saved-line-1')).toHaveTextContent('Saved'));
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Saved' }));
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Line updated' }));
+  });
+
+  it('applying an inline AI polish persists the change via updateLine', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('polish-btn-quote-line-line-1'));
+    await waitFor(() => expect(screen.getByTestId('polish-apply-quote-line-line-1')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('polish-apply-quote-line-line-1'));
+
+    await waitFor(() => {
+      expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { description: 'Premium managed support.' });
+    });
   });
 
   it('changing quantity sends a numeric quantity', async () => {

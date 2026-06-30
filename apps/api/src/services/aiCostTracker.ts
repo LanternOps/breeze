@@ -242,6 +242,22 @@ export async function checkAiRateLimit(
 }
 
 /**
+ * Per-user-only rate limit, for AI endpoints reached without an org context (so
+ * no org budget applies) — e.g. partner-level catalog "Polish with AI". Uses the
+ * same per-user key/window as checkAiRateLimit's user check (a default 20/min, no
+ * per-org effective override available since there's no org), so it bounds spend
+ * from a scope-only caller. Returns a message when blocked, null when allowed.
+ */
+export async function checkUserAiRateLimit(userId: string): Promise<string | null> {
+  const redis = getRedis();
+  const userResult = await rateLimiter(redis, `ai:msg:user:${userId}`, 20, 60);
+  if (!userResult.allowed) {
+    return `Rate limit exceeded. Try again at ${userResult.resetAt.toISOString()}`;
+  }
+  return null;
+}
+
+/**
  * Record token usage for a message and update aggregates.
  *
  * `sessionId` is `null` for sessionless flows (e.g. the one-shot catalog AI

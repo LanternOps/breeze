@@ -6,7 +6,8 @@ import { createPax8ClientForIntegration } from './pax8SyncService';
 import { createCatalogItem, CatalogServiceError, type CatalogActor } from './catalogService';
 import type { Pax8ProductRecord, Pax8ProductPriceRecord } from './pax8Client';
 import { getRedis } from './redis';
-import type { CreateCatalogItemInput } from '@breeze/shared';
+import { enrichDistributorListing } from './catalogEnrichmentService';
+import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 
 const CACHE_TTL_SECONDS = 600;
 const PRODUCT_FETCH_LIMIT = 5000;
@@ -101,6 +102,10 @@ export interface Pax8ImportInput {
     costBasis?: number | null;
     taxable?: boolean;
   };
+  /** When true, run a best-effort web-search enrichment of the product into a
+   *  tidy name + technical description before persisting. Falls back to the raw
+   *  values if the AI is rate-limited/unavailable, so import never fails. */
+  aiCleanup?: boolean;
 }
 
 // Pax8 billing terms map onto the catalog's billing_frequency enum. The schema
@@ -118,11 +123,29 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
   if (!integration) throw new Pax8CatalogError('Pax8 is not connected', 400, 'PAX8_NOT_CONFIGURED');
   const { product, item } = input;
 
+  // Optional web-search enrichment: turn the raw vendor listing into a clean name
+  // + a real description. On any failure keep the raw values (enriched == null).
+  let name = item.name;
+  let description = item.description ?? null;
+  let aiProvenance: EnrichmentProvenance | undefined;
+  if (input.aiCleanup) {
+    const query = product.vendorName ? `${product.vendorName} ${product.name}` : product.name;
+    const enriched = await enrichDistributorListing(query, 'software', {
+      userId: actor.userId,
+      orgId: actor.accessibleOrgIds?.[0] ?? null,
+    });
+    if (enriched) {
+      name = enriched.name;
+      if (enriched.description) description = enriched.description;
+      aiProvenance = enriched.provenance;
+    }
+  }
+
   const payload: CreateCatalogItemInput = {
     itemType: 'software',
-    name: item.name,
+    name,
     sku: item.sku ?? product.vendorSku ?? null,
-    description: item.description ?? null,
+    description,
     billingType: 'recurring',
     billingFrequency: mapBillingFrequency(product.billingTerm),
     unitPrice: item.unitPrice,
@@ -141,6 +164,9 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
         currency: product.currency,
         raw: product.raw,
         importedAt: new Date().toISOString(),
+        rawName: product.name,
+        aiEnriched: aiProvenance != null,
+        ...(aiProvenance ? { aiProvenance } : {}),
       },
     },
   };

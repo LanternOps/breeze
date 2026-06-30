@@ -53,12 +53,21 @@ export default function Pax8CatalogDrawer({ open, onClose, onImported }: Props) 
               unitPrice: sellPrice,
               costBasis: term.partnerBuyRate != null ? Number(term.partnerBuyRate) : null,
             },
+            // Web-enrich the raw vendor listing into a clean name + technical
+            // description on import (best-effort; falls back to raw on failure).
+            aiCleanup: true,
           }),
           errorFallback: 'Could not import the Pax8 product.',
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
         });
-        showToast({ message: `Imported "${saved.name}" to the catalog`, type: 'success' });
+        // aiCleanup is always requested; if the server couldn't run it it stores
+        // pax8.aiEnriched:false and keeps the raw vendor name — surface that.
+        const aiEnriched = (saved as { attributes?: { pax8?: { aiEnriched?: boolean } } })
+          .attributes?.pax8?.aiEnriched === true;
+        showToast(aiEnriched
+          ? { message: `Imported "${saved.name}" to the catalog`, type: 'success' }
+          : { message: `Imported "${saved.name}" — AI clean-up was unavailable, kept the original name.`, type: 'warning' });
         onImported(saved);
         onClose();
       } catch (err) {

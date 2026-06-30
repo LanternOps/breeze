@@ -3,7 +3,8 @@ import { db } from '../db';
 import { tdSynnexDigitalBridgeIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { createCatalogItem, type CatalogActor } from './catalogService';
-import type { CreateCatalogItemInput } from '@breeze/shared';
+import { enrichDistributorListing } from './catalogEnrichmentService';
+import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 import { checkSsrfSafe } from './ssrfGuard';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 
@@ -523,19 +524,43 @@ export interface ImportTdSynnexCatalogItemInput {
     markupPercent?: number | null;
     taxable: boolean;
   };
+  /** When true, run a best-effort web-search enrichment of the product into a
+   *  tidy name + technical description before persisting. Falls back to the raw
+   *  values if the AI is rate-limited/unavailable, so import never fails. */
+  aiCleanup?: boolean;
 }
 
 export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItemInput, actor: CatalogActor) {
   await getActiveIntegration(actor);
   const existingSku = input.item.sku?.trim();
+
+  // Optional web-search enrichment: turn the raw distributor listing into a clean
+  // name + a real description. On any failure keep the raw values (enriched == null).
+  let name = input.item.name;
+  let description = input.item.description ?? input.product.description ?? null;
+  let aiProvenance: EnrichmentProvenance | undefined;
+  if (input.aiCleanup) {
+    const mpn = input.product.manufacturerPartNumber;
+    const query = mpn ? `${input.product.name} (MPN: ${mpn})` : input.product.name;
+    const enriched = await enrichDistributorListing(query, 'hardware', {
+      userId: actor.userId,
+      orgId: actor.accessibleOrgIds?.[0] ?? null,
+    });
+    if (enriched) {
+      name = enriched.name;
+      if (enriched.description) description = enriched.description;
+      aiProvenance = enriched.provenance;
+    }
+  }
+
   // Duplicate-SKU is enforced authoritatively by createCatalogItem's partial
   // unique index (it throws CatalogServiceError DUPLICATE_SKU/409, mapped by the
   // route). A pre-check here would only add a TOCTOU race and a second error code.
   const catalogInput: CreateCatalogItemInput = {
     itemType: 'hardware',
-    name: input.item.name,
+    name,
     sku: existingSku || null,
-    description: input.item.description ?? input.product.description ?? null,
+    description,
     billingType: 'one_time',
     unitPrice: input.item.unitPrice,
     costBasis: input.item.costBasis ?? null,
@@ -554,7 +579,10 @@ export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItem
         currency: input.product.currency,
         availability: input.product.availability,
         warehouses: input.product.warehouses,
-        lastRefreshedAt: input.product.lastRefreshedAt
+        lastRefreshedAt: input.product.lastRefreshedAt,
+        rawName: input.product.name,
+        aiEnriched: aiProvenance != null,
+        ...(aiProvenance ? { aiProvenance } : {}),
       }
     }
   };
