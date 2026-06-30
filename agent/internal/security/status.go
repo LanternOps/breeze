@@ -106,10 +106,13 @@ func providerFromName(name string) string {
 	// "Elastic Defender"-style name isn't misread as Microsoft Defender (#2018).
 	case strings.Contains(lower, "elastic"):
 		return "elastic_defend"
-	case strings.Contains(lower, "defender"):
-		return "windows_defender"
+	// Bitdefender display names contain the substring "defender", so the more
+	// specific match must win — match before the broad "defender" case so a
+	// "Bitdefender ..." name isn't misread as Microsoft Defender (#2075).
 	case strings.Contains(lower, "bitdefender"):
 		return "bitdefender"
+	case strings.Contains(lower, "defender"):
+		return "windows_defender"
 	case strings.Contains(lower, "sophos"):
 		return "sophos"
 	case strings.Contains(lower, "sentinel"):

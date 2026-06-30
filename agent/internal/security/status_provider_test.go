@@ -17,6 +17,11 @@ func TestProviderFromName(t *testing.T) {
 		// Locks the elastic-before-defender ordering: an "Elastic Defender"-style
 		// name must not fall through to the broad "defender" → windows_defender case.
 		{"elastic defender", "Elastic Defender", "elastic_defend"},
+		// Locks the bitdefender-before-defender ordering: "Bitdefender" contains
+		// the substring "defender", so these must not fall through to the broad
+		// "defender" → windows_defender case (#2075).
+		{"bitdefender", "Bitdefender", "bitdefender"},
+		{"bitdefender endpoint security", "Bitdefender Endpoint Security", "bitdefender"},
 		{"unknown product", "Acme Shield", "other"},
 		{"empty", "", "other"},
 	}
