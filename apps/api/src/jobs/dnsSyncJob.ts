@@ -661,7 +661,15 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
 
     // Phase 2 — fetch from the DNS provider with NO DB context held
     // (#1105/#1697). The ~20s-timeout HTTP must not pin a pooled connection.
-    const events = await dbModule.runOutsideDbContext(() => provider.syncEvents(since, until));
+    // Release any provider-held session afterwards (best-effort; see
+    // DnsProvider.dispose — relevant for the seat-limited Pi-hole v6 client).
+    const events = await dbModule.runOutsideDbContext(async () => {
+      try {
+        return await provider.syncEvents(since, until);
+      } finally {
+        await provider.dispose?.();
+      }
+    });
 
     // Phase 3 — process + persist all events in ONE context (security events,
     // aggregations, retention prune and success status commit together).
@@ -761,12 +769,17 @@ export async function processPolicySync(data: SyncPolicyJobData): Promise<{
     // sequentially — see runSequentialDomainMutations for why concurrency here
     // causes silent rule clobbering (issue #827).
     await dbModule.runOutsideDbContext(async () => {
-      if (row.policy.type === 'blocklist') {
-        await runSequentialDomainMutations(addDomains, (domain) => provider.addBlocklistDomain(domain));
-        await runSequentialDomainMutations(removeDomains, (domain) => provider.removeBlocklistDomain(domain));
-      } else {
-        await runSequentialDomainMutations(addDomains, (domain) => provider.addAllowlistDomain(domain));
-        await runSequentialDomainMutations(removeDomains, (domain) => provider.removeAllowlistDomain(domain));
+      try {
+        if (row.policy.type === 'blocklist') {
+          await runSequentialDomainMutations(addDomains, (domain) => provider.addBlocklistDomain(domain));
+          await runSequentialDomainMutations(removeDomains, (domain) => provider.removeBlocklistDomain(domain));
+        } else {
+          await runSequentialDomainMutations(addDomains, (domain) => provider.addAllowlistDomain(domain));
+          await runSequentialDomainMutations(removeDomains, (domain) => provider.removeAllowlistDomain(domain));
+        }
+      } finally {
+        // Release any provider-held session (best-effort; Pi-hole v6 only).
+        await provider.dispose?.();
       }
     });
 
