@@ -18,7 +18,7 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/gorilla/websocket v1.5.3
 	github.com/gosnmp/gosnmp v1.43.2
-	github.com/pion/rtcp v1.2.16
+	github.com/pion/rtcp v1.2.17
 	github.com/pion/webrtc/v4 v4.2.16
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/spf13/cobra v1.10.2
