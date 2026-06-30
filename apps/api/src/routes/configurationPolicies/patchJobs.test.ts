@@ -177,6 +177,7 @@ const inactiveMaintenance = {
   suppressPatching: false,
   suppressAutomations: false,
   suppressScripts: false,
+  rebootIfPending: false,
 };
 
 describe('configurationPolicies patchJob routes', () => {
@@ -243,6 +244,7 @@ describe('configurationPolicies patchJob routes', () => {
         suppressAlerts: false,
         suppressAutomations: false,
         suppressScripts: false,
+        rebootIfPending: false,
       });
 
       const res = await app.request(`/${POLICY_ID}/patch-job`, {
@@ -358,7 +360,7 @@ describe('configurationPolicies patchJob routes', () => {
       checkDeviceMaintenanceWindowMock.mockImplementation(async () => {
         maintenanceCallCount++;
         if (maintenanceCallCount === 1) {
-          return { active: true, suppressPatching: true, suppressAlerts: false, suppressAutomations: false, suppressScripts: false };
+          return { active: true, suppressPatching: true, suppressAlerts: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false };
         }
         return inactiveMaintenance;
       });

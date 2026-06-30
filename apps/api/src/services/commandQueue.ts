@@ -272,6 +272,9 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
   // Peripheral control — pushes full active policy set to agent
   CommandTypes.PERIPHERAL_POLICY_SYNC,
+  // Reboots — manual and maintenance-window-automated
+  'reboot',
+  'schedule_reboot',
   // Safe mode reboot
   CommandTypes.REBOOT_SAFE_MODE,
   // (Wake-on-LAN audit is written by the wakeOnLan service against the target device,

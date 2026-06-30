@@ -14,10 +14,12 @@ vi.mock('../services/featureConfigResolver', () => ({
   resolveMaintenanceConfigForDevice: vi.fn(),
   isInMaintenanceWindow: vi.fn(),
 }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
 import {
   decideRebootCommand,
   processRebootCandidate,
+  runMaintenanceRebootSweep,
   MAINTENANCE_REBOOT_GRACE_MINUTES,
   REBOOT_DEDUP_STATUSES,
 } from './maintenanceRebootWorker';
@@ -41,7 +43,7 @@ describe('decideRebootCommand', () => {
     expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'macos' })).toBeNull();
   });
 
-  it('issues schedule_reboot with a 5-minute grace on Windows', () => {
+  it('issues schedule_reboot with a 15-minute grace on Windows', () => {
     expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows' })).toEqual({
       type: 'schedule_reboot',
       payload: {
@@ -62,6 +64,7 @@ describe('decideRebootCommand', () => {
 
 describe('processRebootCandidate', () => {
   const winDevice = { id: 'dev-1', orgId: 'org-1', osType: 'windows' as const };
+  const linuxDevice = { id: 'dev-2', orgId: 'org-1', osType: 'linux' as const };
 
   type Deps = NonNullable<Parameters<typeof processRebootCandidate>[1]>;
 
@@ -82,7 +85,19 @@ describe('processRebootCandidate', () => {
     expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
       'dev-1',
       'schedule_reboot',
-      expect.objectContaining({ delayMinutes: 5, source: 'maintenance_window' }),
+      expect.objectContaining({ delayMinutes: MAINTENANCE_REBOOT_GRACE_MINUTES, source: 'maintenance_window' }),
+      { expectedOrgId: 'org-1' },
+    );
+  });
+
+  it('issues reboot with grace delay on Linux', async () => {
+    const deps = makeDeps();
+    const res = await processRebootCandidate(linuxDevice, deps);
+    expect(res.issued).toBe(true);
+    expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-2',
+      'reboot',
+      expect.objectContaining({ delay: MAINTENANCE_REBOOT_GRACE_MINUTES }),
       { expectedOrgId: 'org-1' },
     );
   });
@@ -105,12 +120,14 @@ describe('processRebootCandidate', () => {
     expect(deps.queueCommandForExecution).not.toHaveBeenCalled();
   });
 
-  it('does not issue when the device is offline (queue returns error)', async () => {
+  it('does not issue when the device is offline (queue returns error), and returns the error as reason', async () => {
+    const errorMsg = 'Device is offline, cannot execute command';
     const deps = makeDeps({
-      queueCommandForExecution: vi.fn().mockResolvedValue({ error: 'Device is offline, cannot execute command' }),
+      queueCommandForExecution: vi.fn().mockResolvedValue({ error: errorMsg }),
     } as never);
     const res = await processRebootCandidate(winDevice, deps);
     expect(res.issued).toBe(false);
+    expect(res.reason).toBe(errorMsg);
   });
 
   it('skips without issuing when the maintenance window is not active (M3)', async () => {
@@ -120,5 +137,21 @@ describe('processRebootCandidate', () => {
     const res = await processRebootCandidate(winDevice, deps);
     expect(res).toEqual({ issued: false, reason: 'no-action' });
     expect(deps.queueCommandForExecution).not.toHaveBeenCalled();
+  });
+});
+
+describe('runMaintenanceRebootSweep', () => {
+  it('isolates per-device errors so a throw on one device does not abort others', async () => {
+    const candidates = [
+      { id: 'dev-1', orgId: 'org-1', osType: 'linux' as const },
+      { id: 'dev-2', orgId: 'org-1', osType: 'linux' as const },
+    ];
+    const result = await runMaintenanceRebootSweep({
+      getRebootCandidates: vi.fn().mockResolvedValue(candidates),
+      processRebootCandidate: vi.fn()
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValueOnce({ issued: true, reason: 'issued' }),
+    });
+    expect(result).toEqual({ issued: 1, checked: 2 });
   });
 });

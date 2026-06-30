@@ -1438,6 +1438,7 @@ export interface MaintenanceWindowStatus {
   suppressPatching: boolean;
   suppressAutomations: boolean;
   suppressScripts: boolean;
+  rebootIfPending: boolean;
 }
 
 /**
@@ -1461,6 +1462,7 @@ export function isInMaintenanceWindow(
     suppressPatching: false,
     suppressAutomations: false,
     suppressScripts: false,
+    rebootIfPending: false,
   };
 
   const currentTime = now ?? new Date();
@@ -1551,6 +1553,7 @@ export function isInMaintenanceWindow(
     suppressPatching: settings.suppressPatching,
     suppressAutomations: settings.suppressAutomations,
     suppressScripts: settings.suppressScripts,
+    rebootIfPending: settings.rebootIfPending,
   };
 }
 
@@ -1561,7 +1564,7 @@ export function isInMaintenanceWindow(
 export async function checkDeviceMaintenanceWindow(deviceId: string): Promise<MaintenanceWindowStatus> {
   const settings = await resolveMaintenanceConfigForDevice(deviceId);
   if (!settings) {
-    return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false };
+    return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false };
   }
   return isInMaintenanceWindow(settings);
 }

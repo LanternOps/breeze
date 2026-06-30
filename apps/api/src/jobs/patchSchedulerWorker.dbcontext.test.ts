@@ -77,7 +77,7 @@ vi.mock('../db/schema', () => ({
 
 const checkDeviceMaintenanceWindow = vi.fn(async () => {
   maintenanceDepths.push(contextDepth);
-  return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false };
+  return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false };
 });
 vi.mock('../services/featureConfigResolver', () => ({ checkDeviceMaintenanceWindow }));
 

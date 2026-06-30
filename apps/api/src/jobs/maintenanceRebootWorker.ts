@@ -6,10 +6,13 @@
  * have a pending reboot, and for any whose effective maintenance policy is in an
  * active window with `rebootIfPending` enabled, it issues a reboot.
  *
- * Windows gets the rich warn-then-reboot manager (schedule_reboot: staged toasts
- * + circuit-breaker). Linux gets an OS-scheduled reboot (`shutdown -r +5`, which
- * broadcasts a wall warning) because the warn-then-reboot manager is Windows-only.
- * macOS is never rebooted — the agent cannot detect a pending reboot there.
+ * Windows gets the rich warn-then-reboot manager (schedule_reboot). At a
+ * 15-minute delay the agent's staged warning fires the 5-minutes-before "save
+ * your work" notification (its thresholds are 60/15/5 min with strict `>`),
+ * plus the circuit-breaker. Linux gets an OS-scheduled reboot
+ * (`shutdown -r +15`, wall warning to logged-in users). macOS is never a
+ * candidate because `DetectPendingReboot()` is a deliberate no-op stub on
+ * macOS — `pending_reboot` is therefore never true there.
  */
 
 import { Worker, Queue, Job } from 'bullmq';
@@ -18,6 +21,7 @@ import { devices, deviceCommands } from '../db/schema';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { captureException } from '../services/sentry';
 import {
   resolveMaintenanceConfigForDevice,
   isInMaintenanceWindow,
@@ -31,9 +35,9 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const REBOOT_QUEUE = 'maintenance-reboot';
-export const MAINTENANCE_REBOOT_GRACE_MINUTES = 5;
+export const MAINTENANCE_REBOOT_GRACE_MINUTES = 15;
 const DEDUP_WINDOW_MINUTES = 60;
-const REBOOT_COMMAND_TYPES = ['reboot', 'schedule_reboot', 'reboot_safe_mode'];
+const REBOOT_COMMAND_TYPES = ['reboot', 'schedule_reboot', 'reboot_safe_mode'] as const;
 // 'completed' is intentionally included: schedule_reboot (Windows) and the
 // delayed reboot (Linux) report SUCCESS immediately after scheduling the
 // deferred OS reboot, so the row transitions to 'completed' within seconds
@@ -41,7 +45,7 @@ const REBOOT_COMMAND_TYPES = ['reboot', 'schedule_reboot', 'reboot_safe_mode'];
 // would miss the already-issued command and re-queue a second reboot.
 // 'failed', 'timeout', and 'cancelled' are excluded — a genuinely failed
 // reboot should be retried on the next tick.
-export const REBOOT_DEDUP_STATUSES = ['pending', 'sent', 'completed'];
+export const REBOOT_DEDUP_STATUSES = ['pending', 'sent', 'completed'] as const;
 
 type SweepJobData = { type: 'sweep' };
 
@@ -51,7 +55,12 @@ export type RebootCandidate = {
   osType: 'windows' | 'macos' | 'linux';
 };
 
-export type RebootDecision = { type: string; payload: Record<string, unknown> } | null;
+type WindowsRebootPayload = { delayMinutes: number; reason: string; source: string };
+type LinuxRebootPayload = { delay: number };
+export type RebootDecision =
+  | { type: 'schedule_reboot'; payload: WindowsRebootPayload }
+  | { type: 'reboot'; payload: LinuxRebootPayload }
+  | null;
 
 // ── Pure decision logic ──────────────────────────────────────────────────────
 
@@ -141,6 +150,9 @@ export async function processRebootCandidate(
   });
   if (result.error) {
     console.warn(`[MaintenanceReboot] device ${device.id}: ${result.error}`);
+    captureException(
+      new Error(`[MaintenanceReboot] reboot dispatch failed for device ${device.id}: ${result.error}`),
+    );
     return { issued: false, reason: result.error };
   }
   console.log(`[MaintenanceReboot] issued ${decision.type} to device ${device.id} (${device.osType})`);
@@ -149,20 +161,21 @@ export async function processRebootCandidate(
 
 // ── Sweep ────────────────────────────────────────────────────────────────────
 
-export async function runMaintenanceRebootSweep(): Promise<{ issued: number; checked: number }> {
-  const candidates = await runWithSystemDbAccess(() => getRebootCandidates());
+export async function runMaintenanceRebootSweep(
+  deps = { getRebootCandidates, processRebootCandidate },
+): Promise<{ issued: number; checked: number }> {
+  const candidates = await runWithSystemDbAccess(() => deps.getRebootCandidates());
   let issued = 0;
   for (const device of candidates) {
     try {
-      const res = await runWithSystemDbAccess(() => processRebootCandidate(device));
+      const res = await runWithSystemDbAccess(() => deps.processRebootCandidate(device));
       if (res.issued) issued++;
     } catch (err) {
       console.error(`[MaintenanceReboot] error processing device ${device.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
-  if (candidates.length > 0) {
-    console.log(`[MaintenanceReboot] sweep: ${issued}/${candidates.length} reboot(s) issued`);
-  }
+  console.log(`[MaintenanceReboot] sweep complete: ${issued} issued / ${candidates.length} candidate(s)`);
   return { issued, checked: candidates.length };
 }
 
