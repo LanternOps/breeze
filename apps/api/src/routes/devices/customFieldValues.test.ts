@@ -55,8 +55,19 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
       return next();
     }),
     requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+    // Sets the permissions context the same way the real requirePermission does.
+    // An `x-test-allowed-sites` header (comma-separated) opts the session into a
+    // site allowlist so the site-scope branch in loadAccessibleDevice runs.
     requirePermission: vi.fn(() => async (c: any, next: any) => {
-      c.set('permissions', { permissions: [], orgId: ORG_A, scope: 'organization' });
+      const allowedSiteIds = c.req.header('x-test-allowed-sites')
+        ? (c.req.header('x-test-allowed-sites') as string).split(',')
+        : undefined;
+      c.set('permissions', {
+        permissions: [],
+        orgId: ORG_A,
+        scope: 'organization',
+        ...(allowedSiteIds ? { allowedSiteIds } : {}),
+      });
       return next();
     }),
     requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
@@ -64,8 +75,12 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
 });
 
 // API-key auth driven by test headers: x-test-org sets the key's org, and
-// x-test-scopes is a comma-separated scope list. requireApiKeyScope is the real
-// allow/deny logic so the under-scoped 403 path is genuinely exercised.
+// x-test-scopes is a comma-separated scope list. NOTE: this is app-layer only —
+// these mocks stand in for apiKeyAuthMiddleware/requireApiKeyScope and do NOT
+// establish the real DB RLS context. The reimplemented requireApiKeyScope below
+// matches the real module's allow/deny shape (it throws 403) so the scope-gate
+// branch in dualAuth is exercised, but RLS-level isolation is covered by the
+// rls-coverage integration suite, not here.
 vi.mock('../../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: vi.fn((c: any, next: any) => {
     const org = c.req.header('x-test-org') ?? ORG_A;
@@ -222,6 +237,101 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-scalar field value (400)', async () => {
+      rigDeviceLookup(makeDevice());
+      const updateSpy = rigUpdate(makeDevice());
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'brz_test',
+          'x-test-org': ORG_A,
+          'x-test-scopes': 'devices:write',
+        },
+        // A structured object is not an allowed value — only string/number/boolean/null.
+        body: JSON.stringify({ blob: { nested: 'no' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+    });
+
+    it('fails closed if the UPDATE writes zero rows (404, not a false 200)', async () => {
+      // The device passes the org-scoped lookup, but the UPDATE returns no row —
+      // the RLS-silent-zero-row-write failure mode. The handler must 404, not
+      // report success.
+      rigDeviceLookup(makeDevice());
+      rigUpdate(null);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': 'brz_test',
+          'x-test-org': ORG_A,
+          'x-test-scopes': 'devices:write',
+        },
+        body: JSON.stringify({ bitlocker_recovery_key: 'ABC-123' }),
+      });
+
+      expect(res.status).toBe(404);
+      // The sensitive write must not be reported as audited success.
+      expect(vi.mocked(writeAuditEvent)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('site-scope gate (JWT session with allowedSiteIds)', () => {
+    const SITE_IN = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const SITE_OUT = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+
+    it('rejects a PATCH when the device site is outside the allowlist (403, no write)', async () => {
+      rigDeviceLookup(makeDevice({ siteId: SITE_OUT }));
+      const updateSpy = rigUpdate(makeDevice({ siteId: SITE_OUT }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer session-token',
+          'x-test-allowed-sites': SITE_IN,
+        },
+        body: JSON.stringify({ note: 'hi' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(updateSpy.set).not.toHaveBeenCalled();
+      expect(vi.mocked(writeAuditEvent)).not.toHaveBeenCalled();
+    });
+
+    it('rejects a GET when the device site is outside the allowlist (403)', async () => {
+      rigDeviceLookup(makeDevice({ siteId: SITE_OUT, customFields: { asset_tag: 'A-42' } }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer session-token', 'x-test-allowed-sites': SITE_IN },
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('allows a PATCH when the device site is inside the allowlist', async () => {
+      rigDeviceLookup(makeDevice({ siteId: SITE_IN }));
+      rigUpdate(makeDevice({ siteId: SITE_IN, customFields: { existing_field: 'keep-me', note: 'hi' } }));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer session-token',
+          'x-test-allowed-sites': `${SITE_IN},${SITE_OUT}`,
+        },
+        body: JSON.stringify({ note: 'hi' }),
+      });
+
+      expect(res.status).toBe(200);
     });
   });
 
