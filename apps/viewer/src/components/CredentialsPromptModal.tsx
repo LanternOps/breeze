@@ -59,7 +59,7 @@ export default function CredentialsPromptModal({ requiresUsername, onSubmit, onC
 
   return (
     <div
-      className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs"
       role="dialog"
       aria-modal="true"
       aria-labelledby="creds-title"
