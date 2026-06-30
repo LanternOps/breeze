@@ -8,6 +8,7 @@ import { db } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
+import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
 
@@ -389,4 +390,15 @@ unifiRoutes.get('/sync-runs', partnerScopes, readPerm, async (c) => {
     .orderBy(desc(unifiSyncRuns.startedAt))
     .limit(20);
   return c.json({ runs });
+});
+
+// GET /unifi/controller-sites — agent-discovered local sites for the mapping UI
+unifiRoutes.get('/controller-sites', partnerScopes, readPerm, async (c) => {
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, requestedPartnerId(c));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const conn = await getConnection(db, partner.partnerId);
+  if (!conn) return c.json({ sites: [] });
+  const sitesOut = await listControllerSitesForIntegration(db, conn.id);
+  return c.json({ sites: sitesOut });
 });

@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
+import { upsertControllerSites } from './unifiControllerSiteService';
 
 // Fields the wire schema marks optional are `T | null | undefined` here, matching
 // what the zod validator infers (the agent omits zero-value fields via omitempty).
@@ -20,6 +21,7 @@ export interface TelemetryClientDto {
 export interface TelemetryPayload {
   collectorId: string; polledAt: string; firmwareOk: boolean;
   devices: TelemetryDeviceDto[]; clients: TelemetryClientDto[]; error?: string;
+  sites?: Array<{ id: string; name?: string | null }>;
   // Server-authoritative: the posting agent's token-resolved deviceId, stamped by
   // the ingest route. The worker rejects the payload unless it matches the
   // collector's collector_device_id, so an agent cannot write another org's
@@ -50,6 +52,10 @@ export async function reconcileTelemetry(
     integrationId: unifiCollectors.integrationId,
   }).from(unifiCollectors).where(eq(unifiCollectors.id, payload.collectorId)).limit(1);
   if (!collector) throw new Error(`reconcileTelemetry: unknown collector ${payload.collectorId}`);
+
+  if (payload.sites && payload.sites.length > 0) {
+    await upsertControllerSites(db, collector.id, collector.orgId, payload.sites);
+  }
 
   // Build unifiSiteId -> {orgId, siteId} from the Phase 1 mappings for this integration.
   const mappings = await db.select({
