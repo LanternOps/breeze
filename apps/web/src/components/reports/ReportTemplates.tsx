@@ -13,9 +13,11 @@ import {
   X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
+import ReportBuilder, { reportTypeSurvivesBuilder, type ReportBuilderFormValues } from './ReportBuilder';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 
 type TemplateTone = {
@@ -358,11 +360,13 @@ const TemplateSpec = ({ items }: { items: { label: string; value: string }[] }) 
 );
 
 export default function ReportTemplates() {
+  const { currentOrgId } = useOrgStore();
   const [templates, setTemplates] = useState<ReportTemplate[]>(defaultTemplates);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [activeTemplate, setActiveTemplate] = useState<ReportTemplate | null>(null);
   const [builderOpen, setBuilderOpen] = useState(false);
+  const [creatingId, setCreatingId] = useState<string | null>(null);
 
   const fetchTemplates = useCallback(async () => {
     setLoading(true);
@@ -392,6 +396,58 @@ export default function ReportTemplates() {
     setActiveTemplate(template ?? null);
     setBuilderOpen(true);
   }, []);
+
+  // Reports whose type the freeform builder would downgrade are saved directly
+  // with their true type instead of being routed through it.
+  const handleCreateDirect = useCallback(
+    async (template: ReportTemplate) => {
+      setCreatingId(template.id);
+      try {
+        await runAction({
+          request: () =>
+            fetchWithAuth('/reports', {
+              method: 'POST',
+              body: JSON.stringify({
+                name: template.defaults.name ?? template.name,
+                type: template.defaults.type,
+                schedule: template.defaults.schedule ?? 'one_time',
+                format: template.defaults.format ?? 'pdf',
+                ...(currentOrgId ? { orgId: currentOrgId } : {}),
+                config: {
+                  dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' }
+                }
+              })
+            }),
+          errorFallback: 'Failed to create report',
+          successMessage: `Created "${template.defaults.name ?? template.name}". Generate it from the Reports list.`,
+          onUnauthorized: () => {
+            void navigateTo('/login', { replace: true });
+          }
+        });
+        void navigateTo('/reports');
+      } catch {
+        // runAction already surfaced the failure (toast, or redirect on 401).
+      } finally {
+        setCreatingId(null);
+      }
+    },
+    [currentOrgId]
+  );
+
+  const handleUseTemplate = useCallback(
+    (template: ReportTemplate) => {
+      // Curated templates whose report type the builder can't represent (it
+      // would silently downgrade them) are created directly; everything the
+      // builder round-trips losslessly goes through the builder for tailoring.
+      const type = template.defaults.type;
+      if (type && !reportTypeSurvivesBuilder(type)) {
+        void handleCreateDirect(template);
+        return;
+      }
+      handleOpenBuilder(template);
+    },
+    [handleCreateDirect, handleOpenBuilder]
+  );
 
   const handleCloseBuilder = useCallback(() => {
     setBuilderOpen(false);
@@ -496,9 +552,11 @@ export default function ReportTemplates() {
               <div className="mt-auto pt-4">
                 <button
                   type="button"
-                  onClick={() => handleOpenBuilder(template)}
-                  className="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition hover:opacity-90"
+                  onClick={() => handleUseTemplate(template)}
+                  disabled={creatingId === template.id}
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
+                  {creatingId === template.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   Use template
                 </button>
               </div>

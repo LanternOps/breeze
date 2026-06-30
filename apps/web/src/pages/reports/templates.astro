@@ -1,0 +1,15 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import ReportTemplates from '../../components/reports/ReportTemplates';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+---
+
+<DashboardLayout title="Report Templates">
+  <Breadcrumbs client:load items={[
+    { label: 'Reports', href: '/reports' },
+    { label: 'Templates' }
+  ]} />
+  <div class="mt-6">
+    <ReportTemplates client:only="react" />
+  </div>
+</DashboardLayout>
