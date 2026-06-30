@@ -37,8 +37,11 @@ import { fetchWithAuth } from '../../stores/auth';
 // a new canonical feature type makes FEATURE_META below fail to compile until it
 // is accounted for, and DeviceEffectiveConfigTab.featureParity.test.ts asserts
 // the exclusions stay honest. (#2004)
-type FeatureType = Exclude<ConfigFeatureType, 'remote_access' | 'pam'>;
+//
+// FeatureType is sourced FROM this tuple (not a parallel literal) so the runtime
+// exclusion list and the compile-time Exclude can't drift from each other.
 export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = ['remote_access', 'pam'] as const;
+type FeatureType = Exclude<ConfigFeatureType, typeof EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES[number]>;
 
 type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device' | 'default';
 

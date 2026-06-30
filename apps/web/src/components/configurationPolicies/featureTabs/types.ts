@@ -7,8 +7,11 @@ import type { ConfigFeatureType } from '@breeze/shared';
 // Exclude means a new canonical feature type makes FEATURE_META below fail to
 // compile until a tab entry is added, and featureTypeParity.test.ts asserts the
 // exclusion stays honest. (#2004)
-export type FeatureType = Exclude<ConfigFeatureType, 'onedrive_helper'>;
+//
+// FeatureType is sourced FROM this tuple (not a parallel literal) so the runtime
+// exclusion list and the compile-time Exclude can't drift from each other.
 export const EDITOR_EXCLUDED_FEATURE_TYPES = ['onedrive_helper'] as const;
+export type FeatureType = Exclude<ConfigFeatureType, typeof EDITOR_EXCLUDED_FEATURE_TYPES[number]>;
 
 export type FeatureLink = {
   id: string;
