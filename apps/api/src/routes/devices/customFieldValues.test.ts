@@ -109,13 +109,16 @@ vi.mock('../../middleware/apiKeyAuth', () => ({
   }),
 }));
 
-vi.mock('../../services/auditEvents', () => ({
-  writeAuditEvent: vi.fn(),
+// The write path audits SYNCHRONOUSLY via createAuditLog (awaited). Mock it so
+// the assertions can verify attribution without a real DB. ANONYMOUS_ACTOR_ID
+// and the client-IP helper stay real (cheap, no DB).
+vi.mock('../../services/auditService', () => ({
+  createAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { customFieldValuesRoutes } from './customFieldValues';
 import { db } from '../../db';
-import { writeAuditEvent } from '../../services/auditEvents';
+import { createAuditLog } from '../../services/auditService';
 
 function makeDevice(overrides: Record<string, unknown> = {}) {
   return {
@@ -173,10 +176,16 @@ describe('device custom-field value routes (#2066)', () => {
       const body = await res.json();
       // Merge semantics: existing values are preserved alongside the new one.
       expect(body.customFields).toEqual({ existing_field: 'keep-me', bitlocker_recovery_key: 'ABC-123' });
-      // Audited as an api_key actor (not anonymous, not a user).
-      expect(vi.mocked(writeAuditEvent)).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ actorType: 'api_key', actorId: API_KEY_ID, action: 'device.custom_field.update', orgId: ORG_A }),
+      // Audited synchronously as an api_key actor (not anonymous, not a user).
+      expect(vi.mocked(createAuditLog)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: 'api_key',
+          actorId: API_KEY_ID,
+          action: 'device.custom_field.update',
+          orgId: ORG_A,
+          initiatedBy: 'integration',
+          result: 'success',
+        }),
       );
     });
 
@@ -218,7 +227,7 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(404);
       expect(updateSpy.set).not.toHaveBeenCalled();
-      expect(vi.mocked(writeAuditEvent)).not.toHaveBeenCalled();
+      expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
     });
 
     it('rejects an empty field map (400)', async () => {
@@ -279,7 +288,7 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(404);
       // The sensitive write must not be reported as audited success.
-      expect(vi.mocked(writeAuditEvent)).not.toHaveBeenCalled();
+      expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
     });
   });
 
@@ -303,7 +312,7 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(403);
       expect(updateSpy.set).not.toHaveBeenCalled();
-      expect(vi.mocked(writeAuditEvent)).not.toHaveBeenCalled();
+      expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
     });
 
     it('rejects a GET when the device site is outside the allowlist (403)', async () => {
@@ -362,9 +371,8 @@ describe('device custom-field value routes (#2066)', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(vi.mocked(writeAuditEvent)).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ actorType: 'user', actorId: USER_ID }),
+      expect(vi.mocked(createAuditLog)).toHaveBeenCalledWith(
+        expect.objectContaining({ actorType: 'user', actorId: USER_ID, initiatedBy: 'manual', result: 'success' }),
       );
     });
 

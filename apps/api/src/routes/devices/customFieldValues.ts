@@ -15,7 +15,9 @@ import {
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../../middleware/apiKeyAuth';
 import { getDeviceWithOrgCheck } from './helpers';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { writeAuditEvent } from '../../services/auditEvents';
+import { createAuditLog } from '../../services/auditService';
+import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
 /**
  * Device custom-field VALUE read/write API.
@@ -27,6 +29,15 @@ import { writeAuditEvent } from '../../services/auditEvents';
  * gate with `401 "Missing or invalid authorization header"` (issue #2066). There
  * was no API-key-authenticated path to stash a value (e.g. a script writing a
  * BitLocker recovery key into a custom field).
+ *
+ * NOT A SECRETS STORE: `custom_fields` is general automation/inventory data
+ * stored in plaintext JSONB with no field-level encryption. It is the right
+ * place for asset tags, notes, external IDs, etc. — it is NOT a vault. Real
+ * secrets (BitLocker/FileVault recovery keys and similar) belong in the
+ * dedicated, encrypted recovery-key feature tracked in #2021; exposing a value
+ * write here does not bless `custom_fields` as secret storage. Writes are
+ * audited synchronously below so a secret-class value (if a user stashes one
+ * anyway) at least leaves a durable trail.
  *
  * This router adds a dedicated value endpoint that accepts EITHER auth flavour,
  * mirroring the dual-auth pattern in `routes/devPush.ts`:
@@ -113,6 +124,12 @@ function resolveAccess(c: Context): ResolvedAccess {
   }
 
   const apiKey = c.get('apiKey');
+  // Fail closed: reaching here without an apiKey context means neither auth
+  // branch populated a principal (dualAuth always sets one or throws), so never
+  // synthesize an authorized scope from a missing key.
+  if (!apiKey) {
+    throw new HTTPException(401, { message: 'Authentication required' });
+  }
   // apiKeyAuthMiddleware only admits keys whose owning org is active (it 401s
   // otherwise), so a null org here means the auth context is malformed. Fail
   // closed rather than synthesizing an org-less scope.
@@ -216,16 +233,26 @@ customFieldValuesRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    writeAuditEvent(c, {
+    // Audit SYNCHRONOUSLY (await, not fire-and-forget): a custom-field write can
+    // carry a secret-class value, so we want the trail to be durable before we
+    // report success. `createAuditLog` rejects on DB failure — we let that
+    // propagate to a 500 so the caller knows the audit did not land (the merge
+    // is idempotent, so a retry is safe). Only field KEYS are recorded, never
+    // values, so no secret enters the audit payload.
+    await createAuditLog({
       orgId: device.orgId,
       actorType: access.audit.actorType,
-      actorId: access.audit.actorId,
-      actorEmail: access.audit.actorEmail,
+      actorId: access.audit.actorId ?? ANONYMOUS_ACTOR_ID,
+      actorEmail: access.audit.actorEmail ?? undefined,
       action: 'device.custom_field.update',
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: device.hostname ?? device.displayName ?? undefined,
       details: { changedFields: Object.keys(updates) },
+      ipAddress: getTrustedClientIpOrUndefined(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'success',
+      initiatedBy: access.audit.actorType === 'api_key' ? 'integration' : 'manual',
     });
 
     return c.json({ customFields: readExistingCustomFields(updated.customFields) });
