@@ -4,6 +4,7 @@ import { UmbrellaProvider } from './umbrella';
 import { CloudflareGatewayProvider } from './cloudflare';
 import { DnsFilterProvider } from './dnsfilter';
 import { PiHoleProvider } from './pihole';
+import { PiHoleV6Provider } from './piholeV6';
 import { AdGuardHomeProvider } from './adguardHome';
 
 export interface DnsEvent {
@@ -66,7 +67,11 @@ export function createDnsProvider(input: DnsProviderFactoryInput): DnsProvider {
     case 'dnsfilter':
       return new DnsFilterProvider(input.apiKey, input.config);
     case 'pihole':
-      return new PiHoleProvider(input.apiKey, input.config, allowPrivateNetwork);
+      // v6 reworked the admin API into a session-based REST surface; v5 (default
+      // when unset) keeps the legacy /admin/api.php?...&auth= token endpoint.
+      return input.config.piholeVersion === 'v6'
+        ? new PiHoleV6Provider(input.apiKey, input.config, allowPrivateNetwork)
+        : new PiHoleProvider(input.apiKey, input.config, allowPrivateNetwork);
     case 'adguard_home':
       return new AdGuardHomeProvider(input.apiKey, input.apiSecret, input.config, allowPrivateNetwork);
     case 'opendns':
@@ -82,6 +87,7 @@ export {
   CloudflareGatewayProvider,
   DnsFilterProvider,
   PiHoleProvider,
+  PiHoleV6Provider,
   AdGuardHomeProvider
 };
 

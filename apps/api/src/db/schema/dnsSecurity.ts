@@ -65,6 +65,10 @@ export interface DnsIntegrationConfig {
   categories?: string[];
   blocklistId?: string;
   allowlistId?: string;
+  // Pi-hole admin API version. v5 uses the legacy `/admin/api.php?...&auth=`
+  // token endpoint; v6 reworked it into a session-based REST API at `/api/...`.
+  // Unset defaults to 'v5' so existing Pi-hole integrations keep working.
+  piholeVersion?: 'v5' | 'v6';
 }
 
 export interface DnsPolicyDomain {

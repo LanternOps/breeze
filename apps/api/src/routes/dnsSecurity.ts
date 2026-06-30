@@ -165,7 +165,10 @@ const integrationConfigSchema = z.object({
   retentionDays: z.number().int().min(1).max(365).optional(),
   categories: z.array(z.string().min(1).max(100)).max(100).optional(),
   blocklistId: z.string().min(1).optional(),
-  allowlistId: z.string().min(1).optional()
+  allowlistId: z.string().min(1).optional(),
+  // Pi-hole admin API version (v6 uses the session-based REST API). Defaults to
+  // v5 when unset. Ignored by non-Pi-hole providers.
+  piholeVersion: z.enum(['v5', 'v6']).optional()
 });
 
 const createIntegrationSchema = z.object({

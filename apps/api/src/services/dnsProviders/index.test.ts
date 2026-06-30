@@ -102,6 +102,26 @@ describe('createDnsProvider — on-prem allowPrivateNetwork gating', () => {
       expect(lastInit().allowPrivateNetwork).toBe(true);
     });
 
+    it('pihole v6 routes to the session API and threads private networking', async () => {
+      // v6 auths first (POST /api/auth → session.sid) then POSTs the domain;
+      // both requests must carry the on-prem allowPrivateNetwork opt-in.
+      requestJsonMock.mockImplementation(async () => ({
+        session: { valid: true, sid: 'SID', validity: 300 }
+      }) as never);
+      const provider = createDnsProvider({
+        provider: 'pihole',
+        apiKey: 'app-password',
+        apiSecret: null,
+        config: { apiEndpoint: 'https://pi.hole.local', piholeVersion: 'v6' } as never
+      });
+      await provider.addBlocklistDomain('bad.example');
+      const authCall = requestJsonMock.mock.calls[0]!;
+      expect(String(authCall[0])).toBe('https://pi.hole.local/api/auth');
+      expect((authCall[1] as { allowPrivateNetwork?: boolean }).allowPrivateNetwork).toBe(true);
+      expect(String(requestJsonMock.mock.calls.at(-1)![0])).toBe('https://pi.hole.local/api/domains/deny/exact');
+      expect(lastInit().allowPrivateNetwork).toBe(true);
+    });
+
     it('adguard_home opts INTO private networking', async () => {
       const provider = createDnsProvider({
         provider: 'adguard_home',
