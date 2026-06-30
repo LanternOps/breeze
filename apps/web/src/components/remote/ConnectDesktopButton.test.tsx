@@ -122,3 +122,53 @@ describe('ConnectDesktopButton — launcher skip-reason toast', () => {
     expect(toastMock).not.toHaveBeenCalled();
   });
 });
+
+describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
+  beforeEach(() => {
+    _resetToastQueueForTests();
+    fetchMock.mockReset();
+    toastMock.mockReset();
+  });
+
+  // The full and compact render variants previously dropped the `disabled` prop
+  // on the floor (only iconOnly honored it), so an offline device's button
+  // stayed clickable and fired a doomed POST /remote/sessions. These assert all
+  // three variants now honor `disabled` and surface `disabledTitle`.
+  for (const variant of ['full', 'compact', 'iconOnly'] as const) {
+    it(`honors disabled + disabledTitle in the ${variant} variant`, () => {
+      render(
+        <ConnectDesktopButton
+          deviceId="dev-off"
+          disabled
+          disabledTitle="Device is offline"
+          {...(variant === 'compact' ? { compact: true } : {})}
+          {...(variant === 'iconOnly' ? { iconOnly: true } : {})}
+        />,
+      );
+
+      const btn = screen.getByRole('button');
+      expect(btn).toBeDisabled();
+      expect(btn).toHaveAttribute('title', 'Device is offline');
+    });
+
+    it(`does NOT fire a session request when clicked while disabled (${variant} variant)`, () => {
+      render(
+        <ConnectDesktopButton
+          deviceId="dev-off"
+          disabled
+          disabledTitle="Device is offline"
+          {...(variant === 'compact' ? { compact: true } : {})}
+          {...(variant === 'iconOnly' ? { iconOnly: true } : {})}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button'));
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('stays enabled when not disabled', () => {
+    render(<ConnectDesktopButton deviceId="dev-on" disabledTitle="Device is offline" />);
+    expect(screen.getByRole('button', { name: /connect desktop/i })).not.toBeDisabled();
+  });
+});

@@ -162,7 +162,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <Play className="h-4 w-4" />
                 Run Script
               </button>
-              <ConnectDesktopButton deviceId={device.id} compact disabled={device.status === 'offline'} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+              <ConnectDesktopButton deviceId={device.id} compact disabled={device.status === 'offline'} disabledTitle="Device is offline" isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
               <button
                 type="button"
                 onClick={() => handleAction('remote-tools')}
@@ -303,7 +303,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <Play className="h-4 w-4" />
           Run Script
         </button>
-        <ConnectDesktopButton deviceId={device.id} disabled={device.status === 'offline'} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+        <ConnectDesktopButton deviceId={device.id} disabled={device.status === 'offline'} disabledTitle="Device is offline" isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
         <button
           type="button"
           onClick={() => handleAction('remote-tools')}
@@ -318,7 +318,8 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <button
             type="button"
             onClick={() => { setPowerMenuOpen(!powerMenuOpen); setMenuOpen(false); }}
-            disabled={loading}
+            disabled={device.status === 'offline' || loading}
+            title={device.status === 'offline' ? 'Device is offline' : undefined}
             aria-haspopup="true"
             aria-expanded={powerMenuOpen}
             className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
