@@ -20,6 +20,7 @@ interface IncidentFeedRow {
   deviceId: string | null;
   detectedAt: string;
   trackedIncidentId: string | null;
+  linkOut: string | null;
 }
 
 interface Pagination {
@@ -222,7 +223,19 @@ export default function IncidentsPage() {
                         ) : (
                           <div className="flex flex-col gap-0.5">
                             <span className="capitalize text-muted-foreground">{row.edrStatus ?? '-'}</span>
-                            <span className="text-xs text-muted-foreground">Promote from the EDR view</span>
+                            {row.linkOut ? (
+                              <a
+                                href={row.linkOut}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-primary hover:underline"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                View in {sourceLabels[row.source]}
+                              </a>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Promote from the EDR view</span>
+                            )}
                           </div>
                         )}
                       </td>

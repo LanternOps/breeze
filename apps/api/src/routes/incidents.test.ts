@@ -507,6 +507,7 @@ describe('incidentRoutes', () => {
           deviceId: null,
           detectedAt: new Date().toISOString(),
           trackedIncidentId: 'i-1',
+          linkOut: null,
         },
       ],
       total: 1,

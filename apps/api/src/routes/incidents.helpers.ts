@@ -145,7 +145,20 @@ export type IncidentFeedRow = {
   deviceId: string | null;
   detectedAt: string;
   trackedIncidentId: string | null;
+  linkOut: string | null;
 };
+
+export function resolveFindingLinkOut(
+  source: 'huntress' | 's1',
+  details: unknown
+): string | null {
+  if (details && typeof details === 'object') {
+    const d = details as Record<string, unknown>;
+    const url = d.portalUrl ?? d.url ?? d.link;
+    if (typeof url === 'string' && /^https:\/\//.test(url)) return url;
+  }
+  return null;
+}
 
 export class FeedScopeError extends Error {
   constructor(public status: number, message: string) {
@@ -204,6 +217,7 @@ export async function buildIncidentFeed(
       deviceId: sql<string | null>`(${incidents.affectedDevices}->>0)`,
       detectedAt: sql<Date>`${incidents.detectedAt}`,
       trackedIncidentId: sql<string | null>`${incidents.id}::text`,
+      details: sql<unknown>`null::jsonb`,
     })
     .from(incidents)
     .where(orgIncidents.condition);
@@ -221,6 +235,7 @@ export async function buildIncidentFeed(
       deviceId: sql<string | null>`${huntressIncidents.deviceId}::text`,
       detectedAt: sql<Date>`coalesce(${huntressIncidents.reportedAt}, ${huntressIncidents.createdAt})`,
       trackedIncidentId: sql<string | null>`null::text`,
+      details: sql<unknown>`${huntressIncidents.details}`,
     })
     .from(huntressIncidents)
     .where(
@@ -244,6 +259,7 @@ export async function buildIncidentFeed(
       deviceId: sql<string | null>`${s1Threats.deviceId}::text`,
       detectedAt: sql<Date>`coalesce(${s1Threats.detectedAt}, ${s1Threats.createdAt})`,
       trackedIncidentId: sql<string | null>`null::text`,
+      details: sql<unknown>`${s1Threats.details}`,
     })
     .from(s1Threats)
     .where(
@@ -291,18 +307,22 @@ export async function buildIncidentFeed(
   ]);
 
   return {
-    rows: rows.map((r) => ({
-      kind: r.kind as 'tracked' | 'finding',
-      source: r.source as 'breeze' | 'huntress' | 's1',
-      sourceId: r.sourceId,
-      title: r.title,
-      severity: severityRankToLabel(Number(r.rank)),
-      edrStatus: r.edrStatus,
-      status: r.status,
-      deviceId: r.deviceId,
-      detectedAt: new Date(r.detectedAt as unknown as string).toISOString(),
-      trackedIncidentId: r.trackedIncidentId,
-    })),
+    rows: rows.map((r) => {
+      const source = r.source as 'breeze' | 'huntress' | 's1';
+      return {
+        kind: r.kind as 'tracked' | 'finding',
+        source,
+        sourceId: r.sourceId,
+        title: r.title,
+        severity: severityRankToLabel(Number(r.rank)),
+        edrStatus: r.edrStatus,
+        status: r.status,
+        deviceId: r.deviceId,
+        detectedAt: new Date(r.detectedAt as unknown as string).toISOString(),
+        trackedIncidentId: r.trackedIncidentId,
+        linkOut: source === 'breeze' ? null : resolveFindingLinkOut(source, r.details),
+      };
+    }),
     total: Number(countRows[0]?.count ?? 0),
   };
 }

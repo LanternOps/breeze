@@ -11,8 +11,9 @@ function feed(rows: unknown[]) {
   return { ok: true, status: 200, json: async () => ({ data: rows, pagination: { page: 1, limit: 25, total: rows.length } }) } as Response;
 }
 
-const trackedRow = { kind: 'tracked', source: 'breeze', sourceId: 'i1', title: 'War room', severity: 'p1', edrStatus: null, status: 'analyzing', deviceId: null, detectedAt: '2026-06-20T00:00:00Z', trackedIncidentId: 'inc-123' };
-const findingRow = { kind: 'finding', source: 'huntress', sourceId: 'hunt-1', title: 'Huntress: Bad login', severity: 'p2', edrStatus: 'open', status: null, deviceId: 'd1', detectedAt: '2026-06-19T00:00:00Z', trackedIncidentId: null };
+const trackedRow = { kind: 'tracked', source: 'breeze', sourceId: 'i1', title: 'War room', severity: 'p1', edrStatus: null, status: 'analyzing', deviceId: null, detectedAt: '2026-06-20T00:00:00Z', trackedIncidentId: 'inc-123', linkOut: null };
+const findingRow = { kind: 'finding', source: 'huntress', sourceId: 'hunt-1', title: 'Huntress: Bad login', severity: 'p2', edrStatus: 'open', status: null, deviceId: 'd1', detectedAt: '2026-06-19T00:00:00Z', trackedIncidentId: null, linkOut: null };
+const findingRowWithLink = { ...findingRow, linkOut: 'https://huntress.io/portal/incident/hunt-1' };
 
 beforeEach(() => {
   fetchWithAuth.mockReset();
@@ -75,5 +76,25 @@ describe('IncidentsPage feed', () => {
       const lastUrl = fetchWithAuth.mock.calls[fetchWithAuth.mock.calls.length - 1][0] as string;
       expect(lastUrl).toContain('kind=tracked');
     });
+  });
+
+  it('renders "View in Huntress" anchor when linkOut is set on a finding row', async () => {
+    fetchWithAuth.mockResolvedValueOnce(feed([findingRowWithLink]));
+    render(<IncidentsPage />);
+    await waitFor(() => expect(screen.getByText('Bad login', { exact: false })).toBeInTheDocument());
+
+    const link = screen.getByRole('link', { name: /View in Huntress/ });
+    expect(link).toHaveAttribute('href', 'https://huntress.io/portal/incident/hunt-1');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('renders the static hint when linkOut is null on a finding row', async () => {
+    fetchWithAuth.mockResolvedValueOnce(feed([findingRow]));
+    render(<IncidentsPage />);
+    await waitFor(() => expect(screen.getByText('Bad login', { exact: false })).toBeInTheDocument());
+
+    expect(screen.getByText('Promote from the EDR view')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /View in/ })).toBeNull();
   });
 });
