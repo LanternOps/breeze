@@ -75,7 +75,7 @@ describe('upsertSelfHostedController', () => {
       controllerUrl: 'https://192.168.1.1', apiKey: 'secret',
     });
     expect(out.id).toBe('col-1');
-    const inserted = values.mock.calls[0][0];
+    const inserted = values.mock.calls[0]![0];
     expect(inserted.unifiHostId ?? null).toBeNull();
     expect(inserted.localApiKeyEncrypted).toBe('ENC');
   });

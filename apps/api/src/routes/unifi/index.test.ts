@@ -151,6 +151,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: 'My UniFi',
       isActive: true,
@@ -228,6 +229,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.upsertConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,
@@ -261,6 +263,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,
@@ -345,6 +348,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,
@@ -378,6 +382,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,
@@ -417,6 +422,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,
@@ -457,6 +463,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,
@@ -492,6 +499,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,
@@ -621,6 +629,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
+      connectionType: 'cloud',
       baseUrl: 'https://api.ui.com',
       accountLabel: null,
       isActive: true,

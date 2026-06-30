@@ -64,7 +64,7 @@ describe('upsertConnection (cloud path)', () => {
     };
     const { db, onConflictDoUpdate } = spyDb([row]);
     await svc.upsertConnection(db, 'partner-1', { baseUrl: 'https://api.ui.com', apiKey: 'k' });
-    const arg = onConflictDoUpdate.mock.calls[0][0] as { set: Record<string, unknown> };
+    const arg = onConflictDoUpdate.mock.calls[0]![0] as { set: Record<string, unknown> };
     expect(arg.set.connectionType).toBe('cloud');
   });
 });

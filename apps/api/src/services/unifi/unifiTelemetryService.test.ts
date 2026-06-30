@@ -42,6 +42,7 @@ function scriptedDb(opts: {
     insertValues?: any;
     setValues?: any;
     conflict?: any;
+    returning?: boolean;
   }) {
     const chain: any = {
       from(table: any) {
