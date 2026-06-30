@@ -112,7 +112,7 @@ export const unifiCollectors = pgTable('unifi_collectors', {
   integrationId: uuid('integration_id').notNull().references(() => unifiIntegrations.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
-  unifiHostId: text('unifi_host_id').notNull(),
+  unifiHostId: text('unifi_host_id'),
   collectorDeviceId: uuid('collector_device_id').notNull().references(() => devices.id),
   controllerUrl: text('controller_url').notNull(),
   localApiKeyEncrypted: text('local_api_key_encrypted').notNull(),
@@ -127,7 +127,12 @@ export const unifiCollectors = pgTable('unifi_collectors', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
-  integrationHostIdx: uniqueIndex('unifi_collectors_integration_host_idx').on(table.integrationId, table.unifiHostId),
+  integrationHostIdx: uniqueIndex('unifi_collectors_integration_host_idx')
+    .on(table.integrationId, table.unifiHostId)
+    .where(sql`${table.unifiHostId} IS NOT NULL`),
+  integrationUrlIdx: uniqueIndex('unifi_collectors_integration_url_idx')
+    .on(table.integrationId, table.controllerUrl)
+    .where(sql`${table.unifiHostId} IS NULL`),
   deviceIdx: index('unifi_collectors_device_idx').on(table.collectorDeviceId).where(sql`${table.isEnabled}`),
 }));
 
