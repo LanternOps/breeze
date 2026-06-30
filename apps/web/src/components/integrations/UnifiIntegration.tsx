@@ -17,9 +17,11 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 type ConnectionStatus = 'connected' | 'error' | 'reauth_required';
 
 // Mirrors the GET /unifi contract: `{ connected: false }` when not connected, otherwise
-// `{ connected: true, status, accountLabel, lastSyncAt, lastSyncStatus, lastSyncError }`.
+// `{ connected: true, connectionType, status, accountLabel, lastSyncAt, lastSyncStatus, lastSyncError }`.
+type UnifiConnectionType = 'cloud' | 'self_hosted';
 interface UnifiStatus {
   connected: boolean;
+  connectionType?: UnifiConnectionType;
   status?: ConnectionStatus;
   accountLabel?: string | null;
   lastSyncAt?: string | null;
@@ -99,6 +101,10 @@ export default function UnifiIntegration() {
 
   const [status, setStatus] = useState<UnifiStatus | null>(null);
   const [apiKey, setApiKey] = useState('');
+  // Not-connected screen: choose between a UniFi cloud account vs a self-hosted
+  // controller polled by an on-network Breeze agent. Cloud is the default.
+  const [connectMode, setConnectMode] = useState<UnifiConnectionType>('cloud');
+  const [accountLabel, setAccountLabel] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -275,9 +281,11 @@ export default function UnifiIntegration() {
   }, [onUnauthorized, loadHosts]);
 
   // Load mapping/history detail once the connection status resolves to connected.
+  // Only cloud connections have api.ui.com hosts/sites to map — the self-hosted
+  // controller view (Task D2) is driven separately, so skip the cloud fetches.
   useEffect(() => {
-    if (status?.connected === true) void loadDetails();
-  }, [status?.connected, loadDetails]);
+    if (status?.connected === true && status?.connectionType !== 'self_hosted') void loadDetails();
+  }, [status?.connected, status?.connectionType, loadDetails]);
 
   const handleSaveMappings = useCallback(async () => {
     if (!hosts) return;
@@ -404,6 +412,30 @@ export default function UnifiIntegration() {
     }
   }, [apiKey, load, onUnauthorized]);
 
+  const handleConnectSelfHosted = useCallback(async () => {
+    const label = accountLabel.trim();
+    setConnecting(true);
+    setLoadError(null);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/unifi/connect-self-hosted', {
+          method: 'POST',
+          body: JSON.stringify({ accountLabel: label || undefined }),
+        }),
+        errorFallback: 'Failed to connect the self-hosted UniFi controller.',
+        successMessage: 'Self-hosted UniFi controller connected',
+        onUnauthorized,
+      });
+      setAccountLabel('');
+      await load();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) handleActionError(err, 'Failed to connect the self-hosted UniFi controller.');
+    } finally {
+      setConnecting(false);
+    }
+  }, [accountLabel, load, onUnauthorized]);
+
   const handleSync = useCallback(async () => {
     setSyncing(true);
     try {
@@ -463,6 +495,10 @@ export default function UnifiIntegration() {
   // Connected vs. not is the API's `connected` boolean. The `status` string then
   // distinguishes healthy ('connected') from degraded ('error' / 'reauth_required').
   const isConnected = status?.connected === true;
+  // Cloud connections expose api.ui.com-backed affordances (Sync now, host/site mapping,
+  // collectors, sync history). Self-hosted controllers (Task D2) don't, so those are hidden.
+  const isSelfHosted = isConnected && status?.connectionType === 'self_hosted';
+  const isCloud = isConnected && !isSelfHosted;
   const needsReauth = isConnected && status?.status === 'reauth_required';
   const hasError = isConnected && status?.status === 'error';
 
@@ -515,34 +551,98 @@ export default function UnifiIntegration() {
 
       {!isConnected && (
         <div className="rounded-lg border bg-card p-5" data-testid="unifi-disconnected">
-          <p className="text-sm text-muted-foreground">
-            Connect your UniFi Site Manager account with a cloud API key to discover sites,
-            gateways, switches, and access points across your hosts. Breeze maps UniFi sites to
-            your Breeze sites and reconciles discovered network assets.
-          </p>
-          <label className="mt-4 block text-sm font-medium" htmlFor="unifi-api-key">
-            UniFi Site Manager API key
-          </label>
-          <input
-            id="unifi-api-key"
-            type="password"
-            autoComplete="off"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Paste your API key"
-            className="mt-2 h-10 w-full max-w-md rounded-md border bg-background px-3 text-sm"
-            data-testid="unifi-api-key"
-          />
-          <button
-            type="button"
-            onClick={() => void handleConnect()}
-            disabled={connecting || !apiKey.trim()}
-            className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            data-testid="unifi-connect"
+          {/* Connection-type chooser: a UniFi cloud account (Site Manager API key) vs a
+              self-hosted Network controller polled directly by an on-network Breeze agent. */}
+          <div
+            className="inline-flex rounded-md border bg-muted/40 p-1"
+            role="radiogroup"
+            aria-label="UniFi connection type"
+            data-testid="unifi-connect-mode"
           >
-            {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
-            Connect to UniFi
-          </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={connectMode === 'cloud'}
+              onClick={() => setConnectMode('cloud')}
+              className={`inline-flex h-8 items-center rounded px-3 text-sm font-medium ${connectMode === 'cloud' ? 'bg-background shadow-xs' : 'text-muted-foreground hover:text-foreground'}`}
+              data-testid="unifi-connect-mode-cloud"
+            >
+              Cloud (Site Manager API key)
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={connectMode === 'self_hosted'}
+              onClick={() => setConnectMode('self_hosted')}
+              className={`inline-flex h-8 items-center rounded px-3 text-sm font-medium ${connectMode === 'self_hosted' ? 'bg-background shadow-xs' : 'text-muted-foreground hover:text-foreground'}`}
+              data-testid="unifi-connect-mode-self-hosted"
+            >
+              Self-hosted controller
+            </button>
+          </div>
+
+          {connectMode === 'cloud' ? (
+            <div data-testid="unifi-connect-cloud">
+              <p className="mt-4 text-sm text-muted-foreground">
+                Connect your UniFi Site Manager account with a cloud API key to discover sites,
+                gateways, switches, and access points across your hosts. Breeze maps UniFi sites to
+                your Breeze sites and reconciles discovered network assets.
+              </p>
+              <label className="mt-4 block text-sm font-medium" htmlFor="unifi-api-key">
+                UniFi Site Manager API key
+              </label>
+              <input
+                id="unifi-api-key"
+                type="password"
+                autoComplete="off"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="Paste your API key"
+                className="mt-2 h-10 w-full max-w-md rounded-md border bg-background px-3 text-sm"
+                data-testid="unifi-api-key"
+              />
+              <button
+                type="button"
+                onClick={() => void handleConnect()}
+                disabled={connecting || !apiKey.trim()}
+                className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                data-testid="unifi-connect"
+              >
+                {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                Connect to UniFi
+              </button>
+            </div>
+          ) : (
+            <div data-testid="unifi-connect-self-hosted">
+              <p className="mt-4 text-sm text-muted-foreground">
+                Connect a self-hosted UniFi Network controller. A Breeze agent on the controller&apos;s
+                network polls it directly — no UniFi cloud account needed.
+              </p>
+              <label className="mt-4 block text-sm font-medium" htmlFor="unifi-account-label">
+                Account label <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <input
+                id="unifi-account-label"
+                type="text"
+                autoComplete="off"
+                value={accountLabel}
+                onChange={(e) => setAccountLabel(e.target.value)}
+                placeholder="e.g. Acme HQ controllers"
+                className="mt-2 h-10 w-full max-w-md rounded-md border bg-background px-3 text-sm"
+                data-testid="unifi-account-label-input"
+              />
+              <button
+                type="button"
+                onClick={() => void handleConnectSelfHosted()}
+                disabled={connecting}
+                className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                data-testid="unifi-connect-self-hosted-submit"
+              >
+                {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                Connect
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -593,16 +693,18 @@ export default function UnifiIntegration() {
           </dl>
 
           <div className="flex items-center gap-3 border-t pt-4">
-            <button
-              type="button"
-              onClick={() => void handleSync()}
-              disabled={syncing}
-              className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              data-testid="unifi-sync"
-            >
-              {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Sync now
-            </button>
+            {isCloud && (
+              <button
+                type="button"
+                onClick={() => void handleSync()}
+                disabled={syncing}
+                className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+                data-testid="unifi-sync"
+              >
+                {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Sync now
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void handleDisconnect()}
@@ -617,7 +719,7 @@ export default function UnifiIntegration() {
         </div>
       )}
 
-      {isConnected && (
+      {isCloud && (
         <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-mapping-card">
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold">Site mapping</h2>
@@ -709,7 +811,7 @@ export default function UnifiIntegration() {
         </div>
       )}
 
-      {isConnected && hosts && hosts.length > 0 && (
+      {isCloud && hosts && hosts.length > 0 && (
         <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-collectors-card">
           <h2 className="text-lg font-semibold">Deep telemetry collectors</h2>
           <p className="mb-4 text-sm text-muted-foreground">
@@ -815,7 +917,7 @@ export default function UnifiIntegration() {
         </div>
       )}
 
-      {isConnected && (
+      {isCloud && (
         <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-telemetry-card">
           <h2 className="text-lg font-semibold">Deep telemetry</h2>
           <p className="mb-4 text-sm text-muted-foreground">Live per-device PoE/health and connected clients for a mapped site.</p>
@@ -917,7 +1019,7 @@ export default function UnifiIntegration() {
         </div>
       )}
 
-      {isConnected && (
+      {isCloud && (
         <div className="rounded-xl border bg-card p-5 shadow-xs" data-testid="unifi-history-card">
           <div className="flex items-center gap-2">
             <History className="h-4 w-4 text-muted-foreground" />
