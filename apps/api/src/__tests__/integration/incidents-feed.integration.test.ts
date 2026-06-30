@@ -45,7 +45,7 @@ import type { AuthContext } from '../../middleware/auth';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const FEED_PARAMS: IncidentFeedParams = { limit: 50, offset: 0 };
+const FEED_PARAMS: IncidentFeedParams = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null };
 
 // Minimal org-scoped auth. buildIncidentFeed only reads scope/orgId via
 // resolveOrgFilter; the rest of AuthContext is never touched on this path.

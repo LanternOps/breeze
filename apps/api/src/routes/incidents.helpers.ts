@@ -195,19 +195,20 @@ export type IncidentFeedParams = {
    * (huntress + s1) expose device telemetry (device ids + hostnames embedded in
    * titles), so a caller with only `alerts:read` must not see them — when this
    * is `false` the huntress/s1 legs are omitted entirely and only native
-   * tracked incidents are returned. Defaults to included when omitted (so
-   * existing callers keep full visibility); the route always sets it explicitly.
+   * tracked incidents are returned. Required (no default) so omission is a
+   * compile error rather than a fail-open runtime default.
    */
-  hasDevicesRead?: boolean;
+  hasDevicesRead: boolean;
   /**
    * Site-axis allowlist resolved by the route via `resolveSiteAllowedDeviceIds`
-   * (mirrors GET /huntress/incidents + /sentinelone/threats). `null`/`undefined`
-   * means the caller is NOT site-restricted (no narrowing). A concrete array
-   * narrows the EDR legs to findings on these devices, keeping null-device
-   * (provider-level) findings visible. Site is an app-layer authz axis Postgres
-   * RLS does NOT defend, so this must be applied in the query.
+   * (mirrors GET /huntress/incidents + /sentinelone/threats). `null` means the
+   * caller is NOT site-restricted (no narrowing). A concrete array narrows the
+   * EDR legs to findings on these devices, keeping null-device (provider-level)
+   * findings visible. Site is an app-layer authz axis Postgres RLS does NOT
+   * defend, so this must be applied in the query. Required (no default) so
+   * callers must declare their site-restriction posture explicitly.
    */
-  allowedDeviceIds?: string[] | null;
+  allowedDeviceIds: string[] | null;
 };
 
 /**
@@ -319,11 +320,11 @@ export function buildIncidentFeedQueries(
 
   // Determine which legs to include based on filters. The raw EDR finding legs
   // require `devices:read`; a caller with only `alerts:read` (hasDevicesRead ===
-  // false) gets native tracked incidents only. `hasDevicesRead` undefined =
-  // included (back-compat for existing callers/fixtures). This composes with the
+  // false) gets native tracked incidents only. Fail-closed: only include EDR
+  // when the caller explicitly signals devices:read. This composes with the
   // kind/source filters: a no-devices-read caller passing source=huntress simply
   // yields no legs → empty feed (null), not an error.
-  const includeEdr = params.hasDevicesRead !== false;
+  const includeEdr = params.hasDevicesRead === true;
   const includeTracked = params.kind !== 'finding' && params.source !== 'huntress' && params.source !== 's1';
   const includeHuntress = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 'huntress');
   const includeS1 = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 's1');

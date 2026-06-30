@@ -41,7 +41,7 @@ describe('resolveFindingLinkOut', () => {
 // exist"). `.toSQL()` builds the statement synchronously without a DB
 // connection, so this runs in the normal unit suite.
 describe('buildIncidentFeedQueries (DB-less build guard)', () => {
-  const params = { limit: 50, offset: 0 } as const;
+  const params = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null } as const;
 
   it('builds the union feed query without throwing', () => {
     expect(() => buildIncidentFeedQueries(orgAuth, params)).not.toThrow();
