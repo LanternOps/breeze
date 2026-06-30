@@ -9,7 +9,7 @@ export function BrandingFooter({ branding }: { branding: ExchangeBranding | null
       data-testid="branding-footer"
     >
       {branding?.logoUrl ? (
-        <img src={branding.logoUrl} alt="" className="h-3.5 w-3.5 rounded-sm object-contain" />
+        <img src={branding.logoUrl} alt="" className="h-3.5 w-3.5 rounded-xs object-contain" />
       ) : null}
       <span>Powered by {name}</span>
     </div>

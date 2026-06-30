@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 // Office hosts refuse to load task panes over plain http (except localhost in
 // some hosts, but Excel on the web always requires https). office-addin-dev-certs
@@ -14,7 +15,7 @@ export default defineConfig(async () => {
     https = await getHttpsServerOptions();
   }
   return {
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     resolve: { dedupe: ['react', 'react-dom'] },
     server: {
       port: 3000,
