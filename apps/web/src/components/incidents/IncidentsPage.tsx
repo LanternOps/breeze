@@ -4,15 +4,21 @@ import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
-type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
+type IncidentKind = 'tracked' | 'finding';
+type IncidentSource = 'breeze' | 'huntress' | 's1';
+type FeedFilter = '' | IncidentKind;
 
-interface Incident {
-  id: string;
+interface IncidentFeedRow {
+  kind: IncidentKind;
+  source: IncidentSource;
+  sourceId: string;
   title: string;
   severity: IncidentSeverity;
-  status: IncidentStatus;
-  classification: string | null;
+  edrStatus: string | null;
+  status: string | null;
+  deviceId: string | null;
   detectedAt: string;
+  trackedIncidentId: string | null;
 }
 
 interface Pagination {
@@ -28,31 +34,36 @@ const severityColors: Record<IncidentSeverity, string> = {
   p4: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
 };
 
-const statusColors: Record<IncidentStatus, string> = {
-  detected: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
-  analyzing: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
-  contained: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
-  recovering: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
-  closed: 'bg-gray-100 text-gray-800 dark:bg-gray-700/30 dark:text-gray-300',
+const sourceLabels: Record<IncidentSource, string> = {
+  breeze: 'Breeze',
+  huntress: 'Huntress',
+  s1: 'SentinelOne',
 };
 
+const sourceBadge: Record<IncidentSource, string> = {
+  breeze: 'bg-gray-100 text-gray-800 dark:bg-gray-700/40 dark:text-gray-200',
+  huntress: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
+  s1: 'bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300',
+};
+
+const statusBadge = 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300';
+
 export default function IncidentsPage() {
-  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [rows, setRows] = useState<IncidentFeedRow[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 25, total: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [statusFilter, setStatusFilter] = useState<IncidentStatus | ''>('');
+  const [kindFilter, setKindFilter] = useState<FeedFilter>('');
   const [severityFilter, setSeverityFilter] = useState<IncidentSeverity | ''>('');
 
-  const fetchIncidents = useCallback(async (page = 1) => {
+  const fetchFeed = useCallback(async (page = 1) => {
     try {
       setLoading(true);
       setError(undefined);
       const params = new URLSearchParams({ page: String(page), limit: '25' });
-      if (statusFilter) params.set('status', statusFilter);
-      if (severityFilter) params.set('severity', severityFilter);
+      if (kindFilter) params.set('kind', kindFilter);
 
-      const response = await fetchWithAuth(`/incidents?${params.toString()}`);
+      const response = await fetchWithAuth(`/incidents/feed?${params.toString()}`);
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -61,31 +72,36 @@ export default function IncidentsPage() {
         throw new Error('Failed to fetch incidents');
       }
       const data = await response.json();
-      setIncidents(data.data ?? []);
+      setRows(data.data ?? []);
       setPagination(data.pagination ?? { page: 1, limit: 25, total: 0 });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, severityFilter]);
+  }, [kindFilter]);
 
   useEffect(() => {
-    fetchIncidents();
-  }, [fetchIncidents]);
+    fetchFeed();
+  }, [fetchFeed]);
 
-  const handleRowClick = (id: string) => {
-    void navigateTo(`/incidents/${id}`);
+  const handleRowClick = (row: IncidentFeedRow) => {
+    if (row.kind === 'tracked' && row.trackedIncidentId) {
+      void navigateTo(`/incidents/${row.trackedIncidentId}`);
+    }
   };
 
   const handlePrevious = () => {
-    if (pagination.page > 1) fetchIncidents(pagination.page - 1);
+    if (pagination.page > 1) fetchFeed(pagination.page - 1);
   };
 
   const handleNext = () => {
     const totalPages = Math.ceil(pagination.total / pagination.limit);
-    if (pagination.page < totalPages) fetchIncidents(pagination.page + 1);
+    if (pagination.page < totalPages) fetchFeed(pagination.page + 1);
   };
+
+  // Client-side severity narrowing — the feed endpoint does not support a severity param.
+  const visibleRows = severityFilter ? rows.filter((r) => r.severity === severityFilter) : rows;
 
   if (loading) {
     return (
@@ -98,13 +114,13 @@ export default function IncidentsPage() {
     );
   }
 
-  if (error && incidents.length === 0) {
+  if (error && rows.length === 0) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={() => fetchIncidents()}
+          onClick={() => fetchFeed()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           Try again
@@ -121,7 +137,7 @@ export default function IncidentsPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Incidents</h1>
           <p className="text-muted-foreground">
-            Security and operational incidents across your organization.
+            Tracked incidents and EDR findings across your organization.
           </p>
         </div>
       </div>
@@ -135,16 +151,13 @@ export default function IncidentsPage() {
       {/* Filters */}
       <div className="flex gap-3">
         <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as IncidentStatus | '')}
+          value={kindFilter}
+          onChange={(e) => setKindFilter(e.target.value as FeedFilter)}
           className="rounded-md border bg-background px-3 py-2 text-sm text-foreground"
         >
-          <option value="">All statuses</option>
-          <option value="detected">Detected</option>
-          <option value="analyzing">Analyzing</option>
-          <option value="contained">Contained</option>
-          <option value="recovering">Recovering</option>
-          <option value="closed">Closed</option>
+          <option value="">All</option>
+          <option value="tracked">Tracked</option>
+          <option value="finding">Findings</option>
         </select>
         <select
           value={severityFilter}
@@ -159,13 +172,13 @@ export default function IncidentsPage() {
         </select>
       </div>
 
-      {incidents.length === 0 ? (
+      {visibleRows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <h2 className="text-lg font-semibold text-foreground mb-1">No incidents found</h2>
           <p className="text-sm text-muted-foreground max-w-md">
-            {statusFilter || severityFilter
+            {kindFilter || severityFilter
               ? 'No incidents match the current filters.'
-              : 'No incidents have been recorded yet.'}
+              : 'No tracked incidents or EDR findings have been recorded yet.'}
           </p>
         </div>
       ) : (
@@ -175,38 +188,56 @@ export default function IncidentsPage() {
               <thead>
                 <tr className="border-b bg-muted/50">
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Title</th>
+                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">Source</th>
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Severity</th>
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
-                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">Classification</th>
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Detected</th>
                 </tr>
               </thead>
               <tbody>
-                {incidents.map((incident) => (
-                  <tr
-                    key={incident.id}
-                    onClick={() => handleRowClick(incident.id)}
-                    className="border-b cursor-pointer hover:bg-muted/30 transition-colors"
-                  >
-                    <td className="px-4 py-3 font-medium text-foreground">{incident.title}</td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${severityColors[incident.severity]}`}>
-                        {incident.severity.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusColors[incident.status]}`}>
-                        {incident.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {incident.classification ?? '-'}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {formatDateTime(incident.detectedAt)}
-                    </td>
-                  </tr>
-                ))}
+                {visibleRows.map((row) => {
+                  const isTracked = row.kind === 'tracked';
+                  return (
+                    <tr
+                      key={`${row.source}:${row.sourceId}`}
+                      onClick={() => handleRowClick(row)}
+                      className={`border-b transition-colors ${
+                        isTracked ? 'cursor-pointer hover:bg-muted/30' : ''
+                      }`}
+                    >
+                      <td className="px-4 py-3 font-medium text-foreground">{row.title}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${sourceBadge[row.source]}`}>
+                          {sourceLabels[row.source]}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${severityColors[row.severity]}`}>
+                          {row.severity.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {isTracked ? (
+                          row.status ? (
+                            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusBadge}`}>
+                              {row.status}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )
+                        ) : (
+                          <div className="flex flex-col gap-0.5">
+                            <span className="capitalize text-muted-foreground">{row.edrStatus ?? '-'}</span>
+                            <span className="text-xs text-muted-foreground">Promote from the EDR view</span>
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {formatDateTime(row.detectedAt)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
