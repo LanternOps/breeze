@@ -247,7 +247,7 @@ export const networkTopology = pgTable('network_topology', {
   targetType: varchar('target_type', { length: 50 }).notNull(),
   targetId: uuid('target_id').notNull(),
   connectionType: varchar('connection_type', { length: 50 }).notNull(),
-  interfaceName: varchar('interface_name', { length: 100 }),
+  interfaceName: text('interface_name'),
   vlan: integer('vlan'),
   bandwidth: integer('bandwidth'),
   latency: real('latency'),
