@@ -64,6 +64,22 @@ describe('mappers', () => {
     expect(input.affectedDevices).toEqual([]);
     expect(input.classification).toBe('huntress-incident');
   });
+
+  it('s1ThreatToIncident sets the s1 source link', () => {
+    const input = s1ThreatToIncident({ id: 't1', orgId: 'org-1', deviceId: 'dev-9', deviceName: 'PC',
+      s1ThreatId: 's1-xyz', threatName: 'Emotet', severity: 'critical', status: 'active',
+      detectedAt: '2026-06-20T00:00:00Z' } as any);
+    expect(input.sourceType).toBe('s1_threat');
+    expect(input.sourceRef).toBe('s1-xyz');
+  });
+
+  it('huntressIncidentToIncident sets the huntress source link', () => {
+    const input = huntressIncidentToIncident({ id: 'i1', orgId: 'org-1', deviceId: 'dev-9',
+      huntressIncidentId: 'hunt-1', title: 'Bad login', severity: 'high', status: 'open',
+      reportedAt: '2026-06-20T00:00:00Z' } as any);
+    expect(input.sourceType).toBe('huntress_incident');
+    expect(input.sourceRef).toBe('hunt-1');
+  });
 });
 
 describe('promoteToIncident', () => {
