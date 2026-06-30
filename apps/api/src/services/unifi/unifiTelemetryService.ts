@@ -108,7 +108,7 @@ export async function reconcileTelemetry(
 
   const [collector] = await db.select({
     id: unifiCollectors.id, orgId: unifiCollectors.orgId, siteId: unifiCollectors.siteId,
-    integrationId: unifiCollectors.integrationId,
+    integrationId: unifiCollectors.integrationId, unifiHostId: unifiCollectors.unifiHostId,
   }).from(unifiCollectors).where(eq(unifiCollectors.id, payload.collectorId)).limit(1);
   if (!collector) throw new Error(`reconcileTelemetry: unknown collector ${payload.collectorId}`);
 
@@ -116,12 +116,18 @@ export async function reconcileTelemetry(
     await upsertControllerSites(db, collector.id, collector.orgId, payload.sites);
   }
 
-  // Build unifiSiteId -> {orgId, siteId} from the Phase 1 mappings for this integration.
+  // Build unifiSiteId -> {orgId, siteId} from the Phase 1 mappings for this integration,
+  // scoped to this collector's host axis so that identical local site ids on different
+  // self-hosted controllers (e.g. every controller has a "default" site) cannot collide.
+  // Cloud collectors carry a real unifiHostId; self-hosted collectors have NULL and their
+  // mapping rows use the sentinel unifi_host_id = collector.id.
+  const hostKey = collector.unifiHostId ?? collector.id;
   const mappings = await db.select({
-    unifiSiteId: unifiSiteMappings.unifiSiteId, siteId: unifiSiteMappings.siteId, orgId: unifiSiteMappings.orgId,
+    unifiSiteId: unifiSiteMappings.unifiSiteId, siteId: unifiSiteMappings.siteId,
+    orgId: unifiSiteMappings.orgId, unifiHostId: unifiSiteMappings.unifiHostId,
   }).from(unifiSiteMappings).where(eq(unifiSiteMappings.integrationId, collector.integrationId));
   const siteByUnifi = new Map<string, { orgId: string; siteId: string }>();
-  for (const m of mappings) if (m.unifiSiteId) siteByUnifi.set(m.unifiSiteId, { orgId: m.orgId, siteId: m.siteId });
+  for (const m of mappings) if (m.unifiSiteId && m.unifiHostId === hostKey) siteByUnifi.set(m.unifiSiteId, { orgId: m.orgId, siteId: m.siteId });
   // Fallback to the collector's own org/site when a device reports no/unknown unifi site.
   const resolveSite = (unifiSiteId: string | null | undefined) =>
     (unifiSiteId && siteByUnifi.get(unifiSiteId)) || { orgId: collector.orgId, siteId: collector.siteId };

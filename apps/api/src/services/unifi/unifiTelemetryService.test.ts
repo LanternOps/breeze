@@ -109,8 +109,9 @@ function scriptedDb(opts: {
 describe('reconcileTelemetry', () => {
   it('upserts device + client telemetry and resolves site via mapping', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-fallback', siteId: 'site-fallback', integrationId: 'int-1' },
-      mappings: [{ unifiSiteId: 's1', siteId: 'site-mapped', orgId: 'org-mapped' }],
+      // unifiHostId: null = self-hosted; sentinel mapping row carries unifiHostId = collector.id ('c1').
+      collector: { id: 'c1', orgId: 'org-fallback', siteId: 'site-fallback', integrationId: 'int-1', unifiHostId: null },
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-mapped', orgId: 'org-mapped', unifiHostId: 'c1' }],
       assetByMac: { 'cc:dd': { id: 'asset-1' } },
     });
 
@@ -253,6 +254,34 @@ describe('reconcileTelemetry', () => {
     expect(deviceInserts).toHaveLength(1);
     expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-new-1');
     expect(deviceInserts[0]!.conflict.set.discoveredAssetId).toBe('asset-new-1');
+  });
+
+  it('REGRESSION: per-controller isolation — identical local site id on two self-hosted controllers routes to the correct org', async () => {
+    // Pre-fix: siteByUnifi.set("default", …) is called for BOTH mapping rows; last-write-wins
+    // picks collA's row (it is last in iteration order), so collB's device is mis-routed to org-A.
+    // Post-fix: the filter `m.unifiHostId === hostKey` limits the map to collB's own row only.
+    //
+    // Mapping rows ordered [B first, A last] so that without the host-axis filter the last write
+    // (A) wins — proving the test is RED on pre-fix code.
+    const { db, writes } = scriptedDb({
+      collector: { id: 'collB', orgId: 'org-Bhome', siteId: 'site-Bhome', integrationId: 'int-1', unifiHostId: null },
+      mappings: [
+        { unifiHostId: 'collB', unifiSiteId: 'default', orgId: 'org-B', siteId: 'site-B' },
+        { unifiHostId: 'collA', unifiSiteId: 'default', orgId: 'org-A', siteId: 'site-A' },
+      ],
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'collB', polledAt: '2026-06-30T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'dev-1', unifiSiteId: 'default', raw: {} }],
+      clients: [],
+    });
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    // Must resolve to collB's org/site, NOT collA's — cross-tenant mis-routing would write org-A here.
+    expect(deviceInserts[0]!.values.orgId).toBe('org-B');
+    expect(deviceInserts[0]!.values.siteId).toBe('site-B');
   });
 
   it('skips asset creation and leaves discoveredAssetId null when device raw has no ip', async () => {
