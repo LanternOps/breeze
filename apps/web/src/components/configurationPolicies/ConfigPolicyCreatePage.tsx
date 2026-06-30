@@ -34,8 +34,10 @@ export default function ConfigPolicyCreatePage() {
   // own partner (partner-wide / all-orgs, org_id NULL) OR scope it to a single
   // org. The partner is ALWAYS derived server-side from the caller's token; we
   // only send the intent. Org-scope creators never see this — their policy is
-  // always owned by their one org. Mirrors AlertTemplateEditor's availability
-  // picker (gate on partner scope from the JWT, not useOrgStore().partners).
+  // always owned by their one org. Follows AlertTemplateEditor's JWT-scope
+  // detection (gate on partner scope from the JWT, not useOrgStore().partners);
+  // unlike that picker we surface it for any partner-scope creator, not only
+  // those with more than one org.
   const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
   const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
   // Default to partner-wide when the user is viewing the All-orgs scope (no
@@ -59,17 +61,29 @@ export default function ConfigPolicyCreatePage() {
   });
 
   const usePartnerOwner = isPartnerScope && ownerScope === 'partner';
-  const effectiveOrgId = ownerOrgId || currentOrgId || '';
+  // Org-scoped owner id. For partner-scope creators the dropdown (`ownerOrgId`)
+  // is authoritative — do NOT fall back to `currentOrgId`, or clearing the
+  // select would silently submit the focused org while the UI shows nothing
+  // chosen. Org-scope creators have no picker, so they always use their own
+  // current org.
+  const orgScopedOrgId = isPartnerScope ? ownerOrgId : (currentOrgId ?? '');
 
   const onSubmit = async (values: CreatePolicyValues) => {
     try {
       setError(undefined);
+      // Guard the org-scoped path here too (not just the disabled button) so the
+      // Enter key can't bypass it into a `{ orgId: '' }` POST with an opaque
+      // server 400. Partner-wide needs no org — the server derives the partner.
+      if (!usePartnerOwner && !orgScopedOrgId) {
+        setError('Select an organization for this policy.');
+        return;
+      }
       // Partner-wide: send ownerScope only — the server derives the partner from
       // the caller's token and ignores any client-supplied org/partner id. Org-
       // scoped: send the concrete org id (the classic shape).
       const body = usePartnerOwner
         ? { ...values, ownerScope: 'partner' as const }
-        : { ...values, orgId: effectiveOrgId };
+        : { ...values, orgId: orgScopedOrgId };
       const response = await fetchWithAuth('/configuration-policies', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -296,7 +310,7 @@ export default function ConfigPolicyCreatePage() {
             </a>
             <button
               type="submit"
-              disabled={isSubmitting || (mode === 'linked' && !linkedPolicyId) || (!usePartnerOwner && !effectiveOrgId)}
+              disabled={isSubmitting || (mode === 'linked' && !linkedPolicyId) || (!usePartnerOwner && !orgScopedOrgId)}
               className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
               {isSubmitting ? 'Creating...' : 'Create Policy'}

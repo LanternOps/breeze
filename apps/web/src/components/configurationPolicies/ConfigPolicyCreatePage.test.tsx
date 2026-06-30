@@ -101,10 +101,66 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
     });
   });
 
-  it('defaults to org-scoped when a concrete org is selected in the scope switcher', () => {
+  it('defaults to org-scoped when a concrete org is focused, and POSTs that orgId untouched', async () => {
     orgState.current = { currentOrgId: 'org-1', allOrgs: false, organizations: orgState.current.organizations };
     startNewPolicy();
     expect(screen.getByTestId('policy-owner-org')).toBeChecked();
+
+    // Submit without touching the select — the focused org must be sent verbatim.
+    fireEvent.change(screen.getByPlaceholderText('e.g. Standard Workstation Policy'), {
+      target: { value: 'Acme default' },
+    });
+    fireEvent.click(screen.getByText('Create Policy'));
+
+    await waitFor(() => {
+      const body = postBody();
+      expect(body.orgId).toBe('org-1');
+      expect('ownerScope' in body).toBe(false);
+    });
+  });
+
+  it('disables submit (and never POSTs) when "specific organization" is chosen but none selected', () => {
+    // Partner creator in All-orgs scope: no currentOrgId to silently fall back to.
+    startNewPolicy();
+    fireEvent.click(screen.getByTestId('policy-owner-org'));
+    fireEvent.change(screen.getByPlaceholderText('e.g. Standard Workstation Policy'), {
+      target: { value: 'Nameless owner' },
+    });
+
+    expect(screen.getByText('Create Policy').closest('button')).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies' && (c[1] as RequestInit)?.method === 'POST')
+    ).toBe(false);
+  });
+
+  it('does not silently fall back to the focused org when the dropdown is cleared to the placeholder', () => {
+    // Focused on org-1 (so ownerOrgId initializes to org-1), then user blanks the select.
+    orgState.current = { currentOrgId: 'org-1', allOrgs: false, organizations: orgState.current.organizations };
+    startNewPolicy();
+    fireEvent.change(screen.getByTestId('policy-owner-org-select'), { target: { value: '' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. Standard Workstation Policy'), {
+      target: { value: 'Cleared selection' },
+    });
+
+    // The select visibly shows nothing chosen, so submit must be blocked rather
+    // than silently POST org-1.
+    expect(screen.getByText('Create Policy').closest('button')).toBeDisabled();
+  });
+
+  it('blocks Enter-key submit (not just the button) when no org is selected, showing an error', async () => {
+    const { container } = render(<ConfigPolicyCreatePage />);
+    fireEvent.click(screen.getByText('Configure New'));
+    fireEvent.click(screen.getByTestId('policy-owner-org'));
+    fireEvent.change(screen.getByPlaceholderText('e.g. Standard Workstation Policy'), {
+      target: { value: 'Enter bypass' },
+    });
+    // Enter inside a field submits the form regardless of the disabled button.
+    fireEvent.submit(container.querySelector('form')!);
+
+    await waitFor(() => expect(screen.getByText(/select an organization/i)).toBeInTheDocument());
+    expect(
+      fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies' && (c[1] as RequestInit)?.method === 'POST')
+    ).toBe(false);
   });
 
   it('hides the owner picker for an org-scope creator and POSTs orgId only', async () => {
