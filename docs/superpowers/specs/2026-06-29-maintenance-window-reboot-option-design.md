@@ -12,8 +12,11 @@ device is inside an active maintenance window, automatically reboots the device
 clear deferred reboots (typically from previously-installed patches) on a
 predictable off-hours schedule without manual intervention.
 
-The reboot reuses the existing warn-then-reboot machinery (countdown toasts +
-circuit-breaker on Windows; OS-scheduled reboot with a wall warning on Linux).
+The reboot reuses the existing warn-then-reboot machinery: on Windows the
+agent's `RebootManager` (at the 15-minute grace it fires a single "save your
+work" warning ~5 minutes before reboot — its staged thresholds are 60/15/5 min
+with strict `>` — plus a per-day circuit-breaker); on Linux an OS-scheduled
+reboot (`shutdown -r +15`) with a wall warning to logged-in users.
 
 ## Goals
 
@@ -28,7 +31,8 @@ circuit-breaker on Windows; OS-scheduled reboot with a wall warning on Linux).
 
 ## Non-Goals
 
-- A configurable grace period (deferred; hard-coded to 5 minutes for v1).
+- A configurable grace period (deferred; hard-coded to 15 minutes for v1 — long
+  enough that the Windows agent's 5-minutes-before warning notification fires).
 - macOS support (no pending-reboot detection exists).
 - A new standalone policy table or compliance/remediation lifecycle — this is a
   Pattern B (inline settings) feature.
@@ -159,15 +163,17 @@ New file `apps/api/src/jobs/maintenanceRebootWorker.ts`, modeled on
   3. **Platform gate:** Windows or Linux only (resolve from the device's OS
      field). Skip macOS / unknown.
   4. **Dedup guard:** skip if a `reboot` / `schedule_reboot` /
-     `reboot_safe_mode` command for the device exists in status `pending` or
-     `sent` created within the last 60 minutes (prevents re-issuing each tick and
-     avoids colliding with a patch-job reboot already in flight).
+     `reboot_safe_mode` command for the device exists in status `pending`,
+     `sent`, or `completed` created within the last 60 minutes (deferred reboots
+     report `completed` immediately while the device is still up, so `completed`
+     must be included). Prevents re-issuing each tick and avoids colliding with a
+     patch-job reboot already in flight.
   5. **Issue the reboot** via `queueCommandForExecution(deviceId, type, payload,
      {})` (no `userId` → `createdBy: null`, `source: 'maintenance_window'`):
      - **Windows:** `schedule_reboot` with
-       `{ delayMinutes: 5, reason: 'Pending reboot — maintenance window', source: 'maintenance_window' }`
-       → existing warn-then-reboot manager (toasts + circuit-breaker).
-     - **Linux:** `reboot` with `{ delay: 5 }` → OS `shutdown -r +5` (wall
+       `{ delayMinutes: 15, reason: 'Pending reboot — maintenance window', source: 'maintenance_window' }`
+       → existing warn-then-reboot manager (5-min-before warning + circuit-breaker).
+     - **Linux:** `reboot` with `{ delay: 15 }` → OS `shutdown -r +15` (wall
        warning to logged-in users; the warn-then-reboot *manager* is
        Windows-only, so this is the closest equivalent).
   6. Log issuance (device id, platform, command type) for observability.
@@ -222,13 +228,17 @@ device reboots → next heartbeat clears devices.pending_reboot
   `cancelled` are excluded — a genuinely failed reboot should be retried on the
   next tick.
 - **Agent-side circuit-breaker is Windows-only:** the `maxRebootsPerDay`
-  circuit-breaker inside `RebootManager.Schedule()` (staged toasts + day-cap)
+  circuit-breaker inside `RebootManager.Schedule()` (staged warnings + day-cap)
   applies only on Windows. Linux relies entirely on the dedup guard above plus
   the online pre-filter to prevent reboot loops.
-- **Grace-period overhang:** the reboot command is issued with a 5-minute delay
-  (`shutdown -r +5` on Linux; `schedule_reboot.delayMinutes=5` on Windows),
-  matching `patchRebootHandler` behavior. This means the actual reboot may
-  execute up to 5 minutes after the maintenance window closes. Documented and
+- **User warning:** at the 15-minute grace, the Windows `RebootManager` fires its
+  5-minutes-before "save your work" warning (staged thresholds 60/15/5 min, strict
+  `>`); a shorter grace (e.g. the 5 min `patchRebootHandler` uses) fires no staged
+  warning at all, which is why this feature uses 15.
+- **Grace-period overhang:** the reboot command is issued with a 15-minute delay
+  (`shutdown -r +15` on Linux; `schedule_reboot.delayMinutes=15` on Windows). This
+  means the actual reboot may execute up to 15 minutes after the maintenance
+  window closes — acceptable for the default 2-hour windows. Documented and
   accepted for v1.
 - **Offline devices:** excluded by the online pre-filter; picked up on a later
   tick once online and still in-window.
@@ -277,5 +287,5 @@ device reboots → next heartbeat clears devices.pending_reboot
 
 ## Open Questions
 
-None outstanding. Cadence (10 min), grace (5 min fixed), and the worker approach
+None outstanding. Cadence (10 min), grace (15 min fixed), and the worker approach
 are approved.
