@@ -51,8 +51,8 @@ const timezoneOptions = [
   'Australia/Sydney', 'UTC',
 ];
 
-function ToggleRow({ label, description, checked, onChange }: {
-  label: string; description: string; checked: boolean; onChange: (v: boolean) => void;
+function ToggleRow({ label, description, checked, onChange, testId }: {
+  label: string; description: string; checked: boolean; onChange: (v: boolean) => void; testId?: string;
 }) {
   return (
     <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
@@ -62,6 +62,7 @@ function ToggleRow({ label, description, checked, onChange }: {
       </div>
       <button
         type="button"
+        data-testid={testId}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? 'bg-emerald-500/80' : 'bg-muted'}`}
       >
@@ -222,9 +223,10 @@ export default function MaintenanceTab({ policyId, existingLink, onLinkChanged, 
         <h3 className="text-sm font-semibold">Actions During Window</h3>
         <ToggleRow
           label="Reboot if a reboot is pending"
-          description="During the window, reboot devices that have a pending reboot. Windows shows a countdown warning; Linux reboots via the OS with a warning to signed-in users. macOS is not supported."
+          description="During the window, reboot devices that have a pending reboot. Windows warns the signed-in user ~5 minutes before rebooting; Linux schedules the reboot 15 minutes out with a warning to signed-in users. macOS is not supported."
           checked={settings.rebootIfPending}
           onChange={(v) => update('rebootIfPending', v)}
+          testId="maintenance-reboot-if-pending-toggle"
         />
       </div>
 

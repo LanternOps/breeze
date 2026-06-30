@@ -45,6 +45,17 @@ describe('MaintenanceTab — rebootIfPending', () => {
     expect(payload.inlineSettings.rebootIfPending).toBe(false);
   });
 
+  it('enables rebootIfPending when the toggle is clicked', async () => {
+    render(
+      <MaintenanceTab policyId="policy-1" existingLink={undefined} linkedPolicyId={null} onLinkChanged={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByTestId('maintenance-reboot-if-pending-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0] as [string | null, { inlineSettings: Record<string, unknown> }];
+    expect(payload.inlineSettings.rebootIfPending).toBe(true);
+  });
+
   it('reflects an existing rebootIfPending value and keeps it on save', async () => {
     render(
       <MaintenanceTab
