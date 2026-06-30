@@ -641,6 +641,22 @@ const normalizeBuilderType = (value?: ReportBuilderType): BuilderReportType => {
   return legacyToBuilderType[value as LegacyReportType] ?? 'devices';
 };
 
+/**
+ * Whether a report `type` round-trips losslessly through the freeform builder:
+ * opening it (normalizeBuilderType) and re-saving it (builderToLegacyType)
+ * yields the same type. Types that do NOT survive — e.g.
+ * `security_compliance_posture` → `compliance`, `executive_summary` →
+ * `performance` — are silently downgraded by the builder and must instead be
+ * created directly with their true type. This is the single source of truth
+ * for that decision; callers should derive from it rather than hand-maintain a
+ * per-template flag.
+ */
+export const reportTypeSurvivesBuilder = (value: ReportBuilderType): boolean => {
+  // Native builder types are represented directly and always round-trip.
+  if (builderTypeValues.includes(value as BuilderReportType)) return true;
+  return builderToLegacyType[normalizeBuilderType(value)] === value;
+};
+
 const normalizeSchedule = (value?: ReportSchedule): ReportSchedule => {
   if (!value || value === 'one_time') return 'weekly';
   return value;

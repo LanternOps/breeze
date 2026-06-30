@@ -10,7 +10,8 @@ import {
   Clock,
   CheckCircle,
   XCircle,
-  Loader2
+  Loader2,
+  LayoutTemplate
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -284,6 +285,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           <p className="text-muted-foreground">Generate and schedule reports for your infrastructure.</p>
         </div>
         <div className="flex items-center gap-2">
+          <a
+            href="/reports/templates"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+          >
+            <LayoutTemplate className="h-4 w-4" />
+            Templates
+          </a>
           <a
             href="/reports/builder"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
