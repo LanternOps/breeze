@@ -153,6 +153,24 @@ Emails from **unknown senders** and any that failed to process land in a **revie
   An email with no usable sender address can't become a ticket. Those appear in the review queue to be dismissed or followed up out-of-band.
 </Aside>
 
+### Connecting a Microsoft 365 support mailbox
+
+Instead of forwarding to your Breeze inbound address, you can connect a Microsoft 365 **shared support mailbox** (for example `support@yourmsp.com`) directly. Customer email to that mailbox becomes tickets, and your public replies are sent back **from that same mailbox** -- with no MX record or forwarding-rule changes. Breeze uses an app-only connection your Microsoft Global Administrator consents to once, so it survives staff turnover (there's no personal login tied to the mailbox). Set it up on the **Microsoft 365 support mailbox** card under **Settings → Ticketing → Inbound Email**.
+
+<Steps>
+
+1. Enter the shared mailbox address and an optional display name, then click **Connect**. Breeze redirects you to Microsoft, where a **Global Administrator** grants one-time admin consent.
+2. Scope Breeze's access to **only** this mailbox. The card shows an exact **Application Access Policy** snippet (a `New-DistributionGroup` plus `New-ApplicationAccessPolicy` pair) to run in Exchange Online PowerShell as a tenant admin. Until you do this, the connection shows **Needs attention**, because the underlying mail permission is tenant-wide by default.
+3. Click **Re-test**. Once Breeze can read the mailbox, the status flips to **Connected**.
+
+</Steps>
+
+Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
+
+<Aside>
+  Connecting or managing a mailbox requires **partner scope and MFA**. The Microsoft 365 mailbox card only appears once your operator has configured the Breeze Ticketing Azure app -- see [Ticket Mailbox environment variables](/deploy/environment/#ticket-mailbox-m365-email-to-ticket).
+</Aside>
+
 ## Categories and SLAs
 
 Go to **Settings > Ticketing** to manage ticket categories.

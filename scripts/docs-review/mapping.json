@@ -1514,6 +1514,118 @@
       "docs": [
         "features/product-catalog.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/unifi/**",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/unifi/**",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/unifiTelemetry.ts",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/UnifiIntegration.tsx",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/unifi/**",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ticketMailbox/**",
+      "docs": [
+        "features/ticketing.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/mailboxConnect.ts",
+      "docs": [
+        "features/ticketing.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/M365MailboxCard.tsx",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/securityComplianceReport.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/reportGenerationService.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/reports/**",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/reports/reportPdf.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/vulnerabilityCorrelation.ts",
+      "docs": [
+        "features/vulnerability-management.mdx",
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/VulnerabilityTab.tsx",
+      "docs": [
+        "features/configuration-policies.mdx",
+        "features/vulnerability-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/quickbooksCustomerImport.ts",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/QuickbooksCustomerImport.tsx",
+      "docs": [
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/Pax8CatalogDrawer.tsx",
+      "docs": [
+        "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/pax8CatalogService.ts",
+      "docs": [
+        "features/product-catalog.mdx"
+      ]
     }
   ]
 }

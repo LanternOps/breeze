@@ -42,6 +42,7 @@ A policy can bundle multiple feature types:
 | **Monitoring** | Check configuration |
 | **Automation** | Event triggers, cron schedules, bulk actions |
 | **Privileged Access** | Windows UAC elevation prompt capture for [privileged access management](/features/pam/) |
+| **Vulnerability Scanning** | Turns on daily CVE correlation for the scope (off by default) -- see [vulnerability management](/features/vulnerability-management/) |
 
 Each feature can be configured in one of two modes:
 
@@ -154,6 +155,12 @@ When a backup feature is linked to a configuration policy, the schedule, retenti
 
 Configure security policy settings for **Security**; check intervals and targets for **Monitoring**; and event triggers, cron schedules, and action chains for **Automation**.
 
+### Vulnerability Scanning
+
+The **Vulnerability** feature is a single on/off toggle that controls whether the devices in the policy's scope are scanned for CVEs. It is configured **inline** (the on/off state lives in the policy) and is **off by default** -- a device with no vulnerability policy is never scanned, and its Vulnerabilities tab stays empty.
+
+Open the policy's **Vulnerability** tab, switch **Enable vulnerability scanning** on, save, and assign the policy. Because resolution is closest-wins, a device- or group-level setting of *off* overrides an organization-wide *on*. Once a scope is enabled, Breeze correlates its software and OS inventory against the CVE feeds once a day. If a policy exists but no device resolves to *on*, the daily job is simply a no-op -- it never falls back to scanning everything. The findings themselves are reviewed and acted on in [Vulnerability Management](/features/vulnerability-management/), not on this tab.
+
 ## Assigning a policy
 
 <Steps>
@@ -196,6 +203,7 @@ Examples of shipped defaults:
 |---------|---------------|
 | Remote Access | Active (on) |
 | PAM / UAC capture | Not enforced (off by default) |
+| Vulnerability Scanning | Not enforced (off by default) |
 
 Each row on the Defaults page includes a **Create override policy** shortcut that opens the policy editor pre-configured for that feature, so you can add a partner- or org-level override without navigating away.
 
@@ -279,7 +287,7 @@ All paths are relative to `/api/v1`.
 
 When creating a policy, set `ownerScope` to `organization` (the default) or `partner`. With `ownerScope: "partner"` the policy is owned partner-wide and any supplied `orgId` is ignored — the partner is always derived from the caller's own token, never trusted from the request body. Creating a partner-wide policy requires partner scope (a `403` is returned otherwise). When assigning a partner-wide policy, use `level: "partner"`; the target is resolved from the caller's own partner, so no `targetId` is required.
 
-When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`, `pam`.
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`, `pam`, `vulnerability`.
 
 ## Troubleshooting
 

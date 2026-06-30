@@ -117,6 +117,20 @@ TD SYNNEX **EC Express** looks up real-time price and availability by SKU so the
   EC Express is the live price-and-availability connector for TD SYNNEX. It complements the earlier Digital Bridge catalog import and is the recommended way to bring TD SYNNEX products into Breeze.
 </Aside>
 
+### Pax8
+
+If your Pax8 account is connected, you can search the Pax8 catalog and import individual products as recurring-software catalog items.
+
+<Steps>
+
+1. From the catalog, click **Import from Pax8** (visible when you have catalog edit access and Pax8 is connected) to open the import drawer.
+2. Search for a product and select it, then choose the **commitment / billing term** -- this determines the pricing. Pax8's partner buy rate fills in as your cost basis, and the term's suggested retail pre-fills your sell price (editable).
+3. Click **Import & add**. The item is created as a recurring-software catalog item with its Pax8 source details retained, and re-importing the same product won't create a duplicate.
+
+</Steps>
+
+Importing requires MFA confirmation. This is distinct from Pax8 **subscription linking** (mapping a customer's existing subscriptions to contract lines), which is covered under [Integrations → Pax8](/features/integrations/#pax8).
+
 ### Searching distributor products from a quote
 
 While editing a quote, the line-item picker includes a **Search distributor** tab (visible only when TD SYNNEX EC Express credentials are configured). Enter a TD SYNNEX SKU or manufacturer part number, see live cost, MSRP, and availability, enter your sell price, and click **Import & add**. The product is imported to your catalog and added to the quote as a line item in one step.

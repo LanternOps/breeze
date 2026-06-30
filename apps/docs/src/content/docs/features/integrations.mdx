@@ -24,6 +24,7 @@ Breeze supports three categories of integrations, each served by a dedicated set
 | **Monitoring** | External monitoring endpoints | Forward device telemetry and health data to third-party observability platforms |
 | **Accounting** | QuickBooks Online | Connect your accounting platform (see [Accounting](#accounting-integrations)) |
 | **Distributors** | Pax8, TD SYNNEX | Sync licenses and pull live distributor pricing into your [Product Catalog](/features/product-catalog/) |
+| **Network** | UniFi (Ubiquiti Site Manager) | Discover UniFi fleet inventory and WAN health, with optional agent-collected deep telemetry (see [UniFi Network](#unifi-network)) |
 
 <Aside>
   Communication and monitoring integrations are configured through the `/integrations` routes. PSA connections use the dedicated `/psa` routes, which provide full CRUD, credential encryption, ticket mapping, and sync management.
@@ -305,9 +306,19 @@ QuickBooks Online connects through Intuit's standard OAuth consent flow:
 
 </Steps>
 
-<Aside type="note">
-  This release establishes the QuickBooks **connection** (authorize, view status, disconnect). Syncing invoices, customers, and payments builds on this foundation in later releases.
-</Aside>
+#### Importing customers
+
+Once QuickBooks is connected, you can bring your existing QuickBooks customers into Breeze as organizations -- no re-typing. Each imported customer becomes one Breeze **organization** (customer type) with a default **site**, carrying over the billing contact and address.
+
+<Steps>
+
+1. On the connected **QuickBooks Online** panel, open the **Import customers** section and click **Load customers**.
+2. Tick the customers you want to import. Customers you've already imported show an **Already imported** badge and are skipped automatically (select-all excludes them).
+3. Click **Import selected**. Breeze reports how many were imported, skipped, and failed, with an inline list of any failures.
+
+</Steps>
+
+The import is idempotent -- it keys off the QuickBooks customer id, so re-running it never creates duplicates. It requires partner scope, and one QuickBooks company (realm) is connected per partner.
 
 <Aside type="caution">
   QuickBooks requires Intuit OAuth credentials configured on the server (`QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT`). Until those are set, the connect option reports that QuickBooks isn't configured on this instance. See the [environment reference](/deploy/environment/). On Breeze-hosted accounts this is already configured.
@@ -335,9 +346,55 @@ Each subscription row offers these actions:
 
 When **Keep quantity in sync** is enabled on a link, Pax8 subscription quantities are pushed to the linked contract line on each Pax8 sync. Pausing stops future syncs but leaves the last-synced quantity in place so billing is not affected unexpectedly.
 
+Beyond subscription sync, you can also search the Pax8 catalog and import individual products into your [Product Catalog](/features/product-catalog/#pax8) -- see Product Catalog for that workflow.
+
 ### TD SYNNEX
 
 TD SYNNEX provides live product price and availability you can import straight into your catalog. The end-to-end workflow -- including EC Express live pricing -- is documented under [Product Catalog → Importing from distributor catalogs](/features/product-catalog/#importing-from-distributor-catalogs).
+
+---
+
+## UniFi Network
+
+The UniFi integration discovers your Ubiquiti network fleet across every customer site and reconciles it into Breeze's unified network view -- so gateways, switches, and access points show up alongside your agent-discovered assets without duplicating them. It's a **partner-level** integration set up once for your practice, and it's strictly read-only: Breeze never changes your UniFi configuration. It has two layers -- a cloud connection that works everywhere, and optional on-site deep telemetry for richer detail.
+
+<Aside type="note">
+  UniFi is configured on the **UniFi** tab of the Integrations page and is available to partner accounts only. Connecting, mapping sites, and managing collectors are MFA-gated actions.
+</Aside>
+
+### Cloud connection (Site Manager)
+
+Paste a single Ubiquiti **Site Manager API key** that covers your whole account, and Breeze discovers every UniFi console and its sites. After you map each UniFi site to a Breeze site, Breeze syncs device inventory -- model, MAC, type, firmware version and whether an upgrade is available, uptime, and adoption state -- plus the latest WAN/ISP health per site.
+
+<Steps>
+
+1. Open **Integrations → UniFi**.
+2. Generate a **Site Manager API key** in your Ubiquiti account (at unifi.ui.com / UniFi Site Manager).
+3. Paste it into the **UniFi Site Manager API key** field and click **Connect to UniFi**. Breeze validates the key before saving -- a bad key is rejected with a clear message, and a UniFi outage is reported separately so a working key isn't wrongly blamed.
+4. In the **Site mapping** card, choose the matching **Breeze site** (grouped by organization) for each discovered UniFi site, then **Save mappings**. The organization is derived from the site you pick; unmapped UniFi sites are simply not synced.
+5. Inventory syncs automatically about every half hour. Use **Sync now** to pull immediately, and review per-run created / updated / unchanged / removed counts in the **Sync history** table.
+
+</Steps>
+
+The cloud key is read-only -- it can only ever read your UniFi account, never change it -- and reaches behind customer NAT through Ubiquiti's cloud, so there's nothing to install on site.
+
+### Deep telemetry (optional, per console)
+
+The cloud key is deliberately shallow: it can't see per-port PoE, throughput, or the clients attached to each device. To get that depth, designate a Breeze **agent already running at the site** as a collector for a given console. That agent polls the console's local **Network Integration API** (read-only, requires controller firmware **9.3 or newer**) and reports back per-port PoE detail (power draw, link speed, mode), device health (uptime, CPU/memory, throughput, client count), and the currently-connected clients (hostname, IP, which AP or switch, wired vs Wi-Fi and SSID, signal strength).
+
+<Steps>
+
+1. In the **Deep telemetry collectors** card, for each console set the **Breeze site** it serves, a **collector agent** (only online agents at that site can be selected), the **Controller URL** (for example `https://192.168.1.1`), and the console's **local Network Integration API key**.
+2. Click **Enable deep telemetry**. Breeze encrypts the local key, pushes the configuration to the chosen agent, and the agent begins polling on schedule (about once a minute).
+3. Open the **Deep telemetry** card and select a site to view its device table (PoE ports and total watts, client counts) and connected-clients table.
+
+</Steps>
+
+The collector's status badge shows reachability (pending, connected, unreachable, error, or firmware-too-old). This layer is also strictly read-only -- restart, PoE-cycle, and client-block actions are planned for a future release. Deep telemetry requires an agent build that includes the UniFi collector, so promote your fleet to a current agent version before relying on it.
+
+<Aside>
+  UniFi devices and connected clients flow into Breeze's [Network Intelligence](/features/network-intelligence/) discovered-assets view, matched by MAC (then IP), enriching existing assets rather than creating duplicates.
+</Aside>
 
 ---
 

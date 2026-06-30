@@ -26,6 +26,7 @@ Every report has a `type` that determines which data is queried and how the outp
 | `compliance` | Device health and compliance posture | hostname, OS, status, last seen, compliance flag, identified issues |
 | `performance` | Aggregated CPU, RAM, and disk metrics per device | avg/max CPU %, avg/max RAM %, avg/max disk % |
 | `executive_summary` | High-level fleet overview with device counts, alert stats, OS distribution, and site breakdown | online/offline totals, health %, critical/high alert counts, resolution rate |
+| `security_compliance_posture` | Per-control security and compliance evidence for one organization, built for cyber-insurance applications and vendor security questionnaires | EDR/AV coverage, disk encryption %, firewall %, patch currency %, password policy, local-admin exposure, MFA/PAM posture, backup, DNS filtering, optional CIS pass-rate (see [Security & Compliance Posture Report](#security--compliance-posture-report)) |
 
 ---
 
@@ -111,13 +112,12 @@ The response includes:
 
 ### Saved Report Generation
 
-For saved reports, trigger generation with `POST /reports/:id/generate`. This creates a **report run** that is processed asynchronously.
+For saved reports, trigger generation with `POST /reports/:id/generate`. This creates a **report run**, computes the data, and stores the result as a point-in-time snapshot -- all in the same request, so the response comes back already `completed` (or `failed`). The snapshot is what you download later, so the file always reflects the data as of when the run executed rather than re-querying live.
 
 <Steps>
 1. Create a saved report definition with `POST /reports` (see the API reference below).
-2. Trigger generation with `POST /reports/:id/generate`.
-3. Poll the run status with `GET /reports/runs/:runId`.
-4. When the run status is `completed`, use the `outputUrl` field to download the file.
+2. Trigger generation with `POST /reports/:id/generate`. The response returns the new `runId` with `status: "completed"` once the snapshot is stored.
+3. Download the result with `GET /reports/runs/:runId/download?format=csv` (or `pdf` / `excel`).
 </Steps>
 
 ```bash
@@ -199,20 +199,29 @@ The run record stores:
 
 ---
 
+## Security & Compliance Posture Report
+
+The **Security & Compliance Posture** report (`security_compliance_posture`) packages your security evidence for one organization into a single document -- purpose-built for filling out **cyber-insurance applications** and answering **vendor security questionnaires**. It joins the security data Breeze already collects into per-control answers with percent-implemented rollups: EDR/MDR and native antivirus coverage, the list of unprotected devices, disk-encryption and host-firewall coverage, patch currency, antivirus-definition freshness, password-complexity posture, local-admin exposure, MFA and privileged-access posture, backup coverage, DNS filtering, identity-provider connection, and an optional CIS hardening pass-rate.
+
+It is scoped to a single organization (with an optional site filter) and is honest about gaps: a control that hasn't been assessed is reported as **N/A**, never as a misleading 0% or a falsely favorable score. The PDF renders as a branded scorecard (overall score out of 100 with a STRONG / GOOD / FAIR / AT RISK band and a per-control grid) and carries point-in-time, not-a-certification disclaimers.
+
+<Aside type="note">
+  Today this report is created through the report API -- `POST /reports` with `"type": "security_compliance_posture"` and a `config` object -- rather than from the report builder. Once saved, it generates and downloads exactly like any other report (it appears in your reports list as "Security & Compliance Posture"). Posture-specific `config` options include `sites` (limit to specific sites), `windowDays` (recency window for "current" patch/AV data), `minPasswordLength`, `maxLocalAdmins`, `maxAvDefinitionsAgeDays`, and `includeCis` (add the CIS pass-rate section).
+</Aside>
+
+---
+
 ## Downloading and Exporting
 
-When a report run reaches the `completed` status, the `outputUrl` field contains the download path. The format of the file matches the `format` field of the parent report definition (`csv`, `pdf`, or `excel`).
+When a report run reaches the `completed` status, download its stored snapshot from `GET /reports/runs/:id/download`. Pass the desired format as a query parameter -- `?format=csv`, `?format=pdf`, or `?format=excel`. Because the run captured the data at generation time, the download is stable: re-downloading the same run always yields the same data. Downloading a run that hasn't completed returns `409 Conflict`.
 
 ```bash
-# Check run status
-curl /api/v1/reports/runs/RUN_UUID \
-  -H "Authorization: Bearer $TOKEN"
-
-# Response includes outputUrl when completed:
-# "outputUrl": "/api/v1/reports/runs/RUN_UUID/download"
+# Download a completed run as CSV
+curl "/api/v1/reports/runs/RUN_UUID/download?format=csv" \
+  -H "Authorization: Bearer $TOKEN" -OJ
 ```
 
-When retrieving a single report via `GET /reports/:id`, the response includes the five most recent runs, making it easy to find the latest completed download.
+CSV and Excel files are produced on the server; PDF is rendered in the browser from the same snapshot. When retrieving a single report via `GET /reports/:id`, the response includes the five most recent runs, making it easy to find the latest completed download.
 
 ---
 
@@ -369,6 +378,7 @@ All data endpoints accept these common query parameters:
 |--------|----------|-------------|
 | `GET` | `/reports/runs` | List runs. Filter by `reportId`, `status`. Paginated. |
 | `GET` | `/reports/runs/:id` | Get a single run with parent report metadata and download URL. |
+| `GET` | `/reports/runs/:id/download` | Download the run's stored snapshot. Requires `?format=csv\|pdf\|excel`. Returns `409` if the run is not `completed`. |
 
 ### Report Data
 
@@ -408,9 +418,9 @@ All data endpoints accept these common query parameters:
 
 ## Troubleshooting
 
-### Report run stuck in `pending` status
+### Report run returns `failed`
 
-Report generation is processed asynchronously after `POST /reports/:id/generate`. If a run remains in `pending` for an extended period, check that the background job processor is running and connected to the database. Query `GET /reports/runs/:id` to inspect the run record -- if `startedAt` is `null`, the job was never picked up.
+`POST /reports/:id/generate` computes the report and stores its snapshot in the same request, so a run normally comes back `completed` immediately. If it comes back `failed`, inspect the run's `errorMessage` field (via `GET /reports/runs/:id`) for the cause -- most often a configuration problem such as an invalid date range or a scope the caller can't access.
 
 ### "Organization context required" (403) on report endpoints
 
