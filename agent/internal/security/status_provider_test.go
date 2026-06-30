@@ -14,6 +14,9 @@ func TestProviderFromName(t *testing.T) {
 		{"elastic defend", "Elastic Defend", "elastic_defend"},
 		{"elastic endpoint security", "Elastic Endpoint Security", "elastic_defend"},
 		{"elastic agent", "Elastic Agent", "elastic_defend"},
+		// Locks the elastic-before-defender ordering: an "Elastic Defender"-style
+		// name must not fall through to the broad "defender" → windows_defender case.
+		{"elastic defender", "Elastic Defender", "elastic_defend"},
 		{"unknown product", "Acme Shield", "other"},
 		{"empty", "", "other"},
 	}

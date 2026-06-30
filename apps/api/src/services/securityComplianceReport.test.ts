@@ -85,6 +85,24 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect((r.summary as any).controls.unprotectedCount).toBe(2);
   });
 
+  it('counts an Elastic Defend device with RTP on as AV-covered, not unprotected (#2018)', async () => {
+    mockGeneratorQueries({
+      // dev-1: Huntress-managed (#5). dev-2: native Elastic Defend with RTP on.
+      // dev-3: no security_status row → unprotected.
+      3: [
+        { deviceId: 'dev-2', provider: 'elastic_defend', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } }
+      ]
+    });
+    const r = await generateSecurityCompliancePostureReport(ORG, { sites: [] });
+    const c = (r.summary as any).controls;
+    // Before the fix, elastic_defend normalized to 'other' → dev-2 would be
+    // unprotected (anyAv 33%). Recognized as native AV it joins dev-1 in coverage.
+    expect(c.anyAvCoveragePct).toBe(67);
+    expect(c.unprotectedCount).toBe(1);
+    const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
+    expect(byHost['pc-2'].protection).toMatch(/Elastic Defend/i);
+  });
+
   it('computes control percentages from security_status', async () => {
     mockGeneratorQueries();
     const r = await generateSecurityCompliancePostureReport(ORG, {});
