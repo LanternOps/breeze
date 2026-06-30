@@ -211,15 +211,32 @@ device reboots → next heartbeat clears devices.pending_reboot
 
 ## Error Handling & Edge Cases
 
-- **Re-issue prevention:** the dedup guard (step 4) plus the agent-side
-  circuit-breaker (`maxRebootsPerDay`) prevent reboot loops and double-issues.
+- **Re-issue prevention:** the dedup guard (step 4) covers reboot commands in
+  status `pending`, `sent`, **or `completed`** created within the last 60
+  minutes. `completed` must be included because `schedule_reboot` (Windows) and
+  the delayed `reboot` (Linux) report SUCCESS immediately after scheduling the
+  deferred OS reboot — the `device_commands` row transitions to `completed`
+  within seconds while the device is still up and `pending_reboot` remains true.
+  Without `completed` in the set, the next 10-min tick would miss the
+  already-issued command and re-queue a second reboot. `failed`, `timeout`, and
+  `cancelled` are excluded — a genuinely failed reboot should be retried on the
+  next tick.
+- **Agent-side circuit-breaker is Windows-only:** the `maxRebootsPerDay`
+  circuit-breaker inside `RebootManager.Schedule()` (staged toasts + day-cap)
+  applies only on Windows. Linux relies entirely on the dedup guard above plus
+  the online pre-filter to prevent reboot loops.
+- **Grace-period overhang:** the reboot command is issued with a 5-minute delay
+  (`shutdown -r +5` on Linux; `schedule_reboot.delayMinutes=5` on Windows),
+  matching `patchRebootHandler` behavior. This means the actual reboot may
+  execute up to 5 minutes after the maintenance window closes. Documented and
+  accepted for v1.
 - **Offline devices:** excluded by the online pre-filter; picked up on a later
   tick once online and still in-window.
 - **Disconnect-after-claim (known v1 limitation):** if a device disconnects
   immediately after a command is claimed, a queued reboot could be delivered
   slightly outside the window when it reconnects. This matches the existing
-  patch-reboot behavior; mitigated by the online pre-filter and the agent's
-  circuit-breaker. Documented, accepted for v1.
+  patch-reboot behavior; mitigated by the online pre-filter. Documented,
+  accepted for v1.
 - **Interaction with patch `rebootPolicy: 'maintenance_window'`:** the dedup
   guard skips devices that already have a recent reboot command from the patch
   flow, so the two paths don't collide.

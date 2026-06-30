@@ -19,7 +19,14 @@ import {
   decideRebootCommand,
   processRebootCandidate,
   MAINTENANCE_REBOOT_GRACE_MINUTES,
+  REBOOT_DEDUP_STATUSES,
 } from './maintenanceRebootWorker';
+
+describe('REBOOT_DEDUP_STATUSES', () => {
+  it('covers exactly pending, sent, and completed (not failed/timeout/cancelled)', () => {
+    expect(REBOOT_DEDUP_STATUSES).toEqual(['pending', 'sent', 'completed']);
+  });
+});
 
 describe('decideRebootCommand', () => {
   it('returns null when rebootIfPending is false', () => {
@@ -104,5 +111,14 @@ describe('processRebootCandidate', () => {
     } as never);
     const res = await processRebootCandidate(winDevice, deps);
     expect(res.issued).toBe(false);
+  });
+
+  it('skips without issuing when the maintenance window is not active (M3)', async () => {
+    const deps = makeDeps({
+      isInMaintenanceWindow: vi.fn().mockReturnValue({ active: false }),
+    } as never);
+    const res = await processRebootCandidate(winDevice, deps);
+    expect(res).toEqual({ issued: false, reason: 'no-action' });
+    expect(deps.queueCommandForExecution).not.toHaveBeenCalled();
   });
 });

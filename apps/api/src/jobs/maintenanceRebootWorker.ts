@@ -34,6 +34,14 @@ const REBOOT_QUEUE = 'maintenance-reboot';
 export const MAINTENANCE_REBOOT_GRACE_MINUTES = 5;
 const DEDUP_WINDOW_MINUTES = 60;
 const REBOOT_COMMAND_TYPES = ['reboot', 'schedule_reboot', 'reboot_safe_mode'];
+// 'completed' is intentionally included: schedule_reboot (Windows) and the
+// delayed reboot (Linux) report SUCCESS immediately after scheduling the
+// deferred OS reboot, so the row transitions to 'completed' within seconds
+// while the device is still up. Without 'completed', the next 10-min tick
+// would miss the already-issued command and re-queue a second reboot.
+// 'failed', 'timeout', and 'cancelled' are excluded — a genuinely failed
+// reboot should be retried on the next tick.
+export const REBOOT_DEDUP_STATUSES = ['pending', 'sent', 'completed'];
 
 type SweepJobData = { type: 'sweep' };
 
@@ -94,7 +102,7 @@ export async function hasRecentRebootCommand(deviceId: string): Promise<boolean>
       and(
         eq(deviceCommands.deviceId, deviceId),
         inArray(deviceCommands.type, REBOOT_COMMAND_TYPES),
-        inArray(deviceCommands.status, ['pending', 'sent']),
+        inArray(deviceCommands.status, REBOOT_DEDUP_STATUSES),
         gt(deviceCommands.createdAt, sql`now() - (${DEDUP_WINDOW_MINUTES} * interval '1 minute')`),
       ),
     )
