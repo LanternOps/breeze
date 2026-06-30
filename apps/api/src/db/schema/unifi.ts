@@ -191,3 +191,17 @@ export const unifiClients = pgTable('unifi_clients', {
   collectorMacIdx: uniqueIndex('unifi_clients_collector_mac_idx').on(table.collectorId, table.mac),
   orgMacIdx: index('unifi_clients_org_mac_idx').on(table.orgId, table.mac),
 }));
+
+export const unifiControllerSites = pgTable('unifi_controller_sites', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  collectorId: uuid('collector_id').notNull().references(() => unifiCollectors.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  localSiteId: text('local_site_id').notNull(),
+  name: text('name'),
+  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  collectorSiteIdx: uniqueIndex('unifi_controller_sites_collector_site_idx')
+    .on(table.collectorId, table.localSiteId),
+}));
