@@ -88,6 +88,58 @@ coreRoutes.get(
   }
 );
 
+// GET /reports/templates - List the org's saved reports as reusable custom
+// templates. Registered BEFORE /:id so the literal "templates" isn't treated as
+// a report UUID — otherwise it falls through to /:id and Postgres rejects the
+// `where id = 'templates'` cast with `invalid input syntax for type uuid` (500).
+// The web (ReportTemplates.tsx) merges these rows with its curated defaults.
+coreRoutes.get(
+  '/templates',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.REPORTS_READ.resource, PERMISSIONS.REPORTS_READ.action),
+  zValidator('query', listReportsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    // Mirror the list endpoint's org-access scoping.
+    const conditions: ReturnType<typeof eq>[] = [];
+
+    if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      conditions.push(eq(reports.orgId, auth.orgId));
+    } else if (auth.scope === 'partner') {
+      if (query.orgId) {
+        const hasAccess = await ensureOrgAccess(query.orgId, auth);
+        if (!hasAccess) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+        conditions.push(eq(reports.orgId, query.orgId));
+      } else {
+        const orgIds = auth.accessibleOrgIds ?? [];
+        if (orgIds.length === 0) {
+          return c.json({ data: [] });
+        }
+        conditions.push(inArray(reports.orgId, orgIds));
+      }
+    } else if (auth.scope === 'system' && query.orgId) {
+      conditions.push(eq(reports.orgId, query.orgId));
+    }
+
+    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const templates = await db
+      .select()
+      .from(reports)
+      .where(whereCondition)
+      .orderBy(desc(reports.updatedAt));
+
+    return c.json({ data: templates });
+  }
+);
+
 // GET /reports/:id - Get report config
 coreRoutes.get(
   '/:id',
@@ -97,8 +149,10 @@ coreRoutes.get(
     const auth = c.get('auth');
     const reportId = c.req.param('id')!;
 
-    // Skip if this is a route like /reports/runs, /reports/data, etc.
-    if (['runs', 'data', 'generate'].includes(reportId)) {
+    // Skip non-UUID sub-paths so they don't hit the `where id = $1` uuid cast.
+    // 'templates' has its own handler above; listed here as defense-in-depth in
+    // case route registration order ever changes.
+    if (['runs', 'data', 'generate', 'templates'].includes(reportId)) {
       return c.notFound();
     }
 

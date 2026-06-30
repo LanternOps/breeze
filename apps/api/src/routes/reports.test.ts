@@ -519,6 +519,34 @@ describe('reports routes', () => {
     expect(permissionState.last).toEqual({ resource: 'reports', action: 'delete' });
   });
 
+  it('GET /reports/templates returns the org saved reports without hitting the /:id uuid cast', async () => {
+    // A single select for the templates list (no /:id recentRuns follow-up).
+    vi.mocked(db.select).mockReturnValueOnce(selectChain([
+      {
+        id: 'report-1',
+        orgId: ORG_ID,
+        name: 'My Saved Template',
+        type: 'performance',
+        config: { dateRange: { preset: 'last_30_days' }, filters: {} },
+        schedule: 'monthly',
+        format: 'pdf'
+      }
+    ]));
+
+    const res = await app.request('/reports/templates', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Distinguishes the templates handler ({ data: [...] }) from the /:id
+    // handler ({ ...report, recentRuns }) — a mis-route would leave data undefined.
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].id).toBe('report-1');
+  });
+
   it('should generate a saved report run', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([{
