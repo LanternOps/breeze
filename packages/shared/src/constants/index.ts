@@ -1,6 +1,10 @@
 // Permission registry (resource:action grants) + derived literal-union types.
 export * from './permissions';
 
+// Canonical configuration-policy feature types (single source of truth shared
+// by api, agent helpers, and the web layer). See ./configFeatureTypes.ts (#2004).
+export * from './configFeatureTypes';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

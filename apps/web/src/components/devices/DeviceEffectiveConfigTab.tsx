@@ -21,28 +21,24 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 
+import type { ConfigFeatureType } from '@breeze/shared';
+
 import { friendlyFetchError } from '../../lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 
 // ── Types ────────────────────────────────────────────────────────────
 
-type FeatureType =
-  | 'patch'
-  | 'alert_rule'
-  | 'backup'
-  | 'security'
-  | 'monitoring'
-  | 'maintenance'
-  | 'compliance'
-  | 'automation'
-  | 'warranty'
-  | 'helper'
-  | 'event_log'
-  | 'software_policy'
-  | 'sensitive_data'
-  | 'peripheral_control'
-  | 'onedrive_helper'
-  | 'vulnerability';
+// Derived from the canonical CONFIG_FEATURE_TYPES (single source of truth in
+// @breeze/shared) minus the two baselines this tab can't represent. remote_access
+// and pam actively *apply* a value to an unassigned device (`applied: true` in
+// policyBaselineDefaults.ts — remote_access defaults ON, pam is present but
+// uacInterceptionEnabled:false), so the "Not enforced when unassigned" labeling
+// below would mislabel them. Deriving via Exclude (not a hand-listed union) means
+// a new canonical feature type makes FEATURE_META below fail to compile until it
+// is accounted for, and DeviceEffectiveConfigTab.featureParity.test.ts asserts
+// the exclusions stay honest. (#2004)
+type FeatureType = Exclude<ConfigFeatureType, 'remote_access' | 'pam'>;
+export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = ['remote_access', 'pam'] as const;
 
 type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device' | 'default';
 
@@ -88,10 +84,10 @@ type EffectiveConfiguration = {
 // labeling below would mislabel them. Every type present here is a "not enforced
 // when unassigned" baseline, so that labeling is safe.
 //
-// NOTE: parity with the canonical CONFIG_FEATURE_TYPES
-// (apps/api/src/services/configFeatureTypes.ts) minus those two is maintained by
-// hand — no test enforces it. A new canonical feature type must be added here too
-// or it won't render on this tab.
+// FeatureType is derived from the canonical CONFIG_FEATURE_TYPES (@breeze/shared)
+// minus those two, so a new canonical feature type makes this Record fail to
+// compile until it is accounted for, and featureParity.test.ts asserts the
+// exclusion set stays honest. (#2004)
 const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   patch:              { label: 'Patch Management',    Icon: PackageCheck },
   alert_rule:         { label: 'Alert Rules',         Icon: Bell },
@@ -113,7 +109,8 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
 // grid stays in lockstep with FEATURE_META and can't silently omit a type.
-const ALL_FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
+// Exported for the parity test (DeviceEffectiveConfigTab.featureParity.test.ts).
+export const ALL_FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
 
 const LEVEL_LABELS: Record<AssignmentLevel, string> = {
   partner: 'Partner',
