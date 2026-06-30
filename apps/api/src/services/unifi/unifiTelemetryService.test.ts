@@ -7,7 +7,9 @@ type WriteRecord = { table: any; values: any; conflict?: any };
 
 // Build a DbExecutor that returns canned select rows per table and records inserts/updates.
 function scriptedDb(opts: {
-  collector: any; mappings: any[]; existingDevices?: any[]; existingClients?: any[]; assetByMac?: Record<string, any>;
+  collector: any; mappings: any[]; existingDevices?: any[]; existingClients?: any[];
+  assetByMac?: Record<string, any>;
+  assetInsertReturn?: { id: string }; // canned return for discoveredAssets insert().returning()
 }) {
   const writes = { inserts: [] as WriteRecord[], updates: [] as WriteRecord[] };
 
@@ -61,6 +63,10 @@ function scriptedDb(opts: {
         ctx.conflict = conflict;
         return chain;
       },
+      returning(_col: any) {
+        ctx.returning = true;
+        return chain;
+      },
       set(v: any) {
         ctx.setValues = v;
         return chain;
@@ -69,7 +75,11 @@ function scriptedDb(opts: {
         try {
           if (ctx.op === 'insert' && ctx.insertValues !== undefined) {
             writes.inserts.push({ table: ctx.table, values: ctx.insertValues, conflict: ctx.conflict });
-            resolve([]);
+            if (ctx.table === discoveredAssets && opts.assetInsertReturn) {
+              resolve([opts.assetInsertReturn]);
+            } else {
+              resolve([]);
+            }
             return;
           }
           if (ctx.op === 'update' && ctx.setValues !== undefined) {
@@ -218,5 +228,50 @@ describe('reconcileTelemetry', () => {
     // Stored canonical (lowercase, colon-separated) and linked despite the source casing.
     expect(clientInserts[0]!.values.mac).toBe('aa:bb:cc:dd:ee:ff');
     expect(clientInserts[0]!.values.discoveredAssetId).toBe('asset-9');
+  });
+
+  it('reconciles device ip+mac into discovered_assets and stamps discoveredAssetId on the telemetry row', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetInsertReturn: { id: 'asset-new-1' },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'AA:BB:CC:00:11:22', raw: { ipAddress: '10.0.0.5', name: 'sw1' } }],
+      clients: [],
+    });
+
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(1);
+    expect(assetInserts[0]!.values.orgId).toBe('org-a');
+    expect(assetInserts[0]!.values.ipAddress).toBe('10.0.0.5');
+    expect(assetInserts[0]!.values.manufacturer).toBe('Ubiquiti');
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-new-1');
+    expect(deviceInserts[0]!.conflict.set.discoveredAssetId).toBe('asset-new-1');
+  });
+
+  it('skips asset creation and leaves discoveredAssetId null when device raw has no ip', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'AA:BB:CC:00:11:22', raw: { name: 'sw1' } }],
+      clients: [],
+    });
+
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(0);
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBeNull();
   });
 });

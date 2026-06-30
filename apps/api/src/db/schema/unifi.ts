@@ -150,6 +150,7 @@ export const unifiDeviceTelemetry = pgTable('unifi_device_telemetry', {
   txBytes: bigint('tx_bytes', { mode: 'number' }),
   rxBytes: bigint('rx_bytes', { mode: 'number' }),
   numClients: integer('num_clients'),
+  discoveredAssetId: uuid('discovered_asset_id').references(() => discoveredAssets.id),
   poePorts: jsonb('poe_ports'),
   raw: jsonb('raw').notNull(),
   isStale: boolean('is_stale').notNull().default(false),

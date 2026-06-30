@@ -37,6 +37,65 @@ function normalizeMac(mac: string): string {
   return mac.trim().toLowerCase().replace(/-/g, ':');
 }
 
+// Extract IP from a telemetry device's raw payload.
+// UniFi device JSON uses `ipAddress`; guard against other field names too.
+function deviceIp(raw: unknown): string | null {
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    const ip = r.ipAddress ?? r.ip;
+    if (typeof ip === 'string' && ip.length > 0) return ip;
+  }
+  return null;
+}
+
+// Find-or-create a discovered_assets row for a telemetry device; return its id.
+// Mirrors reconcileDiscoveredAsset in unifiSyncService.ts but uses the telemetry
+// device DTO which exposes IP only inside `raw`.
+async function linkTelemetryDeviceToAsset(
+  db: DbExecutor,
+  orgId: string,
+  siteId: string,
+  device: TelemetryDeviceDto,
+): Promise<string | null> {
+  const ip = deviceIp(device.raw);
+  if (!ip) return null;
+
+  const enrich = {
+    macAddress: device.mac ?? undefined,
+    hostname: device.name ?? undefined,
+    manufacturer: 'Ubiquiti',
+    isOnline: true,
+    lastSeenAt: new Date(),
+  };
+
+  // 1. Match by (org_id, mac) first — the stable identifier.
+  let existing: { id: string } | null = null;
+  if (device.mac) {
+    const byMac = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(discoveredAssets.macAddress, device.mac))).limit(1);
+    existing = byMac[0] ?? null;
+  }
+
+  // 2. Fall back to the (org_id, ip_address) unique key.
+  if (!existing) {
+    const byIp = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(discoveredAssets.ipAddress, ip))).limit(1);
+    existing = byIp[0] ?? null;
+  }
+
+  if (existing) {
+    await db.update(discoveredAssets).set(enrich).where(eq(discoveredAssets.id, existing.id));
+    return existing.id;
+  }
+
+  // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
+  const inserted = await db.insert(discoveredAssets)
+    .values({ orgId, siteId, ipAddress: ip, ...enrich })
+    .onConflictDoUpdate({ target: [discoveredAssets.orgId, discoveredAssets.ipAddress], set: enrich })
+    .returning({ id: discoveredAssets.id });
+  return inserted[0]?.id ?? null;
+}
+
 export async function reconcileTelemetry(
   db: DbExecutor,
   payload: TelemetryPayload,
@@ -82,16 +141,17 @@ export async function reconcileTelemetry(
   for (const d of payload.devices) {
     seenDeviceIds.add(d.unifiDeviceId);
     const { orgId, siteId } = resolveSite(d.unifiSiteId);
+    const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d);
     await db.insert(unifiDeviceTelemetry).values({
       collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac: d.mac, name: d.name,
       uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct, txBytes: d.txBytes, rxBytes: d.rxBytes,
-      numClients: d.numClients, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
+      numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiDeviceTelemetry.collectorId, unifiDeviceTelemetry.unifiDeviceId],
       set: {
         orgId, siteId, mac: d.mac, name: d.name, uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct,
-        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
+        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
         isStale: false, lastSeenAt: seenAt, lastSyncedAt: now, updatedAt: now,
       },
     });

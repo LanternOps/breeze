@@ -46,3 +46,8 @@ CREATE POLICY breeze_org_isolation_update ON unifi_controller_sites
   WITH CHECK (public.breeze_has_org_access(org_id));
 CREATE POLICY breeze_org_isolation_delete ON unifi_controller_sites
   FOR DELETE USING (public.breeze_has_org_access(org_id));
+
+-- 3. Link telemetry devices to discovered_assets (inventory parity for self-hosted;
+-- harmless for cloud collectors, which simply leave it null).
+ALTER TABLE unifi_device_telemetry
+  ADD COLUMN IF NOT EXISTS discovered_asset_id uuid REFERENCES discovered_assets(id);
