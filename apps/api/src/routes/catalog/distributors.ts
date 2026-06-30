@@ -125,7 +125,8 @@ const importSchema = z.object({
     costBasis: money.nullable().optional(),
     markupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
     taxable: z.boolean().default(true),
-  })
+  }),
+  aiCleanup: z.boolean().optional(),
 });
 
 function handleTdSynnexError(c: { json: (body: unknown, status: number) => Response }, err: unknown): Response {
@@ -200,7 +201,11 @@ catalogDistributorRoutes.post(
   zValidator('json', importSchema),
   async (c) => {
     try {
-      const data = await importTdSynnexCatalogItem(c.req.valid('json'), catalogActorFrom(c));
+      const body = c.req.valid('json');
+      const data = await importTdSynnexCatalogItem(
+        { product: body.product, item: body.item, aiCleanup: body.aiCleanup },
+        catalogActorFrom(c),
+      );
       return c.json({ data });
     } catch (err) {
       return handleTdSynnexError(c, err);
@@ -340,6 +345,7 @@ const pax8ImportSchema = z.object({
     costBasis: z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01).nullable().optional(),
     taxable: z.boolean().optional(),
   }),
+  aiCleanup: z.boolean().optional(),
 });
 
 function handlePax8Error(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
@@ -362,5 +368,12 @@ catalogDistributorRoutes.get('/distributors/pax8/pricing', scopes, readPerm, zVa
 });
 
 catalogDistributorRoutes.post('/distributors/pax8/import', scopes, writePerm, requireMfa(), zValidator('json', pax8ImportSchema), async (c) => {
-  try { return c.json({ data: await importPax8CatalogItem(c.req.valid('json'), catalogActorFrom(c)) }); } catch (err) { return handlePax8Error(c, err); }
+  try {
+    const body = c.req.valid('json');
+    const data = await importPax8CatalogItem(
+      { product: body.product, item: body.item, aiCleanup: body.aiCleanup },
+      catalogActorFrom(c),
+    );
+    return c.json({ data });
+  } catch (err) { return handlePax8Error(c, err); }
 });

@@ -20,6 +20,7 @@ import {
   type EnrichResult, type EnrichmentProvenance,
 } from '../../lib/api/catalog';
 import CatalogEnrichButton from '../catalog/CatalogEnrichButton';
+import PolishButton from '../catalog/PolishButton';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -526,6 +527,19 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
               placeholder="Customer-facing details shown on quotes and invoices."
               data-testid="catalog-form-description"
             />
+            {canWrite && (name.trim() || description.trim()) && (
+              <div className="mt-2 flex items-center gap-2">
+                <PolishButton
+                  idSuffix="catalog"
+                  getText={() => ({ name, description })}
+                  onApply={(r) => {
+                    if (r.name !== null) setName(r.name);
+                    if (r.description !== null) setDescription(r.description);
+                  }}
+                />
+                <span className="text-xs text-muted-foreground">Cleans up wording &amp; formatting — your numbers &amp; specs stay; you review before it applies.</span>
+              </div>
+            )}
           </div>
 
           <div>

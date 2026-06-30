@@ -143,3 +143,26 @@ export const enrichResponseSchema = z.object({
   provenance: enrichmentProvenanceSchema,
 });
 export type EnrichResponse = z.infer<typeof enrichResponseSchema>;
+
+// "Polish with AI": presentation-only clean-up of a name and/or description the
+// user already has. Unlike enrich, this does NO web search and is contractually
+// forbidden from changing any factual detail — it only fixes grammar, casing,
+// spacing, structure, and strips distributor noise. Used by the catalog item
+// editor, quote line editor, and invoice line editor.
+export const polishTextRequestSchema = z.object({
+  name: z.string().max(255).nullable().optional(),
+  description: z.string().max(10_000).nullable().optional(),
+}).refine(
+  (d) => Boolean(d.name?.trim()) || Boolean(d.description?.trim()),
+  { message: 'Provide a name or description to polish' },
+);
+export type PolishTextRequest = z.infer<typeof polishTextRequestSchema>;
+
+export const polishTextResponseSchema = z.object({
+  name: z.string().max(255).nullable(),
+  description: z.string().max(10_000).nullable(),
+  // True when the polished text differs from the input (lets the UI skip a
+  // no-op "nothing changed" preview).
+  changed: z.boolean(),
+});
+export type PolishTextResponse = z.infer<typeof polishTextResponseSchema>;

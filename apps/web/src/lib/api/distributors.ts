@@ -122,6 +122,6 @@ export function pax8Pricing(productId: string): Promise<Response> {
   return fetchWithAuth(`${PAX8_BASE}/pricing?productId=${encodeURIComponent(productId)}`);
 }
 
-export function pax8Import(body: { product: Pax8ImportProduct; item: Pax8ImportItem }): Promise<Response> {
+export function pax8Import(body: { product: Pax8ImportProduct; item: Pax8ImportItem; aiCleanup?: boolean }): Promise<Response> {
   return fetchWithAuth(`${PAX8_BASE}/import`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
 }

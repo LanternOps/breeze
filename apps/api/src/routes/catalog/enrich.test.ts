@@ -2,15 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import type { AuthContext } from '../../middleware/auth';
 
-const { enrichCatalogItem, EnrichmentError } = vi.hoisted(() => {
+const { enrichCatalogItem, polishCatalogText, EnrichmentError } = vi.hoisted(() => {
   const enrichCatalogItem = vi.fn();
+  const polishCatalogText = vi.fn();
   class EnrichmentError extends Error {
     code: string; status: number;
     constructor(m: string, c: string, s: number) { super(m); this.code = c; this.status = s; }
   }
-  return { enrichCatalogItem, EnrichmentError };
+  return { enrichCatalogItem, polishCatalogText, EnrichmentError };
 });
-vi.mock('../../services/catalogEnrichmentService', () => ({ enrichCatalogItem, EnrichmentError }));
+vi.mock('../../services/catalogEnrichmentService', () => ({ enrichCatalogItem, polishCatalogText, EnrichmentError }));
 
 // Auth middleware stubs: inject an auth context and pass through.
 vi.mock('../../middleware/auth', () => ({
@@ -32,7 +33,7 @@ function app() {
   return a;
 }
 
-beforeEach(() => enrichCatalogItem.mockReset());
+beforeEach(() => { enrichCatalogItem.mockReset(); polishCatalogText.mockReset(); });
 
 describe('POST /catalog/enrich', () => {
   it('returns the enrichment result', async () => {
@@ -63,5 +64,41 @@ describe('POST /catalog/enrich', () => {
     });
     expect(res.status).toBe(429);
     expect((await res.json()).code).toBe('AI_LIMIT');
+  });
+});
+
+describe('POST /catalog/polish', () => {
+  it('returns the polished name + description', async () => {
+    polishCatalogText.mockResolvedValueOnce({ name: 'Clean Name', description: 'Clean desc.', changed: true });
+    const res = await app().request('/polish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'spl clean name disti', description: 'clean desc' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({ name: 'Clean Name', description: 'Clean desc.', changed: true });
+    expect(polishCatalogText).toHaveBeenCalledWith(
+      { name: 'spl clean name disti', description: 'clean desc' },
+      { userId: 'u1', orgId: 'o1' },
+    );
+  });
+
+  it('400s when neither name nor description is provided', async () => {
+    const res = await app().request('/polish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '   ', description: '' }),
+    });
+    expect(res.status).toBe(400);
+    expect(polishCatalogText).not.toHaveBeenCalled();
+  });
+
+  it('maps a fact-drift EnrichmentError to 502 / AI_FACT_DRIFT', async () => {
+    polishCatalogText.mockRejectedValueOnce(new EnrichmentError('changed details', 'AI_FACT_DRIFT', 502));
+    const res = await app().request('/polish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'apc 600va' }),
+    });
+    expect(res.status).toBe(502);
+    expect((await res.json()).code).toBe('AI_FACT_DRIFT');
   });
 });

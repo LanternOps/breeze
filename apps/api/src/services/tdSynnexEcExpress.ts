@@ -5,8 +5,8 @@ import { tdSynnexEcExpressIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { safeFetch } from './urlSafety';
 import { createCatalogItem, type CatalogActor } from './catalogService';
-import { cleanupDistributorListing } from './catalogEnrichmentService';
-import type { CreateCatalogItemInput } from '@breeze/shared';
+import { enrichDistributorListing } from './catalogEnrichmentService';
+import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 
 const TABLE = 'td_synnex_ec_express_integrations';
 const CREDENTIALS_COLUMN = 'credentials';
@@ -503,18 +503,25 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
   const { product, item } = input;
 
   // The quote/catalog lookup flows pass the raw distributor title as item.name,
-  // which is unreadable ("SPL Dell Pro 14 PC14250 ... DISTI"). When asked, tidy it
-  // into a name + description; on any failure keep the raw values (cleaned == null).
+  // which is unreadable ("SPL Dell Pro 14 PC14250 ... DISTI"). When asked, run a
+  // web-search enrichment to produce a clean name + a real, technical description;
+  // on any failure keep the raw values (enriched == null).
   let name = item.name;
   let description = item.description ?? product.description ?? undefined;
+  let aiProvenance: EnrichmentProvenance | undefined;
   if (input.aiCleanup) {
-    const cleaned = await cleanupDistributorListing(product.name, {
+    // Anchor the lookup on the manufacturer part number when present — it pins the
+    // web search to the exact SKU rather than a fuzzy title match.
+    const query = product.mfgPartNo ? `${product.name} (MPN: ${product.mfgPartNo})` : product.name;
+    const enriched = await enrichDistributorListing(query, 'hardware', {
       userId: actor.userId,
       orgId: actor.accessibleOrgIds?.[0] ?? null,
     });
-    if (cleaned) {
-      name = cleaned.name;
-      description = cleaned.description;
+    if (enriched) {
+      name = enriched.name;
+      // enrich can return a null description; keep the raw fallback in that case.
+      if (enriched.description) description = enriched.description;
+      aiProvenance = enriched.provenance;
     }
   }
 
@@ -547,10 +554,12 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
         warehouses: product.warehouses,
         raw: product.raw,
         importedAt: new Date().toISOString(),
-        // Traceability: keep the original distributor title and note when the
-        // stored name/description came from the AI clean-up rather than the feed.
+        // Traceability: keep the original distributor title and, when AI
+        // enrichment supplied the stored name/description, record its provenance
+        // (model, query, suggestion) rather than just a boolean.
         rawName: product.name,
-        aiCleaned: input.aiCleanup === true && name !== item.name,
+        aiEnriched: aiProvenance != null,
+        ...(aiProvenance ? { aiProvenance } : {}),
       },
     },
   };

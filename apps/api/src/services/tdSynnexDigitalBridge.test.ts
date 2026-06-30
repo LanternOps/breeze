@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     createCatalogItem: vi.fn(),
     safeFetch: vi.fn(),
     SsrfBlockedError,
+    enrichDistributorListing: vi.fn(),
   };
 });
 
@@ -24,6 +25,7 @@ vi.mock('./secretCrypto', () => ({
 vi.mock('./catalogService', () => ({
   createCatalogItem: mocks.createCatalogItem,
 }));
+vi.mock('./catalogEnrichmentService', () => ({ enrichDistributorListing: mocks.enrichDistributorListing }));
 vi.mock('./urlSafety', () => ({
   safeFetch: mocks.safeFetch,
   SsrfBlockedError: mocks.SsrfBlockedError,
@@ -436,5 +438,57 @@ describe('tdSynnexDigitalBridge service', () => {
     });
     // raw provider blob must NOT be persisted into the catalog item
     expect(input.attributes.distributor).not.toHaveProperty('raw');
+    expect(mocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
+  });
+
+  it('web-enriches name + description when aiCleanup is set, anchoring on the MPN', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
+    mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-2' });
+    mocks.enrichDistributorListing.mockResolvedValueOnce({
+      name: 'Lenovo ThinkPad USB-C Dock Gen 2',
+      description: 'USB-C dock, dual 4K, 90W PD, GbE.',
+      itemType: 'hardware',
+      priceGuidance: null,
+      provenance: { source: 'ai_enrich', model: 'm', query: 'q', suggestion: {}, enrichedAt: 't', enrichedBy: 'u1' },
+    });
+    await importTdSynnexCatalogItem({
+      product: {
+        source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+        manufacturerPartNumber: 'MPN-1', vendor: 'Lenovo', name: 'SPL Dock DISTI', description: 'raw',
+        cost: '100.00', currency: 'USD', availability: 4, warehouses: [{ code: 'A' }],
+        raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
+      },
+      item: { name: 'SPL Dock DISTI', sku: 'SKU-1', unitPrice: 125, taxable: true },
+      aiCleanup: true,
+    }, actor);
+    const [query, hint] = mocks.enrichDistributorListing.mock.calls[0]!;
+    expect(query).toContain('MPN-1');
+    expect(hint).toBe('hardware');
+    const input = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(input.name).toBe('Lenovo ThinkPad USB-C Dock Gen 2');
+    expect(input.description).toMatch(/4K/);
+    expect(input.attributes.distributor.aiEnriched).toBe(true);
+    expect(input.attributes.distributor.rawName).toBe('SPL Dock DISTI');
+  });
+
+  it('keeps raw values and marks aiEnriched=false when enrichment is unavailable', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([enabledRow]));
+    mocks.createCatalogItem.mockResolvedValueOnce({ id: 'catalog-3' });
+    mocks.enrichDistributorListing.mockResolvedValueOnce(null); // budget/rate/timeout
+    await importTdSynnexCatalogItem({
+      product: {
+        source: 'td_synnex_digital_bridge', sourceProductId: 'td-1', sku: 'SKU-1',
+        manufacturerPartNumber: 'MPN-1', vendor: 'Lenovo', name: 'SPL Dock DISTI', description: 'raw desc',
+        cost: '100.00', currency: 'USD', availability: 4, warehouses: [{ code: 'A' }],
+        raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
+      },
+      item: { name: 'SPL Dock DISTI', sku: 'SKU-1', unitPrice: 125, taxable: true },
+      aiCleanup: true,
+    }, actor);
+    const input = mocks.createCatalogItem.mock.calls[0]![0];
+    expect(input.name).toBe('SPL Dock DISTI'); // unchanged
+    expect(input.description).toBe('raw desc');
+    expect(input.attributes.distributor.aiEnriched).toBe(false);
+    expect(input.attributes.distributor.aiProvenance).toBeUndefined();
   });
 });

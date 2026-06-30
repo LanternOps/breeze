@@ -1,18 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, recordUsage } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
+  checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
 }));
 vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
-vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, recordUsage }));
+vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
-import { enrichCatalogItem, EnrichmentError } from './catalogEnrichmentService';
+import { enrichCatalogItem, enrichDistributorListing, polishCatalogText, EnrichmentError } from './catalogEnrichmentService';
 
 const actor = { userId: 'u1', orgId: 'o1' };
 
@@ -26,8 +28,8 @@ function aiMessage(json: object) {
 
 beforeEach(() => {
   create.mockReset();
-  checkBudget.mockClear(); checkAiRateLimit.mockClear(); recordUsage.mockClear();
-  checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null);
+  checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
+  checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
 });
 
 describe('enrichCatalogItem', () => {
@@ -183,5 +185,210 @@ describe('enrichCatalogItem', () => {
     await enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null });
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
+  });
+});
+
+describe('enrichDistributorListing', () => {
+  it('maps a successful enrichment to name/description/itemType/provenance', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'Dell UltraSharp U2724D 27" Monitor',
+      description: '27-inch QHD (2560x1440) IPS monitor, 120Hz, USB-C hub.',
+      itemType: 'hardware', unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: 380, priceHigh: 550, currency: 'USD', confidence: 0.9, notes: '',
+    }));
+    const res = await enrichDistributorListing('SPL Dell U2724D DISTI (MPN: DELL-U2724D)', 'hardware', actor);
+    expect(res).not.toBeNull();
+    expect(res!.name).toBe('Dell UltraSharp U2724D 27" Monitor');
+    expect(res!.description).toMatch(/QHD/);
+    expect(res!.itemType).toBe('hardware');
+    expect(res!.provenance.source).toBe('ai_enrich');
+    expect(res!.priceGuidance).toMatch(/380/);
+  });
+
+  it('returns null (never throws) when the AI call fails', async () => {
+    create.mockRejectedValueOnce(new Error('network down'));
+    const res = await enrichDistributorListing('Some product', 'hardware', actor);
+    expect(res).toBeNull();
+  });
+
+  it('returns null when the AI is rate-limited or over budget', async () => {
+    checkAiRateLimit.mockResolvedValueOnce('rate limited');
+    const res = await enrichDistributorListing('Some product', 'hardware', actor);
+    expect(res).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a blank query without calling the model', async () => {
+    const res = await enrichDistributorListing('   ', 'hardware', actor);
+    expect(res).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('returns null (keeps raw values) when enrichment exceeds the timeout', async () => {
+    create.mockReturnValue(new Promise(() => {})); // never resolves → forces timeout
+    const res = await enrichDistributorListing('Some product', 'hardware', actor, 20);
+    expect(res).toBeNull();
+  });
+});
+
+describe('polishCatalogText', () => {
+  it('polishes name + description and reports changed=true when facts are preserved', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS 600VA UPS',
+      description: 'APC Back-UPS 600VA battery backup with 7 outlets.',
+    }));
+    const res = await polishCatalogText(
+      { name: 'spl apc back-ups 600va disti', description: 'apc backups 600va,7 outlets' },
+      actor,
+    );
+    expect(res.name).toBe('APC Back-UPS 600VA UPS');
+    expect(res.description).toMatch(/7 outlets/);
+    expect(res.changed).toBe(true);
+  });
+
+  it('blocks a polish that CHANGES a number (fact guard), retrying then throwing AI_FACT_DRIFT', async () => {
+    // Both attempts drift 600VA -> 650VA. Guard must reject both and never return.
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }))
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }));
+    await expect(polishCatalogText({ name: 'apc back-ups 600va' }, actor))
+      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT', status: 502 });
+    expect(create).toHaveBeenCalledTimes(2); // one clean turn + one stricter retry
+  });
+
+  it('blocks a polish that INVENTS a new spec not present in the input', async () => {
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'Dell Monitor 27" 144Hz', description: null }))
+      .mockResolvedValueOnce(aiMessage({ name: 'Dell Monitor 27" 144Hz', description: null }));
+    // input has 27 but NOT 144 — inventing 144Hz must be rejected.
+    await expect(polishCatalogText({ name: 'dell monitor 27 inch' }, actor))
+      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+  });
+
+  it('accepts the stricter retry when the first attempt drifts but the second is clean', async () => {
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null })) // drift
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 600VA', description: null })); // clean
+    const res = await polishCatalogText({ name: 'spl apc back-ups 600va disti' }, actor);
+    expect(res.name).toBe('APC Back-UPS 600VA');
+  });
+
+  it('allows pure presentation changes: thousands separators and unit spacing are not drift', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: null,
+      description: 'Storage array with 1440GB usable capacity and 10GbE networking.',
+    }));
+    const res = await polishCatalogText(
+      { description: 'storage array 1,440 gb usable, 10 gbe networking' },
+      actor,
+    );
+    expect(res.description).toMatch(/1440GB/);
+    expect(res.changed).toBe(true);
+  });
+
+  it('never invents a name when only a description was provided', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'Some Invented Product Name',
+      description: 'Clean managed support description.',
+    }));
+    const res = await polishCatalogText({ description: 'managed support desc' }, actor);
+    expect(res.name).toBeNull();
+    expect(res.description).toBe('Clean managed support description.');
+  });
+
+  it('reports changed=false when the model returns identical text', async () => {
+    create.mockResolvedValueOnce(aiMessage({ name: 'Already Clean Name', description: null }));
+    const res = await polishCatalogText({ name: 'Already Clean Name' }, actor);
+    expect(res.changed).toBe(false);
+  });
+
+  it('throws AI_LIMIT (429) when rate-limited, before calling the model', async () => {
+    checkAiRateLimit.mockResolvedValueOnce('Too many AI requests');
+    await expect(polishCatalogText({ name: 'x' }, actor))
+      .rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a per-user rate limit (no org budget/recordUsage) when orgId is null', async () => {
+    create.mockResolvedValueOnce(aiMessage({ name: 'Clean Name', description: null }));
+    await polishCatalogText({ name: 'clean name' }, { userId: 'u1', orgId: null });
+    expect(checkUserAiRateLimit).toHaveBeenCalledWith('u1');
+    expect(checkBudget).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('rejects with AI_LIMIT when the no-org per-user rate limit is exceeded', async () => {
+    checkUserAiRateLimit.mockResolvedValueOnce('Rate limit exceeded');
+    await expect(polishCatalogText({ name: 'x' }, { userId: 'u1', orgId: null }))
+      .rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('catches a UNIT swap that keeps the digit (16GB → 16TB) as drift', async () => {
+    create
+      .mockResolvedValueOnce(aiMessage({ name: '16TB DDR4 module', description: null }))
+      .mockResolvedValueOnce(aiMessage({ name: '16TB DDR4 module', description: null }));
+    await expect(polishCatalogText({ name: '16gb ddr4 module' }, actor))
+      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+  });
+
+  it('catches a PRICE change ($549.99 → $559.99) as drift', async () => {
+    create
+      .mockResolvedValueOnce(aiMessage({ name: null, description: 'Monitor, $559.99 street price.' }))
+      .mockResolvedValueOnce(aiMessage({ name: null, description: 'Monitor, $559.99 street price.' }));
+    await expect(polishCatalogText({ description: 'monitor $549.99 street price' }, actor))
+      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+  });
+
+  it('catches a dropped duplicate quantity (2 × 2TB → 2TB) via multiset counts', async () => {
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'Dual 2TB NAS (2TB usable)', description: null }))
+      .mockResolvedValueOnce(aiMessage({ name: 'Dual 2TB NAS (2TB usable)', description: null }));
+    // input has bare "2" and "2tb"; output collapses to a single "2tb" — counts differ.
+    await expect(polishCatalogText({ name: '2 x 2tb nas' }, actor))
+      .rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+  });
+
+  it('allows decimal/trailing-zero reformatting (1.50 ↔ 1.5) — not drift', async () => {
+    create.mockResolvedValueOnce(aiMessage({ name: '1.5 GHz mini PC', description: null }));
+    const res = await polishCatalogText({ name: '1.50ghz mini pc' }, actor);
+    expect(res.name).toBe('1.5 GHz mini PC');
+    expect(res.changed).toBe(true);
+  });
+
+  it('allows a numeric spec to MOVE from name into description — not drift', async () => {
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS', description: '600VA battery backup unit.',
+    }));
+    const res = await polishCatalogText(
+      { name: 'apc back-ups 600va', description: 'battery backup unit' },
+      actor,
+    );
+    expect(res.name).toBe('APC Back-UPS');
+    expect(res.description).toBe('600VA battery backup unit.');
+  });
+
+  it('never invents a description when only a name was provided', async () => {
+    create.mockResolvedValueOnce(aiMessage({ name: 'Clean Name', description: 'Invented blurb.' }));
+    const res = await polishCatalogText({ name: 'clean name' }, actor);
+    expect(res.description).toBeNull();
+    expect(res.name).toBe('Clean Name');
+  });
+
+  it('throws AI_PARSE (not AI_FACT_DRIFT) when the model never returns parseable JSON', async () => {
+    create
+      .mockResolvedValueOnce({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'not json' }], usage: { input_tokens: 10, output_tokens: 5 } })
+      .mockResolvedValueOnce({ stop_reason: 'end_turn', content: [{ type: 'text', text: '```still not json```' }], usage: { input_tokens: 10, output_tokens: 5 } });
+    await expect(polishCatalogText({ name: 'apc 600va' }, actor))
+      .rejects.toMatchObject({ code: 'AI_PARSE', status: 502 });
+  });
+
+  it('records the SUMMED tokens across both attempts even when it throws AI_FACT_DRIFT', async () => {
+    create
+      .mockResolvedValueOnce(aiMessage({ name: '650VA UPS', description: null }))   // drift, 100/50
+      .mockResolvedValueOnce(aiMessage({ name: '650VA UPS', description: null }));  // drift, 100/50
+    await expect(polishCatalogText({ name: 'apc 600va ups' }, actor)).rejects.toMatchObject({ code: 'AI_FACT_DRIFT' });
+    // Tokens were really spent on both turns — they must still be billed.
+    expect(recordUsage).toHaveBeenCalledWith(null, 'o1', expect.any(String), 200, 100, true);
   });
 });

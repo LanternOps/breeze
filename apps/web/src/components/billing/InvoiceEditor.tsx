@@ -14,6 +14,7 @@ import {
   computeInvoiceProfit,
 } from './invoiceTypes';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
+import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -334,6 +335,16 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             </div>
             {addMode === 'manual' ? (
               <div className="space-y-2">
+              {(manualName.trim() || manualDesc.trim()) && (
+                <PolishButton
+                  idSuffix="invoice-manual"
+                  getText={() => ({ name: manualName, description: manualDesc })}
+                  onApply={(r) => {
+                    if (r.name !== null) setManualName(r.name);
+                    if (r.description !== null) setManualDesc(r.description);
+                  }}
+                />
+              )}
               <input
                 type="text" placeholder="Name" aria-label="Line name" value={manualName}
                 onChange={(e) => setManualName(e.target.value)}
