@@ -260,6 +260,44 @@ describe('incidentRoutes', () => {
     );
   });
 
+  it('returns 409 (not 500) when the same EDR finding is promoted twice', async () => {
+    // postgres.js raises a 23505 PostgresError carrying the constraint name;
+    // Drizzle wraps it in a query error whose real fields live on `.cause`.
+    // isPgUniqueViolation walks that chain, so reproduce both layers here. The
+    // promote handler matches `incidents_source_ref_unique` specifically.
+    const pgError = Object.assign(
+      new Error('duplicate key value violates unique constraint "incidents_source_ref_unique"'),
+      { code: '23505', constraint: 'incidents_source_ref_unique' },
+    );
+    const drizzleError = Object.assign(new Error('Failed query: insert into "incidents"'), {
+      cause: pgError,
+    });
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockRejectedValue(drizzleError),
+      }),
+    } as any);
+
+    const res = await app.request('/incidents', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+      },
+      body: JSON.stringify({
+        title: 'Huntress: Suspicious login',
+        classification: 'huntress-incident',
+        severity: 'p1',
+        sourceType: 'huntress_incident',
+        sourceRef: 'hunt-abc-123',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/already been promoted/i);
+  });
+
   it('rejects high-risk containment without approvalRef', async () => {
     const res = await app.request('/incidents/33333333-3333-4333-8333-333333333333/contain', {
       method: 'POST',

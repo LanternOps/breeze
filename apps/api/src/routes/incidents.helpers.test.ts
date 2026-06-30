@@ -25,10 +25,10 @@ describe('severityRankToLabel', () => {
 
 describe('resolveFindingLinkOut', () => {
   it('returns the stored portal url when present', () => {
-    expect(resolveFindingLinkOut('huntress', { portalUrl: 'https://huntress.io/x' })).toBe('https://huntress.io/x');
+    expect(resolveFindingLinkOut({ portalUrl: 'https://huntress.io/x' })).toBe('https://huntress.io/x');
   });
   it('returns null when no url is derivable', () => {
-    expect(resolveFindingLinkOut('s1', null)).toBeNull();
+    expect(resolveFindingLinkOut(null)).toBeNull();
   });
 });
 
@@ -84,6 +84,57 @@ describe('buildIncidentFeedQueries (DB-less build guard)', () => {
     const built = buildIncidentFeedQueries(orgAuth, {
       ...params,
       kind: 'tracked',
+      source: 'huntress',
+    });
+    expect(built).toBeNull();
+  });
+
+  // FIX 1 (CRITICAL): site-level RBAC. A site-restricted caller's allowed device
+  // ids must be pushed onto the huntress + s1 legs as the same null-device-OR-
+  // in-list predicate the dedicated EDR routes use, so they cannot read EDR
+  // findings for devices outside their sites via the feed.
+  it('applies the site-allowlist predicate to the huntress and s1 legs when site-restricted', () => {
+    const built = buildIncidentFeedQueries(orgAuth, {
+      ...params,
+      hasDevicesRead: true,
+      allowedDeviceIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+    })!;
+    const { sql } = built.rowsQuery.toSQL();
+    // null-device carve-out + device-id IN (...) narrowing (mirrors EDR routes).
+    expect(sql).toContain('"device_id" is null');
+    expect(sql).toMatch(/"device_id" in \(/);
+  });
+
+  it('does not add a site predicate when the caller is not site-restricted', () => {
+    const built = buildIncidentFeedQueries(orgAuth, {
+      ...params,
+      hasDevicesRead: true,
+      allowedDeviceIds: null,
+    })!;
+    const { sql } = built.rowsQuery.toSQL();
+    // The EDR legs still project device_id (select list), but no WHERE predicate
+    // narrows on it — so the broad feed is not over-restricted.
+    expect(sql).not.toContain('"device_id" is null');
+    expect(sql).not.toMatch(/"device_id" in \(/);
+  });
+
+  // FIX 2: devices:read gate. A caller with alerts:read but not devices:read
+  // sees only native tracked incidents — the raw EDR finding legs are omitted.
+  it('omits the huntress and s1 legs entirely when the caller lacks devices:read', () => {
+    const built = buildIncidentFeedQueries(orgAuth, {
+      ...params,
+      hasDevicesRead: false,
+    })!;
+    const { sql } = built.rowsQuery.toSQL();
+    expect(sql).toContain('"incidents"');
+    expect(sql).not.toContain('huntress_incidents');
+    expect(sql).not.toContain('s1_threats');
+  });
+
+  it('yields an empty feed (null) when a no-devices-read caller filters to source=huntress', () => {
+    const built = buildIncidentFeedQueries(orgAuth, {
+      ...params,
+      hasDevicesRead: false,
       source: 'huntress',
     });
     expect(built).toBeNull();

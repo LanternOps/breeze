@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { unionAll } from 'drizzle-orm/pg-core';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { createHash } from 'node:crypto';
@@ -148,10 +148,7 @@ export type IncidentFeedRow = {
   linkOut: string | null;
 };
 
-export function resolveFindingLinkOut(
-  source: 'huntress' | 's1',
-  details: unknown
-): string | null {
+export function resolveFindingLinkOut(details: unknown): string | null {
   if (details && typeof details === 'object') {
     const d = details as Record<string, unknown>;
     const url = d.portalUrl ?? d.url ?? d.link;
@@ -193,6 +190,24 @@ export type IncidentFeedParams = {
   source?: 'breeze' | 'huntress' | 's1';
   limit: number;
   offset: number;
+  /**
+   * True when the caller holds `devices:read`. The raw EDR finding legs
+   * (huntress + s1) expose device telemetry (device ids + hostnames embedded in
+   * titles), so a caller with only `alerts:read` must not see them — when this
+   * is `false` the huntress/s1 legs are omitted entirely and only native
+   * tracked incidents are returned. Defaults to included when omitted (so
+   * existing callers keep full visibility); the route always sets it explicitly.
+   */
+  hasDevicesRead?: boolean;
+  /**
+   * Site-axis allowlist resolved by the route via `resolveSiteAllowedDeviceIds`
+   * (mirrors GET /huntress/incidents + /sentinelone/threats). `null`/`undefined`
+   * means the caller is NOT site-restricted (no narrowing). A concrete array
+   * narrows the EDR legs to findings on these devices, keeping null-device
+   * (provider-level) findings visible. Site is an app-layer authz axis Postgres
+   * RLS does NOT defend, so this must be applied in the query.
+   */
+  allowedDeviceIds?: string[] | null;
 };
 
 /**
@@ -215,6 +230,22 @@ export function buildIncidentFeedQueries(
   if (orgIncidents.error) {
     throw new FeedScopeError(orgIncidents.error.status, orgIncidents.error.message);
   }
+
+  // Site-axis narrowing for the EDR finding legs. Site is an app-layer authz
+  // axis Postgres RLS cannot see, so a site-restricted caller (org user with
+  // `permissions.allowedSiteIds`) must not read Huntress/S1 findings — deviceId
+  // or hostnames-in-titles — for devices outside their allowed sites. `null`
+  // means the caller is unrestricted (no narrowing). For a restricted caller we
+  // keep null-device (provider-level) findings visible and only exclude rows on
+  // foreign-site devices. Mirrors GET /huntress/incidents (huntress.ts) and GET
+  // /sentinelone/threats (sentinelOne.ts): with no allowed devices the `in (…)`
+  // branch matches nothing, so only the null-device branch survives.
+  const siteDevicePredicate = (deviceIdColumn: PgColumn): SQL | undefined => {
+    if (!params.allowedDeviceIds) return undefined;
+    return params.allowedDeviceIds.length > 0
+      ? (or(isNull(deviceIdColumn), inArray(deviceIdColumn, params.allowedDeviceIds)) as SQL)
+      : isNull(deviceIdColumn);
+  };
 
   // Native tracked incidents. Every raw sql<...> value carries `.as('<key>')`
   // matching its object key — drizzle requires aliases to reference subquery
@@ -255,6 +286,7 @@ export function buildIncidentFeedQueries(
     .where(
       and(
         orgHuntress.condition,
+        siteDevicePredicate(huntressIncidents.deviceId),
         sql`NOT EXISTS (SELECT 1 FROM incidents i WHERE i.org_id = ${huntressIncidents.orgId}
           AND i.source_type = 'huntress_incident' AND i.source_ref = ${huntressIncidents.huntressIncidentId})`
       )
@@ -279,15 +311,22 @@ export function buildIncidentFeedQueries(
     .where(
       and(
         orgS1.condition,
+        siteDevicePredicate(s1Threats.deviceId),
         sql`NOT EXISTS (SELECT 1 FROM incidents i WHERE i.org_id = ${s1Threats.orgId}
           AND i.source_type = 's1_threat' AND i.source_ref = ${s1Threats.s1ThreatId})`
       )
     );
 
-  // Determine which legs to include based on filters.
+  // Determine which legs to include based on filters. The raw EDR finding legs
+  // require `devices:read`; a caller with only `alerts:read` (hasDevicesRead ===
+  // false) gets native tracked incidents only. `hasDevicesRead` undefined =
+  // included (back-compat for existing callers/fixtures). This composes with the
+  // kind/source filters: a no-devices-read caller passing source=huntress simply
+  // yields no legs → empty feed (null), not an error.
+  const includeEdr = params.hasDevicesRead !== false;
   const includeTracked = params.kind !== 'finding' && params.source !== 'huntress' && params.source !== 's1';
-  const includeHuntress = params.kind !== 'tracked' && (params.source === undefined || params.source === 'huntress');
-  const includeS1 = params.kind !== 'tracked' && (params.source === undefined || params.source === 's1');
+  const includeHuntress = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 'huntress');
+  const includeS1 = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 's1');
   if (!includeTracked && !includeHuntress && !includeS1) return null;
 
   // Build UNION ALL explicitly per active combination so Drizzle can infer
@@ -349,7 +388,7 @@ export async function buildIncidentFeed(
         deviceId: r.deviceId,
         detectedAt: new Date(r.detectedAt as unknown as string).toISOString(),
         trackedIncidentId: r.trackedIncidentId,
-        linkOut: source === 'breeze' ? null : resolveFindingLinkOut(source, r.details),
+        linkOut: source === 'breeze' ? null : resolveFindingLinkOut(r.details),
       };
     }),
     total: Number(countRows[0]?.count ?? 0),
