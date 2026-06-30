@@ -3,6 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { PamRule } from '../db/schema/pam';
+import { normalizeSignerGroupEntries } from '../db/schema/pam';
 import {
   evaluatePamRules,
   evaluatePamToolActionRules,
@@ -632,6 +633,22 @@ describe('signer thumbprint pinning (#1776)', () => {
       // forged "Acme Corp" cert with NO thumbprint reported → REJECTED (fail closed)
       expect(
         evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Acme Corp' }, groups),
+      ).toBeNull();
+    });
+
+    it('a corrupted thumbprint pin (via the normalizer) does NOT degrade to a CN match (#1776)', () => {
+      // End-to-end: stored jsonb has a CN + a PRESENT-but-malformed thumbprint.
+      // normalizeSignerGroupEntries drops it (fail closed), so the resolved group
+      // is empty and a forged cert with the trusted CN (no thumbprint) does NOT
+      // auto-approve.
+      const resolved = normalizeSignerGroupEntries([
+        { subjectCn: 'Acme Corp', thumbprint: 'not-a-real-hash' },
+      ]);
+      expect(resolved).toEqual([]);
+      const corrupted: SignerGroupResolver = new Map([[GROUP_ID, resolved]]);
+      const r = rule({ matchSignerGroupId: GROUP_ID, verdict: 'auto_approve' });
+      expect(
+        evaluatePamRules([r], { ...candidate, targetExecutableSigner: 'Acme Corp' }, corrupted),
       ).toBeNull();
     });
 

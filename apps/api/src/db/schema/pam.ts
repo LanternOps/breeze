@@ -114,10 +114,19 @@ export function normalizeSignerGroupEntries(raw: unknown): SignerGroupEntry[] {
       const rec = el as { subjectCn?: unknown; thumbprint?: unknown };
       const cn = typeof rec.subjectCn === 'string' ? rec.subjectCn.trim() : '';
       const tpRaw = typeof rec.thumbprint === 'string' ? rec.thumbprint.trim().toLowerCase() : '';
-      const tp = SIGNER_THUMBPRINT_RE.test(tpRaw) ? tpRaw : '';
-      if (cn && tp) out.push({ subjectCn: cn, thumbprint: tp });
-      else if (tp) out.push({ thumbprint: tp });
-      else if (cn) out.push({ subjectCn: cn });
+      // A thumbprint field that is PRESENT but not valid 64-hex is a CORRUPTED
+      // strong pin (DB tamper / manual edit / a future writer), NOT a CN-only
+      // entry. Drop the whole entry — never silently degrade an intended-strong
+      // pin to a weak CN match, or a forged cert bearing the trusted CN would
+      // auto-approve (the exact EoP #1776 closes). Mirrors the rule-level
+      // matchSignerThumbprint, which fails closed for the same case. A thumbprint
+      // field that is ABSENT/empty is a legitimate CN-only (weak) entry.
+      if (tpRaw !== '') {
+        if (!SIGNER_THUMBPRINT_RE.test(tpRaw)) continue;
+        out.push(cn ? { subjectCn: cn, thumbprint: tpRaw } : { thumbprint: tpRaw });
+      } else if (cn) {
+        out.push({ subjectCn: cn });
+      }
     }
   }
   return out;
