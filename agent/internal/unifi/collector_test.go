@@ -65,6 +65,48 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 	}
 }
 
+func TestRunOnceUploadsSites(t *testing.T) {
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/proxy/network/integration/v1/sites":
+			w.Write([]byte(`{"data":[{"id":"s1","name":"HQ"},{"id":"s2","name":"Branch"}]}`))
+		default:
+			w.Write([]byte(`{"data":[]}`))
+		}
+	}))
+	defer controller.Close()
+
+	var mu sync.Mutex
+	var got map[string]any
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/agents/agent-1/unifi-telemetry" {
+			mu.Lock()
+			defer mu.Unlock()
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.WriteHeader(202)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer api.Close()
+
+	cfg := CollectorConfig{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k"}
+	err := RunOnce(context.Background(), CollectorDeps{APIBaseURL: api.URL, AgentID: "agent-1", HTTP: api.Client()}, cfg, controller.Client())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	sitesRaw, ok := got["sites"].([]any)
+	if !ok || len(sitesRaw) != 2 {
+		t.Fatalf("expected 2 sites in payload, got %+v", got["sites"])
+	}
+	s0, _ := sitesRaw[0].(map[string]any)
+	if s0["id"] != "s1" || s0["name"] != "HQ" {
+		t.Fatalf("unexpected first site: %+v", sitesRaw[0])
+	}
+}
+
 // fetchConfigs must GET the agent-scoped path /agents/<id>/unifi-collectors, not
 // the bare /agent/unifi-collectors (which 404s and never returns configs — C3).
 func TestFetchConfigsHitsAgentScopedPath(t *testing.T) {

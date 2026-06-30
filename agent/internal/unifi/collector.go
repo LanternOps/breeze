@@ -73,12 +73,18 @@ type uploadClient struct {
 	Raw               json.RawMessage `json:"raw,omitempty"`
 }
 
+type uploadSite struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
 type telemetryPayload struct {
 	CollectorID string         `json:"collectorId"`
 	PolledAt    string         `json:"polledAt"`
 	FirmwareOK  bool           `json:"firmwareOk"`
 	Devices     []uploadDevice `json:"devices"`
 	Clients     []uploadClient `json:"clients"`
+	Sites       []uploadSite   `json:"sites,omitempty"`
 	Error       string         `json:"error,omitempty"`
 }
 
@@ -114,12 +120,17 @@ func toUploadClients(in []Client) []uploadClient {
 func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, controllerHTTP *http.Client) error {
 	api := NewAPIClient(cfg.ControllerURL, cfg.APIKey, controllerHTTP)
 	snap, pollErr := api.Poll(ctx)
+	sites := make([]uploadSite, len(snap.Sites))
+	for i, s := range snap.Sites {
+		sites[i] = uploadSite{ID: s.ID, Name: s.Name}
+	}
 	payload := telemetryPayload{
 		CollectorID: cfg.CollectorID,
 		PolledAt:    time.Now().UTC().Format(time.RFC3339),
 		FirmwareOK:  snap.FirmwareOK,
 		Devices:     toUploadDevices(snap.Devices),
 		Clients:     toUploadClients(snap.Clients),
+		Sites:       sites,
 	}
 	if pollErr != nil {
 		payload.Error = pollErr.Error()
