@@ -24,8 +24,17 @@ import { moveOrgRoutes } from './moveOrg';
 import { actuateElevationRoutes } from './actuateElevation';
 import { softwareActionsRoutes } from './softwareActions';
 import { networkRoutes } from './network';
+import { customFieldValuesRoutes } from './customFieldValues';
 
 export const deviceRoutes = new Hono();
+
+// Mount the custom-field VALUE routes FIRST. They use per-route auth that also
+// accepts an X-API-Key header (issue #2066). Hono attaches a sibling sub-router's
+// `.use('*', authMiddleware)` to every route mounted AFTER it, so mounting these
+// after the session-only `coreRoutes` would shadow the API-key branch with the
+// JWT-only `authMiddleware` and resurrect the 401. Mounting first keeps them
+// clear of every later wildcard auth middleware.
+deviceRoutes.route('/', customFieldValuesRoutes);
 
 // Mount provision routes FIRST — `/provision` is a static path under /devices
 // that must NOT be eaten by the `/:id` matcher in coreRoutes.
