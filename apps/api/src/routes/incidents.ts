@@ -4,6 +4,7 @@ import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { db } from '../db';
 import {
+  devices,
   incidentActions,
   incidentEvidence,
   incidents,
@@ -12,28 +13,52 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { publishEvent } from '../services/eventBus';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
 import {
   createIncidentSchema,
+  listIncidentFeedSchema,
   listIncidentsSchema,
   uuidParamSchema,
   closeIncidentSchema,
 } from './incidents.validation';
 import {
+  buildIncidentFeed,
   canTransitionStatus,
   appendTimeline,
+  FeedScopeError,
   normalizeTimelineWithSort,
   getPagination,
   resolveOrgFilter,
   getIncidentWithOrgCheck,
 } from './incidents.helpers';
 import { incidentActionRoutes } from './incidentActions';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const incidentRoutes = new Hono();
 const requireIncidentRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireIncidentWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 incidentRoutes.use('*', authMiddleware);
+
+// Resolve the device IDs a site-restricted caller may read within their org,
+// narrowed by `permissions.allowedSiteIds`. Returns null when the caller has no
+// site restriction (no narrowing needed). Site is an app-layer concept only —
+// Postgres RLS does NOT defend it — so a site-restricted org user must not read
+// EDR finding rows (or device hostnames) for devices in other sites within the
+// same org. Mirrors sentinelOne.ts / browserSecurity.ts `resolveSiteAllowedDeviceIds`.
+async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  permissions: UserPermissions | undefined,
+): Promise<string[] | null> {
+  if (!permissions?.allowedSiteIds) return null;
+  const orgDevices = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(eq(devices.orgId, orgId));
+  return orgDevices
+    .filter((d) => typeof d.siteId === 'string' && canAccessSite(permissions, d.siteId))
+    .map((d) => d.id);
+}
 
 incidentRoutes.post(
   '/',
@@ -75,22 +100,36 @@ incidentRoutes.post(
       },
     }];
 
-    const [incident] = await db
-      .insert(incidents)
-      .values({
-        orgId: orgId!,
-        title: data.title,
-        classification: data.classification,
-        severity: data.severity,
-        status: data.status ?? 'detected',
-        summary: data.summary,
-        relatedAlerts: data.relatedAlerts ?? [],
-        affectedDevices: data.affectedDevices ?? [],
-        timeline: initialTimeline,
-        assignedTo: data.assignedTo,
-        detectedAt,
-      })
-      .returning();
+    let incident;
+    try {
+      [incident] = await db
+        .insert(incidents)
+        .values({
+          orgId: orgId!,
+          title: data.title,
+          classification: data.classification,
+          severity: data.severity,
+          status: data.status ?? 'detected',
+          summary: data.summary,
+          relatedAlerts: data.relatedAlerts ?? [],
+          affectedDevices: data.affectedDevices ?? [],
+          timeline: initialTimeline,
+          assignedTo: data.assignedTo,
+          detectedAt,
+          sourceType: data.sourceType,
+          sourceRef: data.sourceRef,
+        })
+        .returning();
+    } catch (err) {
+      // Promoting the same EDR finding twice collides on the partial unique
+      // index `incidents_source_ref_unique` (org_id, source_type, source_ref).
+      // Surface a clean 409 instead of leaking the raw Postgres 23505 as a 500.
+      // Match the specific constraint so an unrelated 23505 still throws.
+      if (isPgUniqueViolation(err, 'incidents_source_ref_unique')) {
+        return c.json({ error: 'This finding has already been promoted to an incident' }, 409);
+      }
+      throw err;
+    }
 
     if (!incident) {
       return c.json({ error: 'Failed to create incident' }, 500);
@@ -199,6 +238,59 @@ incidentRoutes.get(
         total: Number(countRows[0]?.count ?? 0),
       },
     });
+  }
+);
+
+incidentRoutes.get(
+  '/feed',
+  requireScope('organization', 'partner', 'system'),
+  requireIncidentRead,
+  zValidator('query', listIncidentFeedSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const limit = query.limit;
+    const offset = (query.page - 1) * limit;
+
+    // The route-level gate stays `alerts:read` (requireIncidentRead, which also
+    // populated `permissions`). The raw EDR finding legs additionally expose
+    // device telemetry, so they require `devices:read`; a caller with only
+    // alerts:read sees native tracked incidents and no raw Huntress/S1 findings.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const hasDevicesRead = perms
+      ? hasPermission(perms, PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action)
+      : false;
+
+    // Site is an app-layer authz axis Postgres RLS cannot defend. A site-
+    // restricted org caller must not read EDR findings for devices outside their
+    // site allowlist via the feed. Resolve the allowed device ids exactly as GET
+    // /huntress/incidents and /sentinelone/threats do; partner/system callers
+    // carry no site restriction (allowedSiteIds undefined → null → no narrowing).
+    let allowedDeviceIds: string[] | null = null;
+    if (hasDevicesRead && perms?.allowedSiteIds && auth.scope === 'organization' && auth.orgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+    }
+
+    try {
+      const { rows, total } = await buildIncidentFeed(auth, {
+        orgId: query.orgId,
+        kind: query.kind,
+        source: query.source,
+        limit,
+        offset,
+        hasDevicesRead,
+        allowedDeviceIds,
+      });
+      return c.json({
+        data: rows,
+        pagination: { page: query.page, limit, total },
+      });
+    } catch (err) {
+      if (err instanceof FeedScopeError) {
+        return c.json({ error: err.message }, err.status as ContentfulStatusCode);
+      }
+      throw err;
+    }
   }
 );
 

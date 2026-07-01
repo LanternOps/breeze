@@ -23,6 +23,8 @@ export const createIncidentSchema = z.object({
   assignedTo: z.string().guid().optional(),
   detectedAt: z.string().datetime({ offset: true }).optional(),
   status: z.enum(['detected', 'analyzing']).optional(),
+  sourceType: z.enum(['huntress_incident', 's1_threat']).optional(),
+  sourceRef: z.string().min(1).max(128).optional(),
 });
 
 export const listIncidentsSchema = z.object({
@@ -35,6 +37,14 @@ export const listIncidentsSchema = z.object({
   endDate: z.string().datetime({ offset: true }).optional(),
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(250).optional(),
+});
+
+export const listIncidentFeedSchema = z.object({
+  orgId: z.string().guid().optional(),
+  kind: z.enum(['tracked', 'finding']).optional(),
+  source: z.enum(['breeze', 'huntress', 's1']).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
 });
 
 export const containIncidentSchema = z.object({
