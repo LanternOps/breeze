@@ -203,6 +203,36 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     hourlyRate: z.number().nonnegative().optional(),
   }),
 
+  list_invoices: z.object({
+    orgId: uuid.optional(),
+    status: z.string().optional(),
+    limit: z.number().optional(),
+  }),
+
+  get_invoice: z.object({
+    invoiceId: uuid,
+  }),
+
+  search_catalog: z.object({
+    search: z.string().optional(),
+    itemType: z.string().optional(),
+    limit: z.number().optional(),
+  }),
+
+  get_catalog_item: z.object({
+    catalogItemId: uuid,
+  }),
+
+  list_contracts: z.object({
+    orgId: uuid.optional(),
+    status: z.string().optional(),
+    limit: z.number().optional(),
+  }),
+
+  get_contract: z.object({
+    contractId: uuid,
+  }),
+
   manage_alerts: z.object({
     action: z.enum(['list', 'get', 'acknowledge', 'resolve']),
     alertId: uuid.optional(),

@@ -115,6 +115,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
   },
+  list_invoices: { resource: 'invoices', action: 'read' },
+  get_invoice: { resource: 'invoices', action: 'read' },
+  search_catalog: { resource: 'catalog', action: 'read' },
+  get_catalog_item: { resource: 'catalog', action: 'read' },
+  list_contracts: { resource: 'contracts', action: 'read' },
+  get_contract: { resource: 'contracts', action: 'read' },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
     list: { resource: 'devices', action: 'read' },
