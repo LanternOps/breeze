@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // bootstrapAction describes what the SYSTEM-context bootstrapper should do
@@ -90,4 +91,37 @@ func fetchArtifact(client *http.Client, baseURL string, ref artifactRef) ([]byte
 		return nil, fmt.Errorf("verify %s: %w", ref.Name, err)
 	}
 	return data, nil
+}
+
+// cmdRunner abstracts external process execution so PowerShell-driving code
+// (provisioning, Appx-stack probing, and later the winget provider /
+// orchestrator) can be exercised in unit tests without spawning a real
+// process. name/args mirror exec.Command; timeout bounds how long the caller
+// waits before treating the command as hung.
+type cmdRunner func(name string, args []string, timeout time.Duration) (string, string, int, error)
+
+// buildProvisionArgs assembles the PowerShell argument list for
+// Add-AppxProvisionedPackage -Online, installing bundlePath with its
+// license and any dependency packages (e.g. VCLibs, UI.Xaml) required by
+// the DesktopAppInstaller (winget) package.
+func buildProvisionArgs(bundlePath, licensePath string, depPaths []string) []string {
+	ps := "Add-AppxProvisionedPackage -Online -PackagePath '" + bundlePath +
+		"' -LicensePath '" + licensePath + "' -DependencyPackagePath "
+	quoted := make([]string, 0, len(depPaths))
+	for _, d := range depPaths {
+		quoted = append(quoted, "'"+d+"'")
+	}
+	ps += strings.Join(quoted, ",")
+	return []string{"-NoProfile", "-NonInteractive", "-Command", ps}
+}
+
+// appxStackAvailable probes, via the injected runner, whether the
+// Add-AppxProvisionedPackage cmdlet exists on this host (it ships with the
+// Deployment Image Servicing and Management module and can be absent on
+// stripped-down Windows images).
+func appxStackAvailable(run cmdRunner) bool {
+	_, _, code, err := run("powershell.exe",
+		[]string{"-NoProfile", "-NonInteractive", "-Command", "Get-Command Add-AppxProvisionedPackage -ErrorAction Stop"},
+		30*time.Second)
+	return err == nil && code == 0
 }
