@@ -50,6 +50,10 @@ export default defineConfig({
       'src/services/vulnerabilityRemediationEvents.integration.test.ts',
       // Co-located real-DB integration test for BE-16 Phase 4 AI read tools.
       'src/services/aiToolsVulnerability.integration.test.ts',
+      // Co-located real-DB integration test for the suppression-expiry reaper:
+      // asserts the SQL predicate (incl. the Forever-exclusion invariant)
+      // that mocked unit tests can't cover.
+      'src/jobs/suppressionExpiryReaper.integration.test.ts',
     ],
     exclude: [
       // rls.integration.test.ts is a mocked unit test in integration's
