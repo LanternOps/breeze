@@ -16,10 +16,16 @@ export interface BulkActionBarProps {
 export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkActionBarProps) {
   if (count === 0) return null;
   return (
-    <div
-      className="absolute inset-x-0 bottom-0 z-10 border-t bg-background px-3 py-2 shadow-[0_-4px_12px_-6px_rgba(0,0,0,0.15)] animate-[fade-up_0.18s_ease-out_both]"
-      data-testid={`${testIdPrefix}-bulk-bar`}
-    >
+    <>
+      {/* In-flow spacer: the bar itself is absolutely positioned and would float
+          over the last table row(s). This sibling reserves an equal slice of
+          height in normal flow so the bar overlays blank space, never data — the
+          caller needs no `pb-*` padding hack of its own. */}
+      <div aria-hidden="true" data-testid="bulk-bar-spacer" className="h-14" />
+      <div
+        className="absolute inset-x-0 bottom-0 z-10 border-t bg-background px-3 py-2 shadow-[0_-4px_12px_-6px_rgba(0,0,0,0.15)] animate-[fade-up_0.18s_ease-out_both]"
+        data-testid={`${testIdPrefix}-bulk-bar`}
+      >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium tabular-nums">{count} selected</span>
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -49,6 +55,7 @@ export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkAct
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }

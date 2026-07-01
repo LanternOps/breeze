@@ -67,7 +67,13 @@ function writeFilters(f: Filters): void {
   if (f.orgId) params.set('orgId', f.orgId);
   if (f.status) params.set('status', f.status);
   const next = params.toString();
-  window.location.hash = next ? `#${next}` : '';
+  if (next) {
+    window.location.hash = `#${next}`;
+  } else if (window.location.hash) {
+    // Clearing: plain `location.hash = ''` can leave a bare '#' dangling in the
+    // URL. replaceState strips the fragment cleanly without a history entry.
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
 }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -149,6 +155,16 @@ export function QuotesPage() {
       return next;
     });
   }, []);
+
+  const clearFilters = useCallback(() => {
+    setFilters(EMPTY_FILTERS);
+    writeFilters(EMPTY_FILTERS);
+    setSearch('');
+  }, []);
+
+  // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
+  // first-run empty state (offer "create your first quote").
+  const hasActiveFilters = !!(filters.orgId || filters.status || search.trim());
 
   // Load sites for the org picker in the dialog.
   const loadNewSites = useCallback(async (orgId: string) => {
@@ -351,27 +367,37 @@ export function QuotesPage() {
               </button>
             </div>
           </div>
-        ) : quotes.length === 0 ? (
-          <div className="px-4 py-14 text-center" data-testid="quotes-empty">
-            <h3 className="text-sm font-semibold">No quotes yet</h3>
-            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-              Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.
-            </p>
-            {canWrite && (
+        ) : rows.length === 0 ? (
+          hasActiveFilters ? (
+            <div className="px-4 py-12 text-center" data-testid="quotes-filtered-empty">
+              <p className="text-sm text-muted-foreground">No quotes match these filters.</p>
               <button
                 type="button"
-                onClick={openCreate}
-                className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                data-testid="quotes-empty-new"
+                onClick={clearFilters}
+                data-testid="quotes-clear-filters"
+                className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
-                New quote
+                Clear filters
               </button>
-            )}
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="quotes-no-match">
-            No quotes match these filters.
-          </div>
+            </div>
+          ) : (
+            <div className="px-4 py-14 text-center" data-testid="quotes-empty">
+              <h3 className="text-sm font-semibold">No quotes yet</h3>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.
+              </p>
+              {canWrite && (
+                <button
+                  type="button"
+                  onClick={openCreate}
+                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  data-testid="quotes-empty-new"
+                >
+                  New quote
+                </button>
+              )}
+            </div>
+          )
         ) : (
           <div className="relative">
             <div className="overflow-x-auto">

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuotesPage from './QuotesPage';
@@ -49,6 +49,37 @@ describe('QuotesPage', () => {
     render(<QuotesPage />);
     await waitFor(() => expect(screen.getByTestId('quotes-empty')).toBeInTheDocument());
     expect(screen.getByText('No quotes yet')).toBeInTheDocument();
+  });
+
+  it('shows the filtered-empty state (not the teaching empty) when an active filter returns nothing', async () => {
+    // The page seeds its filter from the URL hash on mount.
+    window.location.hash = '#status=declined';
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+
+    await screen.findByTestId('quotes-filtered-empty');
+    expect(screen.getByTestId('quotes-clear-filters')).toBeInTheDocument();
+    // The first-run teaching empty must NOT be shown — that reads as data loss.
+    expect(screen.queryByTestId('quotes-empty')).not.toBeInTheDocument();
+  });
+
+  it('Clear filters resets the hash with no bare-# residue', async () => {
+    window.location.hash = '#status=declined';
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+
+    fireEvent.click(await screen.findByTestId('quotes-clear-filters'));
+    expect(window.location.hash).toBe('');
+    // With no active filter left, the teaching empty returns.
+    await waitFor(() => expect(screen.getByTestId('quotes-empty')).toBeInTheDocument());
   });
 
   it('renders quote rows with status badge and currency total', async () => {

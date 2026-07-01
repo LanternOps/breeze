@@ -106,6 +106,22 @@ describe('InvoicesPage', () => {
     expect(screen.queryByTestId('invoices-filters')).not.toBeInTheDocument();
   });
 
+  it('shows the filtered-empty state (not the teaching empty) when a filter returns nothing', async () => {
+    window.location.hash = '#status=void';
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<InvoicesPage />);
+
+    await screen.findByTestId('invoices-filtered-empty');
+    // The first-run teaching empty must NOT be shown — that reads as data loss.
+    expect(screen.queryByTestId('invoices-empty')).not.toBeInTheDocument();
+    // The toolbar (and its existing Clear control) stays available while filtered.
+    expect(screen.getByTestId('invoices-filters-clear')).toBeInTheDocument();
+  });
+
   it('shows a Clear control once a filter is active and resets all filters', async () => {
     wireDefault();
     render(<InvoicesPage />);

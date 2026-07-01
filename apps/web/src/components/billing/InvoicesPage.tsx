@@ -69,7 +69,13 @@ function writeFilters(f: Filters): void {
   if (f.from) params.set('from', f.from);
   if (f.to) params.set('to', f.to);
   const next = params.toString();
-  window.location.hash = next ? `#${next}` : '';
+  if (next) {
+    window.location.hash = `#${next}`;
+  } else if (window.location.hash) {
+    // Clearing: plain `location.hash = ''` can leave a bare '#' dangling in the
+    // URL. replaceState strips the fragment cleanly without a history entry.
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
 }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -464,27 +470,32 @@ export function InvoicesPage() {
               </button>
             </div>
           </div>
-        ) : invoices.length === 0 ? (
-          <div className="px-4 py-14 text-center" data-testid="invoices-empty">
-            <h3 className="text-sm font-semibold">No invoices yet</h3>
-            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-              Assemble unbilled time and parts into a draft, or start a blank invoice.
-            </p>
-            {can('invoices', 'write') && (
-              <button
-                type="button"
-                onClick={openAssemble}
-                className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                data-testid="invoices-empty-new"
-              >
-                New invoice
-              </button>
-            )}
-          </div>
         ) : rows.length === 0 ? (
-          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="invoices-no-match">
-            No invoices match these filters.
-          </div>
+          filtersActive ? (
+            // Filtered to nothing. The toolbar above stays mounted (it renders
+            // whenever a filter is active) so its existing Clear control is the
+            // recovery affordance — no redundant button here.
+            <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="invoices-filtered-empty">
+              No invoices match these filters.
+            </div>
+          ) : (
+            <div className="px-4 py-14 text-center" data-testid="invoices-empty">
+              <h3 className="text-sm font-semibold">No invoices yet</h3>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Assemble unbilled time and parts into a draft, or start a blank invoice.
+              </p>
+              {can('invoices', 'write') && (
+                <button
+                  type="button"
+                  onClick={openAssemble}
+                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  data-testid="invoices-empty-new"
+                >
+                  New invoice
+                </button>
+              )}
+            </div>
+          )
         ) : (
           <div className="relative">
             {/* Desktop: scrollable table from `sm` up. Below `sm` a 8-column table

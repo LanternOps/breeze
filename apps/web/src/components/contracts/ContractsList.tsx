@@ -364,9 +364,9 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           )
         ) : (
           <div className="relative">
-            {/* Reserve space below the rows while selected so the absolute
-                bulk bar floats in blank space instead of covering the rows. */}
-            <div className={`overflow-x-auto ${bulk.size > 0 ? 'pb-14' : ''}`}>
+            {/* BulkActionBar reserves its own space via an in-flow spacer, so no
+                bottom-padding hack is needed here. */}
+            <div className="overflow-x-auto">
               <table className="w-full text-sm" data-testid="contracts-list">
                 <thead>
                   <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
