@@ -81,6 +81,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_monitors: ['create', 'update', 'delete'],
   // Ticketing time-tracking — writes at Tier 3 (spec §4)
   manage_tickets: ['log_time_entry', 'start_timer', 'stop_timer'],
+  manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -117,6 +118,24 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },
+  manage_invoices: {
+    create_draft: { resource: 'invoices', action: 'write' },
+    add_manual_line: { resource: 'invoices', action: 'write' },
+    add_catalog_line: { resource: 'invoices', action: 'write' },
+    add_bundle_line: { resource: 'invoices', action: 'write' },
+    add_contract_line: { resource: 'invoices', action: 'write' },
+    update_line: { resource: 'invoices', action: 'write' },
+    remove_line: { resource: 'invoices', action: 'write' },
+    update_header: { resource: 'invoices', action: 'write' },
+    delete_draft: { resource: 'invoices', action: 'write' },
+    assemble_from_org: { resource: 'invoices', action: 'write' },
+    assemble_from_ticket: { resource: 'invoices', action: 'write' },
+    issue: { resource: 'invoices', action: 'send' },
+    void: { resource: 'invoices', action: 'send' },
+    record_payment: { resource: 'invoices', action: 'send' },
+    void_payment: { resource: 'invoices', action: 'send' },
+    create_pay_link: { resource: 'invoices', action: 'write' },
+  },
   search_catalog: { resource: 'catalog', action: 'read' },
   get_catalog_item: { resource: 'catalog', action: 'read' },
   list_contracts: { resource: 'contracts', action: 'read' },
