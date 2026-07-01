@@ -281,6 +281,71 @@ describe('featureLinks routes', () => {
     beforeEach(() => {
       getConfigPolicyMock.mockResolvedValue(PARTNER_POLICY);
       addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'backup' });
+      // Writes on a partner-wide policy require the partner-wide capability —
+      // rebuild the app with a full-partner-admin auth so the tests below
+      // exercise the per-feature-type behavior, not the capability gate.
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_POLICY.partnerId,
+          partnerOrgAccess: 'all',
+        }));
+        await next();
+      });
+      app.route('/', featureLinkRoutes);
+    });
+
+    it('denies ANY feature-link write on a partner-wide policy without full partner org access → 403', async () => {
+      // A 'selected'-access partner user can SEE the partner-wide policy but
+      // must not edit its feature links (all-orgs blast radius, same rationale
+      // as the create/assign guards).
+      const appSelected = new Hono();
+      appSelected.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_POLICY.partnerId,
+          partnerOrgAccess: 'selected',
+        }));
+        await next();
+      });
+      appSelected.route('/', featureLinkRoutes);
+
+      const res = await appSelected.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'patch', inlineSettings: { scheduleTime: '02:00' } }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(String(body.error)).toMatch(/full partner org access/);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('denies feature-link DELETE on a partner-wide policy without full partner org access → 403', async () => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...PARTNER_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'patch' }],
+      });
+      const appSelected = new Hono();
+      appSelected.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_POLICY.partnerId,
+          partnerOrgAccess: 'selected',
+        }));
+        await next();
+      });
+      appSelected.route('/', featureLinkRoutes);
+
+      const res = await appSelected.request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
     });
 
     // onedrive_helper is also in ORG_SCOPED_ONLY_FEATURES but isn't accepted by

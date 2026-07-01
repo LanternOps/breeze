@@ -13,7 +13,17 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-import { addFeatureLink, updateFeatureLink, listFeatureLinks, pamInlineSettingsSchema, validateFeaturePolicyExists } from './configurationPolicy';
+import {
+  addFeatureLink,
+  updateFeatureLink,
+  listFeatureLinks,
+  pamInlineSettingsSchema,
+  validateFeaturePolicyExists,
+  canManagePartnerWidePolicies,
+  updateConfigPolicy,
+  deleteConfigPolicy,
+  PartnerWideWriteDeniedError,
+} from './configurationPolicy';
 import { db } from '../db';
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
@@ -609,5 +619,104 @@ describe('validateFeaturePolicyExists — vulnerability is inline-only', () => {
   it('accepts inline-only (no featurePolicyId)', async () => {
     const result = await validateFeaturePolicyExists('vulnerability', null, { orgId: 'org-1', partnerId: null });
     expect(result.valid).toBe(true);
+  });
+});
+
+// ============================================================
+// Partner-wide administration capability (single source of truth)
+// ============================================================
+
+describe('canManagePartnerWidePolicies', () => {
+  it.each([
+    // [scope, partnerOrgAccess, expected]
+    ['system', undefined, true],
+    ['system', 'none', true], // system short-circuits regardless of flag
+    ['partner', 'all', true],
+    ['partner', 'selected', false],
+    ['partner', 'none', false],
+    ['partner', undefined, false], // membership-less / MCP-key contexts fail closed
+    ['organization', undefined, false],
+    ['organization', 'all', false], // org scope never administers partner-wide state
+  ] as const)('scope=%s partnerOrgAccess=%s → %s', (scope, partnerOrgAccess, expected) => {
+    expect(canManagePartnerWidePolicies({ scope, partnerOrgAccess } as never)).toBe(expected);
+  });
+});
+
+describe('updateConfigPolicy / deleteConfigPolicy — partner-wide administration gate', () => {
+  // policyAccessCondition treats an undefined orgCondition as "no app-layer
+  // filter" — irrelevant here since db is fully mocked; only the fetched row's
+  // orgId and the auth capability drive the gate under test.
+  const partnerAuth = (partnerOrgAccess?: 'all' | 'selected' | 'none'): never =>
+    ({
+      scope: 'partner',
+      partnerId: 'partner-1',
+      orgId: null,
+      partnerOrgAccess,
+      orgCondition: () => undefined,
+      user: { id: 'user-1' },
+    }) as never;
+
+  const PARTNER_WIDE_ROW = { id: 'policy-1', orgId: null, partnerId: 'partner-1', name: 'Wide', status: 'active' };
+
+  function mockSelectExisting(row: Record<string, unknown> | null) {
+    vi.mocked(db.select).mockReturnValue(selectLimitRows(row ? [row] : []) as never);
+  }
+
+  function mockUpdateReturning(row: Record<string, unknown>) {
+    const chain: any = {};
+    chain.set = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.returning = vi.fn(() => Promise.resolve([row]));
+    vi.mocked(db.update).mockReturnValue(chain);
+  }
+
+  function mockDeleteReturning(row: Record<string, unknown>) {
+    const chain: any = {};
+    chain.where = vi.fn(() => chain);
+    chain.returning = vi.fn(() => Promise.resolve([row]));
+    vi.mocked(db.delete).mockReturnValue(chain);
+  }
+
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.delete).mockReset();
+  });
+
+  it('updateConfigPolicy throws PartnerWideWriteDeniedError for a partner-wide policy without orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    await expect(
+      updateConfigPolicy('policy-1', { name: 'Renamed' }, partnerAuth('selected'))
+    ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('deleteConfigPolicy throws PartnerWideWriteDeniedError for a partner-wide policy without orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    await expect(deleteConfigPolicy('policy-1', partnerAuth('none'))).rejects.toBeInstanceOf(
+      PartnerWideWriteDeniedError
+    );
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('updateConfigPolicy proceeds for a partner-wide policy with orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    mockUpdateReturning({ ...PARTNER_WIDE_ROW, name: 'Renamed' });
+    const updated = await updateConfigPolicy('policy-1', { name: 'Renamed' }, partnerAuth('all'));
+    expect(updated?.name).toBe('Renamed');
+  });
+
+  it('deleteConfigPolicy proceeds for a partner-wide policy with orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    mockDeleteReturning(PARTNER_WIDE_ROW);
+    const deleted = await deleteConfigPolicy('policy-1', partnerAuth('all'));
+    expect(deleted?.id).toBe('policy-1');
+  });
+
+  it('org-owned policies are NOT gated (a selected-access partner user may still edit them)', async () => {
+    mockSelectExisting({ ...PARTNER_WIDE_ROW, orgId: 'org-1', partnerId: null });
+    mockUpdateReturning({ ...PARTNER_WIDE_ROW, orgId: 'org-1', partnerId: null, name: 'Renamed' });
+    const updated = await updateConfigPolicy('policy-1', { name: 'Renamed' }, partnerAuth('selected'));
+    expect(updated?.name).toBe('Renamed');
   });
 });

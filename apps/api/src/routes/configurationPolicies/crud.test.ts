@@ -20,18 +20,30 @@ const {
   dbSelectMock: vi.fn(),
 }));
 
-vi.mock('../../services/configurationPolicy', () => ({
-  listConfigPolicies: listConfigPoliciesMock,
-  createConfigPolicy: createConfigPolicyMock,
-  getConfigPolicy: getConfigPolicyMock,
-  updateConfigPolicy: updateConfigPolicyMock,
-  deleteConfigPolicy: deleteConfigPolicyMock,
-  assignPolicy: assignPolicyMock,
-}));
+vi.mock('../../services/configurationPolicy', async (importOriginal) => {
+  // Spread the original so canManagePartnerWidePolicies (the real capability
+  // gate) and PartnerWideWriteDeniedError flow through unmocked.
+  const original = await importOriginal<typeof import('../../services/configurationPolicy')>();
+  return {
+    ...original,
+    listConfigPolicies: listConfigPoliciesMock,
+    createConfigPolicy: createConfigPolicyMock,
+    getConfigPolicy: getConfigPolicyMock,
+    updateConfigPolicy: updateConfigPolicyMock,
+    deleteConfigPolicy: deleteConfigPolicyMock,
+    assignPolicy: assignPolicyMock,
+  };
+});
 
-// crud.ts uses db.select only for the system-scope org-existence check.
-vi.mock('../../db', () => ({ db: { select: dbSelectMock } }));
-vi.mock('../../db/schema', () => ({ organizations: { id: 'organizations.id' } }));
+// crud.ts uses db.select only for the system-scope org-existence check. The
+// real db/schema module loads fine (importOriginal of the service needs its
+// tables); only the db driver itself is mocked.
+vi.mock('../../db', () => ({
+  db: { select: dbSelectMock, insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
 
 // Configure the db.select().from().where().limit() chain to report whether the
 // target org exists (system-scope create path).
@@ -54,6 +66,8 @@ vi.mock('../../middleware/auth', () => ({
 import { crudRoutes } from './crud';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { requireScope } from '../../middleware/auth';
+// Real class via the importOriginal spread in the service mock above.
+import { PartnerWideWriteDeniedError } from '../../services/configurationPolicy';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -261,7 +275,7 @@ describe('configurationPolicies CRUD routes', () => {
 
       const appPartner = new Hono();
       appPartner.use('*', async (c, next) => {
-        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }));
         // requirePermission populates permissions; simulate orgAccess='all' (full partner admin)
         c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
         await next();
@@ -397,7 +411,7 @@ describe('configurationPolicies CRUD routes', () => {
     function partnerCreateApp() {
       const appPartner = new Hono();
       appPartner.use('*', async (c, next) => {
-        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }));
         c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
         await next();
       });
@@ -451,7 +465,7 @@ describe('configurationPolicies CRUD routes', () => {
       // they cannot access.
       const appPartnerSelected = new Hono();
       appPartnerSelected.use('*', async (c, next) => {
-        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID] }));
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID], partnerOrgAccess: 'selected' }));
         // permissions reflect orgAccess='selected' — as set by requirePermission
         c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'selected', allowedOrgIds: [ORG_ID] }));
         await next();
@@ -472,7 +486,7 @@ describe('configurationPolicies CRUD routes', () => {
     it('denies partner-wide policy create when orgAccess is "none"', async () => {
       const appPartnerNone = new Hono();
       appPartnerNone.use('*', async (c, next) => {
-        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [] }));
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [], partnerOrgAccess: 'none' }));
         c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'none' }));
         await next();
       });
@@ -494,7 +508,7 @@ describe('configurationPolicies CRUD routes', () => {
 
       const appPartnerAll = new Hono();
       appPartnerAll.use('*', async (c, next) => {
-        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID, ORG_B] }));
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID, ORG_B], partnerOrgAccess: 'all' }));
         c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
         await next();
       });
@@ -610,6 +624,22 @@ describe('configurationPolicies CRUD routes', () => {
       });
       expect(res.status).toBe(404);
     });
+
+    it('maps PartnerWideWriteDeniedError from the service to a 403', async () => {
+      // The service throws when a partner-wide policy is visible but not
+      // administrable (orgAccess != 'all') — the route must surface 403, not 500.
+      updateConfigPolicyMock.mockRejectedValue(new PartnerWideWriteDeniedError());
+
+      const res = await app.request(`/${POLICY_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      });
+      expect(res.status).toBe(403);
+      const json = await res.json();
+      expect(json.error).toMatch(/full partner org access/);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================
@@ -633,6 +663,14 @@ describe('configurationPolicies CRUD routes', () => {
 
       const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
       expect(res.status).toBe(404);
+    });
+
+    it('maps PartnerWideWriteDeniedError from the service to a 403', async () => {
+      deleteConfigPolicyMock.mockRejectedValue(new PartnerWideWriteDeniedError());
+
+      const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
   });
 

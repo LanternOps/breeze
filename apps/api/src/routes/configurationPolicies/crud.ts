@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { db } from '../../db';
 import { organizations } from '../../db/schema';
 import {
@@ -14,6 +14,8 @@ import {
   updateConfigPolicy,
   deleteConfigPolicy,
   assignPolicy,
+  canManagePartnerWidePolicies,
+  PartnerWideWriteDeniedError,
 } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import {
@@ -72,10 +74,9 @@ crudRoutes.post(
       // subset of orgs — granting them partner-wide policy create would silently
       // push config (remote_access, PAM, monitoring, patch) to orgs they cannot
       // access. Only orgAccess='all' partner users (and system scope) may create
-      // partner-wide policies. requireConfigPolicyWrite (requirePermission)
-      // already populated c.get('permissions') with the caller's orgAccess.
-      const userPerms = c.get('permissions') as UserPermissions | undefined;
-      if (auth.scope !== 'system' && userPerms?.orgAccess !== 'all') {
+      // partner-wide policies. The same gate protects update/delete (enforced in
+      // the service) and feature-link/assignment writes (route gates).
+      if (!canManagePartnerWidePolicies(auth)) {
         return c.json({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' }, 403);
       }
       const policy = await createConfigPolicy({ partnerId: auth.partnerId }, data, auth.user.id);
@@ -194,7 +195,13 @@ crudRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const updated = await updateConfigPolicy(id, data, auth);
+    let updated;
+    try {
+      updated = await updateConfigPolicy(id, data, auth);
+    } catch (err) {
+      if (err instanceof PartnerWideWriteDeniedError) return c.json({ error: err.message }, 403);
+      throw err;
+    }
     if (!updated) return c.json({ error: 'Configuration policy not found' }, 404);
 
     invalidateRemoteAccessCache();
@@ -222,7 +229,13 @@ crudRoutes.delete(
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
 
-    const deleted = await deleteConfigPolicy(id, auth);
+    let deleted;
+    try {
+      deleted = await deleteConfigPolicy(id, auth);
+    } catch (err) {
+      if (err instanceof PartnerWideWriteDeniedError) return c.json({ error: err.message }, 403);
+      throw err;
+    }
     if (!deleted) return c.json({ error: 'Configuration policy not found' }, 404);
 
     invalidateRemoteAccessCache();

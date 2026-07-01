@@ -17,14 +17,20 @@ const {
   validateAssignmentTargetMock: vi.fn(),
 }));
 
-vi.mock('../../services/configurationPolicy', () => ({
-  getConfigPolicy: getConfigPolicyMock,
-  assignPolicy: assignPolicyMock,
-  unassignPolicy: unassignPolicyMock,
-  listAssignments: listAssignmentsMock,
-  listAssignmentsForTarget: listAssignmentsForTargetMock,
-  validateAssignmentTarget: validateAssignmentTargetMock,
-}));
+vi.mock('../../services/configurationPolicy', async (importOriginal) => {
+  // Spread the original so canManagePartnerWidePolicies (the real capability
+  // gate) and PARTNER_WIDE_WRITE_DENIED_MESSAGE flow through unmocked.
+  const original = await importOriginal<typeof import('../../services/configurationPolicy')>();
+  return {
+    ...original,
+    getConfigPolicy: getConfigPolicyMock,
+    assignPolicy: assignPolicyMock,
+    unassignPolicy: unassignPolicyMock,
+    listAssignments: listAssignmentsMock,
+    listAssignmentsForTarget: listAssignmentsForTargetMock,
+    validateAssignmentTarget: validateAssignmentTargetMock,
+  };
+});
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
@@ -151,7 +157,7 @@ describe('configurationPolicies assignment routes', () => {
 
     const appPartnerAll = new Hono();
     appPartnerAll.use('*', async (c, next) => {
-      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }));
       // requirePermission populates permissions; simulate orgAccess='all' (full partner admin)
       c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
       await next();
@@ -194,7 +200,7 @@ describe('configurationPolicies assignment routes', () => {
 
     const appPartnerSelected = new Hono();
     appPartnerSelected.use('*', async (c, next) => {
-      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID] }));
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID], partnerOrgAccess: 'selected' }));
       c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'selected', allowedOrgIds: [ORG_ID] }));
       await next();
     });
@@ -217,7 +223,7 @@ describe('configurationPolicies assignment routes', () => {
 
     const appPartnerNone = new Hono();
     appPartnerNone.use('*', async (c, next) => {
-      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [] }));
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [], partnerOrgAccess: 'none' }));
       c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'none' }));
       await next();
     });
@@ -245,7 +251,7 @@ describe('configurationPolicies assignment routes', () => {
 
     const appPartnerAll = new Hono();
     appPartnerAll.use('*', async (c, next) => {
-      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }));
       c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
       await next();
     });
@@ -298,5 +304,46 @@ describe('configurationPolicies assignment routes', () => {
     // orgAccess guard does not apply to device-level assignments
     expect(res.status).toBe(201);
     expect(assignPolicyMock).toHaveBeenCalled();
+  });
+
+  it('denies UNASSIGNING a partner-wide policy without full partner org access', async () => {
+    // Removing the partner-level assignment strips config from every org under
+    // the partner — same blast radius as assigning, same capability gate.
+    const AID = '77777777-7777-7777-7777-777777777777';
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+
+    const appPartnerSelected = new Hono();
+    appPartnerSelected.use('*', async (c, next) => {
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID], partnerOrgAccess: 'selected' }));
+      await next();
+    });
+    appPartnerSelected.route('/', assignmentRoutes);
+
+    const res = await appPartnerSelected.request(`/${POLICY_ID}/assignments/${AID}`, {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(403);
+    expect(unassignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('allows unassigning a partner-wide policy with full partner org access', async () => {
+    const AID = '77777777-7777-7777-7777-777777777777';
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Partner-wide' });
+    unassignPolicyMock.mockResolvedValue({ id: AID, level: 'partner', targetId: PARTNER_ID });
+
+    const appPartnerAll = new Hono();
+    appPartnerAll.use('*', async (c, next) => {
+      c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }));
+      await next();
+    });
+    appPartnerAll.route('/', assignmentRoutes);
+
+    const res = await appPartnerAll.request(`/${POLICY_ID}/assignments/${AID}`, {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(200);
+    expect(unassignPolicyMock).toHaveBeenCalledWith(AID, POLICY_ID);
   });
 });

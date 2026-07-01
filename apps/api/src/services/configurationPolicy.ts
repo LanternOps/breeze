@@ -153,6 +153,34 @@ function policyAccessCondition(auth: AuthContext): SQL | undefined {
   return orgCond;
 }
 
+/**
+ * Capability gate for creating/modifying PARTNER-WIDE ("all organizations")
+ * policies. Partner-wide state pushes config to every org under the partner —
+ * including orgs created later — so only full-partner admins (orgAccess='all')
+ * and system scope qualify. Contexts that never resolved a partner membership
+ * (org scope, agent, helper, MCP keys) have no partnerOrgAccess and fail closed.
+ *
+ * This is the single source of truth: HTTP routes gate with it directly, and
+ * updateConfigPolicy/deleteConfigPolicy enforce it via
+ * PartnerWideWriteDeniedError so non-route callers (AI tools) are covered too.
+ */
+export function canManagePartnerWidePolicies(
+  auth: Pick<AuthContext, 'scope' | 'partnerOrgAccess'>
+): boolean {
+  return auth.scope === 'system' || (auth.scope === 'partner' && auth.partnerOrgAccess === 'all');
+}
+
+export const PARTNER_WIDE_WRITE_DENIED_MESSAGE =
+  'Modifying a partner-wide policy requires full partner org access (orgAccess must be "all")';
+
+/** Thrown by update/delete when a partner-wide policy is visible to the caller but not administrable. Routes map it to 403. */
+export class PartnerWideWriteDeniedError extends Error {
+  constructor() {
+    super(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+    this.name = 'PartnerWideWriteDeniedError';
+  }
+}
+
 export async function createConfigPolicy(
   owner: { orgId: string; partnerId?: null } | { orgId?: null; partnerId: string },
   data: { name: string; description?: string; status?: 'active' | 'inactive' | 'archived' },
@@ -201,16 +229,26 @@ export async function listConfigPolicies(
   if (accessCond) conditions.push(accessCond);
 
   if (filters.orgId) {
-    // Include the caller's partner-wide policies (org_id NULL) alongside the
-    // org-owned ones. A partner-wide policy applies to EVERY org under the
-    // partner, so an org-filtered list that hid them would misrepresent which
-    // policies actually govern that org's devices (and the UI has no separate
-    // surface for them). policyAccessCondition already bounds the org_id IS NULL
-    // rows to the caller's own partner, so this cannot leak another partner's
-    // policies; for org-scope callers (no partner axis) the NULL branch matches
-    // nothing, leaving their behavior unchanged. (#1724 follow-up)
+    // Include the partner-wide policies (org_id NULL) that govern the filtered
+    // org alongside its org-owned ones — a partner-wide policy applies to EVERY
+    // org under its partner, so an org-filtered list that hid them would
+    // misrepresent which policies actually apply (and the UI has no separate
+    // surface for them). The NULL branch is scoped to THE FILTERED ORG'S OWN
+    // partner, not merely the caller's visibility: for a system-scope caller
+    // policyAccessCondition is no filter at all, and a bare `OR org_id IS NULL`
+    // would return every partner's partner-wide policies platform-wide. If the
+    // org row is missing (or RLS-invisible to the caller), fall back to the
+    // plain org filter — fail-closed, never fail-open. (#1724 follow-up)
+    const [orgRow] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, filters.orgId))
+      .limit(1);
+    const orgPartnerId = orgRow?.partnerId ?? null;
     conditions.push(
-      sql`(${configurationPolicies.orgId} = ${filters.orgId} OR ${configurationPolicies.orgId} IS NULL)`
+      orgPartnerId
+        ? sql`(${configurationPolicies.orgId} = ${filters.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${orgPartnerId}))`
+        : eq(configurationPolicies.orgId, filters.orgId)
     );
   }
   if (filters.status) {
@@ -255,6 +293,14 @@ export async function updateConfigPolicy(
   const [existing] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
   if (!existing) return null;
 
+  // Partner-wide policies are READABLE by any member of the partner but
+  // administrable only with orgAccess='all' — same blast-radius rationale as
+  // the create-time guard. Enforced here (not just in routes) so every caller,
+  // including AI tool handlers, hits the same gate.
+  if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+    throw new PartnerWideWriteDeniedError();
+  }
+
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (data.name !== undefined) updates.name = data.name;
   if (data.description !== undefined) updates.description = data.description;
@@ -274,6 +320,18 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
   const accessCond = policyAccessCondition(auth);
   if (accessCond) conditions.push(accessCond);
+
+  // Pre-fetch to apply the partner-wide administration gate (see
+  // updateConfigPolicy) before the destructive statement.
+  const [existing] = await db
+    .select({ orgId: configurationPolicies.orgId })
+    .from(configurationPolicies)
+    .where(and(...conditions))
+    .limit(1);
+  if (!existing) return null;
+  if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+    throw new PartnerWideWriteDeniedError();
+  }
 
   const [deleted] = await db
     .delete(configurationPolicies)

@@ -16,6 +16,8 @@ import {
   validateFeaturePolicyExists,
   pamInlineSettingsSchema,
   remoteAccessInlineSettingsSchema,
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/configurationPolicy';
 import {
   addFeatureLinkSchema,
@@ -73,6 +75,13 @@ featureLinkRoutes.post(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    // Feature links carry the policy's actual settings (patch schedules, PAM,
+    // remote access...), so editing them on a partner-wide policy has the same
+    // all-orgs blast radius as creating one — gate on the same capability.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
 
     // Partner-wide policies (org_id NULL, #1724) can't carry org-scoped feature
     // settings. Reject at write time so the scheduler/read-side stay consistent.
@@ -198,6 +207,12 @@ featureLinkRoutes.patch(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    // Same all-orgs blast radius as the POST gate above.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
 
     if (!existingLink) {
@@ -302,6 +317,12 @@ featureLinkRoutes.delete(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    // Same all-orgs blast radius as the POST/PATCH gates above.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
     if (!existingLink) return c.json({ error: 'Feature link not found' }, 404);
     if (existingLink.featureType === 'patch' && !hasSatisfiedMfa(auth)) {

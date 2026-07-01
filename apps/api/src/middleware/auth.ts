@@ -35,6 +35,20 @@ export interface AuthContext {
   accessibleOrgIds: string[] | null;
 
   /**
+   * The caller's `partner_users.org_access` flag ('all' | 'selected' | 'none'),
+   * set for partner-scope requests that resolved a partner membership.
+   * This is the capability gate for PARTNER-WIDE writes (policies that apply
+   * to every org under the partner): only 'all' may create/modify them —
+   * see canManagePartnerWidePolicies in services/configurationPolicy.
+   * Deliberately not derivable from `accessibleOrgIds`: a 'selected' user
+   * whose selection covers every current org still must not administer
+   * partner-wide state (it also governs orgs created later). Undefined for
+   * contexts that never resolve a membership (org scope, agent, helper, MCP
+   * keys) — those fail closed at the gate.
+   */
+  partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
+
+  /**
    * Helper to get the org filter condition for any table.
    * Returns undefined for system scope (no filter needed).
    *
@@ -178,20 +192,33 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
  * Compute which org IDs a user can access based on their scope.
  * Called once per request in authMiddleware.
  */
+interface OrgReach {
+  /** null = unrestricted (system scope); string[] = the concrete allowlist. */
+  orgIds: string[] | null;
+  /**
+   * The caller's partner_users.org_access flag, when the caller is a partner
+   * member. Distinct from `orgIds`: a 'selected' user whose selection happens
+   * to cover every current org still must NOT pass 'all'-gated actions
+   * (partner-wide writes apply to future orgs too). null for system/org scope
+   * and for membership-less partner tokens.
+   */
+  partnerOrgAccess: 'all' | 'selected' | 'none' | null;
+}
+
 async function computeAccessibleOrgIds(
   scope: 'system' | 'partner' | 'organization',
   partnerId: string | null,
   orgId: string | null,
   userId: string
-): Promise<string[] | null> {
+): Promise<OrgReach> {
   if (scope === 'system') {
-    // System users can access all orgs - return null to indicate no filter
-    return null;
+    // System users can access all orgs - null indicates no filter
+    return { orgIds: null, partnerOrgAccess: null };
   }
 
   if (scope === 'organization') {
     // Org users can only access their org
-    return orgId ? [orgId] : [];
+    return { orgIds: orgId ? [orgId] : [], partnerOrgAccess: null };
   }
 
   if (scope === 'partner' && partnerId) {
@@ -201,7 +228,7 @@ async function computeAccessibleOrgIds(
     // denies everything. Run the whole lookup under a system-scope context
     // so the pre-auth read works; the returned list is only used to build
     // the real (non-system) context the request then runs under.
-    return withSystemDbAccessContext(async () => {
+    return withSystemDbAccessContext(async (): Promise<OrgReach> => {
       const [partnerMembership] = await db
         .select({
           orgAccess: partnerUsers.orgAccess,
@@ -217,11 +244,11 @@ async function computeAccessibleOrgIds(
         .limit(1);
 
       if (!partnerMembership) {
-        return [];
+        return { orgIds: [], partnerOrgAccess: null };
       }
 
       if (partnerMembership.orgAccess === 'none') {
-        return [];
+        return { orgIds: [], partnerOrgAccess: 'none' };
       }
 
       if (partnerMembership.orgAccess === 'selected') {
@@ -230,7 +257,7 @@ async function computeAccessibleOrgIds(
         );
 
         if (selectedOrgIds.length === 0) {
-          return [];
+          return { orgIds: [], partnerOrgAccess: 'selected' };
         }
 
         const partnerOrgs = await db
@@ -245,7 +272,7 @@ async function computeAccessibleOrgIds(
             )
           );
 
-        return partnerOrgs.map(o => o.id);
+        return { orgIds: partnerOrgs.map(o => o.id), partnerOrgAccess: 'selected' };
       }
 
       // orgAccess=all: partner users can access all orgs under their partner.
@@ -260,11 +287,11 @@ async function computeAccessibleOrgIds(
           )
         );
 
-      return partnerOrgs.map(o => o.id);
+      return { orgIds: partnerOrgs.map(o => o.id), partnerOrgAccess: 'all' };
     });
   }
 
-  return [];
+  return { orgIds: [], partnerOrgAccess: null };
 }
 
 /**
@@ -437,7 +464,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   }
 
   // Pre-compute accessible org IDs
-  const accessibleOrgIds = await computeAccessibleOrgIds(
+  const { orgIds: accessibleOrgIds, partnerOrgAccess } = await computeAccessibleOrgIds(
     payload.scope,
     payload.partnerId,
     payload.orgId,
@@ -490,6 +517,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     orgId: payload.orgId,
     scope: payload.scope,
     accessibleOrgIds,
+    partnerOrgAccess,
     orgCondition,
     canAccessOrg,
     allowedSiteIds,

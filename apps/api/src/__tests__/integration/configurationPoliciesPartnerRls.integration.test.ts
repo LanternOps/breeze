@@ -233,6 +233,35 @@ describe('configuration_policies RLS — dual-axis (2026-06-27 migration)', () =
     expect(ids).toContain(partnerPolicyId); // partner-wide ALSO shows (the fix)
   });
 
+  it('a SYSTEM-scope org-filtered list only includes the filtered org\'s partner\'s partner-wide policies', async () => {
+    // System scope has no access condition at all, so the org filter itself
+    // must bound the org_id IS NULL branch to the filtered org's own partner —
+    // a bare `OR org_id IS NULL` would return every partner's partner-wide
+    // policies platform-wide.
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const aPolicyId = await seedPartnerPolicy(partnerA.id);
+    const bPolicyId = await seedPartnerPolicy(partnerB.id);
+
+    const systemAuth = {
+      scope: 'system',
+      partnerId: null,
+      orgId: null,
+      accessibleOrgIds: null,
+      orgCondition: (): SQL | undefined => undefined,
+    } as never;
+
+    const result = await withDbAccessContext(
+      { scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null },
+      () => listConfigPolicies(systemAuth, { orgId: orgA.id }, { page: 1, limit: 100 }),
+    );
+    const ids = result.data.map((p) => p.id);
+
+    expect(ids).toContain(aPolicyId); // orgA's partner's partner-wide policy
+    expect(ids).not.toContain(bPolicyId); // unrelated partner's must NOT appear
+  });
+
   it('an org-filtered list does NOT surface another partner\'s partner-wide policy', async () => {
     const partnerA = await createPartner();
     const partnerB = await createPartner();

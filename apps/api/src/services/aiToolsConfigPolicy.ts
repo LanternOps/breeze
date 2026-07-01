@@ -19,6 +19,8 @@ import {
   listFeatureLinks,
   listAssignments,
   validateAssignmentTarget,
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from './configurationPolicy';
 import {
   getConfigPolicyComplianceRuleInfo,
@@ -590,6 +592,14 @@ For link-only types, set featurePolicyId instead of inlineSettings:
       if (action === 'list') {
         const links = await listFeatureLinks(configPolicyId);
         return JSON.stringify({ configPolicyId, policyName: policy.name, featureLinks: links });
+      }
+
+      // Feature-link writes on a partner-wide policy (org_id NULL) push config
+      // to every org under the partner — same capability gate as the HTTP
+      // routes. (The add/update/remove services below don't take auth, so this
+      // handler is the enforcement point for the AI path.)
+      if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
       }
 
       if (action === 'add') {
