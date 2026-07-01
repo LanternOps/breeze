@@ -181,6 +181,19 @@ describe('manage_alerts feedback emission', () => {
     }));
   });
 
+  it('refuses to suppress a resolved alert (no write, no feedback)', async () => {
+    mockAlertLookup({ ...ALERT, status: 'resolved' });
+
+    const result = JSON.parse(await handlerFor('manage_alerts')(
+      { action: 'suppress', alertId: ALERT.id },
+      makeAuth()
+    ));
+
+    expect(result.error).toBe('Cannot suppress a resolved alert');
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+    expect(mocks.emitAlertStateFeedback).not.toHaveBeenCalled();
+  });
+
   it('does not emit feedback when the alert is missing', async () => {
     mockAlertLookup(null);
 

@@ -250,6 +250,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const alert = await findAlertWithAccess(input.alertId as string, auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
+        // Mirror the REST endpoints (POST /alerts/:id/suppress): a resolved alert
+        // has nothing to silence, so refuse rather than silently re-open it.
+        if (alert.status === 'resolved') {
+          return JSON.stringify({ error: 'Cannot suppress a resolved alert' });
+        }
+
         // suppressDuration: 0 => indefinite ("Forever") suppression, leaving
         // suppressedUntil null (mirrors POST /alerts/:id/suppress with no `until`).
         const forever = Number(input.suppressDuration) === 0;

@@ -579,4 +579,37 @@ describe('AlertsPage — bulk suppress', () => {
     // Forever == no deadline: the body carries no `until` key at all.
     expect(body).not.toHaveProperty('until');
   });
+
+  it('warns (not success) when the bulk suppress changes nothing (all skipped)', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/alerts/bulk' && method === 'POST') {
+        // Server processed the request but nothing changed (e.g. every selected
+        // alert was already resolved, so suppress skipped them all).
+        return Promise.resolve(makeJsonResponse({ updated: 0, skipped: 1, failed: 0 }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+    render(<AlertsPage />);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Select High CPU on SRV-01/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Bulk Actions/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Suppress/i }));
+    fireEvent.click(await screen.findByTestId('suppress-confirm'));
+
+    // A truthful warning, NOT a green "1 suppressed".
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'warning', message: 'No alerts suppressed — 1 skipped' }),
+      );
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
 });

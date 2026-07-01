@@ -312,7 +312,11 @@ export default function AlertsPage() {
   const executeBulkAction = async (action: string, selectedAlerts: Alert[], until?: Date | null) => {
     setSubmitting(true);
     try {
-      await runAction({
+      // The bulk endpoint returns HTTP 200 with per-alert counts even when
+      // nothing changed (e.g. every selected alert was already resolved, so
+      // suppress skips them all). Toast from the real counts — never a blanket
+      // "N suppressed" off the selection size — so a no-op isn't shown as success.
+      const result = await runAction<{ updated?: number; skipped?: number; failed?: number }>({
         request: () => fetchWithAuth('/alerts/bulk', {
           method: 'POST',
           body: JSON.stringify({
@@ -322,10 +326,27 @@ export default function AlertsPage() {
           })
         }),
         errorFallback: `Failed to ${action} alerts`,
-        successMessage: `${selectedAlerts.length} alert${selectedAlerts.length > 1 ? 's' : ''} ${BULK_PAST_TENSE[action] ?? `${action}d`}`,
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchAlerts();
+
+      const past = BULK_PAST_TENSE[action] ?? `${action}d`;
+      const updated = result?.updated ?? 0;
+      const skipped = result?.skipped ?? 0;
+      const failed = result?.failed ?? 0;
+      const extras = [skipped ? `${skipped} skipped` : '', failed ? `${failed} failed` : '']
+        .filter(Boolean).join(', ');
+      if (updated === 0) {
+        showToast({
+          message: `No alerts ${past}${extras ? ` — ${extras}` : ''}`,
+          type: failed > 0 ? 'error' : 'warning',
+        });
+      } else {
+        showToast({
+          message: `${updated} alert${updated > 1 ? 's' : ''} ${past}${extras ? ` (${extras})` : ''}`,
+          type: failed > 0 ? 'warning' : 'success',
+        });
+      }
     } catch (err) {
       if (!(err instanceof ActionError)) {
         showToast({ message: `Failed to ${action} alerts`, type: 'error' });
