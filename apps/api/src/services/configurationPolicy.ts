@@ -1536,11 +1536,10 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch, software_policy, and security are handled separately in
+  // patch, software_policy, security, and alert_rule are handled separately in
   // validateFeaturePolicyExists: rings are pure partner-axis, and software /
-  // security policies are dual-ownership (org XOR partner, #2126/#2127) —
-  // none fits the org-only lookup below.
-  alert_rule: { table: alertRules, orgIdCol: alertRules.orgId },
+  // security / alert-rule policies are dual-ownership (org XOR partner,
+  // #2126/#2127/#2128) — none fits the org-only lookup below.
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
   compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
@@ -1559,6 +1558,7 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'patch',
   'software_policy',
   'security',
+  'alert_rule',
 ]);
 
 export async function validateFeaturePolicyExists(
@@ -1598,13 +1598,13 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  if (featureType === 'software_policy' || featureType === 'security') {
+  if (featureType === 'software_policy' || featureType === 'security' || featureType === 'alert_rule') {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
-    // Software (#2126) and security (#2127) policies are dual-ownership. A
-    // config policy may link:
+    // Software (#2126), security (#2127), and alert-rule (#2128) policies are
+    // dual-ownership. A config policy may link:
     //  - an org-owned policy belonging to the config policy's own org
     //  - a partner-owned ("all orgs") template belonging to the config
     //    policy's partner (derived from its org for org-owned config policies)
@@ -1612,7 +1612,9 @@ export async function validateFeaturePolicyExists(
     // templates — there is no owning org to anchor an org-owned one.
     const dualAxis = featureType === 'software_policy'
       ? { table: softwarePolicies, label: 'Software policy' }
-      : { table: securityPolicies, label: 'Security policy' };
+      : featureType === 'security'
+        ? { table: securityPolicies, label: 'Security policy' }
+        : { table: alertRules, label: 'Alert rule' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 

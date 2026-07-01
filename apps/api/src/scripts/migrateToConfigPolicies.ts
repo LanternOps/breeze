@@ -202,7 +202,9 @@ async function migrate() {
     ...orgFromAutomationPolicies,
     ...orgFromMaintenanceWindows,
   ]) {
-    orgIdSet.add(row.orgId);
+    // Partner-wide alert rules (org_id NULL, #2128) are not legacy org data —
+    // this migrator only sweeps per-org rows.
+    if (row.orgId !== null) orgIdSet.add(row.orgId);
   }
 
   if (orgIdSet.size === 0) {

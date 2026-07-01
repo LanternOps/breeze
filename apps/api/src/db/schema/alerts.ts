@@ -42,9 +42,17 @@ export const alertTemplates = pgTable('alert_templates', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
+// An alert rule is owned by EITHER an org (orgId set, partnerId NULL — the
+// original shape) OR a partner (partnerId set, orgId NULL — "partner-wide /
+// all orgs", epic #2135 / #2128). Exactly one axis is set per row; the CHECK
+// constraint `alert_rules_one_owner_chk` (migration 2026-07-01) enforces it.
+// Partner-wide rules always use targetType 'all' with targetId = partnerId
+// (targetId is NOT NULL; the 'all' match ignores it). Fired alerts ALWAYS
+// carry the device's org (alerts.org_id NOT NULL), never the rule's.
 export const alertRules = pgTable('alert_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   templateId: uuid('template_id').notNull().references(() => alertTemplates.id),
   name: varchar('name', { length: 200 }).notNull(),
   targetType: varchar('target_type', { length: 50 }).notNull(),
@@ -54,6 +62,7 @@ export const alertRules = pgTable('alert_rules', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('alert_rules_org_id_idx').on(table.orgId),
+  partnerIdIdx: index('alert_rules_partner_id_idx').on(table.partnerId),
   templateIdIdx: index('alert_rules_template_id_idx').on(table.templateId)
 }));
 

@@ -256,6 +256,12 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // security_policies_one_owner_chk enforces exactly one axis. Functional
   // cross-partner forge proof: securityPoliciesPartnerRls.integration.test.ts.
   'security_policies',
+  // alert_rules (#2128, epic #2135): org-scoped OR partner-wide standalone
+  // alert rule (fired alerts always carry the DEVICE's org — alerts stays
+  // org-only). Converted in 2026-07-01-alert-rules-partner-ownership. CHECK
+  // alert_rules_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: alertRulesPartnerRls.integration.test.ts.
+  'alert_rules',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

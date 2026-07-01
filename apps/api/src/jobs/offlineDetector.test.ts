@@ -45,6 +45,8 @@ vi.mock('../services/eventBus', () => ({
 }));
 
 vi.mock('../services/alertService', () => ({
+  // #2128: and() drops undefined, so this stub keeps the mocked rule query unchanged
+  alertRuleOwnershipConditionForOrg: vi.fn(async () => undefined),
   createAlert: vi.fn(),
 }));
 

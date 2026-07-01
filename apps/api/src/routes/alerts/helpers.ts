@@ -97,7 +97,10 @@ export function resolveWriteOrgId(
   return { error: 'orgId is required when the caller can access multiple organizations', status: 400 };
 }
 
-export async function getAlertRuleWithOrgCheck(ruleId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+export async function getAlertRuleWithOrgCheck(
+  ruleId: string,
+  auth: { canAccessOrg: (orgId: string) => boolean; scope?: string; partnerId?: string | null }
+) {
   const [rule] = await db
     .select()
     .from(alertRules)
@@ -108,7 +111,12 @@ export async function getAlertRuleWithOrgCheck(ruleId: string, auth: { canAccess
     return null;
   }
 
-  const hasAccess = ensureOrgAccess(rule.orgId, auth);
+  // Dual-axis access (#2128): org-owned rules via org access; partner-wide
+  // rules (orgId NULL) via the caller's own partner (or system scope). Writes
+  // are additionally gated on canManagePartnerWidePolicies at the routes.
+  const hasAccess = rule.orgId !== null
+    ? ensureOrgAccess(rule.orgId, auth)
+    : auth.scope === 'system' || (!!auth.partnerId && rule.partnerId === auth.partnerId);
   if (!hasAccess) {
     return null;
   }
@@ -447,7 +455,10 @@ export function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemp
 
 export async function resolveAlertTemplate(params: {
   templateId?: string;
-  orgId: string;
+  // Owner of any template CREATED here: org-owned for org rules, partner-owned
+  // for partner-wide rules (#2128; alert_templates are already dual-ownership).
+  orgId: string | null;
+  partnerId?: string | null;
   name?: string;
   description?: string;
   severity?: string;
@@ -477,6 +488,7 @@ export async function resolveAlertTemplate(params: {
       .values({
         id: params.templateId,
         orgId: params.orgId,
+        partnerId: params.partnerId ?? null,
         name: templateName,
         description: params.description,
         conditions: templateConditions,
@@ -496,6 +508,7 @@ export async function resolveAlertTemplate(params: {
     .insert(alertTemplates)
     .values({
       orgId: params.orgId,
+      partnerId: params.partnerId ?? null,
       name: templateName,
       description: params.description,
       conditions: templateConditions,

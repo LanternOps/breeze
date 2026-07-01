@@ -4,6 +4,7 @@ import AlertRuleForm, { type AlertRuleFormValues } from './AlertRuleForm';
 import type { NotificationChannel } from './NotificationChannelList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 
@@ -26,6 +27,17 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
   const [devices, setDevices] = useState<Device[]>([]);
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
   const { currentOrgId } = useOrgStore();
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+
+  // Ownership axis (#2128, mirrors software/security policies): partner-scope
+  // creators may own the rule partner-wide ("all orgs" — targets every device
+  // under the partner, uses each org's default alert routing). Gate on the
+  // JWT scope; default to partner-wide when viewing All orgs. Create-only.
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>(
+    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'
+  );
 
   const fetchRule = useCallback(async () => {
     if (!ruleId || isNew) return;
@@ -146,7 +158,21 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
         autoResolve: values.autoResolve,
         enabled: true
       };
-      const requestPayload = isNew && currentOrgId ? { ...payload, orgId: currentOrgId } : payload;
+      const partnerWideCreate = isNew && isPartnerScope && ownerScope === 'partner';
+      const requestPayload = partnerWideCreate
+        ? {
+            ...payload,
+            ownerScope: 'partner',
+            // Partner-wide rules always target 'all' and use each org's own
+            // default notification routing — org-scoped bindings are rejected
+            // by the API.
+            targetType: 'all',
+            targets: { type: 'all', ids: [] },
+            notificationChannelIds: undefined,
+          }
+        : isNew && currentOrgId
+          ? { ...payload, orgId: currentOrgId }
+          : payload;
 
       const url = isNew ? '/alerts/rules' : `/alerts/rules/${ruleId}`;
       const method = isNew ? 'POST' : 'PUT';
@@ -228,6 +254,34 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
         </div>
+      )}
+
+      {isNew && isPartnerScope && (
+        <fieldset className="space-y-2 rounded-md border p-4" data-testid="alert-rule-owner">
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="alertRuleOwnerScope"
+              value="partner"
+              checked={ownerScope === 'partner'}
+              onChange={() => setOwnerScope('partner')}
+              data-testid="alert-rule-owner-partner"
+            />
+            All organizations <span className="text-muted-foreground">(partner-wide — targets every device; each org's default notification routing applies)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="alertRuleOwnerScope"
+              value="organization"
+              checked={ownerScope === 'organization'}
+              onChange={() => setOwnerScope('organization')}
+              data-testid="alert-rule-owner-org"
+            />
+            This organization only
+          </label>
+        </fieldset>
       )}
 
       <AlertRuleForm

@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { alertRules, alertTemplates, alerts, devices } from '../../db/schema';
+import { alertRules, alertTemplates, alerts, devices, organizations } from '../../db/schema';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -41,33 +42,65 @@ rulesRoutes.get(
     const { page, limit, offset } = getPagination(query);
 
     // Build conditions array
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: SQL[] = [];
 
-    // Filter by org access based on scope
+    // Filter by org access based on scope. Partner callers also see their
+    // partner-wide rules (org_id NULL, #2128) — including in org-filtered
+    // views, since those rules govern that org's devices too. For system
+    // callers the NULL branch is scoped to the QUERIED org's own partner
+    // (mirrors listConfigPolicies) so it never returns unrelated partners'
+    // rules platform-wide.
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
       }
       conditions.push(eq(alertRules.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
+      const partnerWideMine = auth.partnerId
+        ? and(isNull(alertRules.orgId), eq(alertRules.partnerId, auth.partnerId))
+        : undefined;
       if (query.orgId) {
         const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        conditions.push(eq(alertRules.orgId, query.orgId));
+        conditions.push(
+          partnerWideMine
+            ? (or(eq(alertRules.orgId, query.orgId), partnerWideMine) as SQL)
+            : eq(alertRules.orgId, query.orgId)
+        );
       } else {
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
+        if (orgIds.length === 0 && !partnerWideMine) {
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 }
           });
         }
-        conditions.push(inArray(alertRules.orgId, orgIds));
+        const orgOwned = orgIds.length > 0 ? inArray(alertRules.orgId, orgIds) : undefined;
+        if (orgOwned && partnerWideMine) {
+          conditions.push(or(orgOwned, partnerWideMine) as SQL);
+        } else if (orgOwned) {
+          conditions.push(orgOwned);
+        } else if (partnerWideMine) {
+          conditions.push(partnerWideMine as SQL);
+        }
       }
     } else if (auth.scope === 'system' && query.orgId) {
-      conditions.push(eq(alertRules.orgId, query.orgId));
+      const [orgRow] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, query.orgId))
+        .limit(1);
+      const orgPartnerId = orgRow?.partnerId ?? null;
+      conditions.push(
+        orgPartnerId
+          ? (or(
+              eq(alertRules.orgId, query.orgId),
+              and(isNull(alertRules.orgId), eq(alertRules.partnerId, orgPartnerId))
+            ) as SQL)
+          : eq(alertRules.orgId, query.orgId)
+      );
     }
 
     // Additional filters
@@ -140,31 +173,68 @@ rulesRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    const orgId = data.orgId ?? auth.orgId;
-    if (!orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
+    // Ownership axis (#2128). Partner-wide rules evaluate against devices in
+    // ALL orgs under the partner (including orgs created later), so creation
+    // is gated on the partner-wide capability — same gate as software/security
+    // policies. The partner is ALWAYS derived from the caller's own token.
+    const isPartnerWide = data.ownerScope === 'partner';
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (isPartnerWide) {
+      if (!auth.partnerId) {
+        return c.json({ error: 'Partner-wide alert rules require partner scope' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: 'Partner-wide alert rules require full partner org access (orgAccess must be "all")' }, 403);
+      }
+      // Partner-wide rules always target 'all' (every device under the
+      // partner); org/site/group/device targets have no meaning without an
+      // owning org. targetId carries the partner id to satisfy NOT NULL — the
+      // 'all' match ignores it.
+      const requestedTargetType = data.targets?.type ?? data.targetType;
+      if (requestedTargetType && requestedTargetType !== 'all') {
+        return c.json({ error: 'Partner-wide alert rules only support the "all" target — scope narrower rules to an organization instead' }, 400);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgId = data.orgId ?? auth.orgId;
+      if (!orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      if (!auth.canAccessOrg(orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+      owner = { orgId, partnerId: null };
     }
 
-    if (!auth.canAccessOrg(orgId)) {
-      return c.json({ error: 'Access to this organization denied' }, 403);
-    }
-
-    const { targetType, targetId, targetIds, targets } = normalizeTargetsForRule(
-      {
-        targets: data.targets,
-        targetType: data.targetType,
-        targetId: data.targetId
-      },
-      orgId
-    );
+    const { targetType, targetId, targetIds, targets } = isPartnerWide
+      ? { targetType: 'all', targetId: owner.partnerId!, targetIds: [], targets: { type: 'all', ids: [] } }
+      : normalizeTargetsForRule(
+          {
+            targets: data.targets,
+            targetType: data.targetType,
+            targetId: data.targetId
+          },
+          owner.orgId!
+        );
 
     if (!targetId) {
       return c.json({ error: 'Target is required' }, 400);
     }
 
+    // Notification channels and escalation policies are org-scoped (#2130);
+    // a partner-wide rule cannot bind them. Dispatch falls back to each firing
+    // device's OWN org routing (the alert always carries the device's org).
+    if (isPartnerWide) {
+      const requestedChannels = data.notificationChannelIds ?? data.notificationChannels;
+      if ((Array.isArray(requestedChannels) && requestedChannels.length > 0) || data.escalationPolicyId) {
+        return c.json({ error: 'Partner-wide alert rules cannot bind org-scoped notification channels or escalation policies; each organization\'s default routing is used instead' }, 400);
+      }
+    }
+
     const { template, created } = await resolveAlertTemplate({
       templateId: data.templateId,
-      orgId,
+      orgId: owner.orgId,
+      partnerId: owner.partnerId,
       name: data.name,
       description: data.description,
       severity: data.severity,
@@ -176,8 +246,16 @@ rulesRoutes.post(
       return c.json({ error: 'Failed to resolve alert template' }, 500);
     }
 
-    if (!created && template.orgId && template.orgId !== orgId) {
-      return c.json({ error: 'Access to this alert template denied' }, 403);
+    if (!created) {
+      // Org rules may use built-in, partner-shared, or same-org templates
+      // (unchanged). Partner-wide rules may use built-in or OWN-partner
+      // templates — never another tenant's org template.
+      const templateDenied = isPartnerWide
+        ? Boolean(template.orgId) || (template.partnerId ? template.partnerId !== owner.partnerId : !template.isBuiltIn)
+        : Boolean(template.orgId && template.orgId !== owner.orgId);
+      if (templateDenied) {
+        return c.json({ error: 'Access to this alert template denied' }, 403);
+      }
     }
 
     const baseOverrides: Record<string, unknown> = {
@@ -200,12 +278,14 @@ rulesRoutes.post(
       baseOverrides.notificationChannelIds = notificationChannelIds;
     }
 
-    const createNotificationBindingError = await validateAlertRuleNotificationBindings(
-      orgId,
-      getOverrides(baseOverrides)
-    );
-    if (createNotificationBindingError) {
-      return c.json({ error: createNotificationBindingError }, 400);
+    if (!isPartnerWide) {
+      const createNotificationBindingError = await validateAlertRuleNotificationBindings(
+        owner.orgId!,
+        getOverrides(baseOverrides)
+      );
+      if (createNotificationBindingError) {
+        return c.json({ error: createNotificationBindingError }, 400);
+      }
     }
 
     baseOverrides.targets = targets;
@@ -221,7 +301,8 @@ rulesRoutes.post(
     const [rule] = await db
       .insert(alertRules)
       .values({
-        orgId,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         templateId: template.id,
         name: ruleName,
         targetType,
@@ -235,7 +316,7 @@ rulesRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: owner.orgId,
       action: 'alert_rule.create',
       resourceType: 'alert_rule',
       resourceId: rule.id,
@@ -273,6 +354,14 @@ rulesRoutes.put(
       return c.json({ error: 'Alert rule not found' }, 404);
     }
 
+    // Partner-wide rules are READABLE by any member of the partner but
+    // administrable only with the partner-wide capability — editing them
+    // changes alerting across every org under the partner (#2128).
+    const isPartnerWide = rule.orgId === null;
+    if (isPartnerWide && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const updates: Record<string, unknown> = {};
     let templateOwned = getOverrides(rule.overrideSettings).templateOwned;
 
@@ -280,6 +369,7 @@ rulesRoutes.put(
       const resolved = await resolveAlertTemplate({
         templateId: data.templateId,
         orgId: rule.orgId,
+        partnerId: rule.partnerId,
         name: data.name,
         description: data.description,
         severity: data.severity,
@@ -292,7 +382,11 @@ rulesRoutes.put(
       }
       const resolvedTemplate = resolved.template;
 
-      if (!resolved.created && resolvedTemplate.orgId && resolvedTemplate.orgId !== rule.orgId) {
+      const templateDenied = isPartnerWide
+        ? !resolved.created && (Boolean(resolvedTemplate.orgId)
+            || (resolvedTemplate.partnerId ? resolvedTemplate.partnerId !== rule.partnerId : !resolvedTemplate.isBuiltIn))
+        : !resolved.created && Boolean(resolvedTemplate.orgId && resolvedTemplate.orgId !== rule.orgId);
+      if (templateDenied) {
         return c.json({ error: 'Access to this alert template denied' }, 403);
       }
 
@@ -303,14 +397,22 @@ rulesRoutes.put(
     if (data.name !== undefined) updates.name = data.name;
 
     if (data.targets || data.targetType || data.targetId) {
-      const resolvedTargets = normalizeTargetsForRule(
-        {
-          targets: data.targets,
-          targetType: data.targetType,
-          targetId: data.targetId
-        },
-        rule.orgId
-      );
+      if (isPartnerWide) {
+        const requestedTargetType = data.targets?.type ?? data.targetType;
+        if (requestedTargetType && requestedTargetType !== 'all') {
+          return c.json({ error: 'Partner-wide alert rules only support the "all" target — scope narrower rules to an organization instead' }, 400);
+        }
+      }
+      const resolvedTargets = isPartnerWide
+        ? { targetType: 'all', targetId: rule.partnerId!, targetIds: [], targets: { type: 'all', ids: [] } }
+        : normalizeTargetsForRule(
+            {
+              targets: data.targets,
+              targetType: data.targetType,
+              targetId: data.targetId
+            },
+            rule.orgId!
+          );
 
       if (!resolvedTargets.targetId) {
         return c.json({ error: 'Target is required' }, 400);
@@ -354,8 +456,13 @@ rulesRoutes.put(
       || containsNotificationBindingOverride(data.overrides);
 
     if (shouldValidateNotificationBindings) {
+      if (isPartnerWide) {
+        // Channels/escalation are org-scoped (#2130); partner-wide rules use
+        // each firing device's own org routing instead.
+        return c.json({ error: 'Partner-wide alert rules cannot bind org-scoped notification channels or escalation policies; each organization\'s default routing is used instead' }, 400);
+      }
       const updateNotificationBindingError = await validateAlertRuleNotificationBindings(
-        rule.orgId,
+        rule.orgId!,
         getOverrides(baseOverrides)
       );
       if (updateNotificationBindingError) {
@@ -449,6 +556,11 @@ rulesRoutes.delete(
       return c.json({ error: 'Alert rule not found' }, 404);
     }
 
+    // Same partner-wide administration gate as PUT (#2128).
+    if (rule.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     // Check for active alerts using this rule
     const activeAlerts = await db
       .select({ count: sql<number>`count(*)` })
@@ -502,16 +614,16 @@ rulesRoutes.post(
       return c.json({ error: 'Alert rule not found' }, 404);
     }
 
-    // Verify device exists and belongs to same org
+    // Verify device exists and is governed by this rule: same org for
+    // org-owned rules; any org under the rule's partner for partner-wide
+    // rules (#2128).
+    const deviceScope = rule.orgId !== null
+      ? [eq(devices.orgId, rule.orgId)]
+      : [sql`${devices.orgId} IN (SELECT id FROM ${organizations} WHERE ${organizations.partnerId} = ${rule.partnerId})`];
     const [device] = await db
       .select()
       .from(devices)
-      .where(
-        and(
-          eq(devices.id, data.deviceId),
-          eq(devices.orgId, rule.orgId)
-        )
-      )
+      .where(and(eq(devices.id, data.deviceId), ...deviceScope))
       .limit(1);
 
     if (!device) {

@@ -79,6 +79,17 @@ function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any)
   return auth.orgCondition(orgIdCol) ?? undefined;
 }
 
+// Dual-axis access for alert_rules (#2128): org-owned rules the caller can
+// reach OR partner-wide rules (org_id NULL) owned by the caller's own partner.
+function alertRuleWhere(auth: AuthContext): SQL | undefined {
+  const oc = alertRuleWhere(auth);
+  if (!oc) return undefined; // system scope
+  if (auth.partnerId) {
+    return sql`(${oc} OR (${alertRules.orgId} IS NULL AND ${alertRules.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
+}
+
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth) => {
@@ -1338,7 +1349,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list_rules') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, alertRules.orgId);
+        const oc = alertRuleWhere(auth);
         if (oc) conditions.push(oc);
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
@@ -1361,7 +1372,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get_rule') {
         if (!input.ruleId) return JSON.stringify({ error: 'ruleId is required' });
         const conditions: SQL[] = [eq(alertRules.id, input.ruleId as string)];
-        const oc = orgWhere(auth, alertRules.orgId);
+        const oc = alertRuleWhere(auth);
         if (oc) conditions.push(oc);
 
         const [rule] = await db.select().from(alertRules).where(and(...conditions)).limit(1);
@@ -1391,7 +1402,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'test_rule') {
         if (!input.ruleId) return JSON.stringify({ error: 'ruleId is required' });
         const conditions: SQL[] = [eq(alertRules.id, input.ruleId as string)];
-        const oc = orgWhere(auth, alertRules.orgId);
+        const oc = alertRuleWhere(auth);
         if (oc) conditions.push(oc);
 
         const [rule] = await db.select().from(alertRules).where(and(...conditions)).limit(1);

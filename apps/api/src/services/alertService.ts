@@ -16,10 +16,11 @@ import {
   devices,
   deviceGroups,
   deviceGroupMemberships,
+  organizations,
   sites,
   configPolicyAlertRules
 } from '../db/schema';
-import { eq, and, inArray, isNull, isNotNull, or } from 'drizzle-orm';
+import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
 import { isCooldownActive, setCooldown, isConfigPolicyRuleCooling, markConfigPolicyRuleCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { resolveAlertRulesForDevice, resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
@@ -349,6 +350,26 @@ export async function resolveAlert(
  * This function remains for legacy/backward compatibility with standalone alertRules.
  * New alert evaluation should use getApplicableRulesFromPolicy() instead.
  */
+/**
+ * Rule-ownership condition for EVALUATION (#2128): a device is governed by the
+ * standalone rules owned by its OWN org, plus the partner-wide rules (org_id
+ * NULL) owned by that org's partner. Exported for the offline detector, which
+ * runs the same standalone-rule sweep.
+ */
+export async function alertRuleOwnershipConditionForOrg(orgId: string): Promise<SQL> {
+  const [ownerOrg] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const partnerId = ownerOrg?.partnerId ?? null;
+  if (!partnerId) {
+    // Orphaned org (no partner): only its own rules apply.
+    return eq(alertRules.orgId, orgId) as unknown as SQL;
+  }
+  return sql`(${alertRules.orgId} = ${orgId} OR (${alertRules.orgId} IS NULL AND ${alertRules.partnerId} = ${partnerId}))`;
+}
+
 export async function getApplicableRules(deviceId: string): Promise<RuleWithTemplate[]> {
   // Get device info
   const [device] = await db
@@ -384,13 +405,15 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
     );
   }
 
-  // Get all active rules that apply to this device
+  // Get all active rules that apply to this device: the device org's own
+  // rules plus its partner's partner-wide rules (#2128).
+  const ownershipCondition = await alertRuleOwnershipConditionForOrg(device.orgId);
   const rules = await db
     .select()
     .from(alertRules)
     .where(
       and(
-        eq(alertRules.orgId, device.orgId),
+        ownershipCondition,
         eq(alertRules.isActive, true),
         or(...targetConditions)
       )
@@ -477,11 +500,14 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
         const title = interpolateTemplate(template.titleTemplate, templateContext);
         const message = interpolateTemplate(template.messageTemplate, templateContext);
 
-        // Create alert
+        // Create alert — ALWAYS in the DEVICE's org (alerts.org_id NOT NULL):
+        // a partner-wide rule (#2128) has no org of its own, and for org-owned
+        // rules device.orgId is identical to rule.orgId by the ownership match
+        // above. Notifications then route via the firing org's own channels.
         const alertId = await createAlert({
           ruleId: rule.id,
           deviceId,
-          orgId: rule.orgId,
+          orgId: device.orgId,
           severity: effectiveSeverity,
           title,
           message,
