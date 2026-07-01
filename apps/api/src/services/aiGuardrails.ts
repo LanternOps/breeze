@@ -29,7 +29,18 @@ const BLOCKED_TOOLS = new Set<string>([
 //   manage_services: list is a read downgraded from the tool's base Tier 3
 const TIER2_ACTIONS: Record<string, string[]> = {
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
-  manage_tickets: ['create', 'comment', 'assign', 'update_status'],
+  manage_tickets: [
+    'create',
+    'comment',
+    'assign',
+    'update_status',
+    'update_fields',
+    'link_alert',
+    'unlink_alert',
+    'create_from_alert',
+    'edit_comment',
+    'delete_comment'
+  ],
   manage_services: ['list'],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
@@ -80,7 +91,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
   // Ticketing time-tracking — writes at Tier 3 (spec §4)
-  manage_tickets: ['log_time_entry', 'start_timer', 'stop_timer'],
+  manage_tickets: ['log_time_entry', 'start_timer', 'stop_timer', 'move_org'],
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
@@ -114,6 +125,13 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     comment: { resource: 'tickets', action: 'write' },
     assign: { resource: 'tickets', action: 'write' },
     update_status: { resource: 'tickets', action: 'write' },
+    update_fields: { resource: 'tickets', action: 'write' },
+    link_alert: { resource: 'tickets', action: 'write' },
+    unlink_alert: { resource: 'tickets', action: 'write' },
+    create_from_alert: { resource: 'tickets', action: 'write' },
+    edit_comment: { resource: 'tickets', action: 'write' },
+    delete_comment: { resource: 'tickets', action: 'write' },
+    move_org: { resource: 'tickets', action: 'write' },
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },

@@ -8,7 +8,7 @@
 
 import { and, desc, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { tickets } from '../db/schema';
+import { alerts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
@@ -17,7 +17,16 @@ import {
   changeTicketStatus,
   assignTicket,
   addTicketComment,
-  type TicketStatus
+  updateTicketFields,
+  linkAlertToTicket,
+  unlinkAlertFromTicket,
+  createTicketFromAlert,
+  editTicketComment,
+  deleteTicketComment,
+  moveTicketOrg,
+  type CreateTicketInput,
+  type TicketStatus,
+  type UpdateTicketFieldsInput
 } from './ticketService';
 import {
   createTimeEntry,
@@ -26,6 +35,9 @@ import {
   TimeEntryServiceError
 } from './timeEntryService';
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
+import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+
+type ParseResult<T> = { value: T } | { error: string };
 
 function actorFrom(auth: AuthContext) {
   return { userId: auth.user.id, name: auth.user.name };
@@ -69,6 +81,121 @@ async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
   return ticket;
 }
 
+async function findAlertWithAccess(alertId: string, auth: AuthContext) {
+  const conditions: SQL[] = [eq(alerts.id, alertId)];
+  const orgCond = auth.orgCondition(alerts.orgId);
+  if (orgCond) conditions.push(orgCond);
+  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
+  if (!alert) return null;
+  if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
+    return null;
+  }
+  return alert;
+}
+
+async function canManageAnyTicketComment(auth: AuthContext): Promise<boolean> {
+  const userPerms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined,
+  });
+  if (!userPerms) return false;
+  return hasPermission(userPerms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function optionalStringOrNull(record: Record<string, unknown>, key: string): string | null | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'string') return value;
+  return undefined;
+}
+
+function optionalNumberOrNull(record: Record<string, unknown>, key: string): number | null | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return undefined;
+}
+
+function optionalPriority(record: Record<string, unknown>): UpdateTicketFieldsInput['priority'] | undefined {
+  const value = record.priority;
+  if (value === undefined) return undefined;
+  if (value === 'low' || value === 'normal' || value === 'high' || value === 'urgent') return value;
+  return undefined;
+}
+
+function optionalDueDate(record: Record<string, unknown>): Date | null | undefined {
+  const value = record.dueDate;
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return undefined;
+}
+
+function parseUpdateFields(value: unknown): ParseResult<UpdateTicketFieldsInput> {
+  if (!isRecord(value)) return { error: 'fields object is required for update_fields action' };
+  const fields: UpdateTicketFieldsInput = {};
+
+  for (const key of ['subject', 'description'] as const) {
+    const parsed = optionalStringOrNull(value, key);
+    if (typeof parsed === 'string') fields[key] = parsed;
+  }
+
+  for (const key of ['categoryId', 'deviceId', 'submittedBy', 'submitterName', 'submitterEmail'] as const) {
+    const parsed = optionalStringOrNull(value, key);
+    if (parsed !== undefined) fields[key] = parsed;
+  }
+
+  const priority = optionalPriority(value);
+  if (priority !== undefined) fields.priority = priority;
+
+  const dueDate = optionalDueDate(value);
+  if (dueDate !== undefined) fields.dueDate = dueDate;
+
+  const responseSlaMinutes = optionalNumberOrNull(value, 'responseSlaMinutes');
+  if (responseSlaMinutes !== undefined) fields.responseSlaMinutes = responseSlaMinutes;
+
+  const resolutionSlaMinutes = optionalNumberOrNull(value, 'resolutionSlaMinutes');
+  if (resolutionSlaMinutes !== undefined) fields.resolutionSlaMinutes = resolutionSlaMinutes;
+
+  if (value.tags !== undefined) {
+    if (!Array.isArray(value.tags) || !value.tags.every((tag): tag is string => typeof tag === 'string')) {
+      return { error: 'fields.tags must be an array of strings' };
+    }
+    fields.tags = value.tags;
+  }
+
+  if (Object.keys(fields).length === 0) return { error: 'At least one update field is required' };
+  return { value: fields };
+}
+
+function parseAlertOverrides(value: unknown): ParseResult<Partial<Pick<CreateTicketInput, 'subject' | 'description' | 'categoryId' | 'priority' | 'assigneeId'>>> {
+  if (value === undefined) return { value: {} };
+  if (!isRecord(value)) return { error: 'overrides must be an object' };
+
+  const overrides: Partial<Pick<CreateTicketInput, 'subject' | 'description' | 'categoryId' | 'priority' | 'assigneeId'>> = {};
+  const subject = optionalStringOrNull(value, 'subject');
+  if (typeof subject === 'string') overrides.subject = subject;
+  const description = optionalStringOrNull(value, 'description');
+  if (typeof description === 'string') overrides.description = description;
+  const categoryId = optionalStringOrNull(value, 'categoryId');
+  if (typeof categoryId === 'string') overrides.categoryId = categoryId;
+  const assigneeId = optionalStringOrNull(value, 'assigneeId');
+  if (typeof assigneeId === 'string') overrides.assigneeId = assigneeId;
+  const priority = optionalPriority(value);
+  if (priority !== undefined) overrides.priority = priority;
+  return { value: overrides };
+}
+
 export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_tickets', {
     tier: 1 as AiToolTier,
@@ -88,12 +215,37 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         properties: {
           action: {
             type: 'string',
-            enum: ['list', 'get', 'create', 'comment', 'assign', 'update_status', 'log_time_entry', 'start_timer', 'stop_timer'],
+            enum: [
+              'list',
+              'get',
+              'create',
+              'comment',
+              'assign',
+              'update_status',
+              'log_time_entry',
+              'start_timer',
+              'stop_timer',
+              'update_fields',
+              'link_alert',
+              'unlink_alert',
+              'create_from_alert',
+              'edit_comment',
+              'delete_comment',
+              'move_org'
+            ],
             description: 'The action to perform'
           },
           ticketId: {
             type: 'string',
-            description: 'Ticket UUID (required for get/comment/assign/update_status)'
+            description: 'Ticket UUID (required for get/comment/assign/update_status/update_fields/link_alert/unlink_alert/move_org)'
+          },
+          alertId: {
+            type: 'string',
+            description: 'Alert UUID (required for link_alert/unlink_alert/create_from_alert)'
+          },
+          commentId: {
+            type: 'string',
+            description: 'Comment UUID (required for edit_comment/delete_comment)'
           },
           orgId: {
             type: 'string',
@@ -122,7 +274,23 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'Required when resolving a ticket'
           },
-          content: { type: 'string', description: 'Comment body (comment)' },
+          content: { type: 'string', description: 'Comment body (comment/edit_comment)' },
+          expectedTicketId: {
+            type: 'string',
+            description: 'Parent ticket UUID for edit_comment/delete_comment scope verification'
+          },
+          targetOrgId: {
+            type: 'string',
+            description: 'Target organization UUID for move_org'
+          },
+          fields: {
+            type: 'object',
+            description: 'Field patch for update_fields'
+          },
+          overrides: {
+            type: 'object',
+            description: 'Optional create_from_alert ticket overrides (subject, description, categoryId, priority, assigneeId)'
+          },
           isPublic: {
             type: 'boolean',
             description: 'Comment visibility — false = internal note (default true)'
@@ -321,6 +489,96 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           },
           actor
         );
+        return JSON.stringify({ ticket });
+      }
+
+      // ── update_fields ────────────────────────────────────────────────────
+      if (action === 'update_fields') {
+        if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_fields action' });
+        const parsedFields = parseUpdateFields(input.fields);
+        if ('error' in parsedFields) return JSON.stringify({ error: parsedFields.error });
+        // Scoped pre-check: ensure ticket is visible before the service mutates by id.
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        const ticket = await updateTicketFields(String(input.ticketId), parsedFields.value, actor);
+        return JSON.stringify({ ticket });
+      }
+
+      // ── link_alert ────────────────────────────────────────────────────────
+      if (action === 'link_alert') {
+        if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for link_alert action' });
+        if (!input.alertId) return JSON.stringify({ error: 'alertId is required for link_alert action' });
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        const alert = await findAlertWithAccess(String(input.alertId), auth);
+        if (!alert) return JSON.stringify({ error: 'Alert not found' });
+        const link = await linkAlertToTicket(String(input.ticketId), String(input.alertId), actor);
+        return JSON.stringify({ link });
+      }
+
+      // ── unlink_alert ──────────────────────────────────────────────────────
+      if (action === 'unlink_alert') {
+        if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for unlink_alert action' });
+        if (!input.alertId) return JSON.stringify({ error: 'alertId is required for unlink_alert action' });
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        const result = await unlinkAlertFromTicket(String(input.ticketId), String(input.alertId), actor);
+        return JSON.stringify({ unlinked: result });
+      }
+
+      // ── create_from_alert ─────────────────────────────────────────────────
+      if (action === 'create_from_alert') {
+        if (!input.alertId) return JSON.stringify({ error: 'alertId is required for create_from_alert action' });
+        const alert = await findAlertWithAccess(String(input.alertId), auth);
+        if (!alert) return JSON.stringify({ error: 'Alert not found' });
+        const parsedOverrides = parseAlertOverrides(input.overrides);
+        if ('error' in parsedOverrides) return JSON.stringify({ error: parsedOverrides.error });
+        const ticket = await createTicketFromAlert(String(input.alertId), actor, parsedOverrides.value);
+        return JSON.stringify({ ticket });
+      }
+
+      // ── edit_comment ──────────────────────────────────────────────────────
+      if (action === 'edit_comment') {
+        if (!input.commentId) return JSON.stringify({ error: 'commentId is required for edit_comment action' });
+        if (!input.expectedTicketId) return JSON.stringify({ error: 'expectedTicketId is required for edit_comment action' });
+        if (!input.content) return JSON.stringify({ error: 'content is required for edit_comment action' });
+        const found = await findTicketWithAccess(String(input.expectedTicketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        const canManageAny = await canManageAnyTicketComment(auth);
+        const comment = await editTicketComment(
+          String(input.commentId),
+          { content: String(input.content) },
+          actor,
+          { canManageAny, expectedTicketId: String(input.expectedTicketId) }
+        );
+        return JSON.stringify({ comment });
+      }
+
+      // ── delete_comment ────────────────────────────────────────────────────
+      if (action === 'delete_comment') {
+        if (!input.commentId) return JSON.stringify({ error: 'commentId is required for delete_comment action' });
+        if (!input.expectedTicketId) return JSON.stringify({ error: 'expectedTicketId is required for delete_comment action' });
+        const found = await findTicketWithAccess(String(input.expectedTicketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        const canManageAny = await canManageAnyTicketComment(auth);
+        const deleted = await deleteTicketComment(
+          String(input.commentId),
+          actor,
+          { canManageAny, expectedTicketId: String(input.expectedTicketId) }
+        );
+        return JSON.stringify({ deleted });
+      }
+
+      // ── move_org ──────────────────────────────────────────────────────────
+      if (action === 'move_org') {
+        if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for move_org action' });
+        if (!input.targetOrgId) return JSON.stringify({ error: 'targetOrgId is required for move_org action' });
+        const found = await findTicketWithAccess(String(input.ticketId), auth);
+        if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        if (!auth.canAccessOrg(String(input.targetOrgId))) {
+          return JSON.stringify({ error: 'Access to target organization denied' });
+        }
+        const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
         return JSON.stringify({ ticket });
       }
 
