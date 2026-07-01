@@ -9,6 +9,10 @@ const { redisGet, redisSet, redisDel } = vi.hoisted(() => ({
 vi.mock('../db', () => ({
   db: { select: vi.fn() },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // readAsSystem() consults these: contextless (undefined) → runs the query via
+  // withSystemDbAccessContext, matching these tests' agent/contextless call path.
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({

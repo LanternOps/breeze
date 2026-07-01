@@ -1,5 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners } from '../db/schema';
 import { getRedis } from './redis';
 
@@ -14,8 +14,40 @@ function isUsableOrgStatus(status: string | null | undefined): boolean {
   return status === 'active' || status === 'trial';
 }
 
+/**
+ * Run a tenant-status read under a genuine system-scoped DB context, whatever
+ * the caller's ambient context is.
+ *
+ * Whether a tenant is active is an INFRASTRUCTURE question, not a tenant-data
+ * one — it must not be filtered by the caller's RLS visibility. But
+ * `withSystemDbAccessContext` early-returns (no-ops) when a context is already
+ * active; it does NOT widen a narrower ambient context. So when a request has
+ * already established an org/partner-scoped context whose partner allowlist is
+ * empty — the manual-API-key MCP path is exactly this (`accessiblePartnerIds:
+ * []`, see middleware/apiKeyAuth.ts) — a bare `withSystemDbAccessContext` here
+ * would run the `partners` read under that narrow context, RLS
+ * (`breeze_has_partner_access` → false) filters it to 0 rows, and an active
+ * partner looks unresolvable: `getActiveOrgTenant` returns null → the owning
+ * partnerId is never threaded into `getUserPermissions` → every MCP `tools/call`
+ * dies "no role assigned" (#2108 / re-report of #2019).
+ *
+ * Fix: when the ambient context is narrower than system, exit it FIRST
+ * (`runOutsideDbContext`) then open a fresh system transaction — the same
+ * escalation `services/permissions.ts` (getUserPermissions) already uses.
+ * Contextless callers (agent paths, pre-auth middleware) and already-system
+ * callers are unchanged and acquire no extra connection: the former open a
+ * fresh system tx exactly as before, the latter reuse the active system tx.
+ */
+function readAsSystem<T>(fn: () => Promise<T>): Promise<T> {
+  const ambient = getCurrentDbAccessContext();
+  if (ambient && ambient.scope !== 'system') {
+    return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+  }
+  return withSystemDbAccessContext(fn);
+}
+
 export async function getActivePartner(partnerId: string): Promise<{ id: string } | null> {
-  return withSystemDbAccessContext(async () => {
+  return readAsSystem(async () => {
     const [partner] = await db
       .select({ id: partners.id, status: partners.status, deletedAt: partners.deletedAt })
       .from(partners)
@@ -40,7 +72,7 @@ export async function getActivePartner(partnerId: string): Promise<{ id: string 
 const PARTNER_SESSION_ALLOWED_STATUSES = new Set(['active', 'pending']);
 
 export async function getSessionAllowedPartner(partnerId: string): Promise<{ id: string } | null> {
-  return withSystemDbAccessContext(async () => {
+  return readAsSystem(async () => {
     const [partner] = await db
       .select({ id: partners.id, status: partners.status, deletedAt: partners.deletedAt })
       .from(partners)
@@ -53,7 +85,7 @@ export async function getSessionAllowedPartner(partnerId: string): Promise<{ id:
 }
 
 export async function getActiveOrgTenant(orgId: string): Promise<{ orgId: string; partnerId: string } | null> {
-  return withSystemDbAccessContext(async () => {
+  return readAsSystem(async () => {
     const [org] = await db
       .select({
         orgId: organizations.id,
