@@ -552,14 +552,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}
 
-	// Register winget provider (dispatches via user helper for user-context execution)
-	if runtime.GOOS == "windows" && h.sessionBroker != nil {
-		helperCheck := func() bool {
-			return h.sessionBroker.SessionCount() > 0
-		}
-		h.patchMgr.RegisterProvider(patching.NewWingetProvider(h.makeUserExecFunc(), helperCheck))
-		log.Info("winget provider registered (via user helper IPC)")
-	}
+	// Register winget provider (SYSTEM/machine-scope; see winget_register_windows.go)
+	h.registerSystemWinget()
 
 	// Initialize reboot manager (uses session broker for user notifications)
 	h.rebootMgr = patching.NewRebootManager(func(title, body, urgency string) {
