@@ -240,7 +240,7 @@ export default function ConfigPolicyCreatePage() {
 
             {isPartnerScope && (
               <fieldset className="space-y-2 rounded-md border p-4" data-testid="policy-owner">
-                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Apply to</legend>
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
                 <label className="flex items-center gap-2 text-sm">
                   <input
                     type="radio"
@@ -284,8 +284,9 @@ export default function ConfigPolicyCreatePage() {
                 )}
                 {ownerScope === 'partner' && (
                   <p className="pl-6 text-xs text-muted-foreground">
-                    Applies to every organization under your partner. Backup settings aren&apos;t available on
-                    partner-wide policies.
+                    Applies to every organization under your partner — it&apos;s assigned partner-wide
+                    automatically, so you don&apos;t need to add an assignment (you can still add role or OS
+                    filters on the Assignments tab). Backup settings aren&apos;t available on partner-wide policies.
                   </p>
                 )}
               </fieldset>

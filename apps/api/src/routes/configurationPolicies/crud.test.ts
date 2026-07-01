@@ -8,12 +8,14 @@ const {
   getConfigPolicyMock,
   updateConfigPolicyMock,
   deleteConfigPolicyMock,
+  assignPolicyMock,
 } = vi.hoisted(() => ({
   listConfigPoliciesMock: vi.fn(),
   createConfigPolicyMock: vi.fn(),
   getConfigPolicyMock: vi.fn(),
   updateConfigPolicyMock: vi.fn(),
   deleteConfigPolicyMock: vi.fn(),
+  assignPolicyMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', () => ({
@@ -22,6 +24,7 @@ vi.mock('../../services/configurationPolicy', () => ({
   getConfigPolicy: getConfigPolicyMock,
   updateConfigPolicy: updateConfigPolicyMock,
   deleteConfigPolicy: deleteConfigPolicyMock,
+  assignPolicy: assignPolicyMock,
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -73,6 +76,11 @@ describe('configurationPolicies CRUD routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks resets call history but NOT implementations, so restore the
+    // benign defaults every test — otherwise a mockRejectedValue set by an
+    // auto-assign error-path test leaks into later cases.
+    assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
+    deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
     app = new Hono();
     // Set auth context before mounting routes
     app.use('*', async (c, next) => {
@@ -258,6 +266,68 @@ describe('configurationPolicies CRUD routes', () => {
         expect.objectContaining({ name: 'Partner-wide' }),
         'user-1'
       );
+      // The matching partner-level assignment is seeded automatically so the
+      // policy actually applies to all orgs immediately (no orphaned ownership).
+      expect(assignPolicyMock).toHaveBeenCalledWith(POLICY_ID, 'partner', PARTNER_ID, 0, 'user-1');
+    });
+
+    it('does not auto-assign for an org-owned policy (assignment stays manual)', async () => {
+      const policy = { id: POLICY_ID, name: 'Org policy', orgId: ORG_ID, partnerId: null, status: 'active' };
+      createConfigPolicyMock.mockResolvedValue(policy);
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Org policy' }),
+      });
+      expect(res.status).toBe(201);
+      expect(assignPolicyMock).not.toHaveBeenCalled();
+    });
+
+    function partnerCreateApp() {
+      const appPartner = new Hono();
+      appPartner.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+        c.set('permissions', makePermissions({ scope: 'partner', partnerId: PARTNER_ID, orgId: null, orgAccess: 'all' }));
+        await next();
+      });
+      appPartner.route('/', crudRoutes);
+      return appPartner;
+    }
+
+    it('tolerates a UNIQUE violation on the auto-assign (still 201, no rollback)', async () => {
+      const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
+      createConfigPolicyMock.mockResolvedValue(policy);
+      // Real isPgUniqueViolation is used (not mocked) — SQLSTATE 23505 must be swallowed.
+      assignPolicyMock.mockRejectedValue({ code: '23505' });
+
+      const res = await partnerCreateApp().request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Partner-wide', ownerScope: 'partner' }),
+      });
+
+      expect(res.status).toBe(201);
+      // The policy already has its partner assignment — do NOT roll it back.
+      expect(deleteConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('rolls back the orphaned policy and 500s when the auto-assign fails for a non-unique reason', async () => {
+      const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
+      createConfigPolicyMock.mockResolvedValue(policy);
+      assignPolicyMock.mockRejectedValue(new Error('RLS 0-row write'));
+      deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
+
+      const res = await partnerCreateApp().request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Partner-wide', ownerScope: 'partner' }),
+      });
+
+      // A committed-but-unassigned partner-wide policy is the exact failure this
+      // feature prevents, so the orphan is deleted and the failure surfaced.
+      expect(res.status).toBe(500);
+      expect(deleteConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything());
     });
 
     it('rejects ownerScope:partner for an org-scope caller (no partner) (#1724)', async () => {

@@ -187,7 +187,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     definition: {
       name: 'apply_configuration_policy',
-      description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). Use roleFilter and osFilter to scope the assignment to specific device types.',
+      description: 'Assign a configuration policy to a target (partner, organization, site, device group, or device). Use roleFilter and osFilter to scope the assignment to specific device types. The "partner" level is reserved for partner-OWNED ("all organizations") policies — an org-owned policy can only be assigned at organization/site/device_group/device level.',
       input_schema: {
         type: 'object' as const,
         properties: {

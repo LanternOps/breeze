@@ -17,8 +17,12 @@ type Assignment = {
 
 type TargetOption = { id: string; name: string; extra?: string };
 
-const assignmentLevels = [
-  { value: 'partner', label: 'Partner-Wide (All Orgs)' },
+// Org-owned policies can only narrow within their owning org. The Partner-Wide
+// level is intentionally absent here — assigning an org-owned policy partner-wide
+// is a footgun (resolution still clamps it to the one owning org), so the API
+// rejects it and the picker must not offer it. Partner-OWNED policies use a
+// dedicated, separate flow below (no level picker — they're always all-orgs).
+const orgOwnedAssignmentLevels = [
   { value: 'organization', label: 'Organization' },
   { value: 'site', label: 'Site' },
   { value: 'device_group', label: 'Device Group' },
@@ -37,14 +41,20 @@ function getOsLabel(value: string): string {
 
 type Props = {
   policyId: string;
-  orgId: string;
+  // null for partner-owned ("all organizations") policies.
+  orgId: string | null;
+  // Set when the policy is partner-OWNED (all-orgs). Drives the partner-wide UI.
+  partnerId?: string | null;
 };
 
-export default function AssignmentsTab({ policyId, orgId }: Props) {
+export default function AssignmentsTab({ policyId, orgId, partnerId }: Props) {
+  const isPartnerOwned = !!partnerId;
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [newLevel, setNewLevel] = useState('organization');
+  // Partner-owned policies are always assigned at the partner level (all orgs);
+  // org-owned policies default to the organization level.
+  const [newLevel, setNewLevel] = useState(isPartnerOwned ? 'partner' : 'organization');
   const [newTargetId, setNewTargetId] = useState('');
   const [newPriority, setNewPriority] = useState('0');
   const [newRoleFilter, setNewRoleFilter] = useState<string[]>([]);
@@ -97,6 +107,15 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
     }
     setLoadingTargets(true);
     setTargetOptions([]);
+    // site / device_group targets are scoped to the owning org. This branch is
+    // only reached for org-owned policies (partner-owned uses the no-picker
+    // flow), which always have an orgId — but guard rather than interpolate
+    // `orgId=null` into the URL if the ownership invariant is ever violated.
+    if ((level === 'site' || level === 'device_group') && !orgId) {
+      setLoadingTargets(false);
+      setError('This policy has no organization, so sites and device groups cannot be listed.');
+      return;
+    }
     const endpointMap: Record<string, string> = {
       organization: '/orgs/organizations?limit=200',
       site: `/orgs/sites?orgId=${orgId}&limit=200`,
@@ -252,6 +271,243 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
     }
   };
 
+  // Role + OS filter pickers — shared by the org-owned and partner-wide add cards.
+  const filterFields = (
+    <div className="grid gap-4 sm:grid-cols-2">
+      <div>
+        <label className="text-sm font-medium">
+          Role Filter <span className="text-xs text-muted-foreground">(optional)</span>
+          <HelpTooltip text="Restrict this assignment to devices with specific roles. Leave empty to apply to all roles." />
+        </label>
+        <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
+          {DEVICE_ROLES.map((role) => {
+            const isSelected = newRoleFilter.includes(role);
+            return (
+              <button
+                key={role}
+                type="button"
+                onClick={() => {
+                  setNewRoleFilter((prev) =>
+                    isSelected ? prev.filter((r) => r !== role) : [...prev, role]
+                  );
+                }}
+                className={cn(
+                  'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
+                  isSelected
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
+                )}
+              >
+                {getDeviceRoleLabel(role)}
+              </button>
+            );
+          })}
+        </div>
+        {newRoleFilter.length === 0 && (
+          <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all device roles</p>
+        )}
+      </div>
+      <div>
+        <label className="text-sm font-medium">OS Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
+        <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
+          {osFilterOptions.map((os) => {
+            const isSelected = newOsFilter.includes(os.value);
+            return (
+              <button
+                key={os.value}
+                type="button"
+                onClick={() => {
+                  setNewOsFilter((prev) =>
+                    isSelected ? prev.filter((o) => o !== os.value) : [...prev, os.value]
+                  );
+                }}
+                className={cn(
+                  'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
+                  isSelected
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
+                )}
+              >
+                {os.label}
+              </button>
+            );
+          })}
+        </div>
+        {newOsFilter.length === 0 && (
+          <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all operating systems</p>
+        )}
+      </div>
+    </div>
+  );
+
+  const priorityField = (
+    <div>
+      <label className="text-sm font-medium">
+        Priority
+        <HelpTooltip text="Higher values override lower ones when multiple policies target the same device at the same level." />
+      </label>
+      <input
+        type="number"
+        min={0}
+        max={1000}
+        value={newPriority}
+        onChange={(e) => setNewPriority(e.target.value)}
+        className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+      />
+    </div>
+  );
+
+  const renderAssignmentsList = () => (
+    <div className="rounded-lg border bg-card p-6 shadow-xs">
+      <h2 className="text-lg font-semibold">Current Assignments</h2>
+      {assignmentsLoading ? (
+        <div className="flex items-center justify-center py-8">
+          <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      ) : assignments.length === 0 ? (
+        <p className="mt-4 text-sm text-muted-foreground">
+          No assignments yet. Assign this policy to targets above.
+        </p>
+      ) : (
+        <div className="mt-4 overflow-x-auto rounded-md border">
+          <table className="min-w-full divide-y">
+            <thead className="bg-muted/40">
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3">Level</th>
+                <th className="px-4 py-3">Target</th>
+                <th className="px-4 py-3">Priority</th>
+                <th className="px-4 py-3">Filters</th>
+                <th className="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {assignments.map((assignment) => (
+                <tr key={assignment.id} className="text-sm">
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium capitalize">
+                      {assignment.level.replace('_', ' ')}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div>
+                      {assignment.level === 'partner' ? (
+                        <span className="font-medium">All Organizations</span>
+                      ) : targetNameCache[assignment.targetId] ? (
+                        <>
+                          <span className="font-medium">{targetNameCache[assignment.targetId]}</span>
+                          <span className="ml-2 font-mono text-[10px] text-muted-foreground">
+                            {assignment.targetId.slice(0, 8)}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {assignment.targetId}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{assignment.priority}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-1">
+                      {(!assignment.roleFilter || assignment.roleFilter.length === 0) &&
+                       (!assignment.osFilter || assignment.osFilter.length === 0) && (
+                        <span className="text-xs text-muted-foreground">All devices</span>
+                      )}
+                      {assignment.roleFilter && assignment.roleFilter.length > 0 && (
+                        assignment.roleFilter.map((role) => (
+                          <span
+                            key={role}
+                            className="inline-flex items-center rounded-full border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-700"
+                          >
+                            {getDeviceRoleLabel(role)}
+                          </span>
+                        ))
+                      )}
+                      {assignment.osFilter && assignment.osFilter.length > 0 && (
+                        assignment.osFilter.map((os) => (
+                          <span
+                            key={os}
+                            className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-700"
+                          >
+                            {getOsLabel(os)}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveAssignment(assignment.id)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+
+  // Partner-OWNED policies ("all organizations"): no level/target picker — the
+  // policy is intrinsically partner-wide. We surface the auto-created partner
+  // assignment in the list below and only show the add card when none exists
+  // (e.g. it was deleted, or the policy predates auto-seeding). Only one partner
+  // row is ever reachable: the server pins the target to the policy's own
+  // partner, and UNIQUE(policy, level, target) then forbids a duplicate.
+  if (isPartnerOwned) {
+    return (
+      <div className="space-y-6">
+        {error && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        <div className="rounded-md border border-primary/30 bg-primary/5 p-4 text-sm">
+          <p className="font-medium">This policy applies to all organizations in your partner.</p>
+          <p className="mt-1 text-muted-foreground">
+            Scope was set to <span className="font-medium">All organizations</span> when the policy was created,
+            so it&apos;s assigned partner-wide automatically — there&apos;s nothing to assign here. To limit it to
+            certain device roles or operating systems, remove the assignment below and re-add it with filters.
+          </p>
+        </div>
+
+        {assignments.length === 0 && !assignmentsLoading && (
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
+            <h2 className="text-lg font-semibold">Assign to all organizations</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              This policy isn&apos;t currently assigned. Re-assign it partner-wide below.
+            </p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              {priorityField}
+            </div>
+            <div className="mt-4">{filterFields}</div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={handleAddAssignment}
+                disabled={addingAssignment}
+                className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" />
+                {addingAssignment ? 'Assigning...' : 'Assign to all organizations'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {renderAssignmentsList()}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {error && (
@@ -274,7 +530,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
               onChange={(e) => setNewLevel(e.target.value)}
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              {assignmentLevels.map((level) => (
+              {orgOwnedAssignmentLevels.map((level) => (
                 <option key={level.value} value={level.value}>
                   {level.label}
                 </option>
@@ -283,11 +539,6 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
           </div>
           <div ref={dropdownRef} className="relative">
             <label className="text-sm font-medium">Target</label>
-            {isPartnerLevel ? (
-              <div className="mt-2 flex h-10 w-full items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
-                All organizations in your partner
-              </div>
-            ) : (
             <button
               type="button"
               onClick={() => setTargetDropdownOpen(!targetDropdownOpen)}
@@ -298,8 +549,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
               </span>
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             </button>
-            )}
-            {!isPartnerLevel && targetDropdownOpen && (
+            {targetDropdownOpen && (
               <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-lg">
                 <div className="flex items-center border-b px-3 py-2">
                   <Search className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -348,91 +598,14 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
               </div>
             )}
           </div>
-          <div>
-            <label className="text-sm font-medium">
-              Priority
-              <HelpTooltip text="Higher values override lower ones when multiple policies target the same device at the same level." />
-            </label>
-            <input
-              type="number"
-              min={0}
-              max={1000}
-              value={newPriority}
-              onChange={(e) => setNewPriority(e.target.value)}
-              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            />
-          </div>
+          {priorityField}
         </div>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="text-sm font-medium">
-              Role Filter <span className="text-xs text-muted-foreground">(optional)</span>
-              <HelpTooltip text="Restrict this assignment to devices with specific roles. Leave empty to apply to all roles." />
-            </label>
-            <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
-              {DEVICE_ROLES.map((role) => {
-                const isSelected = newRoleFilter.includes(role);
-                return (
-                  <button
-                    key={role}
-                    type="button"
-                    onClick={() => {
-                      setNewRoleFilter((prev) =>
-                        isSelected ? prev.filter((r) => r !== role) : [...prev, role]
-                      );
-                    }}
-                    className={cn(
-                      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
-                      isSelected
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
-                    )}
-                  >
-                    {getDeviceRoleLabel(role)}
-                  </button>
-                );
-              })}
-            </div>
-            {newRoleFilter.length === 0 && (
-              <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all device roles</p>
-            )}
-          </div>
-          <div>
-            <label className="text-sm font-medium">OS Filter <span className="text-xs text-muted-foreground">(optional)</span></label>
-            <div className="mt-2 flex flex-wrap gap-2 rounded-md border bg-background p-2 min-h-10">
-              {osFilterOptions.map((os) => {
-                const isSelected = newOsFilter.includes(os.value);
-                return (
-                  <button
-                    key={os.value}
-                    type="button"
-                    onClick={() => {
-                      setNewOsFilter((prev) =>
-                        isSelected ? prev.filter((o) => o !== os.value) : [...prev, os.value]
-                      );
-                    }}
-                    className={cn(
-                      'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition',
-                      isSelected
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-muted bg-muted/30 text-muted-foreground hover:bg-muted/60'
-                    )}
-                  >
-                    {os.label}
-                  </button>
-                );
-              })}
-            </div>
-            {newOsFilter.length === 0 && (
-              <p className="mt-1 text-xs text-muted-foreground">No restriction - applies to all operating systems</p>
-            )}
-          </div>
-        </div>
+        <div className="mt-4">{filterFields}</div>
         <div className="mt-4 flex justify-end">
           <button
             type="button"
             onClick={handleAddAssignment}
-            disabled={addingAssignment || (!isPartnerLevel && !newTargetId.trim())}
+            disabled={addingAssignment || !newTargetId.trim()}
             className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <Plus className="h-4 w-4" />
@@ -441,102 +614,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
         </div>
       </div>
 
-      {/* Assignments List */}
-      <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">Current Assignments</h2>
-        {assignmentsLoading ? (
-          <div className="flex items-center justify-center py-8">
-            <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          </div>
-        ) : assignments.length === 0 ? (
-          <p className="mt-4 text-sm text-muted-foreground">
-            No assignments yet. Assign this policy to targets above.
-          </p>
-        ) : (
-          <div className="mt-4 overflow-x-auto rounded-md border">
-            <table className="min-w-full divide-y">
-              <thead className="bg-muted/40">
-                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">Level</th>
-                  <th className="px-4 py-3">Target</th>
-                  <th className="px-4 py-3">Priority</th>
-                  <th className="px-4 py-3">Filters</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {assignments.map((assignment) => (
-                  <tr key={assignment.id} className="text-sm">
-                    <td className="px-4 py-3">
-                      <span className="inline-flex items-center rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium capitalize">
-                        {assignment.level.replace('_', ' ')}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div>
-                        {assignment.level === 'partner' ? (
-                          <span className="font-medium">All Organizations</span>
-                        ) : targetNameCache[assignment.targetId] ? (
-                          <>
-                            <span className="font-medium">{targetNameCache[assignment.targetId]}</span>
-                            <span className="ml-2 font-mono text-[10px] text-muted-foreground">
-                              {assignment.targetId.slice(0, 8)}
-                            </span>
-                          </>
-                        ) : (
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {assignment.targetId}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{assignment.priority}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-1">
-                        {(!assignment.roleFilter || assignment.roleFilter.length === 0) &&
-                         (!assignment.osFilter || assignment.osFilter.length === 0) && (
-                          <span className="text-xs text-muted-foreground">All devices</span>
-                        )}
-                        {assignment.roleFilter && assignment.roleFilter.length > 0 && (
-                          assignment.roleFilter.map((role) => (
-                            <span
-                              key={role}
-                              className="inline-flex items-center rounded-full border border-purple-500/40 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-700"
-                            >
-                              {getDeviceRoleLabel(role)}
-                            </span>
-                          ))
-                        )}
-                        {assignment.osFilter && assignment.osFilter.length > 0 && (
-                          assignment.osFilter.map((os) => (
-                            <span
-                              key={os}
-                              className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-700"
-                            >
-                              {getOsLabel(os)}
-                            </span>
-                          ))
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveAssignment(assignment.id)}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {renderAssignmentsList()}
     </div>
   );
 }

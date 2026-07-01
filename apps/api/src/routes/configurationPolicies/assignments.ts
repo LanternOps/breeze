@@ -58,11 +58,13 @@ assignmentRoutes.post(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    // For a Partner-Wide assignment the target is the partner itself, derived
-    // server-side (#1724) — never trust a client-supplied partner id. For a
-    // partner-OWNED policy that is its own partner_id; for an org-owned policy
-    // assigned partner-wide it is the owning org's partner (resolved in the
-    // validator). The client may omit targetId for the partner level.
+    // Partner-level assignments are only valid for partner-OWNED policies, and
+    // the target is the partner itself, derived server-side (#1724) — never
+    // trust a client-supplied partner id. It's the policy's own partner_id (or
+    // the caller's, for a fresh partner-owned policy). Org-owned policies are
+    // rejected at the partner level by validateAssignmentTarget below, so the
+    // `auth.partnerId` fallback here only ever serves partner-owned policies.
+    // The client may omit targetId for the partner level.
     let targetId = data.targetId;
     if (data.level === 'partner') {
       if (policy.partnerId) {

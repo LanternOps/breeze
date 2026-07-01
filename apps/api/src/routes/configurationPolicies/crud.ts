@@ -4,12 +4,14 @@ import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   createConfigPolicy,
   getConfigPolicy,
   listConfigPolicies,
   updateConfigPolicy,
   deleteConfigPolicy,
+  assignPolicy,
 } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import {
@@ -75,13 +77,42 @@ crudRoutes.post(
         return c.json({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' }, 403);
       }
       const policy = await createConfigPolicy({ partnerId: auth.partnerId }, data, auth.user.id);
+      // Seed the matching partner-level assignment so the policy actually
+      // applies the moment it's created. Ownership ("Scope: All organizations")
+      // and the assignment that drives resolution are kept in lockstep —
+      // otherwise a partner-wide policy resolves to NO devices until the user
+      // separately discovers the Assignments tab (#1724 follow-up).
+      //
+      // The two inserts aren't in one transaction, so guard the seed: a
+      // UNIQUE(configPolicyId, level, targetId) collision is impossible on a
+      // fresh policy and is tolerated defensively; any OTHER failure would leave
+      // a committed-but-unassigned partner-wide policy (the exact "resolves to no
+      // devices" state this feature prevents), so roll the orphan back and
+      // surface the failure with its id rather than a bare, anonymous 500.
+      try {
+        await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
+      } catch (err) {
+        if (!isPgUniqueViolation(err)) {
+          console.error(
+            `[ConfigPolicy] Partner-wide auto-assign failed for policy ${policy.id} (partner ${auth.partnerId}); rolling back orphan`,
+            err
+          );
+          await deleteConfigPolicy(policy.id, auth).catch((cleanupErr) => {
+            console.error(
+              `[ConfigPolicy] Failed to roll back orphaned partner-wide policy ${policy.id}`,
+              cleanupErr
+            );
+          });
+          throw err;
+        }
+      }
       writeRouteAudit(c, {
         orgId: null,
         action: 'config_policy.create',
         resourceType: 'configuration_policy',
         resourceId: policy.id,
         resourceName: policy.name,
-        details: { ownerScope: 'partner', partnerId: auth.partnerId },
+        details: { ownerScope: 'partner', partnerId: auth.partnerId, autoAssignedPartnerWide: true },
       });
       return c.json(policy, 201);
     }

@@ -56,7 +56,8 @@ type PolicyDetail = {
   name: string;
   description?: string;
   status: 'active' | 'inactive' | 'archived';
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   createdAt?: string;
   updatedAt?: string;
   featureLinks: FeatureLink[];
@@ -437,7 +438,7 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
       {/* Assignments Tab */}
       {activeTab === 'assignments' && policyId && policy && (
-        <AssignmentsTab policyId={policyId} orgId={policy.orgId} />
+        <AssignmentsTab policyId={policyId} orgId={policy.orgId} partnerId={policy.partnerId} />
       )}
     </div>
   );

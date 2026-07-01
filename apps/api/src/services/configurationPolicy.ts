@@ -1164,15 +1164,16 @@ export async function validateAssignmentTarget(
     }
 
     case 'partner': {
-      const [org] = await db
-        .select({ partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, policyOrgId))
-        .limit(1);
-      if (!org?.partnerId || org.partnerId !== targetId) {
-        return { valid: false, error: 'Partner target does not match the policy organization partner' };
-      }
-      return { valid: true };
+      // An org-owned policy assigned at the partner level is a footgun: it
+      // *looks* partner-wide but resolution still clamps it to its single
+      // owning org (org_id = device.orgId), so it silently reaches only that
+      // one org. True cross-org propagation requires a partner-OWNED policy
+      // (created via the "All organizations" scope). Reject it outright rather
+      // than let it masquerade as fleet-wide (#1724 follow-up).
+      return {
+        valid: false,
+        error: 'Only partner-wide policies can be assigned at the Partner level. This policy is owned by a single organization — assign it at the organization, site, group, or device level instead.',
+      };
     }
 
     default:
