@@ -365,6 +365,11 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 	category := w.mapCategory(update)
 	eulaAccepted, _ := w.getBoolProperty(update, "EulaAccepted")
 
+	// IUpdate exposes no true "release date"; LastDeploymentChangeTime is the
+	// proxy Windows Update itself uses, and matches the fallback collector's
+	// behaviour (collectors/patches_windows.go). Empty when unavailable.
+	releaseDate := w.getDateProperty(update, "LastDeploymentChangeTime")
+
 	// Determine update type: software, driver, or feature
 	updateType := "software"
 	typeVal, _ := w.getIntProperty(update, "Type")
@@ -390,6 +395,7 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 		Size:           int64(maxSize),
 		IsDownloaded:   isDownloaded,
 		RebootRequired: rebootBehavior != 0,
+		ReleaseDate:    releaseDate,
 		UpdateType:     updateType,
 		EulaAccepted:   eulaAccepted,
 	}, nil
@@ -975,6 +981,22 @@ func (w *WindowsUpdateProvider) getIntProperty(dispatch *ole.IDispatch, name str
 	}
 	defer value.Clear()
 	return int(value.Val), nil
+}
+
+// getDateProperty reads a VT_DATE property (e.g. LastDeploymentChangeTime) and
+// formats it as an ISO date (yyyy-MM-dd). Returns "" on any error or a zero
+// value, so a missing date never blocks the rest of the patch report.
+func (w *WindowsUpdateProvider) getDateProperty(dispatch *ole.IDispatch, name string) string {
+	value, err := oleutil.GetProperty(dispatch, name)
+	if err != nil {
+		return ""
+	}
+	defer value.Clear()
+
+	if t, ok := value.Value().(time.Time); ok && !t.IsZero() {
+		return t.Format("2006-01-02")
+	}
+	return ""
 }
 
 func (w *WindowsUpdateProvider) getBoolProperty(dispatch *ole.IDispatch, name string) (bool, error) {
