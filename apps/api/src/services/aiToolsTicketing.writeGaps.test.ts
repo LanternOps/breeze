@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const TICKET_ID = '00000000-0000-0000-0000-000000000001';
 const OTHER_TICKET_ID = '00000000-0000-0000-0000-000000000002';
+const ALERT_ID = '00000000-0000-0000-0000-000000000003';
 const COMMENT_ID = '00000000-0000-0000-0000-000000000004';
 const TARGET_ORG_ID = '00000000-0000-0000-0000-000000000005';
+const DEVICE_ID = '00000000-0000-0000-0000-000000000006';
 
-const { serviceMocks, mockLimit, mockSelect, permissionMocks } = vi.hoisted(() => {
+const { serviceMocks, mockLimit, mockSelect, permissionMocks, siteScopeMocks } = vi.hoisted(() => {
   const serviceMocks = {
     createTicket: vi.fn(),
     changeTicketStatus: vi.fn(),
@@ -29,7 +31,11 @@ const { serviceMocks, mockLimit, mockSelect, permissionMocks } = vi.hoisted(() =
     getUserPermissions: vi.fn(),
     hasPermission: vi.fn(),
   };
-  return { serviceMocks, mockLimit, mockSelect, permissionMocks };
+  const siteScopeMocks = {
+    deviceInSiteScope: vi.fn(),
+    ticketSiteScopeCondition: vi.fn(),
+  };
+  return { serviceMocks, mockLimit, mockSelect, permissionMocks, siteScopeMocks };
 });
 
 vi.mock('../db', () => ({
@@ -38,6 +44,11 @@ vi.mock('../db', () => ({
 
 vi.mock('../middleware/auth', () => ({
   siteAccessCheck: (allowed: string[]) => (siteId?: string | null) => !!siteId && allowed.includes(siteId),
+}));
+
+vi.mock('../routes/tickets/siteScope', () => ({
+  deviceInSiteScope: siteScopeMocks.deviceInSiteScope,
+  ticketSiteScopeCondition: siteScopeMocks.ticketSiteScopeCondition,
 }));
 
 vi.mock('./permissions', () => ({
@@ -99,10 +110,16 @@ function mockDeniedTicket() {
   mockLimit.mockResolvedValueOnce([]);
 }
 
+function mockDeniedAlert() {
+  mockLimit.mockResolvedValueOnce([]);
+}
+
 describe('manage_tickets write-gap actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLimit.mockResolvedValue([]);
+    siteScopeMocks.deviceInSiteScope.mockResolvedValue(true);
+    siteScopeMocks.ticketSiteScopeCondition.mockReturnValue(undefined);
     permissionMocks.getUserPermissions.mockResolvedValue({
       roleId: 'role-1',
       permissions: [],
@@ -145,6 +162,31 @@ describe('manage_tickets write-gap actions', () => {
     expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
   });
 
+  it('update_fields rejects a nested deviceId outside site scope before calling the service', async () => {
+    mockAccessibleTicket();
+    siteScopeMocks.deviceInSiteScope.mockResolvedValueOnce(false);
+
+    const out = await getTool().handler(
+      { action: 'update_fields', ticketId: TICKET_ID, fields: { deviceId: DEVICE_ID } },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Device not found or access denied' });
+    expect(siteScopeMocks.deviceInSiteScope).toHaveBeenCalledWith(expect.objectContaining({ user: expect.objectContaining({ id: 'user-1' }) }), DEVICE_ID);
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+  });
+
+  it('update_fields rejects present wrong-typed fields before calling the service', async () => {
+    const out = await getTool().handler(
+      { action: 'update_fields', ticketId: TICKET_ID, fields: { priority: 123 } },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'fields.priority must be one of low, normal, high, urgent' });
+    expect(mockLimit).not.toHaveBeenCalled();
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+  });
+
   it('update_fields maps TicketServiceError to error JSON with code', async () => {
     mockAccessibleTicket();
     serviceMocks.updateTicketFields.mockRejectedValue(
@@ -182,6 +224,55 @@ describe('manage_tickets write-gap actions', () => {
 
     expect(JSON.parse(out)).toEqual({ error: 'Access to target organization denied' });
     expect(serviceMocks.moveTicketOrg).not.toHaveBeenCalled();
+  });
+
+  it('link_alert returns error and does not call service when ticket access is denied', async () => {
+    mockDeniedTicket();
+
+    const out = await getTool().handler(
+      { action: 'link_alert', ticketId: TICKET_ID, alertId: ALERT_ID },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
+    expect(serviceMocks.linkAlertToTicket).not.toHaveBeenCalled();
+  });
+
+  it('link_alert returns error and does not call service when alert access is denied', async () => {
+    mockAccessibleTicket();
+    mockDeniedAlert();
+
+    const out = await getTool().handler(
+      { action: 'link_alert', ticketId: TICKET_ID, alertId: ALERT_ID },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Alert not found' });
+    expect(serviceMocks.linkAlertToTicket).not.toHaveBeenCalled();
+  });
+
+  it('create_from_alert returns error and does not call service when alert access is denied', async () => {
+    mockDeniedAlert();
+
+    const out = await getTool().handler(
+      { action: 'create_from_alert', alertId: ALERT_ID },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Alert not found' });
+    expect(serviceMocks.createTicketFromAlert).not.toHaveBeenCalled();
+  });
+
+  it('unlink_alert returns error and does not call service when ticket access is denied', async () => {
+    mockDeniedTicket();
+
+    const out = await getTool().handler(
+      { action: 'unlink_alert', ticketId: TICKET_ID, alertId: ALERT_ID },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
+    expect(serviceMocks.unlinkAlertFromTicket).not.toHaveBeenCalled();
   });
 
   it('edit_comment resolves expectedTicketId and passes it to editTicketComment', async () => {

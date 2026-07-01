@@ -249,7 +249,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   list_invoices: z.object({
     orgId: uuid.optional(),
     status: z.enum(INVOICE_STATUSES).optional(),
-    limit: z.number().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }),
 
   get_invoice: z.object({
@@ -271,6 +271,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     catalogItemId: uuid.optional(),
     bundleId: uuid.optional(),
     contractId: uuid.optional(),
+    contractLineId: uuid.optional(),
     ticketId: uuid.optional(),
     quantity: z.number().optional(),
     notes: z.string().optional(),
@@ -303,8 +304,6 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'create_pay_link',
     ]),
     quoteId: uuid.optional(),
-    orgId: uuid.optional(),
-    siteId: uuid.optional(),
     blockId: uuid.optional(),
     lineId: uuid.optional(),
     catalogItemId: uuid.optional(),
@@ -321,8 +320,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   search_catalog: z.object({
     search: z.string().optional(),
-    itemType: z.string().optional(),
-    limit: z.number().optional(),
+    itemType: z.enum(['hardware', 'software', 'service']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }),
 
   get_catalog_item: z.object({
@@ -348,7 +347,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   list_contracts: z.object({
     orgId: uuid.optional(),
     status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
-    limit: z.number().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }),
 
   get_contract: z.object({
@@ -369,7 +368,6 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     ]),
     contractId: uuid.optional(),
     lineId: uuid.optional(),
-    orgId: uuid.optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     line: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),

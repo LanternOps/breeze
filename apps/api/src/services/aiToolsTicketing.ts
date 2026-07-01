@@ -114,39 +114,52 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function optionalStringOrNull(record: Record<string, unknown>, key: string): string | null | undefined {
-  const value = record[key];
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (typeof value === 'string') return value;
-  return undefined;
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-function optionalNumberOrNull(record: Record<string, unknown>, key: string): number | null | undefined {
+function stringField(record: Record<string, unknown>, key: string, label: string): ParseResult<string | undefined> {
+  if (!hasOwn(record, key)) return { value: undefined };
   const value = record[key];
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  return undefined;
+  if (typeof value === 'string') return { value };
+  return { error: `${label} must be a string` };
 }
 
-function optionalPriority(record: Record<string, unknown>): UpdateTicketFieldsInput['priority'] | undefined {
+function stringOrNullField(record: Record<string, unknown>, key: string, label: string): ParseResult<string | null | undefined> {
+  if (!hasOwn(record, key)) return { value: undefined };
+  const value = record[key];
+  if (value === null) return { value: null };
+  if (typeof value === 'string') return { value };
+  return { error: `${label} must be a string or null` };
+}
+
+function numberOrNullField(record: Record<string, unknown>, key: string, label: string): ParseResult<number | null | undefined> {
+  if (!hasOwn(record, key)) return { value: undefined };
+  const value = record[key];
+  if (value === null) return { value: null };
+  if (typeof value === 'number' && Number.isFinite(value)) return { value };
+  return { error: `${label} must be a number or null` };
+}
+
+function priorityField(record: Record<string, unknown>, label: string): ParseResult<UpdateTicketFieldsInput['priority'] | undefined> {
+  if (!hasOwn(record, 'priority')) return { value: undefined };
   const value = record.priority;
-  if (value === undefined) return undefined;
-  if (value === 'low' || value === 'normal' || value === 'high' || value === 'urgent') return value;
-  return undefined;
+  if (value === 'low' || value === 'normal' || value === 'high' || value === 'urgent') {
+    return { value };
+  }
+  return { error: `${label} must be one of low, normal, high, urgent` };
 }
 
-function optionalDueDate(record: Record<string, unknown>): Date | null | undefined {
+function dueDateField(record: Record<string, unknown>, label: string): ParseResult<Date | null | undefined> {
+  if (!hasOwn(record, 'dueDate')) return { value: undefined };
   const value = record.dueDate;
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (value instanceof Date) return value;
+  if (value === null) return { value: null };
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return { value };
   if (typeof value === 'string') {
     const date = new Date(value);
-    if (!Number.isNaN(date.getTime())) return date;
+    if (!Number.isNaN(date.getTime())) return { value: date };
   }
-  return undefined;
+  return { error: `${label} must be an ISO datetime string or null` };
 }
 
 function parseUpdateFields(value: unknown): ParseResult<UpdateTicketFieldsInput> {
@@ -154,28 +167,34 @@ function parseUpdateFields(value: unknown): ParseResult<UpdateTicketFieldsInput>
   const fields: UpdateTicketFieldsInput = {};
 
   for (const key of ['subject', 'description'] as const) {
-    const parsed = optionalStringOrNull(value, key);
-    if (typeof parsed === 'string') fields[key] = parsed;
+    const parsed = stringField(value, key, `fields.${key}`);
+    if ('error' in parsed) return { error: parsed.error };
+    if (parsed.value !== undefined) fields[key] = parsed.value;
   }
 
   for (const key of ['categoryId', 'deviceId', 'submittedBy', 'submitterName', 'submitterEmail'] as const) {
-    const parsed = optionalStringOrNull(value, key);
-    if (parsed !== undefined) fields[key] = parsed;
+    const parsed = stringOrNullField(value, key, `fields.${key}`);
+    if ('error' in parsed) return { error: parsed.error };
+    if (parsed.value !== undefined) fields[key] = parsed.value;
   }
 
-  const priority = optionalPriority(value);
-  if (priority !== undefined) fields.priority = priority;
+  const priority = priorityField(value, 'fields.priority');
+  if ('error' in priority) return { error: priority.error };
+  if (priority.value !== undefined) fields.priority = priority.value;
 
-  const dueDate = optionalDueDate(value);
-  if (dueDate !== undefined) fields.dueDate = dueDate;
+  const dueDate = dueDateField(value, 'fields.dueDate');
+  if ('error' in dueDate) return { error: dueDate.error };
+  if (dueDate.value !== undefined) fields.dueDate = dueDate.value;
 
-  const responseSlaMinutes = optionalNumberOrNull(value, 'responseSlaMinutes');
-  if (responseSlaMinutes !== undefined) fields.responseSlaMinutes = responseSlaMinutes;
+  const responseSlaMinutes = numberOrNullField(value, 'responseSlaMinutes', 'fields.responseSlaMinutes');
+  if ('error' in responseSlaMinutes) return { error: responseSlaMinutes.error };
+  if (responseSlaMinutes.value !== undefined) fields.responseSlaMinutes = responseSlaMinutes.value;
 
-  const resolutionSlaMinutes = optionalNumberOrNull(value, 'resolutionSlaMinutes');
-  if (resolutionSlaMinutes !== undefined) fields.resolutionSlaMinutes = resolutionSlaMinutes;
+  const resolutionSlaMinutes = numberOrNullField(value, 'resolutionSlaMinutes', 'fields.resolutionSlaMinutes');
+  if ('error' in resolutionSlaMinutes) return { error: resolutionSlaMinutes.error };
+  if (resolutionSlaMinutes.value !== undefined) fields.resolutionSlaMinutes = resolutionSlaMinutes.value;
 
-  if (value.tags !== undefined) {
+  if (hasOwn(value, 'tags')) {
     if (!Array.isArray(value.tags) || !value.tags.every((tag): tag is string => typeof tag === 'string')) {
       return { error: 'fields.tags must be an array of strings' };
     }
@@ -191,16 +210,21 @@ function parseAlertOverrides(value: unknown): ParseResult<Partial<Pick<CreateTic
   if (!isRecord(value)) return { error: 'overrides must be an object' };
 
   const overrides: Partial<Pick<CreateTicketInput, 'subject' | 'description' | 'categoryId' | 'priority' | 'assigneeId'>> = {};
-  const subject = optionalStringOrNull(value, 'subject');
-  if (typeof subject === 'string') overrides.subject = subject;
-  const description = optionalStringOrNull(value, 'description');
-  if (typeof description === 'string') overrides.description = description;
-  const categoryId = optionalStringOrNull(value, 'categoryId');
-  if (typeof categoryId === 'string') overrides.categoryId = categoryId;
-  const assigneeId = optionalStringOrNull(value, 'assigneeId');
-  if (typeof assigneeId === 'string') overrides.assigneeId = assigneeId;
-  const priority = optionalPriority(value);
-  if (priority !== undefined) overrides.priority = priority;
+  const subject = stringField(value, 'subject', 'overrides.subject');
+  if ('error' in subject) return { error: subject.error };
+  if (subject.value !== undefined) overrides.subject = subject.value;
+  const description = stringField(value, 'description', 'overrides.description');
+  if ('error' in description) return { error: description.error };
+  if (description.value !== undefined) overrides.description = description.value;
+  const categoryId = stringField(value, 'categoryId', 'overrides.categoryId');
+  if ('error' in categoryId) return { error: categoryId.error };
+  if (categoryId.value !== undefined) overrides.categoryId = categoryId.value;
+  const assigneeId = stringField(value, 'assigneeId', 'overrides.assigneeId');
+  if ('error' in assigneeId) return { error: assigneeId.error };
+  if (assigneeId.value !== undefined) overrides.assigneeId = assigneeId.value;
+  const priority = priorityField(value, 'overrides.priority');
+  if ('error' in priority) return { error: priority.error };
+  if (priority.value !== undefined) overrides.priority = priority.value;
   return { value: overrides };
 }
 
@@ -508,6 +532,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // Scoped pre-check: ensure ticket is visible before the service mutates by id.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
+        if (typeof parsedFields.value.deviceId === 'string' && !(await deviceInSiteScope(auth, parsedFields.value.deviceId))) {
+          return JSON.stringify({ error: 'Device not found or access denied' });
+        }
         try {
           const ticket = await updateTicketFields(String(input.ticketId), parsedFields.value, actor);
           return JSON.stringify({ ticket });

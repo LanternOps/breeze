@@ -13,7 +13,9 @@
  * AI session's auth context (partnerId + accessibleOrgIds) and calls
  * `listInvoices` / `getInvoice`, which already enforce `requireOrgAccess`. A
  * thrown `InvoiceServiceError` (e.g. ORG_DENIED, INVOICE_NOT_FOUND) is converted
- * to a JSON error string rather than propagated. Write tools are deferred.
+ * to a JSON error string rather than propagated. `manage_invoices` is a write
+ * action-multiplexer; issue/void/record_payment/void_payment are approval-gated
+ * Tier 3 actions.
  */
 
 import { INVOICE_STATUSES } from '@breeze/shared';
@@ -41,8 +43,8 @@ import {
 } from './invoiceService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
+import { computeContractEstimate, getContract } from './contractService';
 
-type ContractInvoiceLineInput = Parameters<typeof addContractLine>[1];
 type UpdateInvoiceLinePatch = Parameters<typeof updateLine>[2];
 type UpdateInvoiceHeaderPatch = Parameters<typeof updateInvoice>[1];
 
@@ -153,12 +155,13 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           },
           orgId: { type: 'string', description: 'Organization UUID (create_draft, assemble_from_org)' },
           siteId: { type: 'string' },
-          invoiceId: { type: 'string' },
+          invoiceId: { type: 'string', description: 'Invoice UUID; required for add_contract_line with contractId and contractLineId' },
           lineId: { type: 'string' },
           paymentId: { type: 'string' },
           catalogItemId: { type: 'string' },
           bundleId: { type: 'string' },
-          contractId: { type: 'string', description: 'Contract line/source id for add_contract_line' },
+          contractId: { type: 'string', description: 'Contract UUID for add_contract_line' },
+          contractLineId: { type: 'string', description: 'Contract line UUID for add_contract_line' },
           ticketId: { type: 'string' },
           quantity: { type: 'number' },
           notes: { type: 'string' },
@@ -167,7 +170,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           reissue: { type: 'boolean' },
           from: { type: 'string', description: 'ISO date (assemble_from_org)' },
           to: { type: 'string', description: 'ISO date (assemble_from_org)' },
-          line: { type: 'object', description: 'Manual or contract line fields' },
+          line: { type: 'object', description: 'Manual line fields for add_manual_line' },
           patch: { type: 'object', description: 'Line or header patch fields' },
           payment: { type: 'object', description: 'Payment fields (amount, method, ...)' },
         },
@@ -177,10 +180,6 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const actor = actorFromAuth(auth);
       const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
-      const lineRecord = () =>
-        (input.line && typeof input.line === 'object' && !Array.isArray(input.line)
-          ? input.line as Record<string, unknown>
-          : {});
 
       try {
         switch (input.action) {
@@ -201,16 +200,29 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           case 'add_bundle_line':
             return JSON.stringify(await addBundleLine(String(input.invoiceId), String(input.bundleId), Number(input.quantity), actor));
           case 'add_contract_line': {
-            const line = lineRecord();
-            const contractLine: ContractInvoiceLineInput = {
-              description: String(line.description ?? ''),
-              quantity: String(line.quantity ?? input.quantity),
-              unitPrice: String(line.unitPrice ?? ''),
-              taxable: Boolean(line.taxable),
-              catalogItemId: (line.catalogItemId ?? input.catalogItemId) == null ? null : String(line.catalogItemId ?? input.catalogItemId),
-              sourceId: (line.sourceId ?? input.contractId) == null ? null : String(line.sourceId ?? input.contractId),
+            const contractActor = {
+              userId: auth.user.id,
+              partnerId: actor.partnerId,
+              accessibleOrgIds: actor.accessibleOrgIds,
             };
-            return JSON.stringify(await addContractLine(String(input.invoiceId), contractLine, actor));
+            const contractId = String(input.contractId);
+            const contractLineId = String(input.contractLineId);
+            const { lines } = await getContract(contractId, contractActor);
+            const line = lines.find((candidate) => candidate.id === contractLineId);
+            if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });
+
+            const estimate = await computeContractEstimate(contractId, contractActor);
+            const est = estimate.lines.find((candidate) => candidate.lineId === line.id);
+            if (!est) return JSON.stringify({ error: 'Contract line estimate not found for this contract' });
+
+            return JSON.stringify(await addContractLine(String(input.invoiceId), {
+              description: line.description,
+              quantity: String(est.quantity),
+              unitPrice: line.unitPrice,
+              taxable: line.taxable,
+              catalogItemId: line.catalogItemId,
+              sourceId: line.id,
+            }, actor));
           }
           case 'update_line':
             return JSON.stringify(await updateLine(String(input.invoiceId), String(input.lineId), input.patch as UpdateInvoiceLinePatch, actor));

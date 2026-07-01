@@ -27,6 +27,11 @@ vi.mock('./aiTools', () => ({
       // Ticketing tools
       manage_tickets: 1,
       manage_alerts: 1,
+      // Billing/ticketing write tools
+      manage_invoices: 2,
+      manage_catalog: 2,
+      manage_contracts: 2,
+      manage_quotes: 2,
     };
     return tiers[toolName];
   }),
@@ -334,6 +339,26 @@ describe('checkGuardrails — manage_tickets tier escalation', () => {
   it('update_status remains Tier 2 after adding time-entry actions to TIER3_ACTIONS', () => {
     const result = checkGuardrails('manage_tickets', { action: 'update_status' });
     expect(result.tier).toBe(2);
+    expect(result.requiresApproval).toBe(false);
+  });
+});
+
+describe('checkGuardrails — billing and proposal action tier escalation', () => {
+  it.each([
+    ['manage_invoices', 'issue'],
+    ['manage_contracts', 'activate'],
+    ['manage_quotes', 'send'],
+  ])('%s:%s resolves to Tier 3 and requires approval', (tool, action) => {
+    const result = checkGuardrails(tool, { action });
+    expect(result.tier).toBe(3);
+    expect(result.allowed).toBe(true);
+    expect(result.requiresApproval).toBe(true);
+  });
+
+  it('manage_invoices:create_draft stays Tier 2 without approval', () => {
+    const result = checkGuardrails('manage_invoices', { action: 'create_draft' });
+    expect(result.tier).toBe(2);
+    expect(result.allowed).toBe(true);
     expect(result.requiresApproval).toBe(false);
   });
 });

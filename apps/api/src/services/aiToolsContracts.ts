@@ -1,19 +1,21 @@
 /**
  * AI Contract Tools
  *
- * Read-only AI tools over the recurring contracts engine:
+ * AI tools over the recurring contracts engine:
  *  - `list_contracts` — list contracts for the caller's accessible orgs, with
  *    optional org/status/limit filters.
  *  - `get_contract`   — full view (contract + lines + billing-period history) for
  *    one contract.
+ *  - `manage_contracts` — create/update/delete draft contracts, add/remove
+ *    lines, and run lifecycle actions.
  *
  * Org-scope guarded AT THE TOOL LAYER: each tool builds a `ContractActor` from
  * the AI session's auth context (partnerId + accessibleOrgIds) and calls
  * `listContracts` / `getContract`, which already enforce `requireOrgAccess` and
  * the defense-in-depth `inArray(contracts.orgId, actor.accessibleOrgIds)` filter.
  * A thrown `ContractServiceError` (e.g. ORG_DENIED, CONTRACT_NOT_FOUND) is
- * converted to a JSON error string rather than propagated. Write tools are
- * deferred.
+ * converted to a JSON error string rather than propagated. Activate/pause/
+ * resume/cancel are approval-gated Tier 3 actions.
  */
 
 import type { ContractLineInput, CreateContractInput, UpdateContractInput } from '@breeze/shared';
@@ -145,8 +147,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           },
           contractId: { type: 'string', description: 'Contract UUID' },
           lineId: { type: 'string', description: 'Contract line UUID' },
-          orgId: { type: 'string', description: 'Organization UUID for create_draft' },
-          input: { type: 'object', description: 'Contract create input fields' },
+          input: { type: 'object', description: 'Full create-contract payload including orgId, name, and schedule fields' },
           patch: { type: 'object', description: 'Contract update patch fields' },
           line: { type: 'object', description: 'Contract line input fields' },
         },
