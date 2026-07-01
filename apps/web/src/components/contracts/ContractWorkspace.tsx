@@ -99,10 +99,10 @@ export default function ContractWorkspace({ contractId }: Props) {
   return (
     <div className="space-y-4" data-testid="contract-workspace">
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <a href="/contracts" className="text-xs text-muted-foreground hover:underline">← Contracts</a>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold" data-testid="contract-workspace-title">{contract.name}</h1>
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="truncate text-xl font-semibold" data-testid="contract-workspace-title">{contract.name}</h1>
             <StatusPill
               role={CONTRACT_STATUS_ROLES[contract.status].role}
               label={CONTRACT_STATUS_ROLES[contract.status].label}

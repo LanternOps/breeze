@@ -24,6 +24,7 @@ import {
   computeInvoiceProfit,
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
+import { usePdfDownload } from './shared/usePdfDownload';
 import { MarginPanel } from './billingUi';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -31,9 +32,12 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 interface Props {
   detail: InvoiceDetailData;
   onChanged: () => void;
+  /** The workspace header owns the primary actions (Download PDF) — suppress the
+   *  rail copy so the two don't render at once (mirrors QuoteDetail.actionsInHeader). */
+  actionsInHeader?: boolean;
 }
 
-export default function InvoiceDetail({ detail, onChanged }: Props) {
+export default function InvoiceDetail({ detail, onChanged, actionsInHeader = false }: Props) {
   const { can } = usePermissions();
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
@@ -113,28 +117,11 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
     invoice.status !== 'draft' && invoice.status !== 'void' && invoice.status !== 'paid' && Number(invoice.balance) > 0;
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
 
-  const downloadPdf = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await fetchWithAuth(`/invoices/${invoice.id}/pdf`);
-      if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) { handleActionError(new Error('pdf'), 'Could not download the invoice PDF.'); return; }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      handleActionError(err, 'Could not download the invoice PDF.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id, invoice.invoiceNumber]);
+  const { download: downloadPdf, downloading } = usePdfDownload({
+    path: `/invoices/${invoice.id}/pdf`,
+    filename: `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`,
+    errorMessage: 'Could not download the invoice PDF.',
+  });
 
   const recordPayment = useCallback(async () => {
     if (busy || !payAmount) return;
@@ -387,9 +374,9 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
 
           {/* PDF + void */}
           <div className="space-y-2">
-            {can('invoices', 'export') && (
+            {!actionsInHeader && can('invoices', 'export') && (
               <button
-                type="button" onClick={() => void downloadPdf()} disabled={busy}
+                type="button" onClick={() => void downloadPdf()} disabled={busy || downloading}
                 data-testid="invoice-download-pdf"
                 className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >

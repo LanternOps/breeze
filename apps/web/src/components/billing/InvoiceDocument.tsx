@@ -1,8 +1,6 @@
-import { useCallback, useMemo, useState, type CSSProperties } from 'react';
-import { fetchWithAuth } from '../../stores/auth';
-import { navigateTo } from '@/lib/navigation';
-import { handleActionError } from '../../lib/runAction';
+import { useMemo, type CSSProperties } from 'react';
 import { useOrgStore } from '../../stores/orgStore';
+import { usePdfDownload } from './shared/usePdfDownload';
 import {
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLine,
@@ -17,8 +15,6 @@ import {
   sellerLines,
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
-
-const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean }) {
   const child = !!line.parentLineId;
@@ -223,7 +219,6 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
 export default function InvoiceDocumentPreview({ detail }: { detail: InvoiceDetailData }) {
   const { invoice } = detail;
   const organizations = useOrgStore((s) => s.organizations);
-  const [busy, setBusy] = useState(false);
 
   const customerName = useMemo(() => {
     const billTo = invoice.billToName?.trim();
@@ -232,28 +227,11 @@ export default function InvoiceDocumentPreview({ detail }: { detail: InvoiceDeta
     return resolved || invoice.orgId.slice(0, 8);
   }, [invoice.billToName, invoice.orgId, organizations]);
 
-  const downloadPdf = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await fetchWithAuth(`/invoices/${invoice.id}/pdf`);
-      if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) { handleActionError(new Error('pdf'), 'Could not download the invoice PDF.'); return; }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      handleActionError(err, 'Could not download the invoice PDF.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id, invoice.invoiceNumber]);
+  const { download: downloadPdf, downloading: busy } = usePdfDownload({
+    path: `/invoices/${invoice.id}/pdf`,
+    filename: `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`,
+    errorMessage: 'Could not download the invoice PDF.',
+  });
 
   return (
     <div className="space-y-4" data-testid="invoice-preview">

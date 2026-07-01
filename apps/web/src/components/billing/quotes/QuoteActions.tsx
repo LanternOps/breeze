@@ -130,11 +130,13 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
               // Visible in BOTH variants — a sighted keyboard user (or anyone not
               // hovering for the title tooltip) needs to see WHY the highest-stakes
               // button is disabled. In the header row it takes a full-width basis so
-              // it wraps onto its own line under the action buttons.
+              // it wraps onto its own line BELOW the action buttons (never inline
+              // between them, which would drag the cluster into the page centre),
+              // right-aligned to sit under the right-aligned buttons.
               <p
                 id={`quote-send-empty-hint-${variant}`}
                 data-testid="quote-send-empty-hint"
-                className={header ? 'basis-full text-xs text-muted-foreground' : 'text-center text-xs text-muted-foreground'}
+                className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
               >
                 Add at least one item before sending.
               </p>
