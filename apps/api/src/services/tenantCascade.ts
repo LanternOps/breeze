@@ -295,6 +295,7 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'tunnel_sessions',
   'unifi_clients',
   'unifi_collectors',
+  'unifi_controller_sites',
   'unifi_device_telemetry',
   'unifi_devices',
   'unifi_site_mappings',
