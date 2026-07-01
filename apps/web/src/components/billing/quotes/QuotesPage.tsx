@@ -438,11 +438,18 @@ export function QuotesPage() {
                         />
                       </td>
                       <td className="px-3 py-3 font-medium">
-                        {qt.quoteNumber ?? (
-                          <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Draft
-                          </span>
-                        )}
+                        <a
+                          href={`/billing/quotes/${qt.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid={`quotes-row-link-${qt.id}`}
+                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                          {qt.quoteNumber ?? (
+                            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Draft
+                            </span>
+                          )}
+                        </a>
                       </td>
                       <td className="px-3 py-3">{orgName(qt.orgId)}</td>
                       <td className="px-3 py-3">

@@ -97,4 +97,27 @@ describe('QuotesPage', () => {
     expect(within(row).getByText('$150.00')).toBeInTheDocument();
     expect(screen.getByTestId('quotes-status-q-1')).toHaveTextContent('Draft');
   });
+
+  it('exposes a focusable link to the quote detail so keyboard users can open it', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: QUOTES });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+
+    const link = screen.getByTestId('quotes-row-link-q-1');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/billing/quotes/q-1');
+    expect(link).toHaveTextContent('Q-0001');
+    // A native anchor is focusable; it must never be removed from the tab order.
+    expect(link.getAttribute('tabindex')).not.toBe('-1');
+
+    // Clicking the link must not double-navigate via the row's onClick handler.
+    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    const stop = vi.spyOn(clickEvent, 'stopPropagation');
+    link.dispatchEvent(clickEvent);
+    expect(stop).toHaveBeenCalled();
+  });
 });

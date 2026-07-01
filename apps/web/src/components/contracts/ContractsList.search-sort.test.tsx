@@ -96,6 +96,23 @@ describe('ContractsList — search, sort & skeleton', () => {
     expect(screen.getByTestId(`contract-row-${ZETA.id}`)).toBeInTheDocument();
   });
 
+  it('exposes a focusable link to the contract detail so keyboard users can open it', async () => {
+    listContracts.mockResolvedValue(json({ data: [ALPHA] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    const link = screen.getByTestId(`contract-row-link-${ALPHA.id}`);
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', `/contracts/${ALPHA.id}`);
+    expect(link).toHaveTextContent('Alpha Retainer');
+    expect(link.getAttribute('tabindex')).not.toBe('-1');
+
+    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    const stop = vi.spyOn(clickEvent, 'stopPropagation');
+    link.dispatchEvent(clickEvent);
+    expect(stop).toHaveBeenCalled();
+  });
+
   it('filters rows by organization name via the search box', async () => {
     listContracts.mockResolvedValue(json({ data: [ALPHA, ZETA] }));
     render(<ContractsList />);
@@ -117,7 +134,7 @@ describe('ContractsList — search, sort & skeleton', () => {
     fireEvent.click(screen.getByTestId('contracts-sort-name'));
 
     await waitFor(() => {
-      const rows = screen.getAllByTestId(/^contract-row-/);
+      const rows = screen.getAllByTestId(/^contract-row-(?!link)/);
       // asc → Alpha before Zeta
       expect(rows[0]).toHaveAttribute('data-testid', `contract-row-${ALPHA.id}`);
       expect(rows[1]).toHaveAttribute('data-testid', `contract-row-${ZETA.id}`);
@@ -126,7 +143,7 @@ describe('ContractsList — search, sort & skeleton', () => {
     // Toggle to descending → Zeta first.
     fireEvent.click(screen.getByTestId('contracts-sort-name'));
     await waitFor(() => {
-      const rows = screen.getAllByTestId(/^contract-row-/);
+      const rows = screen.getAllByTestId(/^contract-row-(?!link)/);
       expect(rows[0]).toHaveAttribute('data-testid', `contract-row-${ZETA.id}`);
     });
   });

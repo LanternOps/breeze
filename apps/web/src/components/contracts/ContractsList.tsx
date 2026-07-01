@@ -408,7 +408,16 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                           onChange={() => bulk.toggle(ctr.id)}
                         />
                       </td>
-                      <td className="px-3 py-3 font-medium">{ctr.name}</td>
+                      <td className="px-3 py-3 font-medium">
+                        <a
+                          href={`/contracts/${ctr.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid={`contract-row-link-${ctr.id}`}
+                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                          {ctr.name}
+                        </a>
+                      </td>
                       {!lockedOrgId && <td className="px-3 py-3">{orgName(ctr.orgId)}</td>}
                       <td className="px-3 py-3">
                         <StatusPill

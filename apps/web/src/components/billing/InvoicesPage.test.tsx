@@ -72,6 +72,28 @@ describe('InvoicesPage', () => {
     expect(row.querySelector('.bg-destructive')).not.toBeNull();
   });
 
+  it('exposes a focusable link to the invoice detail (desktop table + mobile card)', async () => {
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+
+    const link = screen.getByTestId('invoices-row-link-inv-1');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/billing/invoices/inv-1');
+    expect(link).toHaveTextContent('INV-0001');
+    expect(link.getAttribute('tabindex')).not.toBe('-1');
+
+    const cardLink = screen.getByTestId('invoices-card-link-inv-1');
+    expect(cardLink.tagName).toBe('A');
+    expect(cardLink).toHaveAttribute('href', '/billing/invoices/inv-1');
+
+    // Clicking the link must not double-navigate via the row's onClick handler.
+    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    const stop = vi.spyOn(clickEvent, 'stopPropagation');
+    link.dispatchEvent(clickEvent);
+    expect(stop).toHaveBeenCalled();
+  });
+
   it('writes filter selections to the URL hash', async () => {
     wireDefault();
     render(<InvoicesPage />);

@@ -546,11 +546,18 @@ export function InvoicesPage() {
                         <td className="px-3 py-3 font-medium">
                           <span className="flex items-center gap-2">
                             <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-destructive' : 'bg-transparent'}`} aria-hidden="true" />
-                            {inv.invoiceNumber ?? (
-                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Draft
-                              </span>
-                            )}
+                            <a
+                              href={`/billing/invoices/${inv.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              data-testid={`invoices-row-link-${inv.id}`}
+                              className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                            >
+                              {inv.invoiceNumber ?? (
+                                <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                  Draft
+                                </span>
+                              )}
+                            </a>
                           </span>
                         </td>
                         <td className="px-3 py-3">{orgName(inv.orgId)}</td>
@@ -589,20 +596,29 @@ export function InvoicesPage() {
                     className={overdue ? 'border-destructive/30' : undefined}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <label className="flex items-center gap-2 font-medium" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          aria-label={`Select invoice ${inv.invoiceNumber ?? inv.id}`}
-                          data-testid={`invoices-card-select-${inv.id}`}
-                          checked={bulk.has(inv.id)}
-                          onChange={() => bulk.toggle(inv.id)}
-                        />
-                        {inv.invoiceNumber ?? (
-                          <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Draft
-                          </span>
-                        )}
-                      </label>
+                      <div className="flex items-center gap-2 font-medium">
+                        <label onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select invoice ${inv.invoiceNumber ?? inv.id}`}
+                            data-testid={`invoices-card-select-${inv.id}`}
+                            checked={bulk.has(inv.id)}
+                            onChange={() => bulk.toggle(inv.id)}
+                          />
+                        </label>
+                        <a
+                          href={`/billing/invoices/${inv.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid={`invoices-card-link-${inv.id}`}
+                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                          {inv.invoiceNumber ?? (
+                            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Draft
+                            </span>
+                          )}
+                        </a>
+                      </div>
                       <StatusPill
                         role={STATUS_ROLES[inv.status].role}
                         label={statusLabel(inv)}
