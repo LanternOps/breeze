@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { db } from '../../db';
@@ -43,14 +43,27 @@ const connectSchema = z.object({
   accountLabel: z.string().max(200).optional(),
 });
 
+// Reject the stringified-undefined/null ids that a broken upstream parse used to
+// emit — persisting them yields rows whose id matches no real UniFi host/site, so
+// device grouping and ISP-metric lookups silently return nothing.
+const unifiId = z.string().min(1).refine(
+  (v) => v !== 'undefined' && v !== 'null',
+  { message: 'Invalid UniFi id' },
+);
+
 const mappingsSchema = z.object({
   mappings: z.array(z.object({
-    unifiHostId: z.string().min(1),
-    unifiSiteId: z.string().min(1),
+    unifiHostId: unifiId,
+    unifiSiteId: unifiId,
     unifiHostName: z.string().optional(),
     unifiSiteName: z.string().optional(),
     siteId: z.string().guid(),
   })),
+  // The full set of UniFi host ids the client enumerated in this save. The replace-all
+  // cleanup is scoped to these hosts so a host transiently absent from the live list is
+  // never purged, and a failed/empty host list can't trigger a mass delete. Omitted →
+  // upsert-only (no deletes), preserving safe behavior for callers that don't send it.
+  hostIds: z.array(z.string()).optional(),
 });
 
 const collectorSchema = z.object({
@@ -169,6 +182,8 @@ unifiRoutes.get('/hosts', partnerScopes, readPerm, async (c) => {
   try {
     const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
     const [hosts, allSites] = await Promise.all([client.listHosts(), client.listSites()]);
+    // listSites already drops sites with a malformed id, so this map only ever holds
+    // genuinely mappable sites.
     const sitesByHost = new Map<string, Array<{ id: string; name: string }>>();
     for (const s of allSites) {
       const list = sitesByHost.get(s.hostId) ?? [];
@@ -176,7 +191,12 @@ unifiRoutes.get('/hosts', partnerScopes, readPerm, async (c) => {
       sitesByHost.set(s.hostId, list);
     }
     return c.json({
-      hosts: hosts.map((h) => ({ id: h.id, name: h.name, sites: sitesByHost.get(h.id) ?? [] })),
+      // Only surface mappable consoles: a host must have at least one valid site, and
+      // — when its type is known — be a console (drops cloud keys / non-console hosts).
+      // This stops the UI from offering host×site rows that can only save junk mappings.
+      hosts: hosts
+        .filter((h) => (h.type ?? 'console') === 'console' && (sitesByHost.get(h.id)?.length ?? 0) > 0)
+        .map((h) => ({ id: h.id, name: h.name, model: h.model, sites: sitesByHost.get(h.id) ?? [] })),
     });
   } catch (err) {
     return c.json({ success: false, message: err instanceof Error ? err.message : String(err) }, 502);
@@ -190,7 +210,7 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  const { mappings } = c.req.valid('json');
+  const { mappings, hostIds } = c.req.valid('json');
   // Resolve + authorize EVERY target site before any write. Doing this inline
   // per-iteration would leave earlier mappings persisted when a later cross-org
   // entry hits the 403, so the client sees a failure on a partially-applied batch.
@@ -222,6 +242,46 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
         updatedAt: new Date(),
       },
     });
+  }
+  // Replace-all cleanup, scoped to the hosts the client actually enumerated (hostIds).
+  // For each of those hosts, any saved mapping no longer in the submitted set is stale
+  // and removed — this is how poisoned rows (e.g. a legacy unifi_site_id of "undefined")
+  // self-heal when the user re-saves that host. Crucially we DON'T touch mappings for
+  // hosts absent from hostIds: a console transiently missing from the live UniFi list
+  // (or an empty/failed list) must never trigger a destructive delete. unifi_devices
+  // cascade on a mapping delete (FK onDelete: cascade).
+  const hostScope = new Set(hostIds ?? []);
+  if (hostScope.size > 0) {
+    const submitted = new Set(resolved.map(({ m }) => `${m.unifiHostId}::${m.unifiSiteId}`));
+    const existing = await db
+      .select({
+        id: unifiSiteMappings.id,
+        orgId: unifiSiteMappings.orgId,
+        siteId: unifiSiteMappings.siteId,
+        unifiHostId: unifiSiteMappings.unifiHostId,
+        unifiSiteId: unifiSiteMappings.unifiSiteId,
+      })
+      .from(unifiSiteMappings)
+      .where(eq(unifiSiteMappings.integrationId, conn.id));
+    // Only delete rows the caller is actually authorized to modify: scoped to an
+    // enumerated host, deselected, and passing the same org + site-axis gates that
+    // GET /mappings applies on read. Without the site-axis check a site-restricted
+    // caller could wipe mappings they can't even see.
+    const siteGate = auth.canAccessSite;
+    const staleIds = existing
+      .filter((row) =>
+        hostScope.has(row.unifiHostId)
+        && !submitted.has(`${row.unifiHostId}::${row.unifiSiteId}`)
+        && auth.canAccessOrg(row.orgId)
+        && (!siteGate || siteGate(row.siteId)),
+      )
+      .map((row) => row.id);
+    if (staleIds.length > 0) {
+      console.warn(`[unifi] mappings replace-all: removing ${staleIds.length} stale mapping(s) for integration ${conn.id}`);
+      await db
+        .delete(unifiSiteMappings)
+        .where(and(eq(unifiSiteMappings.integrationId, conn.id), inArray(unifiSiteMappings.id, staleIds)));
+    }
   }
   return c.json({ success: true });
 });

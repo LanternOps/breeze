@@ -33,6 +33,7 @@ interface UnifiStatus {
 interface UnifiHostOption {
   id: string;
   name: string;
+  model?: string | null;
   sites: Array<{ id: string; name: string }>;
 }
 // Breeze sites/orgs that a UniFi site can be mapped onto (from GET /orgs/*).
@@ -373,7 +374,10 @@ export default function UnifiIntegration() {
     setSavingMappings(true);
     try {
       await runAction({
-        request: () => fetchWithAuth('/unifi/mappings', { method: 'PUT', body: JSON.stringify({ mappings }) }),
+        // Send the full enumerated host set so the server's replace-all cleanup is
+        // scoped to hosts the user actually saw — a host transiently missing from this
+        // live list must not have its mapping (and synced devices) deleted.
+        request: () => fetchWithAuth('/unifi/mappings', { method: 'PUT', body: JSON.stringify({ mappings, hostIds: hosts.map((h) => h.id) }) }),
         errorFallback: 'Failed to save site mappings.',
         successMessage: 'Site mappings saved',
         onUnauthorized,
@@ -433,7 +437,9 @@ export default function UnifiIntegration() {
     setSavingControllerMappings(true);
     try {
       await runAction({
-        request: () => fetchWithAuth('/unifi/mappings', { method: 'PUT', body: JSON.stringify({ mappings }) }),
+        // Scope replace-all to the controller sites enumerated here (keyed by collector
+        // id, the sentinel host id), so other controllers' mappings are never purged.
+        request: () => fetchWithAuth('/unifi/mappings', { method: 'PUT', body: JSON.stringify({ mappings, hostIds: controllerSites.map((s) => s.collectorId) }) }),
         errorFallback: 'Failed to save site mappings.',
         successMessage: 'Site mappings saved',
         onUnauthorized,
@@ -1085,7 +1091,12 @@ export default function UnifiIntegration() {
                         const key = mapKey(h.id, s.id);
                         return (
                           <tr key={key} data-testid="unifi-mapping-row">
-                            <td className="px-3 py-2 font-medium">{h.name}</td>
+                            <td className="px-3 py-2">
+                              <span className="font-medium">{h.name}</span>
+                              {h.model && (
+                                <span className="ml-2 text-xs text-muted-foreground" data-testid="unifi-mapping-host-model">{h.model}</span>
+                              )}
+                            </td>
                             <td className="px-3 py-2 text-muted-foreground">{s.name}</td>
                             <td className="px-3 py-2">
                               <select
@@ -1145,6 +1156,7 @@ export default function UnifiIntegration() {
                 <div key={h.id} className="rounded-lg border p-4" data-testid="unifi-collector-row">
                   <div className="flex items-center gap-2">
                     <span className="font-medium">{h.name}</span>
+                    {h.model && <span className="text-xs text-muted-foreground">{h.model}</span>}
                     {collector && (
                       <span
                         className={`ml-auto inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${collectorStatusClasses(collector.status)}`}

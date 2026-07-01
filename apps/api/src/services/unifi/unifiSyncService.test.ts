@@ -10,7 +10,7 @@ import type { DbExecutor } from './unifiConnectionService';
 
 function fakeClient(devices: any[]): UnifiClient {
   return {
-    listHosts: async () => [{ id: 'h1', name: 'Console' }],
+    listHosts: async () => [{ id: 'h1', name: 'Console', type: 'console', model: 'UDM' }],
     listSites: async () => [{ id: 's1', hostId: 'h1', name: 'Site' }],
     listDevices: async () => devices,
     getIspMetrics: async () => ({
@@ -285,7 +285,7 @@ describe('unifiSyncService.syncIntegration', () => {
     // map-1 (h1): succeeds with no devices this run
     // map-2 (h2): listDevices throws → failedMappingIds captures 'map-2'
     const staledClient: UnifiClient = {
-      listHosts: async () => [{ id: 'h1', name: 'C1' }, { id: 'h2', name: 'C2' }],
+      listHosts: async () => [{ id: 'h1', name: 'C1', type: 'console', model: null }, { id: 'h2', name: 'C2', type: 'console', model: null }],
       listSites: async () => [],
       listDevices: async (hostId) => {
         if (hostId === 'h2') throw new Error('timeout');
