@@ -246,13 +246,14 @@ export default function AlertsPage() {
     }
   };
 
-  // One-click Suppress opens the duration picker; the suppress endpoint needs an
-  // absolute `until`, so we can't fire blind — performSuppress runs on confirm.
+  // One-click Suppress opens the duration picker; the picker resolves the chosen
+  // window (or "Forever") — performSuppress runs on confirm.
   const handleSuppress = (alert: Alert) => {
     setSuppressTarget(alert);
   };
 
-  const performSuppress = async (alert: Alert, until: Date) => {
+  // `until === null` means indefinite ("Forever") suppression — send no `until`.
+  const performSuppress = async (alert: Alert, until: Date | null) => {
     setSuppressTarget(null);
 
     // Optimistic update with undo
@@ -283,7 +284,7 @@ export default function AlertsPage() {
       // runAction would double-toast and fight the optimistic flow.
       const response = await fetchWithAuth(`/alerts/${alert.id}/suppress`, {
         method: 'POST',
-        body: JSON.stringify({ until: until.toISOString() }),
+        body: JSON.stringify(until ? { until: until.toISOString() } : {}),
       });
       if (!response.ok) {
         // Surface the server's specific reason (e.g. "Cannot suppress a resolved
@@ -308,7 +309,7 @@ export default function AlertsPage() {
     }
   };
 
-  const executeBulkAction = async (action: string, selectedAlerts: Alert[], until?: Date) => {
+  const executeBulkAction = async (action: string, selectedAlerts: Alert[], until?: Date | null) => {
     setSubmitting(true);
     try {
       await runAction({

@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Dialog } from '../shared/Dialog';
 
 // Preset suppression windows offered by the one-click Suppress action. The API
-// (`POST /alerts/:id/suppress`) requires an absolute `until` timestamp, so each
-// preset is resolved to `now + ms` at confirm time. '24h' is the default.
+// (`POST /alerts/:id/suppress`) accepts an absolute `until` timestamp, so each
+// timed preset is resolved to `now + ms` at confirm time. '24h' is the default.
+// The 'forever' choice sends no `until`, leaving the alert muted indefinitely.
 const PRESETS = [
   { id: '1h', label: '1 hour', ms: 60 * 60 * 1000 },
   { id: '8h', label: '8 hours', ms: 8 * 60 * 60 * 1000 },
@@ -12,7 +13,7 @@ const PRESETS = [
 ] as const;
 
 type PresetId = (typeof PRESETS)[number]['id'];
-type Choice = PresetId | 'custom';
+type Choice = PresetId | 'forever';
 
 type SuppressAlertDialogProps = {
   /** Single-alert title. Omit (and pass `count`) when suppressing in bulk. */
@@ -20,49 +21,28 @@ type SuppressAlertDialogProps = {
   /** Number of alerts being suppressed; drives the bulk copy. Defaults to 1. */
   count?: number;
   onCancel: () => void;
-  /** Receives the resolved absolute, strictly-future suppression deadline. */
-  onConfirm: (until: Date) => void;
+  /**
+   * Receives the resolved absolute, strictly-future suppression deadline, or
+   * `null` for indefinite ("Forever") suppression.
+   */
+  onConfirm: (until: Date | null) => void;
 };
-
-// datetime-local renders/parses in the browser's local zone, so a min derived
-// from local-clock parts keeps the picker from offering past times.
-function localDatetimeValue(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
 
 export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, onConfirm }: SuppressAlertDialogProps) {
   const [choice, setChoice] = useState<Choice>('24h');
-  const [custom, setCustom] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const minCustom = useMemo(() => localDatetimeValue(new Date(Date.now() + 60 * 1000)), []);
-
   const confirm = () => {
-    let until: Date;
-    if (choice === 'custom') {
-      if (!custom) {
-        setError('Pick a date and time.');
-        return;
-      }
-      until = new Date(custom);
-      if (Number.isNaN(until.getTime())) {
-        setError('That date and time is invalid.');
-        return;
-      }
-    } else {
-      const preset = PRESETS.find((p) => p.id === choice);
-      if (!preset) {
-        setError('Pick a suppression duration.');
-        return;
-      }
-      until = new Date(Date.now() + preset.ms);
-    }
-    if (until.getTime() <= Date.now()) {
-      setError('Suppression time must be in the future.');
+    if (choice === 'forever') {
+      onConfirm(null);
       return;
     }
-    onConfirm(until);
+    const preset = PRESETS.find((p) => p.id === choice);
+    if (!preset) {
+      setError('Pick a suppression duration.');
+      return;
+    }
+    onConfirm(new Date(Date.now() + preset.ms));
   };
 
   return (
@@ -92,31 +72,17 @@ export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, o
             <span>{p.label}</span>
           </label>
         ))}
-        {/* The radio and the datetime input are two separate controls, so each
-            gets its own accessible name — the <label> wraps only the radio, and
-            the input carries an aria-label — rather than one label spanning both. */}
-        <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted">
-          <label className="flex cursor-pointer items-center gap-2">
-            <input
-              type="radio"
-              name="suppress-duration"
-              value="custom"
-              checked={choice === 'custom'}
-              onChange={() => { setChoice('custom'); setError(null); }}
-              data-testid="suppress-duration-custom"
-            />
-            <span>Until&hellip;</span>
-          </label>
+        <label className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted">
           <input
-            type="datetime-local"
-            aria-label="Custom suppression date and time"
-            value={custom}
-            min={minCustom}
-            onChange={(e) => { setCustom(e.target.value); setChoice('custom'); setError(null); }}
-            className="ml-auto rounded-md border bg-background px-2 py-1 text-sm"
-            data-testid="suppress-duration-custom-input"
+            type="radio"
+            name="suppress-duration"
+            value="forever"
+            checked={choice === 'forever'}
+            onChange={() => { setChoice('forever'); setError(null); }}
+            data-testid="suppress-duration-forever"
           />
-        </div>
+          <span>Forever</span>
+        </label>
       </fieldset>
 
       {error && (

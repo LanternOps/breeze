@@ -156,6 +156,31 @@ describe('manage_alerts feedback emission', () => {
     }
   });
 
+  it('suppress with suppressDuration:0 suppresses forever (no deadline)', async () => {
+    mockAlertLookup(ALERT);
+    mockUpdate();
+
+    const result = JSON.parse(await handlerFor('manage_alerts')(
+      { action: 'suppress', alertId: ALERT.id, suppressDuration: 0 },
+      makeAuth()
+    ));
+
+    expect(result.success).toBe(true);
+    expect(result.suppressedUntil).toBeNull();
+    expect(result.durationHours).toBeNull();
+    // Forever == no deadline: the dedupe key and metadata carry no timestamp.
+    expect(mocks.emitAlertStateFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'alert.suppressed',
+      dedupeKey: 'suppress:forever',
+      outcome: 'suppressed',
+      metadata: expect.objectContaining({
+        source: 'ai_tools.manage_alerts',
+        suppressedUntil: null,
+        durationHours: null,
+      }),
+    }));
+  });
+
   it('does not emit feedback when the alert is missing', async () => {
     mockAlertLookup(null);
 

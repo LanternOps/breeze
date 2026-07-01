@@ -552,7 +552,7 @@ export default function AlertList({
                                 Resolve
                               </button>
                             )}
-                            {alert.status !== 'suppressed' && (
+                            {alert.status !== 'suppressed' && alert.status !== 'resolved' && (
                               <button
                                 type="button"
                                 onClick={e => {

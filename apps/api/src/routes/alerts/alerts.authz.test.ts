@@ -316,7 +316,8 @@ describe('POST /alerts/bulk site-axis scope (T3)', () => {
 
 // Bulk suppress (PR #2020 follow-up): the bulk endpoint must accept
 // action:'suppress' with a future `until`, set suppressedUntil, skip resolved
-// alerts, and reject a missing/past deadline.
+// alerts, and reject a past deadline. A missing `until` means indefinite
+// ("Forever") suppression — suppressedUntil is left null.
 describe('POST /alerts/bulk suppress', () => {
   const ORG = 'org-1';
   const ALERT_A = 'a1a1a1a1-1111-4111-8111-111111111111';
@@ -368,15 +369,18 @@ describe('POST /alerts/bulk suppress', () => {
     expect(state.alerts.find((x) => x.id === ALERT_RESOLVED)?.status).toBe('resolved');
   });
 
-  it('400 when `until` is omitted', async () => {
+  it('suppresses indefinitely (Forever) when `until` is omitted', async () => {
     const res = await makeApp().request('/alerts/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ alertIds: [ALERT_A], action: 'suppress' }),
     });
-    expect(res.status).toBe(400);
-    // Nothing was mutated.
-    expect(state.alerts.find((x) => x.id === ALERT_A)?.status).toBe('active');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ updated: 1, skipped: 0 });
+    const a = state.alerts.find((x) => x.id === ALERT_A)!;
+    expect(a.status).toBe('suppressed');
+    // Forever == no deadline: suppressedUntil is left null.
+    expect(a.suppressedUntil).toBeNull();
   });
 
   it('400 when `until` is in the past', async () => {

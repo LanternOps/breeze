@@ -9,12 +9,6 @@ const onCancel = vi.fn();
 const renderDialog = () =>
   render(<SuppressAlertDialog alertTitle="Warranty expires in 5 days: MacBook-Pro-3" onConfirm={onConfirm} onCancel={onCancel} />);
 
-// A local wall-clock string in the datetime-local format (YYYY-MM-DDTHH:mm).
-const localInputValue = (d: Date) => {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
-
 describe('SuppressAlertDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -43,38 +37,14 @@ describe('SuppressAlertDialog', () => {
     expect(until.getTime()).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000 + 1000);
   });
 
-  it('converts a custom local datetime to the matching absolute instant', () => {
+  it('confirms the Forever option as null (indefinite suppression)', () => {
     renderDialog();
-    const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
-    const value = localInputValue(future);
-    fireEvent.change(screen.getByTestId('suppress-duration-custom-input'), { target: { value } });
+    fireEvent.click(screen.getByTestId('suppress-duration-forever'));
     fireEvent.click(screen.getByTestId('suppress-confirm'));
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
-    const until = onConfirm.mock.calls[0][0] as Date;
-    // The emitted instant must equal the local wall-clock the user entered
-    // (this is where a local→UTC off-by-offset bug would surface).
-    expect(until.getTime()).toBe(new Date(value).getTime());
-  });
-
-  it('rejects a past custom time with an inline error and does not confirm', () => {
-    renderDialog();
-    fireEvent.change(screen.getByTestId('suppress-duration-custom-input'), {
-      target: { value: '2000-01-01T00:00' },
-    });
-    fireEvent.click(screen.getByTestId('suppress-confirm'));
-
-    expect(screen.getByTestId('suppress-duration-error')).toHaveTextContent(/future/i);
-    expect(onConfirm).not.toHaveBeenCalled();
-  });
-
-  it('rejects an empty custom selection with an inline error', () => {
-    renderDialog();
-    fireEvent.click(screen.getByTestId('suppress-duration-custom'));
-    fireEvent.click(screen.getByTestId('suppress-confirm'));
-
-    expect(screen.getByTestId('suppress-duration-error')).toBeInTheDocument();
-    expect(onConfirm).not.toHaveBeenCalled();
+    // null signals "no until" — the endpoint leaves suppressedUntil unset.
+    expect(onConfirm.mock.calls[0][0]).toBeNull();
   });
 
   it('cancels without confirming', () => {
@@ -90,12 +60,10 @@ describe('SuppressAlertDialog', () => {
     expect(screen.getByText(/these 5 alerts stay suppressed/i)).toBeInTheDocument();
   });
 
-  it('gives the custom datetime input its own accessible name (not the radio label)', () => {
+  it('offers a Forever radio alongside the timed presets', () => {
     renderDialog();
-    // The radio and the datetime input are distinct, separately-labelled controls.
-    expect(screen.getByRole('radio', { name: /Until/i })).toBeInTheDocument();
-    expect(screen.getByLabelText(/Custom suppression date and time/i)).toBe(
-      screen.getByTestId('suppress-duration-custom-input'),
+    expect(screen.getByRole('radio', { name: /Forever/i })).toBe(
+      screen.getByTestId('suppress-duration-forever'),
     );
   });
 
