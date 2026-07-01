@@ -125,3 +125,54 @@ func appxStackAvailable(run cmdRunner) bool {
 		30*time.Second)
 	return err == nil && code == 0
 }
+
+// EnsureResult reports the outcome of EnsureWinget: either a usable winget
+// binary (Available with WingetPath/Version populated) or an unavailability
+// Reason suitable for surfacing to the patching job / UI.
+type EnsureResult struct {
+	WingetPath string
+	Version    string
+	Available  bool
+	Reason     string
+}
+
+// EnsureDeps are the injected side effects EnsureWinget orchestrates: Locate
+// probes for an existing winget install, AppxAvailable reports whether the
+// Appx provisioning stack can install one, and Provision attempts to install
+// winget via that stack. Keeping these as plain funcs makes EnsureWinget
+// pure and testable without spawning real processes.
+type EnsureDeps struct {
+	Locate        func() (string, string, error)
+	AppxAvailable func() bool
+	Provision     func() error
+}
+
+// EnsureWinget ties detection, decision, provisioning, and re-detection into
+// a single entry point: locate winget, decide whether the existing install
+// (if any) is usable, provision a fresh one via the Appx stack when needed,
+// and re-locate afterward to confirm success.
+func EnsureWinget(deps EnsureDeps) EnsureResult {
+	path, ver, err := deps.Locate()
+	action := decideBootstrap(bootstrapInputs{
+		locatedVersion:   ver,
+		located:          err == nil,
+		minVersion:       minWingetVersion,
+		appxStackPresent: deps.AppxAvailable(),
+	})
+	switch action {
+	case actionUseExisting:
+		return EnsureResult{WingetPath: path, Version: ver, Available: true}
+	case actionUnavailable:
+		return EnsureResult{Available: false, Reason: "winget absent and Appx provisioning unavailable"}
+	case actionProvision:
+		if perr := deps.Provision(); perr != nil {
+			return EnsureResult{Available: false, Reason: "winget provisioning failed: " + perr.Error()}
+		}
+		path, ver, err = deps.Locate()
+		if err != nil {
+			return EnsureResult{Available: false, Reason: "winget still absent after provisioning"}
+		}
+		return EnsureResult{WingetPath: path, Version: ver, Available: true}
+	}
+	return EnsureResult{Available: false, Reason: "unknown bootstrap action"}
+}
