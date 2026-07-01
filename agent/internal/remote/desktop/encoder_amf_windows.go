@@ -543,28 +543,33 @@ func (e *amfEncoder) encodeFrame(bgraTexture uintptr) ([]byte, error) {
 		return nil, fmt.Errorf("AMF SubmitInput failed after retries: %s", amfResultStr(r))
 	}
 
-	// Query output — poll with real delays to give VCE hardware time to encode.
-	// At 2560x1440, the hardware encoder may need 2-5ms to produce a frame.
-	// Total budget: ~20ms (acceptable for 30-60fps streaming).
-	for retries := 0; retries < 20; retries++ {
-		var data uintptr
-		r = amfCall(e.encoder, amfCompQueryOutput, uintptr(unsafe.Pointer(&data)))
-		if r == amfOK && data != 0 {
-			out := e.readBitstream(data)
-			amfReleaseObj(data)
-			return out, nil
-		}
-		if r == amfRepeat || r == amfOK {
-			// Give the hardware encoder real time to complete
-			time.Sleep(1 * time.Millisecond)
-			continue
-		}
-		if r == amfEOF {
-			return nil, nil
-		}
+	// Pipelined retrieval (1-frame latency): do NOT block waiting for THIS
+	// frame's output. Query once for the oldest ready output — a previously
+	// submitted frame the VCE finished in the background while the capture loop
+	// produced this frame. This removes the ~16ms submit-then-sleep-poll stall
+	// that previously ran under e.mu (which also blocked SetBitrate /
+	// ForceKeyframe / Close for the duration). Outputs are drained in FIFO
+	// order (one per call, matching one SubmitInput per call), so the P-frame
+	// reference chain stays intact — this retrieval path never drops a frame.
+	// (The AMF_INPUT_FULL recovery in SubmitInput above is the one place a
+	// completed frame can be discarded, via drainOutput — see its comment.)
+	//
+	// The first call(s) after init/flush return nil while the pipeline fills;
+	// the capture loop tolerates nil (treated as buffering), and
+	// amfStallThreshold (8 consecutive nils) still guards a genuinely stalled
+	// encoder via the caller's stall-detection path.
+	var data uintptr
+	r = amfCall(e.encoder, amfCompQueryOutput, uintptr(unsafe.Pointer(&data)))
+	switch {
+	case r == amfOK && data != 0:
+		out := e.readBitstream(data)
+		amfReleaseObj(data)
+		return out, nil
+	case r == amfOK, r == amfRepeat, r == amfEOF, r == amfNeedMoreInput:
+		return nil, nil // nothing ready this cycle — pipeline warming or idle
+	default:
 		return nil, fmt.Errorf("AMF QueryOutput failed: %s", amfResultStr(r))
 	}
-	return nil, nil // no output after 20ms — stall detection handles this
 }
 
 func (e *amfEncoder) readBitstream(data uintptr) []byte {
@@ -581,11 +586,16 @@ func (e *amfEncoder) readBitstream(data uintptr) []byte {
 	return out
 }
 
+// drainOutput releases one ready output to make room when SubmitInput reports
+// AMF_INPUT_FULL. The drained frame's bitstream is DISCARDED — a real,
+// already-encoded frame is lost, so log it: if this fires repeatedly the
+// 1-frame pipelined retrieval is not keeping up and that must be visible.
 func (e *amfEncoder) drainOutput() {
 	var data uintptr
 	r := amfCall(e.encoder, amfCompQueryOutput, uintptr(unsafe.Pointer(&data)))
 	if r == amfOK && data != 0 {
 		amfReleaseObj(data)
+		slog.Warn("AMF input queue full, discarded one completed output frame to make room")
 	}
 }
 

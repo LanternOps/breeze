@@ -269,6 +269,168 @@ func TestAdaptive_NoOscillation(t *testing.T) {
 	}
 }
 
+func TestAdaptive_SlowStartAcceleratesRecovery(t *testing.T) {
+	a, stub := newTestAdaptive(2_000_000, 500_000, 8_000_000)
+
+	// First upgrade: warmup (stableCount=1) + 2 more clean → step = 5% (400K).
+	warmup(a, 50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0)
+	if stub.bitrate != 2_400_000 {
+		t.Fatalf("first step should be +400K, got %d", stub.bitrate)
+	}
+
+	// Streak active: next upgrade needs only 1 stable sample, step doubles (800K).
+	a.Update(50*time.Millisecond, 0.0)
+	if stub.bitrate != 3_200_000 {
+		t.Fatalf("second step should be +800K (slow-start), got %d", stub.bitrate)
+	}
+
+	// Third: 1 sample, step doubles again (1.6M).
+	a.Update(50*time.Millisecond, 0.0)
+	if stub.bitrate != 4_800_000 {
+		t.Fatalf("third step should be +1.6M, got %d", stub.bitrate)
+	}
+
+	// Fourth: step capped at 25% of max (2M), reaching 6.8M.
+	a.Update(50*time.Millisecond, 0.0)
+	if stub.bitrate != 6_800_000 {
+		t.Fatalf("fourth step should be capped at +2M, got %d", stub.bitrate)
+	}
+}
+
+func TestAdaptive_SlowStartResetOnDegrade(t *testing.T) {
+	a, stub := newTestAdaptive(2_000_000, 500_000, 8_000_000)
+
+	// Build a streak.
+	warmup(a, 50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0) // upgrade #1 (streak=1)
+	a.Update(50*time.Millisecond, 0.0) // upgrade #2 (streak=2)
+
+	// Congestion: degrade resets the streak and arms the backoff.
+	for i := 0; i < 6; i++ {
+		a.Update(50*time.Millisecond, 0.20)
+	}
+
+	// Clean again: the EWMA tail causes a few more degrades before it decays
+	// below 0.01 (~10 samples from 0.20); track the true floor, then backoff
+	// (4) and 3 stable samples gate the FIRST upgrade — i.e. the streak did
+	// not survive the congestion event.
+	lowest := stub.bitrate
+	post := 0
+	for i := 0; i < 60; i++ {
+		a.Update(50*time.Millisecond, 0.0)
+		post++
+		if stub.bitrate < lowest {
+			lowest = stub.bitrate
+		}
+		if stub.bitrate > lowest {
+			break // first upgrade landed
+		}
+	}
+	if stub.bitrate <= lowest {
+		t.Fatalf("never recovered after degrade, bitrate=%d", stub.bitrate)
+	}
+	// First post-degrade upgrade must NOT be an accelerated step: it should be
+	// exactly one gentle 5%-of-max step above the floor.
+	if got, want := stub.bitrate, lowest+400_000; got != want {
+		t.Fatalf("first post-degrade step should be gentle +400K (%d), got %d", want, got)
+	}
+	if post < 3 {
+		t.Fatalf("first post-degrade upgrade came too fast (%d samples) — backoff/stable gating broken", post)
+	}
+}
+
+func TestAdaptive_SlowStartResetOnDeadZone(t *testing.T) {
+	a, stub := newTestAdaptive(2_000_000, 500_000, 8_000_000)
+
+	// Build a streak of 2 upgrades.
+	warmup(a, 50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0) // upgrade #1
+	a.Update(50*time.Millisecond, 0.0) // upgrade #2 (streak=2, bitrate=3.2M)
+	afterStreak := stub.bitrate
+
+	// One dead-zone sample (loss 0.03-ish smoothed) kills the acceleration.
+	a.Update(50*time.Millisecond, 0.04)
+
+	// Next clean samples: EWMA needs to decay below 0.01 again, and the first
+	// upgrade after the dead zone must be a gentle +400K, not a doubled step.
+	for i := 0; i < 30 && stub.bitrate <= afterStreak; i++ {
+		a.Update(50*time.Millisecond, 0.0)
+	}
+	if got, want := stub.bitrate, afterStreak+400_000; got != want {
+		t.Fatalf("post-dead-zone step should reset to gentle +400K (%d), got %d", want, got)
+	}
+}
+
+// TestAdaptive_DeepDipRecoveryTime documents the headline improvement: from the
+// floor, sustained-clean recovery to an 8M ceiling completes in well under 20
+// samples (~20s at 1s stats cadence) versus ~60 with the old fixed +5%/3-sample
+// scheme. EWMA decay from the congestion event dominates the tail.
+func TestAdaptive_DeepDipRecoveryTime(t *testing.T) {
+	a, stub := newTestAdaptive(8_000_000, 500_000, 8_000_000)
+
+	// Crash to the floor.
+	for i := 0; i < 50; i++ {
+		a.Update(50*time.Millisecond, 0.15)
+	}
+	if stub.bitrate != 500_000 {
+		t.Fatalf("expected floor, got %d", stub.bitrate)
+	}
+
+	// Sustained clean conditions: count samples to full recovery.
+	samples := 0
+	for i := 0; i < 120 && stub.bitrate < 8_000_000; i++ {
+		a.Update(50*time.Millisecond, 0.0)
+		samples++
+	}
+	if stub.bitrate < 8_000_000 {
+		t.Fatalf("did not recover to ceiling, got %d", stub.bitrate)
+	}
+	if samples > 30 {
+		t.Fatalf("recovery took %d samples — slow-start not engaging (old behavior was ~60+)", samples)
+	}
+}
+
+// TestAdaptive_SoftResetForActivityResetsUpgradeStreak pins that an
+// idle→active soft reset clears the slow-start streak: the first upgrade after
+// the reset must be gated on the full 3 stable samples and step gently
+// (+5% of max), not fire early with an accelerated doubled step while the
+// encoder is already re-ramping from the reset bitrate.
+func TestAdaptive_SoftResetForActivityResetsUpgradeStreak(t *testing.T) {
+	a, stub := newTestAdaptive(2_000_000, 500_000, 8_000_000)
+
+	// Build a streak of 2 accelerated upgrades.
+	warmup(a, 50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0)
+	a.Update(50*time.Millisecond, 0.0) // upgrade #1 (streak=1)
+	a.Update(50*time.Millisecond, 0.0) // upgrade #2 (streak=2, accelerated)
+	if a.upgradeStreak != 2 {
+		t.Fatalf("setup: expected streak=2, got %d", a.upgradeStreak)
+	}
+
+	a.SoftResetForActivity()
+	if a.upgradeStreak != 0 {
+		t.Fatalf("SoftResetForActivity must reset upgradeStreak, got %d", a.upgradeStreak)
+	}
+	moderate := stub.bitrate // 60% of max = 4.8M
+
+	// The reset also restarts the EWMA warmup (5 samples) — then the first
+	// upgrade must wait the full 3 stable samples and be a gentle +400K
+	// (5% of 8M), not a doubled step.
+	warmup(a, 50*time.Millisecond, 0.0) // 5th sample: stableCount=1
+	a.Update(50*time.Millisecond, 0.0)  // stableCount=2 — no upgrade yet
+	if stub.bitrate != moderate {
+		t.Fatalf("upgraded before 3 stable samples post-reset, bitrate=%d", stub.bitrate)
+	}
+	a.Update(50*time.Millisecond, 0.0) // stableCount=3 → first post-reset upgrade
+	if got, want := stub.bitrate, moderate+400_000; got != want {
+		t.Fatalf("first post-reset step should be gentle +400K (%d), got %d", want, got)
+	}
+}
+
 func TestAdaptive_CapForSoftwareEncoder(t *testing.T) {
 	a, stub := newTestAdaptive(6_000_000, 500_000, 15_000_000)
 

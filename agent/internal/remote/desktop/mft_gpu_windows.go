@@ -9,9 +9,12 @@ import (
 	"unsafe"
 )
 
-// tryInitGPUPipeline attempts to set up DXGI device manager + GPU color converter.
-// On failure, logs a warning and falls back to CPU path.
-func (m *mftEncoder) tryInitGPUPipeline() {
+// tryInitGPUPipeline attempts to set up the DXGI device manager on the MFT so
+// it can accept DXGI-surface (GPU texture) input samples. Called from
+// initialize() before media-type negotiation, with the transform passed
+// explicitly because m.transform is not yet assigned at that point.
+// On failure, logs a warning and leaves the CPU-buffer input path in effect.
+func (m *mftEncoder) tryInitGPUPipeline(transform uintptr) {
 	// 1. Create DXGI device manager
 	var token uint32
 	var manager uintptr
@@ -34,7 +37,7 @@ func (m *mftEncoder) tryInitGPUPipeline() {
 
 	// 3. Set MF_SA_D3D11_AWARE = TRUE on MFT attributes
 	var attrs uintptr
-	_, err = comCall(m.transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
+	_, err = comCall(transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
 	if err == nil && attrs != 0 {
 		comCall(attrs, vtblSetUINT32,
 			uintptr(unsafe.Pointer(&mfSAD3D11Aware)),
@@ -44,7 +47,7 @@ func (m *mftEncoder) tryInitGPUPipeline() {
 	}
 
 	// 4. ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager)
-	_, err = comCall(m.transform, vtblProcessMessage, uintptr(mftMessageSetD3DManager), manager)
+	_, err = comCall(transform, vtblProcessMessage, uintptr(mftMessageSetD3DManager), manager)
 	if err != nil {
 		comRelease(manager)
 		slog.Warn("MFT SET_D3D_MANAGER failed, using CPU path", "error", err.Error())
@@ -53,15 +56,18 @@ func (m *mftEncoder) tryInitGPUPipeline() {
 
 	m.dxgiManager = manager
 	m.dxgiResetToken = token
+	m.useDXGISamples = true
 
-	slog.Info("DXGI device manager configured for MFT")
+	slog.Info("DXGI device manager configured for MFT (zero-copy input enabled)")
 	// gpuConv will be initialized lazily on first EncodeTexture call
 	// since we need the BGRA staging texture handle at that point
 }
 
 // teardownDXGIManager removes the DXGI device manager from the MFT,
-// reverting it to CPU buffer mode. Called when GPU converter init fails.
+// reverting it to CPU buffer mode. Called when GPU converter init fails or the
+// zero-copy input path stalls.
 func (m *mftEncoder) teardownDXGIManager() {
+	m.useDXGISamples = false
 	if m.dxgiManager == 0 {
 		return
 	}
@@ -75,8 +81,14 @@ func (m *mftEncoder) teardownDXGIManager() {
 	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
 	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
 	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+	// The flush invalidated queued async input credits / pending output.
+	if n := len(m.pendingOutput); n > 0 {
+		slog.Debug("DXGI manager teardown discarding buffered async output frames", "frames", n)
+	}
+	m.needInputCredits = 0
+	m.pendingOutput = nil
 
-	slog.Info("DXGI device manager removed from MFT (GPU converter failed)")
+	slog.Info("DXGI device manager removed from MFT (zero-copy input disabled)")
 }
 
 func (m *mftEncoder) SetD3D11Device(device, context uintptr) {
@@ -92,6 +104,18 @@ func (m *mftEncoder) SetD3D11Device(device, context uintptr) {
 		m.gpuEnabled = false
 		m.gpuFailed = false
 		slog.Info("GPU converter reset for new D3D11 device (monitor switch)")
+	}
+	if device != m.d3d11Device && m.dxgiManager != 0 {
+		// The DXGI device manager is bound to the old device; re-point it so
+		// zero-copy DXGI-surface samples from the new device stay valid.
+		if device != 0 {
+			if _, err := comCall(m.dxgiManager, vtblDXGIManagerResetDevice, device, uintptr(m.dxgiResetToken)); err != nil {
+				slog.Warn("DXGI manager ResetDevice for new device failed, disabling zero-copy input", "error", err.Error())
+				m.teardownDXGIManager()
+			}
+		} else {
+			m.teardownDXGIManager()
+		}
 	}
 	m.d3d11Device = device
 	m.d3d11Context = context
@@ -207,11 +231,12 @@ func (m *mftEncoder) SupportsGPUInput() bool {
 	return m.gpuEnabled || m.d3d11Device != 0
 }
 
-// createDXGISurfaceSample wraps a D3D11 NV12 texture as an IMFSample backed
-// by a DXGI surface buffer. The MFT reads directly from GPU memory — no CPU
-// readback required. Returns (sample, cleanup, error). Caller must call
-// cleanup() after ProcessInput returns to release the COM objects.
-func createDXGISurfaceSample(nv12Texture uintptr, timestamp int64) (uintptr, func(), error) {
+// createTextureSample wraps a D3D11 NV12 texture as an IMFSample backed by a
+// DXGI surface buffer — the MFT reads directly from GPU memory, no CPU
+// readback. Timing/ownership semantics mirror createSample: frameIdx-derived
+// timestamps, the sample owns the buffer, and the caller releases the sample
+// after ProcessInput (the MFT AddRefs what it keeps). Caller holds m.mu.
+func (m *mftEncoder) createTextureSample(nv12Texture uintptr) (uintptr, error) {
 	// MFCreateDXGISurfaceBuffer(riid, surface, subresourceIndex, bottomUpWhenFalse) → IMFMediaBuffer
 	var mediaBuffer uintptr
 	hr, _, _ := procMFCreateDXGISurfaceBuffer.Call(
@@ -222,7 +247,7 @@ func createDXGISurfaceSample(nv12Texture uintptr, timestamp int64) (uintptr, fun
 		uintptr(unsafe.Pointer(&mediaBuffer)),
 	)
 	if int32(hr) < 0 {
-		return 0, nil, fmt.Errorf("MFCreateDXGISurfaceBuffer: 0x%08X", uint32(hr))
+		return 0, fmt.Errorf("MFCreateDXGISurfaceBuffer: 0x%08X", uint32(hr))
 	}
 
 	// MFCreateSample → IMFSample
@@ -230,27 +255,27 @@ func createDXGISurfaceSample(nv12Texture uintptr, timestamp int64) (uintptr, fun
 	hr, _, _ = procMFCreateSample.Call(uintptr(unsafe.Pointer(&sample)))
 	if int32(hr) < 0 {
 		comRelease(mediaBuffer)
-		return 0, nil, fmt.Errorf("MFCreateSample: 0x%08X", uint32(hr))
+		return 0, fmt.Errorf("MFCreateSample: 0x%08X", uint32(hr))
 	}
 
-	// IMFSample::AddBuffer(mediaBuffer)
+	// Timing — same scheme as createSample
+	fps := m.cfg.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+	frameDuration100ns := int64(10_000_000 / fps)
+	sampleTime := int64(m.frameIdx) * frameDuration100ns
+	m.frameIdx++
+	comCall(sample, vtblSetSampleTime, uintptr(sampleTime))
+	comCall(sample, vtblSetSampleDuration, uintptr(frameDuration100ns))
+
+	// IMFSample::AddBuffer(mediaBuffer); the sample owns the buffer afterwards
 	_, err := comCall(sample, vtblAddBuffer, mediaBuffer)
+	comRelease(mediaBuffer)
 	if err != nil {
 		comRelease(sample)
-		comRelease(mediaBuffer)
-		return 0, nil, fmt.Errorf("AddBuffer: %w", err)
+		return 0, fmt.Errorf("AddBuffer: %w", err)
 	}
 
-	// Set sample timestamp (100ns units)
-	comCall(sample, vtblSetSampleTime, uintptr(timestamp))
-
-	// Set sample duration (100ns units, ~60fps default)
-	comCall(sample, vtblSetSampleDuration, uintptr(166667))
-
-	cleanup := func() {
-		comRelease(mediaBuffer)
-		// Note: do NOT release sample here — MFT owns it after ProcessInput
-	}
-
-	return sample, cleanup, nil
+	return sample, nil
 }

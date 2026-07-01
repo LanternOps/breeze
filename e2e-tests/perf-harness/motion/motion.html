@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Breeze RD perf motion source</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;overflow:hidden;cursor:none}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Deterministic, high-motion full-screen animation to give the remote-desktop
+// encoder a consistent, reproducible load. Motion is driven by a frame COUNTER
+// (not wall-clock or random), so every run produces the same pixel sequence.
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha: false });
+let W = 0, H = 0;
+function resize(){ W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+window.addEventListener('resize', resize); resize();
+
+let f = 0;                 // frame counter → deterministic positions
+const N = 240;             // moving blocks (spatial + temporal complexity)
+const blocks = [];
+for (let i = 0; i < N; i++) {
+  blocks.push({
+    bx: (i * 137) % 1000 / 1000, by: (i * 331) % 1000 / 1000,
+    sx: 0.6 + (i % 7) * 0.13, sy: 0.5 + (i % 5) * 0.17,
+    hue: (i * 47) % 360, w: 40 + (i % 6) * 22, h: 30 + (i % 5) * 26
+  });
+}
+function draw(){
+  f++;
+  // scrolling gradient background (whole-frame change every frame)
+  const g = ctx.createLinearGradient(0, (f*3)%H, W, ((f*3)%H)+H);
+  g.addColorStop(0, `hsl(${(f*2)%360},60%,12%)`);
+  g.addColorStop(1, `hsl(${(f*2+120)%360},60%,20%)`);
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  // moving high-contrast blocks
+  for (const b of blocks){
+    const x = ((b.bx + Math.sin((f*0.01)*b.sx + b.hue) * 0.5 + 0.5) % 1) * (W - b.w);
+    const y = ((b.by + Math.cos((f*0.01)*b.sy + b.hue) * 0.5 + 0.5) % 1) * (H - b.h);
+    ctx.fillStyle = `hsl(${(b.hue + f) % 360},90%,55%)`;
+    ctx.fillRect(x, y, b.w, b.h);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(x+6, y+6, b.w-12, b.h-12);
+  }
+  // scrolling text band (sharp edges stress intra prediction)
+  ctx.fillStyle = '#fff'; ctx.font = '28px monospace';
+  const line = 'BREEZE REMOTE DESKTOP ENCODER LOAD 0123456789 ';
+  const off = (f * 6) % 600;
+  for (let row = 0; row < H; row += 60){
+    ctx.fillText(line.repeat(6), 40 - off, row + 40);
+  }
+  // frame HUD (so we can eyeball motion continuity)
+  ctx.fillStyle = '#0f0'; ctx.font = '20px monospace';
+  ctx.fillText('frame ' + f, 20, 26);
+  requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>

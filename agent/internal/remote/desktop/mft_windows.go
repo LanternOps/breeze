@@ -43,6 +43,19 @@ type mftEncoder struct {
 	providesSamples bool // MFT allocates its own output samples
 	outputBufSize   int  // required output buffer size from GetOutputStreamInfo
 
+	// Async MFT event model. Hardware MFTs (Intel QuickSync, NVENC, AMD VCE) are
+	// asynchronous: they deliver METransformNeedInput / METransformHaveOutput
+	// events through IMFMediaEventGenerator, and ProcessInput/ProcessOutput must
+	// be gated on those events. Driving an async MFT with synchronous polling
+	// (ProcessInput then ProcessOutput every frame) makes it accept input but
+	// never produce output — the permanent-stall signature on Intel UHD 630.
+	// eventGen is 0 for synchronous MFTs (e.g. the software fallback), in which
+	// case the legacy synchronous path is used.
+	eventGen         uintptr  // IMFMediaEventGenerator, 0 if MFT is synchronous
+	asyncMode        bool     // true when eventGen != 0 (drive via event handshake)
+	needInputCredits int      // METransformNeedInput events received, not yet satisfied
+	pendingOutput    [][]byte // encoded frames drained from HaveOutput, returned FIFO
+
 	// Frame timing
 	frameIdx  uint64
 	startTime time.Time
@@ -63,6 +76,12 @@ type mftEncoder struct {
 	gpuEnabled     bool
 	gpuFailed      bool // permanently disabled after init failure
 	zeroCopyLogged bool // true after first successful zero-copy output is logged
+	// useDXGISamples: feed the MFT DXGI-surface (GPU texture) input samples
+	// instead of CPU memory buffers — skips the NV12 readback + memcpy per
+	// frame. Requires the async event handshake (asyncMode) and the DXGI
+	// device manager (dxgiManager). Cleared if the zero-copy path stalls,
+	// downgrading to the GPU-convert + readback path.
+	useDXGISamples bool
 
 	// Keyframe forcing: set when we want the next output to be an IDR.
 	forceKeyframePending bool
@@ -182,6 +201,17 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		}
 	}
 
+	// Zero-copy input: install the DXGI device manager BEFORE media-type
+	// negotiation (per MF guidance for D3D-aware MFTs) so the hardware MFT can
+	// accept DXGI-surface samples. Only attempted for hardware MFTs with a
+	// capture-provided D3D11 device; requires the async event handshake to
+	// actually work (verified after init — torn down if the MFT turns out to
+	// be synchronous). gpuFailed persists across re-inits so a downgraded
+	// session doesn't retry a broken GPU pipeline.
+	if isHW && m.d3d11Device != 0 && !m.gpuFailed {
+		m.tryInitGPUPipeline(transform)
+	}
+
 	// Configure output type (H264) — must be set BEFORE input
 	if err := m.setOutputType(transform, width, height); err != nil {
 		comRelease(transform)
@@ -193,6 +223,13 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	if err := m.setInputType(transform, width, height); err != nil {
 		// Hardware encoder may reject this format — fall back to software MFT
 		if isHW {
+			// The DXGI manager was installed on the hardware transform being
+			// discarded; the software MFT must not inherit zero-copy state.
+			if m.dxgiManager != 0 {
+				comRelease(m.dxgiManager)
+				m.dxgiManager = 0
+			}
+			m.useDXGISamples = false
 			comRelease(transform)
 			slog.Warn("Hardware MFT rejected input type, falling back to software", "error", err.Error())
 			transform, err = m.enumAndActivate(mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12}, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264})
@@ -235,6 +272,38 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	m.stride = stride
 	m.isHW = isHW
 	m.inited = true
+
+	// Async MFT detection: hardware MFTs implement IMFMediaEventGenerator and
+	// must be driven via the METransformNeedInput/METransformHaveOutput event
+	// handshake. QueryInterface is the authoritative test — a synchronous MFT
+	// (e.g. the software fallback) returns E_NOINTERFACE, leaving eventGen=0 and
+	// the legacy synchronous ProcessInput/ProcessOutput path in effect.
+	m.eventGen = 0
+	m.asyncMode = false
+	m.needInputCredits = 0
+	m.pendingOutput = nil
+	var eventGen uintptr
+	if _, qiErr := comCall(m.transform, vtblQueryInterface,
+		uintptr(unsafe.Pointer(&iidIMFMediaEventGenerator)),
+		uintptr(unsafe.Pointer(&eventGen)),
+	); qiErr == nil && eventGen != 0 {
+		m.eventGen = eventGen
+		m.asyncMode = true
+		slog.Info("Async MFT event model enabled (IMFMediaEventGenerator)", "isHW", isHW)
+	} else if isHW {
+		// A hardware MFT with no event generator is unusual; the sync path may
+		// still stall, but we let it try rather than fail init.
+		slog.Warn("Hardware MFT does not expose IMFMediaEventGenerator, using synchronous path",
+			"error", fmt.Sprintf("%v", qiErr))
+	}
+	// Zero-copy input requires the async handshake: feeding DXGI-surface
+	// samples to a synchronously-driven hardware MFT is the historical stall
+	// (tested on Kit pre-async). If the MFT turned out synchronous, revert to
+	// CPU-buffer input now.
+	if m.useDXGISamples && !m.asyncMode {
+		slog.Warn("Zero-copy input disabled: MFT is not async")
+		m.teardownDXGIManager()
+	}
 
 	// Query output stream info for buffer requirements and sample allocation
 	var streamInfo mftOutputStreamInfo
@@ -348,12 +417,13 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		_ = m.forceKeyframeLocked()
 	}
 
-	// NOTE: We do not set up the DXGI device manager on the MFT.
-	// The GPU pipeline uses VideoProcessorBlt for BGRA→NV12 on the GPU,
-	// then reads back NV12 to CPU and feeds it as a regular memory buffer.
-	// Hardware MFTs (Intel Quick Sync, AMD VCE) stall when fed DXGI surface
-	// samples on many GPU/driver combinations — tested and confirmed on Kit.
-	// The real zero-copy path is direct NVENC (Phase 3), which bypasses MFT.
+	// NOTE: the DXGI device manager is installed earlier in this function
+	// (tryInitGPUPipeline, before media-type negotiation) when zero-copy
+	// DXGI-surface input is available. The earlier belief that hardware MFTs
+	// "stall when fed DXGI surface samples (tested on Kit)" was actually the
+	// async-MFT-driven-synchronously bug — with the event handshake
+	// (encodeAsync/pumpEvents) surface input works. See
+	// docs/remote-desktop-performance/findings.md, "Zero-copy DXGI input".
 
 	hwStr := "software"
 	if isHW {
@@ -779,6 +849,16 @@ func (m *mftEncoder) shutdown() {
 		comRelease(m.dxgiManager)
 		m.dxgiManager = 0
 	}
+	m.useDXGISamples = false
+
+	// Release the async event generator before the transform
+	if m.eventGen != 0 {
+		comRelease(m.eventGen)
+		m.eventGen = 0
+	}
+	m.asyncMode = false
+	m.needInputCredits = 0
+	m.pendingOutput = nil
 
 	// Release ICodecAPI before the transform
 	if m.codecAPI != 0 {
@@ -853,6 +933,19 @@ func (m *mftEncoder) AdvanceStallDetection() {
 		m.outputSinceFlush = false
 
 		if m.stallFlushCount >= 2 {
+			if m.useDXGISamples {
+				// Same downgrade as trackNilOutput: a stall on the zero-copy
+				// input path reverts to readback before declaring death.
+				slog.Warn("MFT stalling with zero-copy input during idle, downgrading to readback path",
+					"stallFlushCount", m.stallFlushCount, "consecutiveNil", m.consecutiveNilOutputs)
+				m.teardownDXGIManager()
+				m.consecutiveNilOutputs = 0
+				m.stallFlushCount = 0
+				m.outputSinceFlush = false
+				m.lastStallFlush = time.Now()
+				m.forceKeyframePending = true
+				return
+			}
 			slog.Error("MFT encoder permanently stalled during idle — flush recovery not working",
 				"stallFlushCount", m.stallFlushCount,
 				"consecutiveNil", m.consecutiveNilOutputs,

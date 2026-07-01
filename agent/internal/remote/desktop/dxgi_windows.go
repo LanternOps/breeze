@@ -4,7 +4,6 @@ package desktop
 
 import (
 	"fmt"
-	"image"
 	"log/slog"
 	"runtime"
 	"sync"
@@ -177,9 +176,6 @@ type dxgiCapturer struct {
 
 	// Last AcquireNextFrame accumulated count
 	lastAccumulatedFrames uint32
-
-	// Dirty rects from the last successful AcquireNextFrame
-	lastDirtyRects []image.Rectangle
 
 	// Failure tracking for GDI fallback
 	consecutiveFailures int
@@ -517,10 +513,9 @@ func (c *dxgiCapturer) releaseDXGI() {
 }
 
 var (
-	_ ScreenCapturer    = (*dxgiCapturer)(nil)
-	_ BGRAProvider      = (*dxgiCapturer)(nil)
-	_ TightLoopHint     = (*dxgiCapturer)(nil)
-	_ FrameChangeHint   = (*dxgiCapturer)(nil)
-	_ TextureProvider   = (*dxgiCapturer)(nil)
-	_ DirtyRectProvider = (*dxgiCapturer)(nil)
+	_ ScreenCapturer  = (*dxgiCapturer)(nil)
+	_ BGRAProvider    = (*dxgiCapturer)(nil)
+	_ TightLoopHint   = (*dxgiCapturer)(nil)
+	_ FrameChangeHint = (*dxgiCapturer)(nil)
+	_ TextureProvider = (*dxgiCapturer)(nil)
 )

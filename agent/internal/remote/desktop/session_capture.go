@@ -96,6 +96,41 @@ func (s *Session) noteVideoWrite() {
 	s.lastVideoWriteUnixNano.Store(time.Now().UnixNano())
 }
 
+// maxSampleDuration caps the per-sample RTP duration so a pathological clock
+// reading (or a very long idle gap) can't produce an absurd timestamp jump.
+const maxSampleDuration = 10 * time.Second
+
+// sampleDuration returns the wall-clock time elapsed since the previous video
+// sample was written, for use as the pion media.Sample Duration. pion advances
+// the RTP timestamp by Duration*clockRate per sample, so feeding *real elapsed
+// time* (instead of a fixed 1/fps) keeps the RTP media clock tracking wall-clock
+// even when frames are skipped during static periods. With the old fixed value,
+// every skipped frame made the media clock fall behind wall-clock, which inflates
+// the receiver's jitter estimate / playout delay and shows up as latency that
+// climbs after idle. Falls back to the nominal frame duration for the first frame
+// or on a backwards/zero clock delta, and caps very long gaps.
+func (s *Session) sampleDuration(fallback time.Duration) time.Duration {
+	last := s.lastSampleNanos.Load()
+	if last == 0 {
+		return fallback
+	}
+	elapsed := time.Since(time.Unix(0, last))
+	if elapsed < time.Millisecond {
+		return fallback
+	}
+	if elapsed > maxSampleDuration {
+		return maxSampleDuration
+	}
+	return elapsed
+}
+
+// noteSampleWrite records the wall-clock time of an actual RTP sample write,
+// for sampleDuration. Call this (not just noteVideoWrite) after every real
+// WriteSample so the media-clock pacing sees true inter-frame gaps.
+func (s *Session) noteSampleWrite() {
+	s.lastSampleNanos.Store(time.Now().UnixNano())
+}
+
 func clampSecureDesktopFPS(fps int) int {
 	if fps < secureDesktopMinFPS {
 		return secureDesktopMinFPS
@@ -143,7 +178,7 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 	s.lastEncodedMu.RUnlock()
 	sample := media.Sample{
 		Data:     frame,
-		Duration: frameDuration,
+		Duration: s.sampleDuration(frameDuration),
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
 		slog.Debug("Failed to resend cached secure-desktop frame", "session", s.id, "error", err.Error())
@@ -151,6 +186,7 @@ func (s *Session) maybeResendCachedFrameOnSecureDesktop(cap ScreenCapturer, fram
 	}
 	s.metrics.RecordSend(size)
 	s.noteVideoWrite()
+	s.noteSampleWrite()
 	return true
 }
 
@@ -876,7 +912,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	// 5. Write as pion media.Sample
 	sample := media.Sample{
 		Data:     h264Data,
-		Duration: frameDuration,
+		Duration: s.sampleDuration(frameDuration),
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
 		slog.Debug("Failed to write H264 sample", "session", s.id, "error", err.Error())
@@ -886,6 +922,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 
 	s.cacheEncodedFrame(h264Data)
 	s.noteVideoWrite()
+	s.noteSampleWrite()
 	s.metrics.RecordSend(len(h264Data))
 }
 
@@ -986,7 +1023,7 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 
 	sample := media.Sample{
 		Data:     h264Data,
-		Duration: frameDuration,
+		Duration: s.sampleDuration(frameDuration),
 	}
 	if err := s.videoTrack.WriteSample(sample); err != nil {
 		slog.Warn("Failed to write H264 sample (GPU)", "session", s.id, "error", err.Error())
@@ -996,6 +1033,7 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 
 	s.cacheEncodedFrame(h264Data)
 	s.noteVideoWrite()
+	s.noteSampleWrite()
 	s.metrics.RecordSend(len(h264Data))
 	return true, false, true
 }

@@ -110,6 +110,16 @@ const (
 	mfEBufferTooSmall        = 0xC00D36B1
 	mfETransformNeedInput    = 0xC00D6D72
 	mfETransformStreamChange = 0xC00D6D61
+	mfENoEvents              = 0xC00D3E80 // MF_E_NO_EVENTS (event queue empty)
+
+	// Async MFT event model (IMFMediaEventGenerator)
+	mfEventFlagNoWait = 0x00000001 // MF_EVENT_FLAG_NO_WAIT
+
+	// MediaEventType values posted by async MFTs
+	meTransformNeedInput     = 601 // METransformNeedInput  → respond with ProcessInput
+	meTransformHaveOutput    = 602 // METransformHaveOutput → respond with ProcessOutput
+	meTransformDrainComplete = 603 // METransformDrainComplete
+	meTransformMarkerType    = 604 // METransformMarkerType
 
 	// MFT_OUTPUT_DATA_BUFFER flags
 	mftOutputDataBufferIncomplete = 0x01000000
@@ -172,6 +182,10 @@ var (
 
 	// Async MFT unlock — required before configuring hardware encoders
 	mfTransformAsyncUnlock = comGUID{0xe5666d6b, 0x3422, 0x4eb6, [8]byte{0xa4, 0x21, 0xda, 0x7d, 0xb1, 0xf8, 0xe2, 0x07}}
+
+	// IMFMediaEventGenerator — async hardware MFTs expose this for the
+	// METransformNeedInput / METransformHaveOutput event handshake.
+	iidIMFMediaEventGenerator = comGUID{0x2cd0bd52, 0xbcd5, 0x4b89, [8]byte{0xb6, 0x2c, 0xea, 0xdc, 0x0c, 0x03, 0x1e, 0x7d}}
 
 	// D3D11 Video interfaces for GPU color conversion
 	iidID3D11VideoDevice  = comGUID{0x10ec4d5b, 0x975a, 0x4689, [8]byte{0xb9, 0xe4, 0xd0, 0xaa, 0xc3, 0x0f, 0xe3, 0x33}}
@@ -252,6 +266,14 @@ const (
 
 	// IUnknown vtable offsets
 	vtblQueryInterface = 0
+
+	// IMFMediaEventGenerator vtable offsets (extends IUnknown)
+	// 3=GetEvent, 4=BeginGetEvent, 5=EndGetEvent, 6=QueueEvent
+	vtblGetEvent = 3
+
+	// IMFMediaEvent vtable offsets (extends IMFAttributes, base 33 + method index)
+	// 33=GetType, 34=GetExtendedType, 35=GetStatus, 36=GetValue
+	vtblMediaEventGetType = 33
 
 	// ICodecAPI vtable offsets (extends IUnknown)
 	vtblCodecAPISetValue = 9 // ICodecAPI: 3(IUnknown) + 6(IsSupported through GetValue)

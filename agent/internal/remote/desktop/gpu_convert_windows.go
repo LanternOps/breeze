@@ -9,18 +9,29 @@ import (
 	"unsafe"
 )
 
+// gpuNV12RingSize is the number of NV12 output textures the converter rotates
+// through. The zero-copy path hands these textures to an async MFT, which may
+// still be reading frame N when frame N+1 is converted — a ring prevents the
+// Blt from scribbling over a texture the encoder is consuming. Both Convert
+// and ConvertAndReadback rotate, so a slot is only overwritten 3 calls
+// (~50ms at 60fps) after it was submitted — 2 full frames of margin beyond
+// the 1-frame pipeline's need, and safe across a zero-copy→readback downgrade
+// where the MFT may still hold the last zero-copy slot.
+const gpuNV12RingSize = 3
+
 // gpuConverter uses the D3D11 Video Processor to convert BGRA textures to NV12
 // entirely on the GPU, avoiding the CPU round-trip through Map/bgraToNV12.
 type gpuConverter struct {
-	videoDevice   uintptr // ID3D11VideoDevice
-	videoContext  uintptr // ID3D11VideoContext
-	processor     uintptr // ID3D11VideoProcessor
-	enumerator    uintptr // ID3D11VideoProcessorEnumerator
-	inputView     uintptr // ID3D11VideoProcessorInputView
-	outputView    uintptr // ID3D11VideoProcessorOutputView
-	nv12Texture   uintptr // ID3D11Texture2D (NV12, RENDER_TARGET)
-	nv12Staging   uintptr // ID3D11Texture2D (NV12, STAGING, CPU_ACCESS_READ)
-	d3dContext    uintptr // ID3D11DeviceContext (not owned, for CopyResource/Map)
+	videoDevice   uintptr                  // ID3D11VideoDevice
+	videoContext  uintptr                  // ID3D11VideoContext
+	processor     uintptr                  // ID3D11VideoProcessor
+	enumerator    uintptr                  // ID3D11VideoProcessorEnumerator
+	inputView     uintptr                  // ID3D11VideoProcessorInputView
+	outputViews   [gpuNV12RingSize]uintptr // ID3D11VideoProcessorOutputView per ring slot
+	nv12Textures  [gpuNV12RingSize]uintptr // ID3D11Texture2D (NV12, RENDER_TARGET) ring
+	ringIdx       int                      // next ring slot to Blt into
+	nv12Staging   uintptr                  // ID3D11Texture2D (NV12, STAGING, CPU_ACCESS_READ)
+	d3dContext    uintptr                  // ID3D11DeviceContext (not owned, for CopyResource/Map)
 	width, height int
 	inited        bool
 }
@@ -91,7 +102,9 @@ func newGPUConverter(device, context uintptr, bgraTexture uintptr, width, height
 	}
 	g.processor = processor
 
-	// 5. Create NV12 output texture (RENDER_TARGET bind flag for video processor output)
+	// 5. Create the NV12 output texture ring (RENDER_TARGET bind flag for
+	// video processor output). Multiple textures so the zero-copy path can
+	// hand one to the encoder while the next frame Blts into another.
 	nv12Desc := d3d11Texture2DDesc{
 		Width:          uint32(width),
 		Height:         uint32(height),
@@ -105,17 +118,19 @@ func newGPUConverter(device, context uintptr, bgraTexture uintptr, width, height
 		CPUAccessFlags: 0,
 		MiscFlags:      0,
 	}
-	var nv12Texture uintptr
-	_, err = comCall(device, d3d11DeviceCreateTexture2D,
-		uintptr(unsafe.Pointer(&nv12Desc)),
-		0, // pInitialData
-		uintptr(unsafe.Pointer(&nv12Texture)),
-	)
-	if err != nil {
-		g.Close()
-		return nil, fmt.Errorf("CreateTexture2D NV12: %w", err)
+	for i := 0; i < gpuNV12RingSize; i++ {
+		var nv12Texture uintptr
+		_, err = comCall(device, d3d11DeviceCreateTexture2D,
+			uintptr(unsafe.Pointer(&nv12Desc)),
+			0, // pInitialData
+			uintptr(unsafe.Pointer(&nv12Texture)),
+		)
+		if err != nil {
+			g.Close()
+			return nil, fmt.Errorf("CreateTexture2D NV12 (ring %d): %w", i, err)
+		}
+		g.nv12Textures[i] = nv12Texture
 	}
-	g.nv12Texture = nv12Texture
 
 	// 5b. Create NV12 staging texture for CPU readback
 	nv12StagingDesc := d3d11Texture2DDesc{
@@ -161,22 +176,24 @@ func newGPUConverter(device, context uintptr, bgraTexture uintptr, width, height
 	}
 	g.inputView = inputView
 
-	// 7. Create output view (wraps NV12 texture)
+	// 7. Create output views (one per NV12 ring texture)
 	// D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC: ViewDimension=1(TEXTURE2D)
 	// The native struct is 16 bytes (ViewDimension + union[3]).
 	outputViewDesc := [4]uint32{1, 0, 0, 0} // ViewDimension(TEXTURE2D), MipSlice, FirstArraySlice, ArraySize
-	var outputView uintptr
-	_, err = comCall(videoDevice, vtblVidDevCreateVideoProcessorOutputView,
-		nv12Texture,
-		enumerator,
-		uintptr(unsafe.Pointer(&outputViewDesc)),
-		uintptr(unsafe.Pointer(&outputView)),
-	)
-	if err != nil {
-		g.Close()
-		return nil, fmt.Errorf("CreateVideoProcessorOutputView: %w", err)
+	for i := 0; i < gpuNV12RingSize; i++ {
+		var outputView uintptr
+		_, err = comCall(videoDevice, vtblVidDevCreateVideoProcessorOutputView,
+			g.nv12Textures[i],
+			enumerator,
+			uintptr(unsafe.Pointer(&outputViewDesc)),
+			uintptr(unsafe.Pointer(&outputView)),
+		)
+		if err != nil {
+			g.Close()
+			return nil, fmt.Errorf("CreateVideoProcessorOutputView (ring %d): %w", i, err)
+		}
+		g.outputViews[i] = outputView
 	}
-	g.outputView = outputView
 
 	// 8. Set BT.709 full-range color space on both input and output.
 	// Without explicit color space, the video processor may default to BT.601
@@ -207,12 +224,18 @@ func newGPUConverter(device, context uintptr, bgraTexture uintptr, width, height
 	return g, nil
 }
 
-// Convert performs GPU BGRA→NV12 conversion using VideoProcessorBlt.
-// Returns the NV12 texture handle. The returned texture is owned by gpuConverter.
+// Convert performs GPU BGRA→NV12 conversion using VideoProcessorBlt into the
+// next ring slot. Returns the NV12 texture handle for that slot. The returned
+// texture is owned by gpuConverter and will be reused gpuNV12RingSize frames
+// later — the caller (zero-copy MFT path) must have consumed it by then, which
+// the 1-frame encoder pipeline guarantees with margin.
 func (g *gpuConverter) Convert() (uintptr, error) {
 	if !g.inited {
 		return 0, fmt.Errorf("GPU converter not initialized")
 	}
+
+	slot := g.ringIdx
+	g.ringIdx = (g.ringIdx + 1) % gpuNV12RingSize
 
 	// Build stream struct
 	stream := d3d11VideoProcessorStream{
@@ -225,7 +248,7 @@ func (g *gpuConverter) Convert() (uintptr, error) {
 		comVtblFn(g.videoContext, vtblVidCtxVideoProcessorBlt),
 		g.videoContext,
 		g.processor,
-		g.outputView,
+		g.outputViews[slot],
 		0, // OutputFrame
 		1, // StreamCount
 		uintptr(unsafe.Pointer(&stream)),
@@ -234,7 +257,7 @@ func (g *gpuConverter) Convert() (uintptr, error) {
 		return 0, fmt.Errorf("VideoProcessorBlt: 0x%08X", uint32(ret))
 	}
 
-	return g.nv12Texture, nil
+	return g.nv12Textures[slot], nil
 }
 
 // ConvertAndReadback performs GPU BGRA→NV12 conversion and reads the result
@@ -245,7 +268,13 @@ func (g *gpuConverter) ConvertAndReadback() ([]byte, error) {
 		return nil, fmt.Errorf("GPU converter not initialized")
 	}
 
-	// 1. VideoProcessorBlt: BGRA → NV12 on GPU
+	// 1. VideoProcessorBlt: BGRA → NV12 on GPU. Rotate the ring here too —
+	// not because the synchronous readback needs it, but so a
+	// zero-copy→readback downgrade never Blts into the slot Convert() last
+	// handed to the async MFT (which may still hold that texture in flight;
+	// the teardown Flush is not guaranteed synchronous for async MFTs).
+	slot := g.ringIdx
+	g.ringIdx = (g.ringIdx + 1) % gpuNV12RingSize
 	stream := d3d11VideoProcessorStream{
 		Enable:        1,
 		PInputSurface: g.inputView,
@@ -254,7 +283,7 @@ func (g *gpuConverter) ConvertAndReadback() ([]byte, error) {
 		comVtblFn(g.videoContext, vtblVidCtxVideoProcessorBlt),
 		g.videoContext,
 		g.processor,
-		g.outputView,
+		g.outputViews[slot],
 		0, // OutputFrame
 		1, // StreamCount
 		uintptr(unsafe.Pointer(&stream)),
@@ -270,7 +299,7 @@ func (g *gpuConverter) ConvertAndReadback() ([]byte, error) {
 		comVtblFn(g.d3dContext, d3d11CtxCopyResource),
 		g.d3dContext,
 		g.nv12Staging,
-		g.nv12Texture,
+		g.nv12Textures[slot],
 	)
 
 	// 3. Map staging texture to read NV12 data
@@ -330,9 +359,11 @@ func (g *gpuConverter) ConvertAndReadback() ([]byte, error) {
 
 // Close releases all D3D11 video processor resources.
 func (g *gpuConverter) Close() {
-	if g.outputView != 0 {
-		comRelease(g.outputView)
-		g.outputView = 0
+	for i := 0; i < gpuNV12RingSize; i++ {
+		if g.outputViews[i] != 0 {
+			comRelease(g.outputViews[i])
+			g.outputViews[i] = 0
+		}
 	}
 	if g.inputView != 0 {
 		comRelease(g.inputView)
@@ -342,9 +373,11 @@ func (g *gpuConverter) Close() {
 		comRelease(g.nv12Staging)
 		g.nv12Staging = 0
 	}
-	if g.nv12Texture != 0 {
-		comRelease(g.nv12Texture)
-		g.nv12Texture = 0
+	for i := 0; i < gpuNV12RingSize; i++ {
+		if g.nv12Textures[i] != 0 {
+			comRelease(g.nv12Textures[i])
+			g.nv12Textures[i] = 0
+		}
 	}
 	if g.processor != 0 {
 		comRelease(g.processor)

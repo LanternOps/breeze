@@ -111,11 +111,10 @@ type TextureProvider interface {
 	GetD3D11Context() uintptr
 }
 
-// DirtyRectProvider is implemented by capturers that can report which screen
-// regions changed since the last frame.
-type DirtyRectProvider interface {
-	DirtyRects() []image.Rectangle
-}
+// NOTE: a DirtyRectProvider interface (DirtyRects() []image.Rectangle) used to
+// live here, but nothing ever consumed it and the DXGI capturer paid a per-frame
+// COM call + allocations to populate it. Removed until region-based encoding
+// actually lands; the fetch helper survives in dxgi_dirty_rects_windows.go.
 
 // CursorProvider is implemented by capturers that can report the system cursor
 // position for real-time cursor streaming to the viewer. This enables the viewer

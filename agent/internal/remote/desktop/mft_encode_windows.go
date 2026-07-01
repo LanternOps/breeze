@@ -5,6 +5,7 @@ package desktop
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -16,6 +17,23 @@ import (
 // must trigger before the screen goes idle, otherwise the stall counter freezes.
 // breaks the stall with acceptable quality loss (one IDR keyframe).
 const mftStallThreshold = 8
+
+// Async-MFT input pacing. When an async MFT has not yet posted a
+// METransformNeedInput token, encodeAsync yield-spins up to mftAsyncInputWait
+// for one before skipping the captured frame. The wait is strictly bounded so
+// a genuinely wedged encoder can only hold the encoder mutex for ~3ms (cf. the
+// unbounded pre-fix poll-sleep loop in encoder_amf_windows.go, a different
+// backend with the same mutex-pinning hazard) — the stall detector still trips
+// and we fall back to software. In steady state the previous frame finished
+// long before the next capture arrives, so a credit is already queued and this
+// wait is skipped.
+//
+// A runtime.Gosched() spin is used rather than time.Sleep: Windows' default
+// timer granularity is 15.6ms, so a time.Sleep(1ms) here would actually stall
+// ~15ms and inflate encode latency (observed as 9–37ms encodeMs and periodic
+// capture-loop back-ups). Yielding costs a little CPU for at most a few ms but
+// wakes the instant the driver posts the event.
+const mftAsyncInputWait = 3 * time.Millisecond
 
 // Encode takes RGBA or BGRA pixel data (per SetPixelFormat), converts to NV12, and encodes to H264.
 // Returns nil, nil when the MFT is buffering (no output yet).
@@ -47,6 +65,14 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		}
 	}
 
+	// This is the CPU-frame path — if the capture loop dropped to CPU capture
+	// while the DXGI manager is still installed, remove it so the MFT isn't
+	// mixing DXGI-surface expectations with memory-buffer input.
+	if m.useDXGISamples {
+		slog.Info("CPU frame received while zero-copy input enabled, removing DXGI manager")
+		m.teardownDXGIManager()
+	}
+
 	// Convert pixels → NV12
 	var nv12 []byte
 	if m.pixelFormat == PixelFormatBGRA {
@@ -75,6 +101,18 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 			"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx, "isHW", m.isHW)
 		return nil, nil
 	}
+
+	// Async hardware MFT: drive via the METransformNeedInput/HaveOutput event
+	// handshake instead of synchronous ProcessInput/ProcessOutput polling.
+	if m.asyncMode {
+		out, err := m.encodeAsync(sample)
+		if err != nil {
+			return out, err
+		}
+		m.trackNilOutput(out)
+		return out, nil
+	}
+
 	// Feed to encoder
 	ret, _, _ := syscall.SyscallN(
 		m.vtblFn(vtblProcessInput),
@@ -343,6 +381,135 @@ func (m *mftEncoder) drainOutput() ([]byte, error) {
 	return allNALs, nil
 }
 
+// encodeAsync drives an asynchronous MFT via the IMFMediaEventGenerator event
+// handshake: feed one frame per METransformNeedInput token, drain one frame per
+// METransformHaveOutput event. It returns the oldest completed frame (≈1-frame
+// pipeline latency, like the AMF pipeline), or nil while the pipeline fills or
+// when the encoder is applying backpressure. Caller holds m.mu.
+//
+// This is the fix for the Intel UHD 630 stall: the hardware QuickSync MFT is a
+// true async MFT that only produces output through this handshake. The former
+// code called ProcessInput then ProcessOutput synchronously every frame, so the
+// MFT accepted input but never signalled output → permanent stall → OpenH264.
+func (m *mftEncoder) encodeAsync(sample uintptr) ([]byte, error) {
+	// Drain events already queued: collect finished frames + NeedInput credits.
+	if err := m.pumpEvents(); err != nil {
+		return m.popPendingOutput(), err
+	}
+
+	// If the MFT isn't asking for input yet, yield-spin briefly (bounded) for a
+	// NeedInput token so we don't drop this captured frame at startup or under
+	// transient backpressure.
+	if m.needInputCredits == 0 {
+		deadline := time.Now().Add(mftAsyncInputWait)
+		for {
+			runtime.Gosched()
+			if err := m.pumpEvents(); err != nil {
+				return m.popPendingOutput(), err
+			}
+			if m.needInputCredits > 0 || !time.Now().Before(deadline) {
+				break
+			}
+		}
+	}
+
+	if m.needInputCredits > 0 {
+		ret, _, _ := syscall.SyscallN(
+			m.vtblFn(vtblProcessInput),
+			m.transform,
+			0, // stream ID
+			sample,
+			0, // flags
+		)
+		if uint32(ret) == mfENotAccepting {
+			// Should not happen while a NeedInput credit is held. The frame is
+			// LOST (the caller releases the sample after we return), so this
+			// warrants Warn, not Debug — if a driver hits this repeatedly it
+			// must be visible in shipped logs.
+			slog.Warn("async ProcessInput returned NOTACCEPTING despite NeedInput credit, frame dropped",
+				"frameIdx", m.frameIdx)
+		} else if int32(ret) < 0 {
+			return m.popPendingOutput(), fmt.Errorf("ProcessInput (async): 0x%08X", uint32(ret))
+		} else {
+			m.needInputCredits--
+		}
+	} else {
+		// No NeedInput credit arrived within the bounded wait: this captured
+		// (and possibly GPU-converted) frame is dropped, NOT buffered. Distinct
+		// from "encoder still buffering" — log it so backpressure drops are
+		// distinguishable from warm-up in the log stream.
+		slog.Debug("async MFT gave no NeedInput credit within bounded wait, dropping captured frame",
+			"waitMs", mftAsyncInputWait.Milliseconds(), "frameIdx", m.frameIdx)
+	}
+
+	// Feeding input may synchronously post a HaveOutput; drain once more so the
+	// completed frame is available to this or the next call.
+	if err := m.pumpEvents(); err != nil {
+		return m.popPendingOutput(), err
+	}
+
+	return m.popPendingOutput(), nil
+}
+
+// popPendingOutput returns the oldest drained frame (FIFO) so the P-frame
+// reference chain is delivered in order, or nil if none. Caller holds m.mu.
+func (m *mftEncoder) popPendingOutput() []byte {
+	if len(m.pendingOutput) == 0 {
+		return nil
+	}
+	out := m.pendingOutput[0]
+	m.pendingOutput = m.pendingOutput[1:]
+	return out
+}
+
+// pumpEvents non-blockingly drains the async MFT event queue, servicing
+// METransformHaveOutput (ProcessOutput → append to pendingOutput) and counting
+// METransformNeedInput credits. It never blocks (MF_EVENT_FLAG_NO_WAIT), so it
+// cannot hold the encoder mutex waiting on the driver. Caller holds m.mu.
+func (m *mftEncoder) pumpEvents() error {
+	genVtbl := *(*uintptr)(unsafe.Pointer(m.eventGen))
+	getEventFn := *(*uintptr)(unsafe.Pointer(genVtbl + uintptr(vtblGetEvent)*unsafe.Sizeof(uintptr(0))))
+	for {
+		var ev uintptr
+		ret, _, _ := syscall.SyscallN(getEventFn, m.eventGen, uintptr(mfEventFlagNoWait), uintptr(unsafe.Pointer(&ev)))
+		if uint32(ret) == mfENoEvents {
+			return nil // queue drained
+		}
+		if int32(ret) < 0 || ev == 0 {
+			// A real GetEvent failure (MF_E_SHUTDOWN, driver fault, ...) is a
+			// different animal from an empty queue — if it's swallowed, a dead
+			// event generator is indistinguishable from benign buffering in
+			// the logs. Surface the HRESULT and propagate so the caller's
+			// error path (and ultimately the stall machinery) sees it.
+			slog.Warn("Async MFT GetEvent failed (not MF_E_NO_EVENTS)",
+				"hr", fmt.Sprintf("0x%08X", uint32(ret)), "frameIdx", m.frameIdx)
+			return fmt.Errorf("IMFMediaEventGenerator::GetEvent: 0x%08X", uint32(ret))
+		}
+
+		var evType uint32
+		evVtbl := *(*uintptr)(unsafe.Pointer(ev))
+		getTypeFn := *(*uintptr)(unsafe.Pointer(evVtbl + uintptr(vtblMediaEventGetType)*unsafe.Sizeof(uintptr(0))))
+		syscall.SyscallN(getTypeFn, ev, uintptr(unsafe.Pointer(&evType)))
+		comRelease(ev)
+
+		switch evType {
+		case meTransformNeedInput:
+			m.needInputCredits++
+		case meTransformHaveOutput:
+			// drainOutput performs a single ProcessOutput for this event and
+			// reuses all the providesSamples / stream-change / buffer-grow
+			// handling. HaveOutput guarantees one frame is ready.
+			out, err := m.drainOutput()
+			if err != nil {
+				return err
+			}
+			if out != nil {
+				m.pendingOutput = append(m.pendingOutput, out)
+			}
+		}
+	}
+}
+
 func (m *mftEncoder) extractSampleData(pSample uintptr) ([]byte, error) {
 	var pContiguous uintptr
 	_, err := comCall(pSample, vtblConvertToContiguous, uintptr(unsafe.Pointer(&pContiguous)))
@@ -392,6 +559,18 @@ func (m *mftEncoder) flushLocked() {
 	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
 	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
 	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
+	// A flush discards queued input/output; drop stale async event state so we
+	// don't feed against credits that no longer exist or return dead output.
+	// START_OF_STREAM re-arms the MFT to post fresh METransformNeedInput events.
+	// Already-encoded frames waiting in pendingOutput are lost here (e.g. a
+	// click-flush landing while a drained frame awaits delivery) — log the
+	// count so a stutter-after-click has a trace.
+	if n := len(m.pendingOutput); n > 0 {
+		slog.Debug("MFT flush discarding buffered async output frames",
+			"frames", n, "frameIdx", m.frameIdx)
+	}
+	m.needInputCredits = 0
+	m.pendingOutput = nil
 	m.forceKeyframePending = true
 	_ = m.forceKeyframeLocked()
 }
@@ -440,6 +619,20 @@ func (m *mftEncoder) trackNilOutput(out []byte) {
 			m.outputSinceFlush = false
 
 			if m.stallFlushCount >= 2 {
+				if m.useDXGISamples {
+					// Stall began on the zero-copy input path — downgrade to
+					// the readback path before declaring the encoder dead.
+					// teardownDXGIManager flushes + restarts streaming.
+					slog.Warn("MFT stalling with zero-copy input, downgrading to readback path",
+						"stallFlushCount", m.stallFlushCount, "frameIdx", m.frameIdx)
+					m.teardownDXGIManager()
+					m.consecutiveNilOutputs = 0
+					m.stallFlushCount = 0
+					m.outputSinceFlush = false
+					m.lastStallFlush = time.Now()
+					m.forceKeyframePending = true
+					return
+				}
 				slog.Error("MFT encoder permanently stalled — flush recovery not working",
 					"stallFlushCount", m.stallFlushCount,
 					"frameIdx", m.frameIdx,
@@ -537,11 +730,66 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 		_ = m.forceKeyframeLocked()
 	}
 
+	// Zero-copy: feed the converted NV12 GPU texture straight to the MFT as a
+	// DXGI-surface sample — no CPU readback, no sample memcpy. Requires the
+	// async event handshake (the historical "hardware MFTs stall on DXGI
+	// surface samples" was the async MFT being driven synchronously). The
+	// first 3 frames go through the readback path below so the black-frame
+	// content check can validate the GPU converter output.
+	if m.useDXGISamples && m.asyncMode && m.gpuFrameCount >= 3 {
+		if m.consecutiveNilOutputs >= mftStallThreshold {
+			// Zero-copy input stalling this MFT — downgrade to the readback
+			// path (this same call falls through) instead of giving up on
+			// hardware encoding entirely.
+			slog.Warn("Zero-copy DXGI input stalling, downgrading to GPU readback path",
+				"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx)
+			m.teardownDXGIManager()
+			m.consecutiveNilOutputs = 0
+			m.stallFlushCount = 0
+			m.outputSinceFlush = false
+			m.lastStallFlush = time.Now()
+			m.forceKeyframePending = true
+		} else {
+			// Convert/sample-creation failures downgrade to the readback path
+			// (fall through below in this same call) rather than returning an
+			// error: a hard error here would count against the session's
+			// gpuEncodeErrors and, after 3 strikes, disable the ENTIRE GPU
+			// pipeline — skipping the readback rung of the ladder that the
+			// stall branch above deliberately preserves.
+			nv12Tex, convErr := m.gpuConv.Convert()
+			if convErr == nil {
+				m.gpuFrameCount++
+				texSample, sErr := m.createTextureSample(nv12Tex)
+				if sErr == nil {
+					out, err := m.encodeAsync(texSample)
+					comRelease(texSample)
+					if err != nil {
+						return out, err
+					}
+					if out != nil && !m.zeroCopyLogged {
+						m.zeroCopyLogged = true
+						slog.Info("Zero-copy DXGI input active (GPU NV12 → MFT, no readback)",
+							"width", m.width, "height", m.height)
+					}
+					m.trackNilOutput(out)
+					return out, nil
+				}
+				slog.Warn("Zero-copy texture sample creation failed, downgrading to GPU readback path",
+					"error", sErr.Error(), "frameIdx", m.frameIdx)
+			} else {
+				slog.Warn("Zero-copy GPU convert failed, downgrading to GPU readback path",
+					"error", convErr.Error(), "frameIdx", m.frameIdx)
+			}
+			m.teardownDXGIManager()
+			m.forceKeyframePending = true
+		}
+	}
+
 	// GPU BGRA→NV12 conversion + readback to CPU memory.
 	// The GPU does the expensive color conversion via VideoProcessorBlt;
 	// the NV12 result is read back to CPU and fed as a regular memory buffer.
-	// Zero-copy DXGI surface path was tested but hardware MFTs stall on
-	// many GPU/driver combinations. Direct NVENC (Phase 3) is the real fix.
+	// Used for the first 3 frames (content check) and as the fallback when
+	// zero-copy DXGI input is unavailable or was downgraded.
 	nv12, err := m.gpuConv.ConvertAndReadback()
 	if err != nil {
 		return nil, fmt.Errorf("GPU convert: %w", err)
@@ -622,12 +870,25 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	// producing output), skip feeding and mark permanently stalled instead
 	// of risking a blocking ProcessInput call.
 	if m.consecutiveNilOutputs >= mftStallThreshold {
-		comRelease(sample)
+		// NOTE: sample is released by the deferred comRelease above — an
+		// explicit release here would double-release (refcount already 1).
 		m.permanentlyStalled = true
 		slog.Warn("MFT stall detected before ProcessInput, marking permanently stalled",
 			"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx, "isHW", m.isHW)
 		return nil, nil
 	}
+
+	// Async hardware MFT: drive via the METransformNeedInput/HaveOutput event
+	// handshake instead of synchronous ProcessInput/ProcessOutput polling.
+	if m.asyncMode {
+		out, err := m.encodeAsync(sample)
+		if err != nil {
+			return out, err
+		}
+		m.trackNilOutput(out)
+		return out, nil
+	}
+
 	ret, _, _ := syscall.SyscallN(
 		m.vtblFn(vtblProcessInput),
 		m.transform,

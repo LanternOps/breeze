@@ -185,7 +185,10 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	// Success — reset failure counter
 	c.consecutiveFailures = 0
 	c.lastAccumulatedFrames = frameInfo.AccumulatedFrames
-	c.lastDirtyRects = getDirtyRects(c.duplication, frameInfo.TotalMetadataBufferSize)
+	// NOTE: dirty rects (frameInfo.TotalMetadataBufferSize) are intentionally
+	// NOT fetched — nothing consumes them yet, and the per-frame COM call +
+	// allocations were pure overhead. Re-add via getDirtyRects (still in
+	// dxgi_dirty_rects_windows.go) when region-based encoding lands.
 
 	// No new frames accumulated — skip
 	if frameInfo.AccumulatedFrames == 0 {
@@ -479,7 +482,7 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 
 	c.consecutiveFailures = 0
 	c.lastAccumulatedFrames = frameInfo.AccumulatedFrames
-	c.lastDirtyRects = getDirtyRects(c.duplication, frameInfo.TotalMetadataBufferSize)
+	// Dirty rects intentionally not fetched — see CaptureFrame.
 
 	if frameInfo.AccumulatedFrames == 0 {
 		c.diagZeroFrames++
@@ -570,9 +573,4 @@ func (c *dxgiCapturer) GetD3D11Context() uintptr {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.context
-}
-
-// DirtyRects returns the dirty rectangles from the last AcquireNextFrame call.
-func (c *dxgiCapturer) DirtyRects() []image.Rectangle {
-	return c.lastDirtyRects
 }

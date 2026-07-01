@@ -325,6 +325,17 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("no H264 encoder available (backend=%s)", enc.BackendName())
 	}
 
+	// Pass D3D11 device to encoder for GPU zero-copy pipeline setup.
+	// Must happen BEFORE SetDimensions: SetDimensions eagerly initializes the
+	// encoder, and the MFT zero-copy input path requires the DXGI device
+	// manager to be installed during initialization (before media-type
+	// negotiation) — which only happens if the device is already known.
+	if tp, ok := capturer.(TextureProvider); ok {
+		enc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
+		slog.Info("D3D11 device passed to encoder for GPU pipeline",
+			"session", sessionID)
+	}
+
 	if err := enc.SetDimensions(w, h); err != nil {
 		return "", fmt.Errorf("failed to set encoder dimensions: %w", err)
 	}
@@ -335,13 +346,6 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		enc.SetPixelFormat(PixelFormatBGRA)
 		session.encoderPF = PixelFormatBGRA
 		slog.Info("Capturer provides BGRA, encoder set to BGRA→NV12 direct path",
-			"session", sessionID)
-	}
-
-	// Pass D3D11 device to encoder for GPU zero-copy pipeline setup
-	if tp, ok := capturer.(TextureProvider); ok {
-		enc.SetD3D11Device(tp.GetD3D11Device(), tp.GetD3D11Context())
-		slog.Info("D3D11 device passed to encoder for GPU pipeline",
 			"session", sessionID)
 	}
 

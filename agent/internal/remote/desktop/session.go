@@ -138,8 +138,15 @@ type Session struct {
 	// desktop capture yields temporary no-frame periods.
 	lastEncodedMu    sync.RWMutex
 	lastEncodedFrame []byte
-	// Nanoseconds since epoch of the last successful video sample write.
+	// Nanoseconds since epoch of the last successful video sample write. NOTE:
+	// this is ALSO bumped by the idle capture-alive heartbeat (which writes no
+	// sample) to keep the no-video watchdog quiet, so it is NOT a reliable
+	// "when did we last emit a frame" signal — use lastSampleNanos for that.
 	lastVideoWriteUnixNano atomic.Int64
+	// lastSampleNanos is the wall-clock nanos of the last actual RTP sample
+	// WriteSample (never bumped by the idle heartbeat). Drives sampleDuration so
+	// the RTP media clock reflects true inter-frame wall time across idle gaps.
+	lastSampleNanos atomic.Int64
 
 	// lastInputUnixNano is the wall-clock nanos of the most recent INPUT event
 	// (mouse/keyboard) from the viewer. It drives the idle-session watchdog

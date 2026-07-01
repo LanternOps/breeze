@@ -56,6 +56,16 @@ type AdaptiveBitrate struct {
 	// before upgrading to prevent the boom-bust cycle where the controller
 	// ramps back to the same bitrate that caused congestion.
 	degradeBackoff int
+
+	// Slow-start recovery: consecutive upgrade actions without an intervening
+	// degrade or dead-zone sample. The first upgrade after congestion is slow
+	// (3 stable samples, +5% of max); while conditions stay clean, subsequent
+	// upgrades accelerate (1 stable sample, step doubling up to 25% of max).
+	// Any degrade or dead-zone sample resets the streak, so recovery from a
+	// deep dip takes ~16 clean samples (~16s at the 1s viewer-stats cadence,
+	// pinned by TestAdaptive_DeepDipRecoveryTime) instead of ~60, without
+	// reintroducing oscillation.
+	upgradeStreak int
 }
 
 func NewAdaptiveBitrate(cfg AdaptiveConfig) (*AdaptiveBitrate, error) {
@@ -171,6 +181,7 @@ func (a *AdaptiveBitrate) SoftResetForActivity() {
 	a.targetBitrate = moderate
 	a.stableCount = 0
 	a.degradeBackoff = 0
+	a.upgradeStreak = 0
 	a.samplesCount = 0 // reset network EWMA warmup for fresh conditions
 
 	newFPS := clampInt(moderate/minBitsPerFrame, 10, a.maxFPS)
@@ -282,6 +293,7 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 
 	if degrade {
 		a.stableCount = 0
+		a.upgradeStreak = 0
 		// After degrading, require extra stable samples before upgrading again.
 		// This prevents the boom-bust cycle: degrade→recover→immediately ramp
 		// back to the same bitrate that caused congestion. At 1s viewer stats
@@ -294,15 +306,24 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		}
 	} else {
 		// In the middle zone — not degrading, but not clean enough to upgrade.
-		// Let stableCount decay slowly rather than resetting.
+		// Let stableCount decay slowly rather than resetting, but kill the
+		// slow-start acceleration: mixed conditions must re-earn it.
+		a.upgradeStreak = 0
 		if a.stableCount > 0 {
 			a.stableCount--
 		}
 	}
 
-	// Require 3 consecutive stable samples plus no active backoff before upgrading.
-	// At 1s viewer stats polling, this means 3s of clean conditions before each step.
+	// The FIRST upgrade after congestion (or mixed conditions) requires 3
+	// consecutive stable samples — ~3s of clean conditions at 1s viewer stats
+	// polling. While the streak holds, subsequent upgrades only need 1 stable
+	// sample, so sustained-clean recovery accelerates instead of paying 3s per
+	// +5% step (the old behavior: ~60s to recover from a deep dip).
 	const stableRequired = 3
+	requiredStable := stableRequired
+	if a.upgradeStreak > 0 {
+		requiredStable = 1
+	}
 
 	action := "hold"
 	newBitrate := a.targetBitrate
@@ -320,18 +341,27 @@ func (a *AdaptiveBitrate) Update(rtt time.Duration, packetLoss float64) {
 		newBitrate = int(float64(newBitrate) * 0.85)
 		newBitrate = clampInt(newBitrate, a.minBitrate, a.maxBitrate)
 		newQuality = stepQuality(newQuality, -1, a.minQuality, a.maxQuality)
-	} else if a.stableCount >= stableRequired && a.degradeBackoff <= 0 && a.targetBitrate < a.maxBitrate {
+	} else if a.stableCount >= requiredStable && a.degradeBackoff <= 0 && a.targetBitrate < a.maxBitrate {
 		action = "upgrade"
-		// Additive increase: gentle probe — add 5% of max ceiling.
-		// This avoids multiplicative overshoot that causes degrade spirals.
+		// Additive increase with slow-start acceleration: the first probe is
+		// gentle (+5% of max, avoids multiplicative overshoot / degrade
+		// spirals); each consecutive clean upgrade doubles the step, capped at
+		// 25% of max. A degrade or dead-zone sample resets to gentle.
 		step := a.maxBitrate / 20
 		if step < 100_000 {
 			step = 100_000
+		}
+		for i := 0; i < a.upgradeStreak && step < a.maxBitrate/4; i++ {
+			step *= 2
+		}
+		if step > a.maxBitrate/4 {
+			step = a.maxBitrate / 4
 		}
 		newBitrate = newBitrate + step
 		newBitrate = clampInt(newBitrate, a.minBitrate, a.maxBitrate)
 		newQuality = stepQuality(newQuality, 1, a.minQuality, a.maxQuality)
 		a.stableCount = 0 // reset so we need another stable period before next upgrade
+		a.upgradeStreak++
 	}
 
 	// Scale FPS with bitrate: ensure each frame gets enough bits for quality.

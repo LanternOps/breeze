@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><title>RD perf motion (video)</title>
+<style>html,body{margin:0;background:#000;overflow:hidden;cursor:none}
+video{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill}</style></head>
+<body><video id="v" src="motion.mp4" autoplay loop muted playsinline></video>
+<script>
+// Video decode is NOT requestAnimationFrame-gated, so it keeps producing frames
+// even when the kiosk window loses foreground / the session idles. Re-arm on any
+// pause as defense-in-depth.
+const v=document.getElementById('v');
+const kick=()=>{v.play().catch(()=>{})}; kick();
+setInterval(()=>{ if(v.paused||v.ended) kick(); }, 1000);
+</script></body></html>

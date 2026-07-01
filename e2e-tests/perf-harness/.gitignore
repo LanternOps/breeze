@@ -1,0 +1,3 @@
+# Harness run outputs (per-machine, per-run) — not source
+results/
+.auth/
