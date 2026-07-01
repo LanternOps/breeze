@@ -12,6 +12,8 @@ export interface CreateIncidentInput {
   summary?: string;
   affectedDevices?: string[];
   detectedAt?: string;
+  sourceType?: 'huntress_incident' | 's1_threat';
+  sourceRef?: string;
 }
 
 const SEVERITY_MAP: Record<string, IncidentSeverity> = {
@@ -39,6 +41,8 @@ export function s1ThreatToIncident(t: S1Threat): CreateIncidentInput {
     summary: `Promoted from SentinelOne threat "${t.threatName ?? 'Unknown threat'}" on ${device}.`,
     affectedDevices: t.deviceId ? [t.deviceId] : [],
     detectedAt: t.detectedAt ?? undefined,
+    sourceType: 's1_threat',
+    sourceRef: t.s1ThreatId,
   };
 }
 
@@ -53,6 +57,8 @@ export function huntressIncidentToIncident(i: HuntressIncident): CreateIncidentI
     summary: `Promoted from Huntress incident "${i.title}" on ${device}.${body ? ` ${body}` : ''}`.slice(0, 10000),
     affectedDevices: i.deviceId ? [i.deviceId] : [],
     detectedAt: i.reportedAt ?? undefined,
+    sourceType: 'huntress_incident',
+    sourceRef: i.huntressIncidentId,
   };
 }
 

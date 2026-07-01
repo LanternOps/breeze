@@ -43,9 +43,18 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('./incidents.helpers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./incidents.helpers')>();
+  return {
+    ...actual,
+    buildIncidentFeed: vi.fn(),
+  };
+});
+
 import { db } from '../db';
 import { incidentRoutes } from './incidents';
 import { publishEvent } from '../services/eventBus';
+import { buildIncidentFeed, FeedScopeError } from './incidents.helpers';
 
 function mockSelectSingle(row: unknown) {
   return {
@@ -206,6 +215,87 @@ describe('incidentRoutes', () => {
       'incidents-route',
       expect.any(Object),
     );
+  });
+
+  it('persists sourceType/sourceRef when promoting an EDR finding', async () => {
+    const valuesMock = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          orgId: '22222222-2222-4222-8222-222222222222',
+          title: 'Huntress: Suspicious login',
+          classification: 'huntress-incident',
+          severity: 'p1',
+          status: 'detected',
+          relatedAlerts: [],
+          affectedDevices: [],
+          sourceType: 'huntress_incident',
+          sourceRef: 'hunt-abc-123',
+        },
+      ]),
+    });
+    vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+    const res = await app.request('/incidents', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+      },
+      body: JSON.stringify({
+        title: 'Huntress: Suspicious login',
+        classification: 'huntress-incident',
+        severity: 'p1',
+        sourceType: 'huntress_incident',
+        sourceRef: 'hunt-abc-123',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceType: 'huntress_incident',
+        sourceRef: 'hunt-abc-123',
+      })
+    );
+  });
+
+  it('returns 409 (not 500) when the same EDR finding is promoted twice', async () => {
+    // postgres.js raises a 23505 PostgresError carrying the constraint name;
+    // Drizzle wraps it in a query error whose real fields live on `.cause`.
+    // isPgUniqueViolation walks that chain, so reproduce both layers here. The
+    // promote handler matches `incidents_source_ref_unique` specifically.
+    const pgError = Object.assign(
+      new Error('duplicate key value violates unique constraint "incidents_source_ref_unique"'),
+      { code: '23505', constraint: 'incidents_source_ref_unique' },
+    );
+    const drizzleError = Object.assign(new Error('Failed query: insert into "incidents"'), {
+      cause: pgError,
+    });
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockRejectedValue(drizzleError),
+      }),
+    } as any);
+
+    const res = await app.request('/incidents', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token',
+      },
+      body: JSON.stringify({
+        title: 'Huntress: Suspicious login',
+        classification: 'huntress-incident',
+        severity: 'p1',
+        sourceType: 'huntress_incident',
+        sourceRef: 'hunt-abc-123',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/already been promoted/i);
   });
 
   it('rejects high-risk containment without approvalRef', async () => {
@@ -439,6 +529,48 @@ describe('incidentRoutes', () => {
       'incidents-route',
       expect.any(Object),
     );
+  });
+
+  it('GET /incidents/feed returns the unified union with pagination', async () => {
+    vi.mocked(buildIncidentFeed).mockResolvedValueOnce({
+      rows: [
+        {
+          kind: 'tracked',
+          source: 'breeze',
+          sourceId: 'i-1',
+          title: 'Test incident',
+          severity: 'p1',
+          edrStatus: null,
+          status: 'detected',
+          deviceId: null,
+          detectedAt: new Date().toISOString(),
+          trackedIncidentId: 'i-1',
+          linkOut: null,
+        },
+      ],
+      total: 1,
+    });
+
+    const res = await app.request('/incidents/feed?limit=25', {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      data: expect.any(Array),
+      pagination: { page: 1, limit: 25 },
+    });
+  });
+
+  it('GET /incidents/feed surfaces scope errors as their status', async () => {
+    vi.mocked(buildIncidentFeed).mockRejectedValueOnce(
+      new FeedScopeError(403, 'Access to this organization denied')
+    );
+
+    const res = await app.request('/incidents/feed?orgId=00000000-0000-0000-0000-000000000999', {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(403);
   });
 
   it('builds incident report with evidence and action summaries', async () => {
