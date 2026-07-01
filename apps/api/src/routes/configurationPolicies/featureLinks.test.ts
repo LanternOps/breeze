@@ -425,12 +425,34 @@ describe('featureLinks routes', () => {
       expect(addFeatureLinkMock).toHaveBeenCalled();
     });
 
-    it('still rejects linking an org-scoped feature policy (non-patch) on a partner-owned policy → 400', async () => {
+    it('ALLOWS linking a partner-owned SECURITY policy template on a partner-owned policy → 201 (#2127)', async () => {
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'security' });
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           featureType: 'security',
+          featurePolicyId: '66666666-6666-4666-8666-666666666666',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(validateFeaturePolicyExistsMock).toHaveBeenCalledWith(
+        'security',
+        '66666666-6666-4666-8666-666666666666',
+        expect.objectContaining({ orgId: null, partnerId: PARTNER_POLICY.partnerId })
+      );
+    });
+
+    it('still rejects linking an org-scoped feature policy (compliance) on a partner-owned policy → 400', async () => {
+      // compliance links automationPolicies, which is still org-only (#2129
+      // will migrate it). security graduated to PARTNER_LINKABLE in #2127.
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'compliance',
           featurePolicyId: '44444444-4444-4444-4444-444444444444',
         }),
       });

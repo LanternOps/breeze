@@ -250,6 +250,12 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // policy's partner_id so both admins can see it; CHECK
   // software_policy_audit_owner_chk requires at least one axis.
   'software_policy_audit',
+  // security_policies (#2127, epic #2135): org-scoped OR partner-wide AV/EDR
+  // baseline template. Converted from org-only to dual-axis in
+  // 2026-07-01-security-policies-partner-ownership. CHECK
+  // security_policies_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: securityPoliciesPartnerRls.integration.test.ts.
+  'security_policies',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

@@ -1536,13 +1536,12 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch and software_policy are handled separately in
-  // validateFeaturePolicyExists: rings are pure partner-axis, and software
-  // policies are dual-ownership (org XOR partner, #2126) — neither fits the
-  // org-only lookup below.
+  // patch, software_policy, and security are handled separately in
+  // validateFeaturePolicyExists: rings are pure partner-axis, and software /
+  // security policies are dual-ownership (org XOR partner, #2126/#2127) —
+  // none fits the org-only lookup below.
   alert_rule: { table: alertRules, orgIdCol: alertRules.orgId },
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
-  security: { table: securityPolicies, orgIdCol: securityPolicies.orgId },
   compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
   sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
@@ -1559,6 +1558,7 @@ const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCo
 export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set([
   'patch',
   'software_policy',
+  'security',
 ]);
 
 export async function validateFeaturePolicyExists(
@@ -1598,41 +1598,45 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  if (featureType === 'software_policy') {
+  if (featureType === 'software_policy' || featureType === 'security') {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
-    // Software policies are dual-ownership (#2126). A config policy may link:
-    //  - an org-owned software policy belonging to the config policy's own org
-    //  - a partner-owned ("all orgs") software policy belonging to the config
+    // Software (#2126) and security (#2127) policies are dual-ownership. A
+    // config policy may link:
+    //  - an org-owned policy belonging to the config policy's own org
+    //  - a partner-owned ("all orgs") template belonging to the config
     //    policy's partner (derived from its org for org-owned config policies)
     // A partner-wide config policy (orgId null) can only link partner-owned
     // templates — there is no owning org to anchor an org-owned one.
+    const dualAxis = featureType === 'software_policy'
+      ? { table: softwarePolicies, label: 'Software policy' }
+      : { table: securityPolicies, label: 'Security policy' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 
     const ownershipConditions: SQL[] = [];
     if (owner.orgId) {
-      ownershipConditions.push(eq(softwarePolicies.orgId, owner.orgId));
+      ownershipConditions.push(eq(dualAxis.table.orgId, owner.orgId));
     }
     if (partnerId) {
       ownershipConditions.push(
-        sql`(${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${partnerId})`
+        sql`(${dualAxis.table.orgId} IS NULL AND ${dualAxis.table.partnerId} = ${partnerId})`
       );
     }
     if (ownershipConditions.length === 0) {
-      return { valid: false, error: `Software policy "${featurePolicyId}" not found — no owning organization or partner` };
+      return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found — no owning organization or partner` };
     }
 
     const [row] = await db
-      .select({ id: softwarePolicies.id })
-      .from(softwarePolicies)
-      .where(and(eq(softwarePolicies.id, featurePolicyId), or(...ownershipConditions)))
+      .select({ id: dualAxis.table.id })
+      .from(dualAxis.table)
+      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions)))
       .limit(1);
 
     if (!row) {
-      return { valid: false, error: `Software policy "${featurePolicyId}" not found for this organization or partner` };
+      return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found for this organization or partner` };
     }
 
     return { valid: true };

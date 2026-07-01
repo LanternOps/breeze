@@ -757,4 +757,17 @@ describe('validateFeaturePolicyExists — software_policy dual-axis linking (#21
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/not found/i);
   });
+
+  it('a PARTNER-WIDE config policy can link a partner-owned SECURITY policy (#2127)', async () => {
+    mockLookupReturns([{ id: 'sec-1' }]);
+    const result = await validateFeaturePolicyExists('security', 'sec-1', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a security policy id that resolves to neither axis', async () => {
+    mockLookupReturns([]);
+    const result = await validateFeaturePolicyExists('security', 'missing', { orgId: 'org-1', partnerId: null });
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/Security policy .* not found/i);
+  });
 });

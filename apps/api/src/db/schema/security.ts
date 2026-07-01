@@ -13,7 +13,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { users } from './users';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 
 export const securityProviderEnum = pgEnum('security_provider', [
   'windows_defender',
@@ -112,15 +112,22 @@ export const securityScans = pgTable('security_scans', {
   statusIdx: index('security_scans_status_idx').on(table.status)
 }));
 
+// A security policy is owned by EITHER an org (orgId set, partnerId NULL — the
+// original shape) OR a partner (partnerId set, orgId NULL — "partner-wide /
+// all orgs" template, epic #2135 / #2127). Exactly one axis is set per row;
+// the CHECK constraint `security_policies_one_owner_chk` (migration
+// 2026-07-01) enforces it. Mirrors software_policies (#2126).
 export const securityPolicies = pgTable('security_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   settings: jsonb('settings').notNull().default({}),
   isDefault: boolean('is_default').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
-  orgIdx: index('security_policies_org_id_idx').on(table.orgId)
+  orgIdx: index('security_policies_org_id_idx').on(table.orgId),
+  partnerIdx: index('security_policies_partner_id_idx').on(table.partnerId)
 }));
 
 export const securityPostureSnapshots = pgTable('security_posture_snapshots', {
