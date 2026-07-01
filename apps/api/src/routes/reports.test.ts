@@ -7,6 +7,21 @@ const permissionState = vi.hoisted(() => ({
   permissions: undefined as { allowedSiteIds?: string[] } | undefined
 }));
 
+// Mutable auth context so individual tests can exercise partner/system scopes
+// (mirrors the permissionState pattern). Defaults to an org-scoped caller.
+const authState = vi.hoisted(() => {
+  const ORG = '11111111-1111-1111-1111-111111111111';
+  const makeDefault = () => ({
+    user: { id: 'user-123', email: 'test@example.com' },
+    scope: 'organization' as string,
+    partnerId: null as string | null,
+    orgId: ORG as string | null,
+    accessibleOrgIds: [ORG] as string[],
+    canAccessOrg: ((orgId: string) => orgId === ORG) as (orgId: string) => boolean
+  });
+  return { makeDefault, auth: makeDefault() as ReturnType<typeof makeDefault> };
+});
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/securityComplianceReport', () => ({
@@ -143,14 +158,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com' },
-      scope: 'organization',
-      partnerId: null,
-      orgId: '11111111-1111-1111-1111-111111111111',
-      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
-      canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111'
-    });
+    c.set('auth', authState.auth);
     c.set('permissions', permissionState.permissions);
     return next();
   }),
@@ -477,6 +485,7 @@ describe('reports routes', () => {
     permissionState.deny = false;
     permissionState.last = null;
     permissionState.permissions = undefined;
+    authState.auth = authState.makeDefault();
     const { reportRoutes } = await import('./reports');
     app = new Hono();
     app.route('/reports', reportRoutes);
@@ -519,32 +528,141 @@ describe('reports routes', () => {
     expect(permissionState.last).toEqual({ resource: 'reports', action: 'delete' });
   });
 
-  it('GET /reports/templates returns the org saved reports without hitting the /:id uuid cast', async () => {
-    // A single select for the templates list (no /:id recentRuns follow-up).
-    vi.mocked(db.select).mockReturnValueOnce(selectChain([
-      {
-        id: 'report-1',
-        orgId: ORG_ID,
-        name: 'My Saved Template',
-        type: 'performance',
-        config: { dateRange: { preset: 'last_30_days' }, filters: {} },
-        schedule: 'monthly',
-        format: 'pdf'
-      }
-    ]));
+  describe('GET /reports/templates', () => {
+    const OTHER_ORG = '99999999-9999-9999-9999-999999999999';
 
-    const res = await app.request('/reports/templates', {
-      method: 'GET',
-      headers: { Authorization: 'Bearer valid-token' }
+    /** Records the WHERE condition the handler builds so tests can assert scoping. */
+    function captureTemplatesSelect(rows: any) {
+      let captured: any;
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn((condition) => {
+            captured = condition;
+            return { orderBy: vi.fn().mockResolvedValue(rows) };
+          })
+        })
+      } as any);
+      return () => captured;
+    }
+
+    it('returns the org saved reports and scopes the query to the org (not a /:id mis-route)', async () => {
+      const getCondition = captureTemplatesSelect([
+        {
+          id: 'report-1',
+          orgId: ORG_ID,
+          name: 'My Saved Template',
+          type: 'performance',
+          config: { dateRange: { preset: 'last_30_days' }, filters: {} },
+          schedule: 'monthly',
+          format: 'pdf'
+        }
+      ]);
+
+      const res = await app.request('/reports/templates', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Distinguishes the templates handler ({ data: [...] }) from the /:id
+      // handler ({ ...report, recentRuns }) — a mis-route would leave data undefined.
+      expect(Array.isArray(body.data)).toBe(true);
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].id).toBe('report-1');
+      // Tenant isolation: the query MUST be filtered to the caller's org. Without
+      // this assertion the test would pass even if the org filter were dropped.
+      expect(conditionHas(getCondition(), 'eq', 'reports.orgId', (v) => v === ORG_ID)).toBe(true);
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    // Distinguishes the templates handler ({ data: [...] }) from the /:id
-    // handler ({ ...report, recentRuns }) — a mis-route would leave data undefined.
-    expect(Array.isArray(body.data)).toBe(true);
-    expect(body.data).toHaveLength(1);
-    expect(body.data[0].id).toBe('report-1');
+    it('denies a partner caller who requests an org they cannot access (403, no DB read)', async () => {
+      authState.auth = {
+        ...authState.makeDefault(),
+        scope: 'partner',
+        partnerId: 'partner-1',
+        orgId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      };
+
+      const res = await app.request(`/reports/templates?orgId=${OTHER_ORG}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(403);
+      // Access is rejected before any query runs.
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('scopes a partner caller to a requested org they CAN access', async () => {
+      authState.auth = {
+        ...authState.makeDefault(),
+        scope: 'partner',
+        partnerId: 'partner-1',
+        orgId: null,
+        accessibleOrgIds: [ORG_ID, OTHER_ORG],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === OTHER_ORG
+      };
+      const getCondition = captureTemplatesSelect([]);
+
+      const res = await app.request(`/reports/templates?orgId=${OTHER_ORG}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(conditionHas(getCondition(), 'eq', 'reports.orgId', (v) => v === OTHER_ORG)).toBe(true);
+    });
+
+    it('filters a partner caller (no org selected) to their accessible orgs', async () => {
+      authState.auth = {
+        ...authState.makeDefault(),
+        scope: 'partner',
+        partnerId: 'partner-1',
+        orgId: null,
+        accessibleOrgIds: [ORG_ID, OTHER_ORG],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === OTHER_ORG
+      };
+      const getCondition = captureTemplatesSelect([]);
+
+      const res = await app.request('/reports/templates', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(
+        conditionHas(
+          getCondition(),
+          'inArray',
+          'reports.orgId',
+          (values) => Array.isArray(values) && values.includes(ORG_ID) && values.includes(OTHER_ORG)
+        )
+      ).toBe(true);
+    });
+
+    it('short-circuits a partner caller with no accessible orgs to an empty list (no DB read)', async () => {
+      authState.auth = {
+        ...authState.makeDefault(),
+        scope: 'partner',
+        partnerId: 'partner-1',
+        orgId: null,
+        accessibleOrgIds: [],
+        canAccessOrg: () => false
+      };
+
+      const res = await app.request('/reports/templates', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      // Contract the web consumer depends on: empty result without querying.
+      expect(db.select).not.toHaveBeenCalled();
+    });
   });
 
   it('should generate a saved report run', async () => {
