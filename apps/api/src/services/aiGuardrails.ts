@@ -83,6 +83,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_tickets: ['log_time_entry', 'start_timer', 'stop_timer'],
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
+  manage_quotes: ['send'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -159,6 +160,23 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
+  },
+  manage_quotes: {
+    create_draft: { resource: 'quotes', action: 'write' },
+    update: { resource: 'quotes', action: 'write' },
+    delete_draft: { resource: 'quotes', action: 'write' },
+    add_block: { resource: 'quotes', action: 'write' },
+    update_block: { resource: 'quotes', action: 'write' },
+    delete_block: { resource: 'quotes', action: 'write' },
+    reorder_blocks: { resource: 'quotes', action: 'write' },
+    add_manual_line: { resource: 'quotes', action: 'write' },
+    add_catalog_line: { resource: 'quotes', action: 'write' },
+    update_line: { resource: 'quotes', action: 'write' },
+    remove_line: { resource: 'quotes', action: 'write' },
+    reorder_lines: { resource: 'quotes', action: 'write' },
+    send: { resource: 'quotes', action: 'send' },
+    decline: { resource: 'quotes', action: 'write' },
+    create_pay_link: { resource: 'quotes', action: 'write' },
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
