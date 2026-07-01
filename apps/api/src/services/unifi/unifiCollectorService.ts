@@ -90,6 +90,10 @@ export async function upsertCollector(
     })
     .onConflictDoUpdate({
       target: [unifiCollectors.integrationId, unifiCollectors.unifiHostId],
+      // unifi_collectors_integration_host_idx is PARTIAL (self-hosted rows
+      // have a null host id and are governed by the controller_url index);
+      // Postgres can only infer a partial arbiter when the predicate matches.
+      targetWhere: sql`${unifiCollectors.unifiHostId} IS NOT NULL`,
       set: {
         orgId: fields.orgId,
         siteId: fields.siteId,
