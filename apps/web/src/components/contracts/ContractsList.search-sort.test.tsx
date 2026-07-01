@@ -15,6 +15,7 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
 });
 
 import { ContractsList } from './ContractsList';
+import { navigateTo } from '@/lib/navigation';
 
 const json = (payload: unknown, status = 200) =>
   ({ ok: status < 400, status, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -108,9 +109,15 @@ describe('ContractsList — search, sort & skeleton', () => {
     expect(link.getAttribute('tabindex')).not.toBe('-1');
 
     const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    // Cancel the anchor's default action up front so jsdom doesn't attempt a real
+    // document navigation (unimplemented → console noise). Propagation behavior
+    // — the thing under test — is unaffected.
+    clickEvent.preventDefault();
     const stop = vi.spyOn(clickEvent, 'stopPropagation');
     link.dispatchEvent(clickEvent);
     expect(stop).toHaveBeenCalled();
+    // The row's onClick (SPA navigateTo) must not fire — the anchor navigates natively.
+    expect(vi.mocked(navigateTo)).not.toHaveBeenCalled();
   });
 
   it('filters rows by organization name via the search box', async () => {

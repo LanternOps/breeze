@@ -89,9 +89,15 @@ describe('InvoicesPage', () => {
 
     // Clicking the link must not double-navigate via the row's onClick handler.
     const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    // Cancel the anchor's default action up front so jsdom doesn't attempt a real
+    // document navigation (unimplemented → console noise). Propagation behavior
+    // — the thing under test — is unaffected.
+    clickEvent.preventDefault();
     const stop = vi.spyOn(clickEvent, 'stopPropagation');
     link.dispatchEvent(clickEvent);
     expect(stop).toHaveBeenCalled();
+    // The row's onClick (SPA navigateTo) must not fire — the anchor navigates natively.
+    expect(navigateTo).not.toHaveBeenCalled();
   });
 
   it('writes filter selections to the URL hash', async () => {
