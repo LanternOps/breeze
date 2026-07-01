@@ -112,36 +112,19 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
             contact with the PDF + a public accept link, and flips draft→sent.
             Gated on quotes:send; only a draft can be sent. An empty quote can't. */}
         {canSend && (
-          <>
-            <button
-              type="button"
-              onClick={() => setSendOpen(true)}
-              disabled={sending || isEmpty}
-              // Tie the disabled button to the visible hint below (rendered in both
-              // variants) so AT announces the reason when the button takes focus.
-              aria-describedby={isEmpty ? `quote-send-empty-hint-${variant}` : undefined}
-              title={isEmpty ? 'Add at least one item before sending.' : undefined}
-              data-testid="quote-send"
-              className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
-            >
-              {sending ? 'Sending…' : 'Send proposal'}
-            </button>
-            {isEmpty && (
-              // Visible in BOTH variants — a sighted keyboard user (or anyone not
-              // hovering for the title tooltip) needs to see WHY the highest-stakes
-              // button is disabled. In the header row it takes a full-width basis so
-              // it wraps onto its own line BELOW the action buttons (never inline
-              // between them, which would drag the cluster into the page centre),
-              // right-aligned to sit under the right-aligned buttons.
-              <p
-                id={`quote-send-empty-hint-${variant}`}
-                data-testid="quote-send-empty-hint"
-                className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
-              >
-                Add at least one item before sending.
-              </p>
-            )}
-          </>
+          <button
+            type="button"
+            onClick={() => setSendOpen(true)}
+            disabled={sending || isEmpty}
+            // Tie the disabled button to the visible hint below (rendered in both
+            // variants) so AT announces the reason when the button takes focus.
+            aria-describedby={isEmpty ? `quote-send-empty-hint-${variant}` : undefined}
+            title={isEmpty ? 'Add at least one item before sending.' : undefined}
+            data-testid="quote-send"
+            className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
+          >
+            {sending ? 'Sending…' : 'Send proposal'}
+          </button>
         )}
         {/* PDF download is a read affordance (quotes has no dedicated export
             permission), so it's gated on quotes:read. */}
@@ -165,6 +148,21 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
           >
             Delete draft
           </button>
+        )}
+        {canSend && isEmpty && (
+          // Visible in BOTH variants — a sighted keyboard user (or anyone not
+          // hovering for the title tooltip) needs to see WHY the highest-stakes
+          // button is disabled. Rendered LAST so in the header row it takes a
+          // full-width basis and wraps onto its own line BELOW the whole action
+          // cluster (never inline between buttons, which would drag the cluster
+          // into the page centre), right-aligned under the right-aligned buttons.
+          <p
+            id={`quote-send-empty-hint-${variant}`}
+            data-testid="quote-send-empty-hint"
+            className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
+          >
+            Add at least one item before sending.
+          </p>
         )}
       </div>
 

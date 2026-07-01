@@ -24,7 +24,7 @@ import {
   computeInvoiceProfit,
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
-import { usePdfDownload } from './shared/usePdfDownload';
+import InvoiceActions from './InvoiceActions';
 import { MarginPanel } from './billingUi';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -32,8 +32,9 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 interface Props {
   detail: InvoiceDetailData;
   onChanged: () => void;
-  /** The workspace header owns the primary actions (Download PDF) — suppress the
-   *  rail copy so the two don't render at once (mirrors QuoteDetail.actionsInHeader). */
+  /** The workspace header owns the primary actions (Issue / Issue & Send /
+   *  Download PDF / Delete draft) — suppress the rail copy so the two don't
+   *  render at once (mirrors QuoteDetail.actionsInHeader). */
   actionsInHeader?: boolean;
 }
 
@@ -61,8 +62,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const [reversePayment, setReversePayment] = useState<InvoicePayment | null>(null);
   // Void dialog
   const [voidOpen, setVoidOpen] = useState(false);
-  // Delete dialog
-  const [delOpen, setDelOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [voidReissue, setVoidReissue] = useState(false);
 
@@ -116,12 +115,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const canRecordPayment =
     invoice.status !== 'draft' && invoice.status !== 'void' && invoice.status !== 'paid' && Number(invoice.balance) > 0;
   const canVoid = invoice.status !== 'void' && invoice.status !== 'draft';
-
-  const { download: downloadPdf, downloading } = usePdfDownload({
-    path: `/invoices/${invoice.id}/pdf`,
-    filename: `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`,
-    errorMessage: 'Could not download the invoice PDF.',
-  });
 
   const recordPayment = useCallback(async () => {
     if (busy || !payAmount) return;
@@ -226,25 +219,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       setBusy(false);
     }
   }, [busy, voidReason, voidReissue, invoice.id, refresh]);
-
-  const remove = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}`, { method: 'DELETE' }),
-        errorFallback: 'Could not delete the draft.',
-        successMessage: 'Draft deleted',
-        onUnauthorized: UNAUTHORIZED,
-      });
-      setDelOpen(false);
-      void navigateTo('/billing/invoices');
-    } catch (err) {
-      handleActionError(err, 'Could not delete the draft.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id]);
 
   return (
     <div className="space-y-6" data-testid="invoice-detail">
@@ -372,17 +346,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           )}
 
-          {/* PDF + void */}
+          {/* Primary actions (Issue / PDF / Delete) + void. The rail copy of
+              InvoiceActions is suppressed when the workspace header owns the
+              actions; Void stays here — its written-reason dialog belongs with
+              the issued-lifecycle rail, not the header. */}
           <div className="space-y-2">
-            {!actionsInHeader && can('invoices', 'export') && (
-              <button
-                type="button" onClick={() => void downloadPdf()} disabled={busy || downloading}
-                data-testid="invoice-download-pdf"
-                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                Download PDF
-              </button>
-            )}
+            {!actionsInHeader && <InvoiceActions detail={detail} onChanged={onChanged} variant="rail" />}
             {canVoid && can('invoices', 'send') && (
               <button
                 type="button" onClick={() => { setVoidReason(''); setVoidReissue(false); setVoidOpen(true); }}
@@ -390,16 +359,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
               >
                 Void invoice
-              </button>
-            )}
-            {invoice.status === 'draft' && can('invoices', 'write') && (
-              <button
-                type="button"
-                onClick={() => setDelOpen(true)}
-                data-testid="invoice-delete-open"
-                className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
-              >
-                Delete draft
               </button>
             )}
           </div>
@@ -545,18 +504,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         message={`Record a ${formatMoney(Number(payAmount), currency)} payment (${PAYMENT_METHOD_LABELS[payMethod]}) dated ${formatDate(payDate)}?`}
         confirmLabel="Record payment"
         confirmTestId="invoice-payment-confirm"
-      />
-
-      {/* Delete draft dialog */}
-      <ConfirmDialog
-        open={delOpen}
-        onClose={() => setDelOpen(false)}
-        onConfirm={() => void remove()}
-        isLoading={busy}
-        title="Delete draft invoice"
-        message="This permanently deletes the draft invoice. This cannot be undone."
-        confirmLabel="Delete draft"
-        confirmTestId="invoice-delete-confirm"
       />
 
       {/* Void dialog */}

@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { usePermissions } from '../../lib/permissions';
 import { DocumentWorkspace, type DocumentTab } from './shared/DocumentWorkspace';
 import { StatusPill } from './shared/StatusPill';
-import { usePdfDownload } from './shared/usePdfDownload';
 import InvoiceEditor from './InvoiceEditor';
 import InvoiceDetail from './InvoiceDetail';
 import InvoiceDocumentPreview from './InvoiceDocument';
+import InvoiceActions from './InvoiceActions';
 import { type InvoiceDetail as InvoiceDetailData, STATUS_ROLES, statusLabel } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -32,23 +31,10 @@ function readTab(isDraft: boolean): Tab {
 }
 
 export default function InvoiceWorkspace({ invoiceId }: Props) {
-  const { can } = usePermissions();
   const [detail, setDetail] = useState<InvoiceDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
-
-  const invoice = detail?.invoice;
-  // Download PDF is the one primary action liftable to the header for free: it's a
-  // stateless authed-fetch hook, so both the draft editor tab and the read-only
-  // detail tab can reach it without duplicating a stateful confirm flow. (Issue /
-  // Issue & Send / Delete carry runAction + ConfirmDialog state that lives in
-  // InvoiceEditor / InvoiceDetail and stays there.)
-  const { download: downloadPdf, downloading } = usePdfDownload({
-    path: `/invoices/${invoiceId}/pdf`,
-    filename: `${invoice?.invoiceNumber ?? `invoice-${invoiceId}`}.pdf`,
-    errorMessage: 'Could not download the invoice PDF.',
-  });
 
   // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
   // so the editor stays mounted — a full-page spinner would remount the form and
@@ -139,20 +125,6 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
     />
   );
 
-  // Download PDF is surfaced from any tab; the Detail tab suppresses its own copy
-  // (actionsInHeader) so the two don't render at once.
-  const actions = can('invoices', 'export') ? (
-    <button
-      type="button"
-      onClick={() => void downloadPdf()}
-      disabled={downloading}
-      data-testid="invoice-download-pdf"
-      className="inline-flex items-center justify-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-    >
-      {downloading ? 'Preparing…' : 'Download PDF'}
-    </button>
-  ) : undefined;
-
   return (
     <DocumentWorkspace
       idPrefix="invoice"
@@ -160,7 +132,11 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
       backLabel="Invoices"
       title={detail.invoice.invoiceNumber ?? 'Draft invoice'}
       statusPill={statusPill}
-      actions={actions}
+      // Primary actions live in the header so Issue / Issue & Send (the
+      // money-moment) and Download are reachable from any tab, not buried inside
+      // the Editor tab. The Detail tab suppresses its rail copy (actionsInHeader)
+      // so the two never render at once.
+      actions={<InvoiceActions detail={detail} onChanged={reload} variant="header" />}
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={selectTab}

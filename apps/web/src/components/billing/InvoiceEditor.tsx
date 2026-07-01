@@ -3,8 +3,6 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
-import { showToast } from '../shared/Toast';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { UnsavedBadge, MarginPanel } from './billingUi';
 import {
   type InvoiceDetail,
@@ -37,13 +35,6 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
 
   const [busy, setBusy] = useState(false);
-  // Distinct from `busy` (which any line edit sets) so the Issue buttons can show
-  // an unambiguous in-flight label. Without it the disabled-but-still-"Issue"
-  // button + still-"Draft" header during the POST reads as "done but stuck" (#1418).
-  const [issuing, setIssuing] = useState(false);
-  // Issue-and-send emails the customer and can't be undone, so it goes through a
-  // confirm step (plain Issue stays direct — it's reversible via Void).
-  const [issueSendOpen, setIssueSendOpen] = useState(false);
   const [notes, setNotes] = useState(invoice.notes ?? '');
   const [notesDirty, setNotesDirty] = useState(false);
   const [terms, setTerms] = useState(invoice.termsAndConditions ?? '');
@@ -214,47 +205,6 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
     }
   }, [busy, termsDirty, terms, invoice.id, refresh]);
 
-  const issue = useCallback(async (alsoSend: boolean) => {
-    if (busy) return;
-    setBusy(true);
-    setIssuing(true);
-    try {
-      // Issue first; on success optionally send.
-      await runAction({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
-        errorFallback: 'Could not issue invoice.',
-        successMessage: alsoSend ? undefined : 'Invoice issued',
-        onUnauthorized: UNAUTHORIZED,
-      });
-      if (alsoSend) {
-        // /send is honest about whether an email actually went out. The invoice
-        // is issued either way; only claim "sent" when an email was dispatched,
-        // otherwise warn so the operator knows nothing was emailed. We suppress
-        // runAction's own success toast and post-process the result ourselves.
-        const result = await runAction<{ data: { emailed: boolean } }>({
-          request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
-          errorFallback: 'Invoice issued, but sending failed.',
-          onUnauthorized: UNAUTHORIZED,
-        });
-        if (result?.data?.emailed) {
-          showToast({ type: 'success', message: 'Invoice issued and sent' });
-        } else {
-          showToast({ type: 'warning', message: 'Invoice issued — but no email was sent (no billing contact / email not configured)' });
-        }
-      }
-    } catch (err) {
-      handleActionError(err, 'Could not issue invoice.');
-    } finally {
-      // Always refresh: if issue succeeded but send threw, we still need to leave
-      // the draft editor so a second click doesn't re-issue and hit 409 NOT_A_DRAFT.
-      refresh();
-      setIssuing(false);
-      setBusy(false);
-      setIssueSendOpen(false);
-    }
-  }, [busy, invoice.id, refresh]);
-
-  const hasVisibleLines = lines.some((l) => l.customerVisible);
   // Tax rate is inherited from partner Billing settings, not set per invoice. When
   // a line is marked taxable but no rate is configured, the Tax row reads $0.00
   // with no obvious cause — point the operator at where the rate actually lives.
@@ -493,49 +443,11 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             />
           </div>
 
-          <div className="space-y-2">
-            {can('invoices', 'send') && (
-              <button
-                type="button"
-                onClick={() => void issue(false)}
-                disabled={busy || !hasVisibleLines}
-                data-testid="invoice-issue"
-                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                {issuing ? 'Issuing…' : 'Issue'}
-              </button>
-            )}
-            {can('invoices', 'send') && (
-              <button
-                type="button"
-                onClick={() => setIssueSendOpen(true)}
-                disabled={busy || !hasVisibleLines}
-                data-testid="invoice-issue-send"
-                className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {issuing ? 'Issuing…' : 'Issue & Send'}
-              </button>
-            )}
-            {!hasVisibleLines && (
-              <p className="text-center text-xs text-muted-foreground" data-testid="invoice-no-visible-hint">
-                Add at least one customer-visible line to issue.
-              </p>
-            )}
-          </div>
+          {/* Issue / Issue & Send / Download PDF / Delete draft live in the
+              workspace header (InvoiceActions) so they're reachable from any tab
+              — mirrors the quote editor, which carries no Send button of its own. */}
         </div>
       </div>
-
-      <ConfirmDialog
-        open={issueSendOpen}
-        onClose={() => setIssueSendOpen(false)}
-        onConfirm={() => void issue(true)}
-        isLoading={issuing}
-        variant="warning"
-        title="Issue and send this invoice?"
-        message={`This issues the invoice and emails it to ${invoice.billToName ?? 'the customer'} for ${formatMoney(invoice.total, currency)}. This can't be undone.`}
-        confirmLabel="Issue & Send"
-        confirmTestId="invoice-issue-send-confirm"
-      />
     </div>
   );
 }

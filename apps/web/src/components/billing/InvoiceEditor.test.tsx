@@ -52,18 +52,13 @@ describe('InvoiceEditor', () => {
     });
   });
 
-  it('disables Issue when there are no customer-visible lines', async () => {
-    render(<InvoiceEditor detail={draft([])} onChanged={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('invoice-issue')).toBeDisabled();
-    expect(screen.getByTestId('invoice-issue-send')).toBeDisabled();
-    expect(screen.getByTestId('invoice-no-visible-hint')).toBeInTheDocument();
-  });
+  // Issue / Issue & Send behavior (disabled-without-visible-lines, toasts,
+  // in-flight label) moved to InvoiceActions.test.tsx with the buttons — the
+  // actions now live in the workspace header (InvoiceActions), not the editor.
 
-  it('enables Issue when a visible line exists and shows the total', async () => {
+  it('renders an editable line (full-width description row)', async () => {
     render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('invoice-issue')).not.toBeDisabled();
     // Name/description are now editable inputs (full-width description row) rather
     // than static text; the legacy name-less line shows its description in the box.
     expect(screen.getByTestId('invoice-line-desc-line-1')).toHaveValue('Consulting');
@@ -156,64 +151,6 @@ describe('InvoiceEditor', () => {
     const unapproved = { ...manualLine, id: 'line-u', isUnapprovedTime: true };
     render(<InvoiceEditor detail={draft([unapproved])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-unapproved-warning')).toBeInTheDocument());
-  });
-
-  it('Issue & Send shows a success toast when the email was dispatched (emailed:true)', async () => {
-    const onChanged = vi.fn();
-    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
-      if (input.startsWith('/catalog')) return json({ data: [] });
-      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') return json({ data: { id: 'inv-1', status: 'sent' } });
-      if (input === '/invoices/inv-1/send' && opts?.method === 'POST') return json({ data: { invoice: { id: 'inv-1', status: 'sent' }, emailed: true } });
-      return json({ data: {} });
-    });
-    render(<InvoiceEditor detail={draft([manualLine])} onChanged={onChanged} />);
-    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByTestId('invoice-issue-send'));
-    fireEvent.click(await screen.findByTestId('invoice-issue-send-confirm'));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Invoice issued and sent' }));
-  });
-
-  it('shows an "Issuing…" label on the Issue button while the mutation is in flight (#1418)', async () => {
-    let resolveIssue: (r: Response) => void = () => {};
-    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
-      if (input.startsWith('/catalog')) return json({ data: [] });
-      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') {
-        return new Promise<Response>((res) => { resolveIssue = res; });
-      }
-      return json({ data: {} });
-    });
-    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByTestId('invoice-issue'));
-
-    // In flight: button is disabled AND relabelled so it never reads as a stuck "Issue".
-    await waitFor(() => expect(screen.getByTestId('invoice-issue')).toHaveTextContent('Issuing…'));
-    expect(screen.getByTestId('invoice-issue')).toBeDisabled();
-
-    resolveIssue(json({ data: { id: 'inv-1', status: 'sent' } }));
-    await waitFor(() => expect(screen.getByTestId('invoice-issue')).toHaveTextContent('Issue'));
-  });
-
-  it('Issue & Send shows a WARNING toast (not error) when nothing was emailed (emailed:false)', async () => {
-    const onChanged = vi.fn();
-    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
-      if (input.startsWith('/catalog')) return json({ data: [] });
-      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') return json({ data: { id: 'inv-1', status: 'sent' } });
-      if (input === '/invoices/inv-1/send' && opts?.method === 'POST') return json({ data: { invoice: { id: 'inv-1', status: 'sent' }, emailed: false, reason: 'no_billing_contact' } });
-      return json({ data: {} });
-    });
-    render(<InvoiceEditor detail={draft([manualLine])} onChanged={onChanged} />);
-    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByTestId('invoice-issue-send'));
-    fireEvent.click(await screen.findByTestId('invoice-issue-send-confirm'));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
-    // never a success "sent" claim when nothing went out
-    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Invoice issued and sent' }));
   });
 
   it('editing the T&C textarea and blurring issues PATCH /invoices/:id with { termsAndConditions }', async () => {
