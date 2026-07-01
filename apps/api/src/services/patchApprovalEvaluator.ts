@@ -101,6 +101,22 @@ export interface ApprovedPatch {
 // Policy-source → patch-source mapping
 // ============================================
 
+/**
+ * Reconcile category synonyms so ring category rules match the agent's emitted
+ * `patches.category`. The Windows agent emits 'definitions' (plural, see
+ * classifyWindowsUpdateCategory), while older ring rules / the ring UI stored
+ * 'definition' (singular) — without this they never matched and the toggle was
+ * dead. Applied to BOTH the stored rule keys and the patch category at lookup,
+ * so legacy 'definition' rules and new 'definitions' rules both work. Keep in
+ * sync with the agent classifier and the Update Ring category options
+ * (apps/web/src/components/patches/UpdateRingForm.tsx).
+ */
+export function canonicalizePatchCategory(category: string): string {
+  const c = category.toLowerCase();
+  if (c === 'definition') return 'definitions';
+  return c;
+}
+
 /** patches.source values that count as OS updates. Keep in sync with patchSourceEnum (db/schema/patches.ts). */
 const OS_PATCH_SOURCES = ['microsoft', 'apple', 'linux'] as const;
 /** patches.source values that count as third-party application updates. Keep in sync with patchSourceEnum (db/schema/patches.ts). */
@@ -354,7 +370,7 @@ export async function resolveApprovedPatchesForDevice(
   const categoryRuleMap = new Map<string, CategoryRule>();
   for (const rule of categoryRules) {
     if (rule.category) {
-      categoryRuleMap.set(rule.category.toLowerCase(), rule);
+      categoryRuleMap.set(canonicalizePatchCategory(rule.category), rule);
     }
   }
 
@@ -428,7 +444,7 @@ function evaluatePatchApproval(
   // 'third_party_app' is a virtual category — agents report inconsistent
   // category strings for app updates (application/homebrew/homebrew-cask/...),
   // so it matches by patch source instead. An exact category rule wins.
-  let rule = patch.category ? categoryRuleMap.get(patch.category.toLowerCase()) : undefined;
+  let rule = patch.category ? categoryRuleMap.get(canonicalizePatchCategory(patch.category)) : undefined;
   if (!rule && isThirdPartyPatchSource(patch.source)) {
     rule = categoryRuleMap.get('third_party_app');
   }

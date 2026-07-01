@@ -402,6 +402,50 @@ describe('app rules in resolveApprovedPatchesForDevice', () => {
   });
 });
 
+describe('category rule canonicalization (definition/definitions)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  const catRing = (categoryRules: RingConfig['categoryRules']): RingConfig => ({
+    ringId: RING_ID,
+    categoryRules,
+    autoApprove: { enabled: false, severities: [] },
+    deferralDays: 0,
+  });
+
+  it('legacy singular "definition" rule matches the agent\'s "definitions" category', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, devicePatchId: 'dp-1', category: 'definitions', source: 'microsoft' })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(
+      DEVICE_ID,
+      ORG_ID,
+      catRing([{ category: 'definition', autoApprove: true }])
+    );
+
+    expect(result.map((r) => r.patchId)).toEqual([P1]);
+    expect(result[0]?.approvalReason).toBe('category_rule');
+  });
+
+  it('canonical "definitions" rule matches the "definitions" category', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, devicePatchId: 'dp-1', category: 'definitions', source: 'microsoft' })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(
+      DEVICE_ID,
+      ORG_ID,
+      catRing([{ category: 'definitions', autoApprove: true }])
+    );
+
+    expect(result[0]?.approvalReason).toBe('category_rule');
+  });
+});
+
 describe('ring-less path: only manual approvals apply', () => {
   // policyAutoApprove has been removed. With no ring, only partner-wide manual
   // approvals (ring_id NULL) or ring-specific approvals matching null apply.

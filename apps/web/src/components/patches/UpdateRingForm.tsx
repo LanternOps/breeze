@@ -55,13 +55,17 @@ type UpdateRingFormProps = {
 
 type Severity = 'critical' | 'important' | 'moderate' | 'low';
 
+// `value` must match the category strings the agent emits (see the agent's
+// classifyWindowsUpdateCategory) so the approval evaluator's category rules
+// actually match. Note 'definitions' is plural to match the agent; the
+// evaluator also canonicalizes legacy singular 'definition' rules.
 const categoryOptions = [
   { value: 'security', label: 'Security Updates' },
   { value: 'feature', label: 'Feature Updates' },
   { value: 'firmware', label: 'Firmware' },
   { value: 'driver', label: 'Drivers' },
   { value: 'third_party_app', label: 'Third-Party Apps' },
-  { value: 'definition', label: 'Definition Updates' },
+  { value: 'definitions', label: 'Definition Updates' },
 ];
 
 // Severity is a domain-ordered scale (Critical > Important > Moderate > Low),
