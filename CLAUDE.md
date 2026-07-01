@@ -48,6 +48,19 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 
 For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE ... WHERE ctid IN (... LIMIT N)` loops before `SET NOT NULL`. Full narrative and rationale: `docs/superpowers/plans/2026-04-11-rls-coverage-gaps.md`.
 
+### Partner-Wide First (config/policy tables) — epic #2135
+
+Breeze is an MSP tool: techs define one policy and apply it to ALL their orgs. **Every new config-ish table (policies, templates, rules, windows, baselines) defaults to dual-ownership: `org_id` XOR `partner_id`, both nullable, exactly one set.** `org_id NOT NULL` on a new config table needs an explicit justification in the PR (e.g. `backup_configs` — org-owned storage credentials). Org-first designs have required painful retrofits every time (#1724, #2126–#2129).
+
+The playbook (copy a `2026-07-01-*-partner-ownership.sql` migration as the reference):
+1. **Migration**: `partner_id` FK + `org_id` nullable + `<table>_one_owner_chk` CHECK `((org_id IS NULL) <> (partner_id IS NULL))` + partner index + ONE dual-axis RLS policy (`system OR org-access OR partner-access`), replacing any per-command org-only policies.
+2. **Writes**: gate partner-wide create/update/delete on `canManagePartnerWidePolicies(auth)` (`services/partnerWideAccess.ts` — the single source of truth). Create routes take an `ownerScope: 'organization' | 'partner'` field; update schemas derived via `.partial()` must `.omit({ ownerScope: true })`.
+3. **Reads**: app-layer dual-axis conditions (`orgCondition OR (org_id IS NULL AND partner_id = auth.partnerId)`) must be gated on `auth.scope === 'partner'` — org tokens carry a partnerId but never pass `breeze_has_partner_access`; RLS is stricter than the app layer, never claim parity. Readers running inside an org-scoped RLS context (agent paths!) cannot see partner-wide rows at all — move them to a system context (see the heartbeat probe-config pattern, #1105).
+4. **Config-policy linkage**: add the feature type to `PARTNER_LINKABLE_FEATURE_TYPES` and the dual-axis branch of `validateFeaturePolicyExists` (`services/configurationPolicy.ts`); remove it from the org-only `FEATURE_TABLE_MAP`.
+5. **Evaluation/enforcement**: if a worker/scheduler evaluates the table against devices, partner-wide rows MUST fan out by the device org's partner (never `eq(table.orgId, device.orgId)` alone — that silently no-ops on `org_id NULL`). Worker-created child rows (results, alerts, findings) always take the DEVICE's org. One integration test must prove the fan-out fires against real Postgres.
+6. **Tests + UI**: register in `DUAL_AXIS_TENANT_TABLES` (`rls-coverage.integration.test.ts`), add a `<table>PartnerRls.integration.test.ts` suite (cross-partner forge 42501, XOR 23514, org isolation, fan-out), create-only ownerScope selector + "All orgs" badge in the web UI (pattern: `apps/web/src/components/software/PolicyForm.tsx`).
+7. **Sweep ALL `<table>.orgId` call sites repo-wide** before calling it done — hidden second routes/readers (agent config delivery, AI tools, alert bridges, stats endpoints) are how features get missed.
+
 ### Database Schema Location
 - `apps/api/src/db/schema/` - All Drizzle schema definitions
 - Key tables: devices, users, organizations, sites, alerts, scripts, automations
