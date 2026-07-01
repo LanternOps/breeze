@@ -277,6 +277,26 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     contractId: uuid,
   }),
 
+  manage_contracts: z.object({
+    action: z.enum([
+      'create_draft',
+      'update',
+      'delete_draft',
+      'add_line',
+      'remove_line',
+      'activate',
+      'pause',
+      'resume',
+      'cancel',
+    ]),
+    contractId: uuid.optional(),
+    lineId: uuid.optional(),
+    orgId: uuid.optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
+    line: z.record(z.string(), z.unknown()).optional(),
+    patch: z.record(z.string(), z.unknown()).optional(),
+  }),
+
   manage_alerts: z.object({
     action: z.enum(['list', 'get', 'acknowledge', 'resolve']),
     alertId: uuid.optional(),

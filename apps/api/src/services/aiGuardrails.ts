@@ -82,6 +82,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   // Ticketing time-tracking — writes at Tier 3 (spec §4)
   manage_tickets: ['log_time_entry', 'start_timer', 'stop_timer'],
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
+  manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -148,6 +149,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   list_contracts: { resource: 'contracts', action: 'read' },
   get_contract: { resource: 'contracts', action: 'read' },
+  manage_contracts: {
+    create_draft: { resource: 'contracts', action: 'write' },
+    update: { resource: 'contracts', action: 'write' },
+    delete_draft: { resource: 'contracts', action: 'write' },
+    add_line: { resource: 'contracts', action: 'write' },
+    remove_line: { resource: 'contracts', action: 'write' },
+    activate: { resource: 'contracts', action: 'manage' },
+    pause: { resource: 'contracts', action: 'manage' },
+    resume: { resource: 'contracts', action: 'manage' },
+    cancel: { resource: 'contracts', action: 'manage' },
+  },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
     list: { resource: 'devices', action: 'read' },
