@@ -26,7 +26,7 @@ const C = {
   teal: [14, 212, 197] as RGB, //         brand accent (logo strokes)
   success: [42, 147, 98] as RGB, //       --success  hsl(152 56% 37%)
   danger: [221, 70, 60] as RGB, //        --destructive hsl(4 76% 56%)
-  warning: [196, 128, 12] as RGB, //      --warning, darkened for text contrast
+  warning: [160, 102, 8] as RGB, //       --warning, darkened to ≥4.5:1 on white (AA at table sizes)
   muted: [92, 99, 112] as RGB, //         secondary text — darkened to ≥4.5:1 on white (AA)
   faint: [108, 115, 128] as RGB, //       de-emphasized but still AA-legible (N/A, ticks, footer ~4.8:1)
   rule: [223, 227, 233] as RGB, //        --border (decorative lines / meter track only — never text)
@@ -67,6 +67,14 @@ const set = {
 const titleCase = (s: string): string =>
   s.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
 
+// Display names for report types whose titleCase form loses punctuation
+// (the band label must match the page-1 H1, ampersand included).
+const REPORT_TYPE_LABELS: Record<string, string> = {
+  security_compliance_posture: 'Security & Compliance Posture',
+};
+
+const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
+
 // Domain acronyms that should stay upper-cased in humanized column headers.
 const ACRONYMS = new Set([
   'os', 'cpu', 'ram', 'gb', 'mb', 'tb', 'id', 'ip', 'url', 'av', 'dns',
@@ -93,14 +101,29 @@ function humanizeHeader(key: string): string {
 // Brand chrome: header band + footer, drawn on every page via didDrawPage.
 // ----------------------------------------------------------------------------
 
-/** Three white "gust" strokes evoking the Breeze wind mark, for the band. */
-function drawBreezeMark(doc: jsPDF, x: number, yMid: number): void {
-  set.draw(doc, C.white);
+// The Breeze wind mark — three gust strokes with curled tails, transcribed from
+// the product logo (apps/web/public/favicon.svg, 32-unit art space). Each path
+// is a start point plus relative cubic-bezier segments for jsPDF `lines()`.
+type MarkPath = { start: [number, number]; curves: [number, number, number, number, number, number][] };
+const BREEZE_MARK_PATHS: MarkPath[] = [
+  { start: [6, 11], curves: [[0, 0, 4, 0, 8, 0], [4, 0, 6, -3, 10, -3], [2, 0, 3, 1, 3, 2], [0, 1, -1, 2, -3, 2], [-2, 0, -3, -1, -3, -1]] },
+  { start: [4, 17], curves: [[0, 0, 5, 0, 11, 0], [6, 0, 8, -3, 11, -3], [1.5, 0, 2.5, 1, 2.5, 2], [0, 1, -1, 2, -2.5, 2], [-2, 0, -3, -1, -3, -1]] },
+  { start: [7, 23], curves: [[0, 0, 4, 0, 9, 0], [4, 0, 6, -3, 9, -3], [1.5, 0, 2.5, 1, 2.5, 2], [0, 1, -1, 2, -2.5, 2], [-2, 0, -3, -1, -3, -1]] },
+];
+
+/** The Breeze logo as it appears in the product: dark rounded chip + teal gusts. */
+function drawBreezeMark(doc: jsPDF, x: number, yMid: number, size = 9): void {
+  const s = size / 32; // favicon art space is 32 units square
+  set.fill(doc, C.ink);
+  doc.roundedRect(x, yMid - size / 2, size, size, 8 * s, 8 * s, 'F');
+  set.draw(doc, C.teal);
   doc.setLineCap('round');
-  doc.setLineWidth(1.1);
-  doc.line(x, yMid - 2.3, x + 6.6, yMid - 2.3);
-  doc.line(x - 1, yMid, x + 8.2, yMid);
-  doc.line(x + 0.6, yMid + 2.3, x + 5.6, yMid + 2.3);
+  doc.setLineJoin('round');
+  doc.setLineWidth(2 * s);
+  const y0 = yMid - size / 2;
+  for (const p of BREEZE_MARK_PATHS) {
+    doc.lines(p.curves, x + p.start[0] * s, y0 + p.start[1] * s, [s, s], 'S', false);
+  }
 }
 
 function drawHeaderBand(doc: jsPDF, opts: BuildOpts): void {
@@ -151,7 +174,7 @@ function drawHeaderBand(doc: jsPDF, opts: BuildOpts): void {
   set.text(doc, C.bandText);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
-  doc.text(titleCase(reportType).toUpperCase(), PAGE.w - PAGE.mx, yMid + 1, {
+  doc.text(reportTypeLabel(reportType).toUpperCase(), PAGE.w - PAGE.mx, yMid + 1, {
     align: 'right',
     baseline: 'middle',
   });
@@ -328,9 +351,16 @@ function drawMetricGrid(doc: jsPDF, metrics: Metric[], top: number): number {
     const row = Math.floor(i / 2);
     const x = PAGE.mx + col * (colW + 8);
     const y = top + row * rowH;
-    // status dot
-    set.fill(doc, STATUS_COLOR[m.status]);
-    doc.circle(x + 1.4, y - 1.2, 1.2, 'F');
+    // Status dot; informational metrics (no pass/fail judgement) get a hollow
+    // ring so they don't masquerade as a fifth status colour.
+    if (m.status === 'neutral') {
+      set.draw(doc, C.muted);
+      doc.setLineWidth(0.35);
+      doc.circle(x + 1.4, y - 1.2, 1, 'S');
+    } else {
+      set.fill(doc, STATUS_COLOR[m.status]);
+      doc.circle(x + 1.4, y - 1.2, 1.2, 'F');
+    }
     set.text(doc, C.muted);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
@@ -359,11 +389,12 @@ function drawMetricGrid(doc: jsPDF, metrics: Metric[], top: number): number {
 
 /** One-line color key, right-aligned to a section heading row. */
 function drawLegend(doc: jsPDF, y: number): void {
-  const items: [RGB, string][] = [
+  const items: [RGB | null, string][] = [
     [C.success, 'Meets target'],
     [C.warning, 'Needs attention'],
     [C.danger, 'At risk'],
     [C.faint, 'Not assessed'],
+    [null, 'Informational'], // hollow ring — matches neutral metric dots
   ];
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
@@ -373,8 +404,14 @@ function drawLegend(doc: jsPDF, y: number): void {
   const total = widths.reduce((a, b) => a + b, 0) + itemGap * (items.length - 1);
   let x = PAGE.w - PAGE.mx - total;
   items.forEach(([color, label], i) => {
-    set.fill(doc, color);
-    doc.circle(x + 1, y - 1.1, 1.1, 'F');
+    if (color) {
+      set.fill(doc, color);
+      doc.circle(x + 1, y - 1.1, 1.1, 'F');
+    } else {
+      set.draw(doc, C.muted);
+      doc.setLineWidth(0.3);
+      doc.circle(x + 1, y - 1.1, 0.9, 'S');
+    }
     set.text(doc, C.muted);
     doc.text(label, x + 2 + dotGap, y);
     x += (widths[i] ?? 0) + itemGap;
@@ -416,14 +453,14 @@ function renderPostureCover(
   );
 
   if (summary.postureScore != null) {
-    const protectedPct = c.anyAvCoveragePct;
-    const caption =
-      protectedPct != null ? `${protectedPct}% of devices running real-time protection` : '';
+    // The meter must be captioned with what it plots (the composite score) —
+    // captioning it with the AV-coverage % made the bar read as coverage.
+    const caption = 'Overall posture score across assessed controls';
     const unprotected = c.unprotectedCount ?? agg.unprotectedCount;
     const protectedCount = Math.max(0, deviceCount - unprotected);
     const stats: ScoreStat[] = [
-      { label: 'Protected', value: `${protectedCount}/${deviceCount}`, tone: unprotected > 0 ? C.warning : C.success },
-      { label: 'Critical findings', value: String(agg.criticalCount), tone: agg.criticalCount > 0 ? C.danger : C.success },
+      { label: 'AV protected', value: `${protectedCount}/${deviceCount}`, tone: unprotected > 0 ? C.warning : C.success },
+      { label: 'Critical patches/vulns', value: String(agg.criticalCount), tone: agg.criticalCount > 0 ? C.danger : C.success },
       { label: 'Unprotected', value: String(unprotected), tone: unprotected > 0 ? C.danger : C.success },
     ];
     y = drawScorecard(doc, summary.postureScore, caption, stats, y);
@@ -439,7 +476,7 @@ function renderPostureCover(
       label: 'Unprotected devices',
       value: String(c.unprotectedCount ?? 0),
       status: (c.unprotectedCount ?? 0) > 0 ? 'bad' : 'good',
-      target: '0',
+      target: 'none', // "0" beside a value of 0 read as a duplicated numeral
     },
     { label: 'AV definitions current', value: pctStr(c.avDefinitionsCurrentPct), status: pctStatus(c.avDefinitionsCurrentPct), target: '>=95%' },
     { label: 'Disk encryption', value: pctStr(c.encryptionPct), status: pctStatus(c.encryptionPct), target: '>=90%' },
@@ -470,7 +507,7 @@ function renderPostureCover(
     { label: 'Active PAM rules', value: String(p.activePamRules ?? 0), status: (p.activePamRules ?? 0) > 0 ? 'good' : 'neutral' },
     {
       label: 'Elevations in window',
-      value: `${p.elevationsInWindow ?? 0} (${p.elevationsApproved ?? 0} appr / ${p.elevationsDenied ?? 0} den)`,
+      value: `${p.elevationsInWindow ?? 0} (${p.elevationsApproved ?? 0} approved / ${p.elevationsDenied ?? 0} denied)`,
       status: 'neutral',
     },
     { label: 'MFA step-up enforced', value: yesNo(p.mfaStepUpEnforced), status: boolStatus(p.mfaStepUpEnforced) },
@@ -480,23 +517,120 @@ function renderPostureCover(
   const products = summary.securityProducts ?? [];
   if (products.length > 0) {
     y = drawSectionHeading(doc, 'Security products in use', y + 3);
-    set.text(doc, C.ink);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     for (const prod of products) {
+      if (y > PAGE.footY - 8) break; // never draw into the footer
       const catLabel = PRODUCT_CATEGORY_LABELS[prod.category] ?? prod.category;
       // Skip the category tag when the product name already conveys it
       // (avoids "Backup (local) (Backup)").
       const cat = prod.product.toLowerCase().includes(catLabel.toLowerCase()) ? '' : ` (${catLabel})`;
       const coverage = prod.deviceCoverage != null ? ` — ${prod.deviceCoverage} devices` : '';
-      const sync = prod.lastSyncStatus ? ` [sync: ${prod.lastSyncStatus}]` : '';
-      const degraded = prod.active === false ? ' — DEGRADED' : '';
+      // Sync status is only interesting when it's a problem; "[sync: success]"
+      // is machine noise on a client-facing page.
+      const syncOk = !prod.lastSyncStatus || /^(ok|success|succeeded)$/i.test(prod.lastSyncStatus);
+      const sync = syncOk ? '' : ` — sync ${prod.lastSyncStatus}`;
+      const degraded = prod.active === false ? ' — not reporting' : '';
       set.fill(doc, prod.active === false ? C.warning : C.success);
       doc.circle(PAGE.mx + 1.4, y - 1.2, 1.2, 'F');
       set.text(doc, C.ink);
-      doc.text(`${prod.product}${cat}${coverage}${sync}${degraded}`, PAGE.mx + 5, y);
+      doc.text(`${prod.product}${cat}${coverage}`, PAGE.mx + 5, y);
+      if (sync || degraded) {
+        const baseW = doc.getTextWidth(`${prod.product}${cat}${coverage}`);
+        set.text(doc, C.warning);
+        doc.text(`${sync}${degraded}`, PAGE.mx + 5 + baseW, y);
+      }
       y += 5.6;
     }
+  }
+
+  drawRecommendedActions(doc, summary, agg, y + 3);
+}
+
+// ----------------------------------------------------------------------------
+// Recommended actions: plain-language next steps derived from failing controls.
+// Bridges the gap between "score 79 GOOD" and the red rows beneath it — the
+// reader leaves with a plan instead of a contradiction.
+// ----------------------------------------------------------------------------
+
+type Recommendation = { severity: 'bad' | 'warn'; text: string };
+
+function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): Recommendation[] {
+  const c = summary.controls ?? {};
+  const p = summary.privilegedAccess ?? {};
+  const recs: Recommendation[] = [];
+  const unprotected = c.unprotectedCount ?? agg.unprotectedCount;
+  if (unprotected > 0) {
+    recs.push({ severity: 'bad', text: `Deploy protection to the ${unprotected} unprotected device${unprotected === 1 ? '' : 's'} — these are the fleet's most exposed endpoints.` });
+  }
+  if (agg.criticalCount > 0) {
+    recs.push({ severity: 'bad', text: `Remediate ${agg.criticalCount} critical patch/vulnerability finding${agg.criticalCount === 1 ? '' : 's'} (see per-device detail).` });
+  }
+  if (c.backupConfigured === false) {
+    recs.push({ severity: 'bad', text: 'Configure backups — no backup solution is currently detected for this organization.' });
+  }
+  if (p.mfaStepUpEnforced === false) {
+    recs.push({ severity: 'bad', text: 'Enforce MFA step-up so privileged actions require a second factor.' });
+  }
+  if (c.localAdminExposurePct != null && c.localAdminExposurePct > 10) {
+    recs.push({ severity: 'bad', text: `Reduce local administrator rights — ${c.localAdminExposurePct}% of devices exceed the 10% exposure target.` });
+  }
+  if (c.identityProviderConnected === false) {
+    recs.push({ severity: 'warn', text: 'Connect an identity provider to centralize account and access control.' });
+  }
+  if (c.dnsFilteringActive === false) {
+    recs.push({ severity: 'warn', text: 'Enable DNS filtering to block malicious domains before devices reach them.' });
+  }
+  if (c.encryptionPct != null && c.encryptionPct < 90) {
+    recs.push({ severity: 'warn', text: `Encrypt remaining disks — ${c.encryptionPct}% of devices are encrypted against a 90% target.` });
+  }
+  if (c.edrCoveragePct != null && c.edrCoveragePct < 90) {
+    recs.push({ severity: 'warn', text: `Extend managed EDR coverage (currently ${c.edrCoveragePct}%, target 90%).` });
+  }
+  if (c.patchCurrentPct != null && c.patchCurrentPct < 90) {
+    recs.push({ severity: 'warn', text: `Bring pending patches current — ${c.patchCurrentPct}% of devices are patch-current against a 90% target.` });
+  }
+  if (c.avDefinitionsCurrentPct != null && c.avDefinitionsCurrentPct < 95) {
+    recs.push({ severity: 'warn', text: 'Update stale antivirus definitions on lagging devices.' });
+  }
+  if (c.firewallPct != null && c.firewallPct < 95) {
+    recs.push({ severity: 'warn', text: `Enable the host firewall on remaining devices (currently ${c.firewallPct}%).` });
+  }
+  if (p.uacInterceptionEnabled === false) {
+    recs.push({ severity: 'warn', text: 'Enable UAC interception so admin elevations are governed and auditable.' });
+  }
+  return [...recs.filter((r) => r.severity === 'bad'), ...recs.filter((r) => r.severity === 'warn')];
+}
+
+/** Numbered, priority-ordered next steps; renders only what fits above the footer. */
+function drawRecommendedActions(
+  doc: jsPDF,
+  summary: PostureSummary,
+  agg: PostureAggregates,
+  top: number,
+): void {
+  const all = buildRecommendations(summary, agg);
+  if (all.length === 0) return;
+  const rowH = 5.4;
+  const maxY = PAGE.footY - 6;
+  if (top + 5 + rowH > maxY) return; // no room for even one item — skip cleanly
+  const fit = Math.min(all.length, 5, Math.floor((maxY - top - 5) / rowH));
+  let y = drawSectionHeading(doc, 'Recommended actions', top);
+  const recs = all.slice(0, fit);
+  doc.setFontSize(9);
+  recs.forEach((rec, i) => {
+    set.text(doc, rec.severity === 'bad' ? C.danger : C.warning);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${i + 1}.`, PAGE.mx + 1, y);
+    set.text(doc, C.ink);
+    doc.setFont('helvetica', 'normal');
+    doc.text(rec.text, PAGE.mx + 6.5, y);
+    y += rowH;
+  });
+  if (all.length > recs.length) {
+    set.text(doc, C.muted);
+    doc.setFontSize(7.5);
+    doc.text(`+ ${all.length - recs.length} further recommendation${all.length - recs.length === 1 ? '' : 's'} available in Breeze`, PAGE.mx + 6.5, y);
   }
 }
 
@@ -511,15 +645,22 @@ const POSTURE_COLUMNS: PostureCol[] = [
   { key: 'os', label: 'OS', w: 16, halign: 'left' },
   { key: 'site', label: 'Site', w: 24, halign: 'left' },
   { key: 'protection', label: 'Protection', w: 30, halign: 'left' },
-  { key: 'avDefinitionsAgeDays', label: 'AV Age (d)', w: 16, halign: 'center' },
+  { key: 'avDefinitionsAgeDays', label: 'AV Age (days)', w: 16, halign: 'center' },
   { key: 'encryption', label: 'Encryption', w: 22, halign: 'center' },
   { key: 'firewall', label: 'Firewall', w: 16, halign: 'center' },
   { key: 'localAdmins', label: 'Local Admins', w: 19, halign: 'center' },
   { key: 'pendingPatches', label: 'Pending', w: 16, halign: 'center' },
   { key: 'criticalPatches', label: 'Critical', w: 16, halign: 'center' },
-  { key: 'openVulnHigh', label: 'Vuln High', w: 16, halign: 'center' },
-  { key: 'openVulnCritical', label: 'Vuln Crit', w: 16, halign: 'center' },
+  { key: 'openVulnHigh', label: 'High', w: 16, halign: 'center' },
+  { key: 'openVulnCritical', label: 'Critical', w: 16, halign: 'center' },
   { key: 'cisPassRate', label: 'CIS %', w: 14, halign: 'center' },
+];
+
+// Column groups rendered as a spanning first header row, so "Pending" and
+// "Critical" unambiguously read as *patch* counts next to the vuln pair.
+const POSTURE_COLUMN_GROUPS: { label: string; keys: string[] }[] = [
+  { label: 'Patches', keys: ['pendingPatches', 'criticalPatches'] },
+  { label: 'Vulnerabilities', keys: ['openVulnHigh', 'openVulnCritical'] },
 ];
 
 const num = (v: unknown): number | null =>
@@ -544,12 +685,23 @@ const PRODUCT_CATEGORY_LABELS: Record<string, string> = {
 function postureCellColor(key: string, raw: unknown): RGB | null {
   const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   const n = num(raw);
-  if (raw == null || s === '' || s === 'no data' || s === 'n/a' || s === '—') return C.faint;
+  // Empty-value guard applies to null/missing and blank-ish strings only —
+  // booleans must fall through to the per-column rules (a bare `s === ''`
+  // check used to swallow firewall true/false into faint gray).
+  if (raw == null || (typeof raw === 'string' && (s === '' || s === 'no data' || s === 'n/a' || s === '—'))) {
+    return C.faint;
+  }
   switch (key) {
     case 'firewall':
       return raw === true || s === 'yes' ? C.success : raw === false || s === 'no' ? C.danger : null;
     case 'encryption':
-      return /encrypt|enabled|on|yes/.test(s) ? C.success : /no|off|disabled/.test(s) ? C.danger : null;
+      // Negative forms first: "unencrypted" contains "encrypt" and must not
+      // match the positive pattern.
+      return /unencrypt|not encrypt|\bno\b|\boff\b|disabled/.test(s)
+        ? C.danger
+        : /encrypt|enabled|\bon\b|yes/.test(s)
+          ? C.success
+          : null;
     case 'protection':
       return null;
     case 'avDefinitionsAgeDays':
@@ -582,14 +734,54 @@ function formatPostureCell(key: string, raw: unknown): string {
   return s;
 }
 
+type HeadCell = {
+  content: string;
+  rowSpan?: number;
+  colSpan?: number;
+  styles?: { halign?: 'left' | 'center'; valign?: 'middle' };
+};
+
 function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: BuildOpts): void {
   doc.addPage();
   drawTitleBlock(doc, 'Per-device detail', '', `${rows.length} device${rows.length === 1 ? '' : 's'}`, PAGE.bandH + 8);
-  const head = [POSTURE_COLUMNS.map((col) => col.label)];
-  const body = rows.map((row) => POSTURE_COLUMNS.map((col) => formatPostureCell(col.key, row[col.key])));
+
+  // Drop the CIS column when no device was assessed — a full column of dashes
+  // is noise, and its absence matches the cover's "Not assessed" line.
+  const cols = POSTURE_COLUMNS.filter(
+    (col) => col.key !== 'cisPassRate' || rows.some((r) => num(r.cisPassRate) != null),
+  );
+  // Scale fixed widths so the table always fills the content width exactly
+  // (aligning its right edge with the page-1 elements), whatever columns are active.
+  const contentW = PAGE.w - PAGE.mx * 2;
+  const scale = contentW / cols.reduce((a, c) => a + c.w, 0);
+
+  // Two-tier header: ungrouped columns span both rows; "Patches" and
+  // "Vulnerabilities" group labels sit above their sub-columns so "Pending" /
+  // "Critical" unambiguously read as patch counts.
+  const groupOf = (key: string) => POSTURE_COLUMN_GROUPS.find((g) => g.keys.includes(key));
+  const headTop: HeadCell[] = [];
+  const headSub: HeadCell[] = [];
+  for (const col of cols) {
+    const group = groupOf(col.key);
+    if (!group) {
+      headTop.push({ content: col.label, rowSpan: 2, styles: { halign: col.halign, valign: 'middle' } });
+    } else {
+      if (headTop[headTop.length - 1]?.content !== group.label) {
+        headTop.push({
+          content: group.label,
+          colSpan: cols.filter((c) => group.keys.includes(c.key)).length,
+          styles: { halign: 'center' },
+        });
+      }
+      headSub.push({ content: col.label, styles: { halign: 'center' } });
+    }
+  }
+  const head = [headTop, headSub];
+
+  const body = rows.map((row) => cols.map((col) => formatPostureCell(col.key, row[col.key])));
   const columnStyles: Record<number, { cellWidth: number; halign: 'left' | 'center' }> = {};
-  POSTURE_COLUMNS.forEach((col, i) => {
-    columnStyles[i] = { cellWidth: col.w, halign: col.halign };
+  cols.forEach((col, i) => {
+    columnStyles[i] = { cellWidth: col.w * scale, halign: col.halign };
   });
 
   // Totals row: sum the count columns, average CIS, so the evidence table
@@ -598,7 +790,7 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
   const cisVals = rows.map((r) => num(r.cisPassRate)).filter((n): n is number => n != null);
   const cisAvg = cisVals.length ? Math.round(cisVals.reduce((a, b) => a + b, 0) / cisVals.length) : null;
   const foot = [
-    POSTURE_COLUMNS.map((col) => {
+    cols.map((col) => {
       switch (col.key) {
         case 'hostname':
           return `Totals · ${rows.length} device${rows.length === 1 ? '' : 's'}`;
@@ -629,21 +821,25 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
     showFoot: 'lastPage',
     theme: 'grid',
     styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },
-    headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold', fontSize: 7.5, lineColor: C.primary },
+    headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold', fontSize: 7.5, lineColor: C.white, lineWidth: 0.15 },
     footStyles: { fillColor: C.panel, textColor: C.ink, fontStyle: 'bold', fontSize: 7.5, lineColor: C.rule },
     alternateRowStyles: { fillColor: C.zebra },
     columnStyles,
     didParseCell: (data: CellHookData) => {
-      const col = POSTURE_COLUMNS[data.column.index];
-      if (!col) return;
       if (data.section === 'body') {
+        const col = cols[data.column.index];
+        if (!col) return;
         const raw = rows[data.row.index]?.[col.key];
         const color = postureCellColor(col.key, raw);
         if (color) {
           data.cell.styles.textColor = color;
-          if (color === C.danger) data.cell.styles.fontStyle = 'bold';
+          // Bold at-risk AND needs-attention values so the signal survives
+          // grayscale printing, where amber/green/red numerals converge.
+          if (color === C.danger || color === C.warning) data.cell.styles.fontStyle = 'bold';
         }
       } else if (data.section === 'foot') {
+        const col = cols[data.column.index];
+        if (!col) return;
         // Red totals when there are open criticals; amber for pending/high.
         const n = num(data.cell.text.join(''));
         if ((col.key === 'criticalPatches' || col.key === 'openVulnCritical') && (n ?? 0) > 0) {
@@ -689,7 +885,7 @@ function formatGenericCell(raw: unknown, timezone: string): string {
 }
 
 function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: BuildOpts): void {
-  const title = titleCase(opts.reportType);
+  const title = reportTypeLabel(opts.reportType);
   drawTitleBlock(doc, title, '', `Generated ${opts.generatedAt}   ·   ${rows.length} record${rows.length === 1 ? '' : 's'}`, PAGE.bandH + 8);
 
   if (rows.length === 0) {

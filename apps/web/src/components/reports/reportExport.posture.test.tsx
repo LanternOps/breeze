@@ -19,6 +19,7 @@ vi.mock('jspdf', () => {
     roundedRect: () => doc,
     circle: () => doc,
     line: () => doc,
+    lines: () => doc,
     addImage: () => doc,
     getTextWidth: () => 10,
     text: (t: unknown) => {
@@ -152,8 +153,8 @@ describe('exportReport — security_compliance_posture PDF', () => {
     expect(joined).toContain('CIS hardening');
     expect(joined).toContain('95% (2/3)'); // pass-rate with assessed/total-scope coverage
     expect(joined).toContain('DNS filtering active'); // grid shows clean Yes/No
-    expect(joined).toContain('DEGRADED'); // degraded product flagged
-    expect(joined).toContain('[sync: error]'); // sync detail surfaced on the product
+    expect(joined).toContain('not reporting'); // degraded product flagged, plain language
+    expect(joined).toContain('sync error'); // sync problem surfaced on the product
   });
 
   it('omits the CIS hardening line when the section is toggled off', async () => {
@@ -177,6 +178,6 @@ describe('exportReport — security_compliance_posture PDF', () => {
         branding: noBranding,
       })
     ).resolves.toBeUndefined();
-    expect(textCalls.join('\n')).toContain('Security Compliance Posture'); // humanized title
+    expect(textCalls.join('\n')).toContain('Security & Compliance Posture'); // display label keeps the ampersand
   });
 });

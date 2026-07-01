@@ -98,7 +98,13 @@ export async function exportReport(
   }
 
   // PDF — branded scorecard cover (posture) or branded generic table.
-  const generatedAt = formatDateTime(new Date(), { timeZone: timezone });
+  // Medium date + short time ("Jul 1, 2026, 4:15 PM"): an outward-facing
+  // document doesn't need seconds precision.
+  const generatedAt = formatDateTime(new Date(), {
+    timeZone: timezone,
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
   const branding = opts.branding ?? (await loadPartnerBranding());
   const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, branding });
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
