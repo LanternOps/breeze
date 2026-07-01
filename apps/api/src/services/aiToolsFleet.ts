@@ -298,7 +298,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
-    deviceArgs: ['deviceIds'],
+    deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
       description: 'Manage patches: list patches present on the org\'s devices (optionally scoped to a single device via deviceId, which also returns per-device install status), check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
