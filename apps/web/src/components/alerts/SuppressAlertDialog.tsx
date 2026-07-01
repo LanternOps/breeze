@@ -30,19 +30,15 @@ type SuppressAlertDialogProps = {
 
 export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, onConfirm }: SuppressAlertDialogProps) {
   const [choice, setChoice] = useState<Choice>('24h');
-  const [error, setError] = useState<string | null>(null);
 
   const confirm = () => {
     if (choice === 'forever') {
       onConfirm(null);
       return;
     }
+    // `choice` is a PresetId here, so the preset always resolves.
     const preset = PRESETS.find((p) => p.id === choice);
-    if (!preset) {
-      setError('Pick a suppression duration.');
-      return;
-    }
-    onConfirm(new Date(Date.now() + preset.ms));
+    if (preset) onConfirm(new Date(Date.now() + preset.ms));
   };
 
   return (
@@ -66,7 +62,7 @@ export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, o
               name="suppress-duration"
               value={p.id}
               checked={choice === p.id}
-              onChange={() => { setChoice(p.id); setError(null); }}
+              onChange={() => setChoice(p.id)}
               data-testid={`suppress-duration-${p.id}`}
             />
             <span>{p.label}</span>
@@ -78,18 +74,12 @@ export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, o
             name="suppress-duration"
             value="forever"
             checked={choice === 'forever'}
-            onChange={() => { setChoice('forever'); setError(null); }}
+            onChange={() => setChoice('forever')}
             data-testid="suppress-duration-forever"
           />
           <span>Forever</span>
         </label>
       </fieldset>
-
-      {error && (
-        <p className="mt-3 text-sm text-destructive" data-testid="suppress-duration-error">
-          {error}
-        </p>
-      )}
 
       <div className="mt-5 flex justify-end gap-2">
         <button
