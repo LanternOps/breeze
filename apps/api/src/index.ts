@@ -199,6 +199,7 @@ import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/r
 import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
 import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
+import { initializeReportScheduleWorker, shutdownReportScheduleWorker } from './jobs/reportScheduleWorker';
 import { initializeCveEnrichmentWorker, shutdownCveEnrichmentWorker } from './jobs/cveEnrichmentWorker';
 import { initializeVulnerabilityJobs, shutdownVulnerabilityJobs } from './jobs/vulnerabilityJobs';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
@@ -1162,6 +1163,7 @@ async function initializeWorkers(): Promise<void> {
     ['unifiTelemetryWorker', initializeUnifiTelemetryWorker],
     ['snmpRetention', initializeSnmpRetention],
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
+    ['reportScheduleWorker', initializeReportScheduleWorker],
     ['cveEnrichmentWorker', initializeCveEnrichmentWorker],
     ['vulnerabilityJobs', initializeVulnerabilityJobs],
     ['dnsSyncWorker', initializeDnsSyncJob],
@@ -1317,6 +1319,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownIncidentTimelineEnricher,
     shutdownIncidentCorrelationWorker,
     shutdownPatchComplianceReportWorker,
+    shutdownReportScheduleWorker,
     shutdownCveEnrichmentWorker,
     shutdownVulnerabilityJobs,
     shutdownDnsSyncJob,

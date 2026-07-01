@@ -1,0 +1,509 @@
+/**
+ * Report schedule worker.
+ *
+ * Executes saved reports whose `schedule` is daily/weekly/monthly. Until this
+ * worker existed the builder let users pick a cadence (persisted on
+ * `reports.schedule` + `config.schedule.{time,day,date}`) but nothing ever ran
+ * them — schedules were silently dead.
+ *
+ * - `check-schedules` repeats every 5 minutes, computes each report's most
+ *   recent scheduled occurrence in the org's timezone (org -> partner -> UTC
+ *   chain, same resolution the rest of the platform uses), and enqueues a run
+ *   when `lastGeneratedAt` predates that occurrence.
+ * - `run-scheduled-report` mirrors the on-demand POST /reports/:id/generate
+ *   path: insert a report_runs row, generateReport, store the snapshot. When
+ *   `config.emailRecipients` is set, recipients get an email with a CSV
+ *   attachment (tabular formats) or a link into the app (PDF renders
+ *   client-side).
+ * - Without Redis the check falls back to inline processing, matching the
+ *   other queue workers.
+ */
+
+import { and, eq, ne } from 'drizzle-orm';
+import { Job, Queue, Worker } from 'bullmq';
+
+import * as dbModule from '../db';
+import { reports, reportRuns, organizations, partners } from '../db/schema';
+import { generateReport } from '../services/reportGenerationService';
+import { getEmailService } from '../services/email';
+import { renderLayout, renderButton, renderParagraph, escapeHtml } from '../services/emailLayout';
+import { getBullMQConnection, isRedisAvailable } from '../services/redis';
+import { resolveEffectiveTimezone, canonicalizeTimezone, rowsToCsv } from '@breeze/shared';
+import { attachWorkerObservability } from './workerObservability';
+
+const { db } = dbModule;
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
+
+const REPORT_SCHEDULE_QUEUE = 'report-schedules';
+const CHECK_INTERVAL_MS = 5 * 60 * 1000;
+// Attachments above this size are dropped in favour of the in-app link.
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+interface CheckSchedulesJobData {
+  type: 'check-schedules';
+}
+
+interface RunScheduledReportJobData {
+  type: 'run-scheduled-report';
+  reportId: string;
+  /** Wall-clock occurrence key the run was enqueued for (dedupe + audit). */
+  occurrenceKey: number;
+}
+
+type ReportScheduleJobData = CheckSchedulesJobData | RunScheduledReportJobData;
+
+let reportScheduleQueue: Queue<ReportScheduleJobData> | null = null;
+let reportScheduleWorker: Worker<ReportScheduleJobData> | null = null;
+
+// ─── Occurrence math ─────────────────────────────────────────────────────────
+// All comparisons happen in wall-clock space for the report's timezone, encoded
+// as a sortable number (YYYYMMDDHHmm). This avoids DST/offset conversions: a
+// "daily at 09:00" report is due once the org's local clock passes 09:00,
+// whatever UTC instant that is.
+
+export type ScheduleCadence = 'daily' | 'weekly' | 'monthly';
+
+export type ScheduleConfig = {
+  /** 24h "HH:MM"; defaults to 09:00 (the builder's default). */
+  time?: string;
+  /** Weekly: lowercase weekday name; defaults to monday. */
+  day?: string;
+  /** Monthly: day-of-month "1".."31" (clamped to month length); defaults to 1. */
+  date?: string;
+};
+
+const DAY_INDEX: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+};
+
+const WEEKDAY_SHORT_INDEX: Record<string, number> = {
+  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+};
+
+type WallClock = { y: number; m: number; d: number; hh: number; mm: number; weekday: number };
+
+/** Decompose a UTC instant into wall-clock parts for a timezone. */
+export function wallClockIn(instant: Date, timeZone: string): WallClock {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      weekday: 'short',
+    }).formatToParts(instant);
+  } catch {
+    // Bad/unknown zone string in stored settings — fall back to UTC.
+    return wallClockIn(instant, 'UTC');
+  }
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return {
+    y: Number(get('year')),
+    m: Number(get('month')),
+    d: Number(get('day')),
+    hh: Number(get('hour')),
+    mm: Number(get('minute')),
+    weekday: WEEKDAY_SHORT_INDEX[get('weekday')] ?? 0,
+  };
+}
+
+const keyOf = (y: number, m: number, d: number, hh: number, mm: number): number =>
+  ((y * 100 + m) * 100 + d) * 10000 + hh * 100 + mm;
+
+/** Pure calendar arithmetic (timezone-free): shift a Y/M/D by whole days. */
+function shiftDays(y: number, m: number, d: number, days: number): { y: number; m: number; d: number } {
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
+}
+
+const daysInMonth = (y: number, m: number): number => new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+function parseTime(time: string | undefined): { hh: number; mm: number } {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(time ?? '');
+  const hh = match ? Number(match[1]) : 9;
+  const mm = match ? Number(match[2]) : 0;
+  if (!match || hh > 23 || mm > 59) return { hh: 9, mm: 0 };
+  return { hh, mm };
+}
+
+/**
+ * The most recent scheduled occurrence at or before `now`, as a wall-clock key
+ * in `timeZone`. A report is due when its lastGeneratedAt (in the same
+ * wall-clock space) predates this key.
+ */
+export function lastOccurrenceKey(
+  now: Date,
+  cadence: ScheduleCadence,
+  cfg: ScheduleConfig,
+  timeZone: string,
+): number {
+  const nowWc = wallClockIn(now, timeZone);
+  const nowKey = keyOf(nowWc.y, nowWc.m, nowWc.d, nowWc.hh, nowWc.mm);
+  const { hh, mm } = parseTime(cfg.time);
+
+  if (cadence === 'daily') {
+    let day = { y: nowWc.y, m: nowWc.m, d: nowWc.d };
+    if (keyOf(day.y, day.m, day.d, hh, mm) > nowKey) day = shiftDays(day.y, day.m, day.d, -1);
+    return keyOf(day.y, day.m, day.d, hh, mm);
+  }
+
+  if (cadence === 'weekly') {
+    const target = DAY_INDEX[(cfg.day ?? 'monday').toLowerCase()] ?? 1;
+    const delta = (nowWc.weekday - target + 7) % 7;
+    let day = shiftDays(nowWc.y, nowWc.m, nowWc.d, -delta);
+    if (keyOf(day.y, day.m, day.d, hh, mm) > nowKey) day = shiftDays(day.y, day.m, day.d, -7);
+    return keyOf(day.y, day.m, day.d, hh, mm);
+  }
+
+  // monthly
+  const wanted = Math.max(1, Math.min(31, Number(cfg.date) || 1));
+  let y = nowWc.y;
+  let m = nowWc.m;
+  let d = Math.min(wanted, daysInMonth(y, m));
+  if (keyOf(y, m, d, hh, mm) > nowKey) {
+    m -= 1;
+    if (m === 0) { m = 12; y -= 1; }
+    d = Math.min(wanted, daysInMonth(y, m));
+  }
+  return keyOf(y, m, d, hh, mm);
+}
+
+/** Due when the report has never run, or last ran before the latest occurrence. */
+export function isDue(
+  lastGeneratedAt: Date | null,
+  occurrenceKey: number,
+  timeZone: string,
+): boolean {
+  if (!lastGeneratedAt) return true;
+  const wc = wallClockIn(lastGeneratedAt, timeZone);
+  return keyOf(wc.y, wc.m, wc.d, wc.hh, wc.mm) < occurrenceKey;
+}
+
+// ─── Due-report discovery ────────────────────────────────────────────────────
+
+type DueCandidate = {
+  id: string;
+  schedule: ScheduleCadence;
+  lastGeneratedAt: Date | null;
+  config: Record<string, unknown>;
+  timeZone: string;
+};
+
+function scheduleConfigOf(config: Record<string, unknown>): ScheduleConfig {
+  const raw = config.schedule;
+  return raw && typeof raw === 'object' ? (raw as ScheduleConfig) : {};
+}
+
+// Org -> partner -> UTC timezone chain (no site axis for org-level reports),
+// same source-of-truth rules as featureConfigResolver's partnerTimezoneFrom.
+function timezoneFor(
+  orgSettings: unknown,
+  partnerTzColumn: string | null,
+  partnerSettings: unknown,
+): string {
+  const orgTz =
+    orgSettings && typeof orgSettings === 'object'
+      ? (orgSettings as Record<string, unknown>).timezone
+      : null;
+  const partnerColumn = canonicalizeTimezone(partnerTzColumn);
+  const partnerFromSettings =
+    partnerSettings && typeof partnerSettings === 'object'
+      ? (partnerSettings as Record<string, unknown>).timezone
+      : null;
+  const partnerTz =
+    partnerColumn !== null && partnerColumn !== 'UTC'
+      ? partnerColumn
+      : typeof partnerFromSettings === 'string' && partnerFromSettings.length > 0
+        ? partnerFromSettings
+        : partnerColumn;
+  return resolveEffectiveTimezone({
+    siteTz: null,
+    orgTz: typeof orgTz === 'string' ? orgTz : null,
+    partnerTz,
+  });
+}
+
+export async function findDueReports(now: Date): Promise<Array<{ id: string; occurrenceKey: number }>> {
+  const rows = await db
+    .select({
+      id: reports.id,
+      schedule: reports.schedule,
+      lastGeneratedAt: reports.lastGeneratedAt,
+      config: reports.config,
+      orgSettings: organizations.settings,
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
+    })
+    .from(reports)
+    .innerJoin(organizations, eq(reports.orgId, organizations.id))
+    .leftJoin(partners, eq(organizations.partnerId, partners.id))
+    .where(ne(reports.schedule, 'one_time'));
+
+  const due: Array<{ id: string; occurrenceKey: number }> = [];
+  for (const row of rows) {
+    const candidate: DueCandidate = {
+      id: row.id,
+      schedule: row.schedule as ScheduleCadence,
+      lastGeneratedAt: row.lastGeneratedAt,
+      config: (row.config ?? {}) as Record<string, unknown>,
+      timeZone: timezoneFor(row.orgSettings, row.partnerTimezone, row.partnerSettings),
+    };
+    const key = lastOccurrenceKey(now, candidate.schedule, scheduleConfigOf(candidate.config), candidate.timeZone);
+    if (isDue(candidate.lastGeneratedAt, key, candidate.timeZone)) {
+      due.push({ id: candidate.id, occurrenceKey: key });
+    }
+  }
+  return due;
+}
+
+// ─── Execution ───────────────────────────────────────────────────────────────
+
+function recipientsOf(config: Record<string, unknown>): string[] {
+  const raw = config.emailRecipients;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((r): r is string => typeof r === 'string')
+    .map((r) => r.trim())
+    .filter((r) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r));
+}
+
+async function emailReportRun(opts: {
+  reportName: string;
+  reportType: string;
+  format: string;
+  recipients: string[];
+  rows: unknown[];
+}): Promise<void> {
+  const email = getEmailService();
+  if (!email) {
+    console.warn('[ReportScheduleWorker] Email service not configured; skipping recipients for', opts.reportName);
+    return;
+  }
+  const base = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+  const link = `${base}/reports`;
+
+  const attachments = [] as Array<{ filename: string; content: Buffer; contentType?: string }>;
+  if (opts.rows.length > 0 && opts.format !== 'pdf') {
+    const csv = rowsToCsv(opts.rows);
+    const content = Buffer.from(csv, 'utf8');
+    if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
+      const dateStr = new Date().toISOString().split('T')[0];
+      attachments.push({
+        filename: `${opts.reportType}-report-${dateStr}.csv`,
+        content,
+        contentType: 'text/csv',
+      });
+    }
+  }
+
+  const bodyText =
+    opts.rows.length > 0
+      ? `Your scheduled report "${opts.reportName}" has been generated with ${opts.rows.length} record${opts.rows.length === 1 ? '' : 's'}.`
+      : `Your scheduled report "${opts.reportName}" has been generated.`;
+  const attachmentNote =
+    attachments.length > 0
+      ? 'The data is attached as CSV; open Breeze for the fully formatted report.'
+      : 'Open Breeze to view and download the formatted report.';
+
+  await email.sendEmail({
+    to: opts.recipients,
+    subject: `Scheduled report ready: ${opts.reportName}`,
+    html: renderLayout({
+      title: 'Scheduled report',
+      preheader: bodyText,
+      heading: 'Scheduled report ready',
+      body: [
+        renderParagraph(escapeHtml(bodyText)),
+        renderParagraph(escapeHtml(attachmentNote), { muted: true }),
+        renderButton('View in Breeze', link),
+      ].join(''),
+    }),
+    text: `${bodyText}\n${attachmentNote}\n${link}`,
+    attachments,
+  });
+}
+
+export async function processRunScheduledReport(data: RunScheduledReportJobData): Promise<void> {
+  const [report] = await db
+    .select()
+    .from(reports)
+    .where(and(eq(reports.id, data.reportId), ne(reports.schedule, 'one_time')))
+    .limit(1);
+  if (!report) return; // deleted or switched to one_time since enqueue
+
+  const config = (report.config ?? {}) as Record<string, unknown>;
+
+  const [run] = await db
+    .insert(reportRuns)
+    .values({ reportId: report.id, status: 'running', startedAt: new Date() })
+    .returning();
+  if (!run) throw new Error(`Failed to create run for scheduled report ${report.id}`);
+
+  // Stamp lastGeneratedAt up front so a crash mid-generation doesn't cause a
+  // tight retry loop every check interval; the failed run row records the error.
+  await db
+    .update(reports)
+    .set({ lastGeneratedAt: new Date(), updatedAt: new Date() })
+    .where(eq(reports.id, report.id));
+
+  try {
+    // System context: scheduled runs execute with full org scope (no user
+    // site-permission filter — parity with a report owner generating it).
+    const result = await generateReport(report.type, report.orgId, config, undefined);
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    const rowCount = result.rowCount ?? rows.length;
+    await db
+      .update(reportRuns)
+      .set({
+        status: 'completed',
+        completedAt: new Date(),
+        outputUrl: `/api/reports/runs/${run.id}/download`,
+        result,
+        rowCount,
+      })
+      .where(eq(reportRuns.id, run.id));
+
+    const recipients = recipientsOf(config);
+    if (recipients.length > 0) {
+      try {
+        await emailReportRun({
+          reportName: report.name,
+          reportType: report.type,
+          format: report.format,
+          recipients,
+          rows,
+        });
+      } catch (err) {
+        // Delivery failure must not fail the (already stored) run.
+        console.error(`[ReportScheduleWorker] Email delivery failed for report ${report.id}:`, err);
+      }
+    }
+  } catch (err) {
+    await db
+      .update(reportRuns)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errorMessage: err instanceof Error ? err.message : 'Failed to generate report',
+      })
+      .where(eq(reportRuns.id, run.id));
+    throw err;
+  }
+}
+
+async function processCheckSchedules(): Promise<void> {
+  const due = await findDueReports(new Date());
+  if (due.length === 0) return;
+  console.log(`[ReportScheduleWorker] ${due.length} scheduled report(s) due`);
+
+  for (const item of due) {
+    if (!isRedisAvailable()) {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: item.id, occurrenceKey: item.occurrenceKey });
+      continue;
+    }
+    // Occurrence-keyed jobId dedupes double-enqueue across overlapping checks.
+    await getReportScheduleQueue().add(
+      'run-scheduled-report',
+      { type: 'run-scheduled-report', reportId: item.id, occurrenceKey: item.occurrenceKey },
+      {
+        jobId: `report-sched-run-${item.id}-${item.occurrenceKey}`,
+        removeOnComplete: { count: 500 },
+        removeOnFail: { count: 500 },
+      },
+    );
+  }
+}
+
+// ─── Queue / worker lifecycle ────────────────────────────────────────────────
+
+export function getReportScheduleQueue(): Queue<ReportScheduleJobData> {
+  if (!reportScheduleQueue) {
+    reportScheduleQueue = new Queue<ReportScheduleJobData>(REPORT_SCHEDULE_QUEUE, {
+      connection: getBullMQConnection(),
+    });
+  }
+  return reportScheduleQueue;
+}
+
+/** Inline scheduler for Redis-less deploys: check on an interval, run inline. */
+let inlineTimer: ReturnType<typeof setInterval> | null = null;
+
+export async function initializeReportScheduleWorker(): Promise<void> {
+  if (!isRedisAvailable()) {
+    if (!inlineTimer) {
+      inlineTimer = setInterval(() => {
+        runWithSystemDbAccess(processCheckSchedules).catch((err) => {
+          console.error('[ReportScheduleWorker] Inline schedule check failed:', err);
+        });
+      }, CHECK_INTERVAL_MS);
+      inlineTimer.unref?.();
+      console.warn('[ReportScheduleWorker] Redis unavailable; using inline interval scheduler');
+    }
+    return;
+  }
+
+  if (reportScheduleWorker) return;
+
+  reportScheduleWorker = new Worker<ReportScheduleJobData>(
+    REPORT_SCHEDULE_QUEUE,
+    async (job: Job<ReportScheduleJobData>) => {
+      return runWithSystemDbAccess(async () => {
+        switch (job.data.type) {
+          case 'check-schedules':
+            return processCheckSchedules();
+          case 'run-scheduled-report':
+            return processRunScheduledReport(job.data);
+          default:
+            throw new Error(`Unknown report schedule job type: ${(job.data as { type: string }).type}`);
+        }
+      });
+    },
+    {
+      connection: getBullMQConnection(),
+      concurrency: 2,
+      lockDuration: 300_000,
+      stalledInterval: 60_000,
+      maxStalledCount: 2,
+    },
+  );
+  attachWorkerObservability(reportScheduleWorker, 'reportScheduleWorker');
+  reportScheduleWorker.on('error', (error) => {
+    console.error('[ReportScheduleWorker] Worker error:', error);
+  });
+  reportScheduleWorker.on('failed', (job, error) => {
+    console.error(`[ReportScheduleWorker] Job ${job?.id} failed:`, error);
+  });
+
+  const queue = getReportScheduleQueue();
+  await queue.add(
+    'check-schedules',
+    { type: 'check-schedules' },
+    {
+      repeat: { every: CHECK_INTERVAL_MS },
+      jobId: 'report-schedules-check',
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 50 },
+    },
+  );
+
+  console.log('[ReportScheduleWorker] Initialized');
+}
+
+export async function shutdownReportScheduleWorker(): Promise<void> {
+  if (inlineTimer) {
+    clearInterval(inlineTimer);
+    inlineTimer = null;
+  }
+  if (reportScheduleWorker) {
+    await reportScheduleWorker.close();
+    reportScheduleWorker = null;
+  }
+  if (reportScheduleQueue) {
+    await reportScheduleQueue.close();
+    reportScheduleQueue = null;
+  }
+  console.log('[ReportScheduleWorker] Shut down');
+}
