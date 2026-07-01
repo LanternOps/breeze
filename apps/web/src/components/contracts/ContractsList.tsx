@@ -13,6 +13,8 @@ import {
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { StatusPill } from '../billing/shared/StatusPill';
+import { SortableTh } from '../billing/shared/SortableTh';
+import { TableSkeleton } from '../billing/shared/TableSkeleton';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { useBulkSelection } from '../billing/bulk/useBulkSelection';
@@ -59,6 +61,13 @@ function writeFilters(f: Filters): void {
   window.location.hash = next ? `#${next}` : '';
 }
 
+// ---- client-side sort ----------------------------------------------------
+type SortKey = 'name' | 'org' | 'status' | 'estimate' | 'start';
+interface Sort { key: SortKey; dir: 'asc' | 'desc' }
+
+const num = (s: string | null | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
+const ts = (d: string | null | undefined) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
+
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
@@ -78,6 +87,8 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   const [filters, setFilters] = useState<Filters>(() =>
     lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : readFilters(),
   );
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<Sort | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -125,11 +136,11 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     return () => window.removeEventListener('hashchange', onHash);
   }, [lockedOrgId]);
 
-  // Clear bulk selection whenever the server-side filters change so stale
-  // invisible rows are never acted on. No client-side search in this component.
+  // Clear bulk selection whenever the server-side filters or client-side search
+  // change so stale, now-invisible rows are never acted on.
   useEffect(() => {
     bulk.clear();
-  }, [filters.orgId, filters.status, bulk.clear]);
+  }, [filters.orgId, filters.status, search, bulk.clear]);
 
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
@@ -141,7 +152,43 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   const newContractHref = lockedOrgId ? `/contracts/new#orgId=${lockedOrgId}` : '/contracts/new';
 
-  const rows = useMemo(() => contracts, [contracts]);
+  const toggleSort = (key: SortKey) =>
+    setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+
+  // ---- derived rows: client-side search (name/org) then optional sort ------
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let out = contracts.filter((c) => {
+      if (!q) return true;
+      return c.name.toLowerCase().includes(q) || orgName(c.orgId).toLowerCase().includes(q);
+    });
+    if (sort) {
+      const dir = sort.dir === 'asc' ? 1 : -1;
+      out = [...out].sort((a, b) => {
+        switch (sort.key) {
+          case 'name':
+            return a.name.localeCompare(b.name) * dir;
+          case 'org':
+            return orgName(a.orgId).localeCompare(orgName(b.orgId)) * dir;
+          case 'status':
+            return a.status.localeCompare(b.status) * dir;
+          case 'estimate':
+            return (num(a.estimatedPeriodValue) - num(b.estimatedPeriodValue)) * dir;
+          case 'start': {
+            const av = ts(a.startDate);
+            const bv = ts(b.startDate);
+            if (av == null && bv == null) return 0;
+            if (av == null) return 1;
+            if (bv == null) return -1;
+            return (av - bv) * dir;
+          }
+          default:
+            return 0;
+        }
+      });
+    }
+    return out;
+  }, [contracts, search, sort, orgName]);
 
   // Only DRAFT contracts can be bulk-deleted, so the action is offered only when
   // the selection actually contains one — otherwise it's a confusing no-op.
@@ -152,7 +199,8 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
   // first-run empty state (offer "create your first contract").
-  const hasActiveFilters = Boolean(filters.status) || (!lockedOrgId && Boolean(filters.orgId));
+  const hasActiveFilters =
+    Boolean(search.trim()) || Boolean(filters.status) || (!lockedOrgId && Boolean(filters.orgId));
 
   // Estimated monthly recurring across active contracts (normalized by cadence).
   const mrr = useMemo(() => {
@@ -219,6 +267,14 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3" data-testid="contracts-filters">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name or org"
+          aria-label="Search contracts"
+          data-testid="contracts-search"
+          className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+        />
         {!lockedOrgId && (
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Organization
@@ -262,9 +318,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       {/* Table */}
       <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
-          <div className="flex items-center justify-center py-12" data-testid="contracts-loading">
-            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          </div>
+          <TableSkeleton cols={lockedOrgId ? 6 : 7} />
         ) : error ? (
           <div className="p-6 text-center text-sm text-destructive" data-testid="contracts-error">
             {error}
@@ -284,7 +338,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
               <p className="text-sm text-muted-foreground">No contracts match these filters.</p>
               <button
                 type="button"
-                onClick={() => applyFilter(lockedOrgId ? { status: '' } : { status: '', orgId: '' })}
+                onClick={() => { setSearch(''); applyFilter(lockedOrgId ? { status: '' } : { status: '', orgId: '' }); }}
                 data-testid="contracts-clear-filters"
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
@@ -325,12 +379,15 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                         onChange={(e) => (e.target.checked ? bulk.selectAll(rows.map((r) => r.id)) : bulk.clear())}
                       />
                     </th>
-                    <th className="px-3 py-3 font-medium">Name</th>
-                    {!lockedOrgId && <th className="px-3 py-3 font-medium">Organization</th>}
-                    <th className="px-3 py-3 font-medium">Status</th>
+                    <SortableTh label="Name" sortKey="name" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-name" />
+                    {!lockedOrgId && (
+                      <SortableTh label="Organization" sortKey="org" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-org" />
+                    )}
+                    <SortableTh label="Status" sortKey="status" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-status" />
+                    <SortableTh label="Start date" sortKey="start" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-start" />
                     <th className="px-3 py-3 font-medium">Cadence</th>
                     <th className="px-3 py-3 font-medium">Next bill</th>
-                    <th className="px-3 py-3 text-right font-medium">Est. / period</th>
+                    <SortableTh label="Est. / period" sortKey="estimate" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} align="right" testId="contracts-sort-estimate" />
                   </tr>
                 </thead>
                 <tbody>
@@ -360,6 +417,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                           testId={`contract-status-${ctr.id}`}
                         />
                       </td>
+                      <td className="px-3 py-3">{formatDate(ctr.startDate)}</td>
                       <td className="px-3 py-3">{formatCadence(ctr.intervalMonths)}</td>
                       <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
                       <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>

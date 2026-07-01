@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
@@ -10,6 +9,7 @@ import { listQuotes, createQuote } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { useBulkSelection } from '../bulk/useBulkSelection';
 import { BulkActionBar } from '../bulk/BulkActionBar';
+import { SortableTh } from '../shared/SortableTh';
 import {
   type Quote,
   type QuoteStatus,
@@ -258,35 +258,6 @@ export function QuotesPage() {
     [bulk, loadQuotes, filters],
   );
 
-  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => {
-    const active = sort?.key === sortKey;
-    const ariaLabel = active
-      ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
-      : `Sort by ${label}`;
-    return (
-      <th className="px-3 py-3 text-right font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-        <button
-          type="button"
-          onClick={() => toggleSort(sortKey)}
-          className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
-          data-testid={`quotes-sort-${sortKey}`}
-          aria-label={ariaLabel}
-        >
-          {label}
-          {active ? (
-            sort!.dir === 'asc' ? (
-              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-            ) : (
-              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-            )
-          ) : (
-            <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-        </button>
-      </th>
-    );
-  };
-
   return (
     <div className="space-y-5" data-testid="quotes-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -419,8 +390,8 @@ export function QuotesPage() {
                     <th className="px-3 py-3 font-medium">Number</th>
                     <th className="px-3 py-3 font-medium">Organization</th>
                     <th className="px-3 py-3 font-medium">Status</th>
-                    <SortHeader label="Total" sortKey="total" />
-                    <SortHeaderLeft label="Created" sortKey="created" sort={sort} onSort={toggleSort} />
+                    <SortableTh label="Total" sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="quotes-sort-total" />
+                    <SortableTh label="Created" sortKey="created" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="quotes-sort-created" />
                   </tr>
                 </thead>
                 <tbody>
@@ -564,39 +535,6 @@ export function QuotesPage() {
         </div>
       </Dialog>
     </div>
-  );
-}
-
-// Left-aligned sortable header (Created). Right-aligned headers use the inline
-// SortHeader defined in the component.
-function SortHeaderLeft({
-  label, sortKey, sort, onSort,
-}: { label: string; sortKey: SortKey; sort: Sort | null; onSort: (k: SortKey) => void }) {
-  const active = sort?.key === sortKey;
-  const ariaLabel = active
-    ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
-    : `Sort by ${label}`;
-  return (
-    <th className="px-3 py-3 font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-      <button
-        type="button"
-        onClick={() => onSort(sortKey)}
-        className="inline-flex items-center gap-1 hover:text-foreground"
-        data-testid={`quotes-sort-${sortKey}`}
-        aria-label={ariaLabel}
-      >
-        {label}
-        {active ? (
-          sort!.dir === 'asc' ? (
-            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-          )
-        ) : (
-          <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
-        )}
-      </button>
-    </th>
   );
 }
 
