@@ -147,11 +147,30 @@ Partners can customize the acknowledgement email's **subject** and **body** (pla
 
 ### Review queue
 
-Emails from **unknown senders** and any that failed to process land in a **review queue** instead of creating tickets automatically -- so unsolicited mail doesn't flood the queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it.
+Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Two kinds of mail land here:
+
+- Any email that **failed to process** -- for example, one with no usable sender address.
+- Emails from **unknown senders**, if your **Unknown senders** setting is left on its default. See [Unknown sender handling](#unknown-sender-handling) below to change that behavior.
 
 <Aside>
   An email with no usable sender address can't become a ticket. Those appear in the review queue to be dismissed or followed up out-of-band.
 </Aside>
+
+### Unknown sender handling
+
+A sender is "unknown" when it isn't a portal user, a mapped customer domain, or a reply to an existing ticket. Choose what happens to that mail under **Settings → Ticketing → Inbound email**, in the **Unknown senders** section:
+
+| Option | Behavior |
+|---|---|
+| **Quarantine for review** (default) | Held in the Tickets **Review queue** for manual convert or dismiss. |
+| **Route to the triage organization** | Auto-creates a ticket directly in a designated triage organization instead of quarantining it. This option requires a **Default triage organization** to already be selected above it -- it stays disabled until you pick one. |
+| **Drop silently** | No ticket, no review-queue entry, no autoresponse. Breeze still keeps an internal record of the message. Use this to keep unmapped spam out of both triage and the review queue. |
+
+Pick the **Default triage organization** from the dropdown above the Unknown senders options before you can select "Route to the triage organization."
+
+#### Dropping mail that fails sender authentication
+
+A separate checkbox on the same card, **Drop mail that fails sender authentication (SPF/DKIM/DMARC)**, controls mail that fails those checks -- independently of the Unknown senders setting above. When it's off (the default), unverified mail is quarantined for review. When it's on, unverified mail is dropped silently instead -- no ticket, no review-queue entry, no autoresponse. This applies to **all** unverified senders, including a message from an otherwise-recognized customer that individually fails the check, and takes priority over whatever you've chosen for unknown senders.
 
 ### Connecting a Microsoft 365 support mailbox
 

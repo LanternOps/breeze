@@ -344,6 +344,81 @@ Platform-admin scope. Backs the third-party application patching catalog and AI 
 | `POST` | `/security/recommendations/:id/complete` | Mark recommendation complete |
 | `POST` | `/security/recommendations/:id/dismiss` | Dismiss recommendation |
 
+### Incident Response
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/incidents/feed` | Unified tracked-incident + EDR-finding feed (see below) |
+
+`GET /incidents/feed` merges native tracked incidents (`kind: "tracked"`, `source: "breeze"`) with not-yet-promoted Huntress and SentinelOne findings (`kind: "finding"`, `source: "huntress"` or `"s1"`) into a single feed, ordered by severity rank (p1 first) then detection time (most recent first).
+
+Query params (all optional): `orgId`, `kind` (`tracked` | `finding`), `source` (`breeze` | `huntress` | `s1`), `page` (default `1`), `limit` (integer, `1`-`100`, default `25`).
+
+Response:
+
+```json
+{
+  "data": [
+    {
+      "kind": "tracked",
+      "source": "breeze",
+      "sourceId": "…",
+      "title": "Ransomware detected on WIN-ACCT-04",
+      "severity": "p1",
+      "edrStatus": null,
+      "status": "detected",
+      "deviceId": "…",
+      "detectedAt": "2026-06-30T18:04:11Z",
+      "trackedIncidentId": "…",
+      "linkOut": null
+    }
+  ],
+  "pagination": { "page": 1, "limit": 25, "total": 3 }
+}
+```
+
+`severity` is `p1`-`p4`. `trackedIncidentId` is `null` unless a finding has already been promoted to a tracked incident; `linkOut` carries a link to the EDR console for finding rows when the provider exposes one. Raw EDR finding rows additionally require `devices:read` -- a caller with only `alerts:read` sees native tracked incidents only.
+
+## Privileged Access Management (PAM)
+
+Just-in-time elevation: UAC-intercept and technician JIT-admin requests, approvals, and the executable/signer rules that auto-decide them. Full request/response shapes and the elevation flow live in [PAM API](/reference/pam-api/); this section covers the endpoint surface and rule-matching fields.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/pam/elevation-requests` | List and filter elevation requests |
+| `GET` | `/pam/active` | List currently-active (unexpired, approved) elevations |
+| `POST` | `/pam/elevation-requests/:id/respond` | Approve or deny a pending request |
+| `POST` | `/pam/elevation-requests/:id/revoke` | Revoke an active elevation before it expires |
+| `GET` | `/pam/rules` | List executable/signer auto-decision rules |
+| `POST` | `/pam/rules` | Create a rule |
+| `POST` | `/pam/rules/preview` | Preview which recent requests a draft rule would have matched |
+| `PATCH` | `/pam/rules/:id` | Update a rule |
+| `DELETE` | `/pam/rules/:id` | Delete a rule |
+| `GET` | `/pam/signer-groups` | List reusable code-signer groups |
+| `POST` | `/pam/signer-groups` | Create a signer group |
+| `PATCH` | `/pam/signer-groups/:id` | Update a signer group |
+| `DELETE` | `/pam/signer-groups/:id` | Delete a signer group |
+| `GET` | `/pam/config` | Get the org's default unmatched-request verdict |
+| `PUT` | `/pam/config` | Set the org's default unmatched-request verdict |
+
+### Rule matching fields
+
+A rule matches an elevation candidate on one or more of these fields (`POST`/`PATCH /pam/rules`); at least one is required:
+
+| Field | Type | Notes |
+|---|---|---|
+| `matchSigner` | string | Code-signer name (executable rule). Mutually exclusive with `matchSignerGroupId` |
+| `matchSignerThumbprint` | string | SHA-256 Authenticode signer certificate thumbprint -- 64 hex characters (`/^[0-9a-fA-F]{64}$/`), stored lowercased. Pins the rule to one exact code-signing certificate. Mutually exclusive with `matchSignerGroupId` |
+| `matchSignerGroupId` | uuid \| null | Reference a reusable [signer group](/reference/pam-api/#signer-groups) instead of `matchSigner`/`matchSignerThumbprint` |
+| `matchHash` | string | SHA-256 file hash, 64 hex characters |
+| `matchPathGlob` | string | Executable path glob |
+| `matchParentImage` | string | Parent process image path |
+| `matchCommandLine` | string | Command-line substring/glob |
+| `matchUser` | string | Subject username |
+| `matchAdGroup` | string | Subject AD group |
+
+`matchSignerGroupId` cannot be combined with `matchSigner` or `matchSignerThumbprint` on the same rule -- a rule pins to a group or to a direct signer identity, not both; the API rejects the combination with a 400.
+
 ## Software Inventory
 
 | Method | Path | Description |

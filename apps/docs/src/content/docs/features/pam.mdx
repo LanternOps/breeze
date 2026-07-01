@@ -90,6 +90,10 @@ Criteria identify *what* is being elevated and *who* is asking. A rule must carr
 
 Any criterion can be **negated** — turn on "does not match" beneath a field to make the rule fire when that criterion is *not* satisfied (for example, "signer is *not* Microsoft Corporation"). Negation never turns missing data into a match: if the agent didn't report the value a negated criterion checks, the rule simply doesn't match.
 
+<Aside type="note">
+  You can also pin an executable rule to the **exact code-signing certificate** a binary was signed with -- its SHA-256 Authenticode **thumbprint** -- rather than trusting the signer's name alone. This is a much stronger guarantee: a certificate's subject name (its Common Name) can be spoofed with a look-alike cert, but its SHA-256 thumbprint can't practically be forged for a different certificate. **Thumbprint pinning is API-only today** -- there's no console field for it yet, so it's set via the `matchSignerThumbprint` field on the [PAM API](/reference/pam-api/), not the Rules tab UI. It also **fails closed**: a binary that doesn't report a thumbprint at all -- unsigned executables, or devices still running an agent version that doesn't yet extract Authenticode thumbprints -- will never match a rule that has a thumbprint pinned, even if the signer name matches. A rule uses a direct signer (name and/or thumbprint) *or* a signer group, never both at once.
+</Aside>
+
 Evaluation order is: a **Software Policy** allowlist/blocklist match decides first; if nothing there applies, PAM rules run in priority order and the first match wins. Use the enable/disable switch to retire a rule without deleting it, or **Add rule** to create one from scratch.
 
 The Rules tab also carries a **Default verdict** control — what happens to an elevation that matches no software policy and no rule. The default is **Require approval** (the request waits for a human); you can switch it to **Auto-deny** to fail unmatched elevations closed instead.
@@ -108,7 +112,11 @@ Signer Groups let you define a named list of trusted code-signing publishers onc
 
 </Steps>
 
-In a rule's **Executable** criteria, pick the group from the **Signer group** dropdown instead of typing a single signer — the rule then matches when the executable is signed by *any* publisher in the group. A rule references either a single signer *or* a signer group, not both. A group that's still referenced by a rule can't be deleted; remove those references first.
+In a rule's **Executable** criteria, pick the group from the **Signer group** dropdown instead of typing a single signer — the rule then matches when the executable is signed by *any* publisher in the group. A rule references either a direct signer (name and/or thumbprint, see above) *or* a signer group, never both. A group that's still referenced by a rule can't be deleted; remove those references first.
+
+<Aside type="note">
+  Each publisher entry in a group can also be pinned to that publisher's exact **SHA-256 Authenticode thumbprint**, instead of or in addition to its name -- the same strong-vs-weak distinction described above applies per entry. As with the rule-level thumbprint field, **pinning a thumbprint on a group member is API-only today**; there's no row-level field for it in the console yet. And it's fail-closed the same way: a binary that doesn't report a thumbprint (unsigned, or an older agent that hasn't yet started extracting Authenticode thumbprints) will never match a group entry that has one pinned, regardless of whether the signer name matches.
+</Aside>
 
 ### Audit
 

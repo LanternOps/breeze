@@ -25,7 +25,9 @@ A policy is owned at one of two scopes:
 - **Organization** — the policy belongs to a single customer organization and can only be assigned within that org's hierarchy. This is the default.
 - **Partner-wide (all orgs)** — the policy belongs to your partner account and can apply across **every** organization you manage. Use this for fleet-wide standards you want enforced everywhere without recreating the policy per customer.
 
-You choose the ownership scope when creating the policy. Partner-wide policies can only be created and managed while your scope selector is set to **All orgs**; organization users see them in their effective configuration but cannot edit them.
+You choose the ownership scope when creating the policy. Partner-wide policies can only be created and managed by partner-level users with full access to every organization under the partner (not users restricted to a subset of organizations); organization-scoped users see partner-wide policies in their effective configuration but cannot edit them.
+
+Backup settings cannot be configured on a partner-wide policy — see [Backup](#backup) below.
 
 ## Feature types
 
@@ -69,7 +71,7 @@ Compliance rules support three enforcement levels:
 
 3. Enter a **Name** and optional **Description**.
 
-4. Choose the **Ownership scope**: **Organization** (applies within one customer) or **Partner-wide (all orgs)** (applies across every organization you manage). Partner-wide is available only when your scope selector is set to **All orgs**.
+4. If you're a partner-level user with full access to every organization, an **Apply to** picker appears: choose **All organizations (partner-wide)** to apply the policy across every organization you manage, or **A specific organization** and pick the target org from the dropdown. Users scoped to a single organization (or with access to only some organizations) don't see this picker — their policy is always scoped to their own organization. Note that Backup settings can't be configured on a partner-wide policy.
 
 5. Set **Status** to **Active**. Inactive and archived policies are not evaluated by the scheduler.
 
@@ -88,6 +90,7 @@ Open the policy detail editor and click the tab for the feature you want to conf
 | **Auto-approve** | Automatically approve patches matching the configured criteria |
 | **Schedule** | Frequency (daily/weekly/monthly) and time of day for patch runs |
 | **Reboot policy** | How to handle required reboots after patching |
+| **Manage Windows Update exclusively through Breeze** | Windows-only. Off by default. When on, the agent suppresses the device's native Windows Update automatic-install channel (it sets the `NoAutoUpdate` registry value under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`) so that device only receives updates through Breeze's schedule and approval rings — no surprise reboots or out-of-band patches. Turning it back off returns update control to native Windows Update. |
 
 ### Alert Rules
 
@@ -125,6 +128,10 @@ Optionally link a title and message template to control notification formatting.
 | **Remediation script** | Script to run when `enforce` mode detects non-compliance |
 
 ### Backup
+
+<Aside type="caution">
+  Backup is **not available on partner-wide (all organizations) policies**. Backup settings are always tied to a single organization, so a policy owned at the partner level has no organization to attach them to — attempting to add or save a Backup feature link on a partner-wide policy is rejected. Configure Backup on an organization-owned policy instead.
+</Aside>
 
 Backup feature links use **inline settings** stored in the `config_policy_backup_settings` table (one row per feature link).
 

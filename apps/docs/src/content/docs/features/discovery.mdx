@@ -315,6 +315,16 @@ Each asset in the response includes monitoring status flags:
 | `monitoringEnabled` | `true` if either SNMP or network monitoring is active |
 | `linkedDeviceName` | Display name or hostname of the linked enrolled device, if any |
 
+### Network Device Detail Page
+
+Clicking a network-discovered device in the unified **Devices** list opens a dedicated detail page (`/devices/network/:id`) instead of a popup. The page has breadcrumbs back to **Devices** and a working back button, so you can navigate in and out without losing your place.
+
+The page has two tabs — **Overview** (identity, IP/MAC, manufacturer/model, SNMP data, ping, open ports) and **Monitoring** (SNMP/network monitoring status, linked device, discovery metadata). The selected tab is reflected in the URL hash (e.g. `#monitoring`), so you can bookmark or share a link directly to a specific tab.
+
+From the **Overview** tab you can override the auto-detected device type using the **Asset Type** dropdown. If a device's type was set manually, a **Reset to auto-detected** link appears so you can revert to the type the scan originally detected.
+
+From the **Monitoring** tab you can **Unlink** a device that was manually linked to an enrolled Breeze device — the Unlink action only appears for manually-linked devices, since auto-linked devices are kept in sync automatically by future scans. To link an asset to a device for the first time, use the **Manage in Discovery** link near the top of the page, which opens the asset in the Discovery view where you can complete the link (see [Linking an Asset to a Device](#linking-an-asset-to-a-device) below) and reach Proxy Access (see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui)).
+
 ### Linking an Asset to a Device
 
 Manually link a discovered asset to an enrolled device. This sets the asset status to `managed` and is used for **identity and asset tracking only** — it records which enrolled Breeze device corresponds to this discovered asset. Linking alone does not open remote access; see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui) below for proxy access.
@@ -334,11 +344,11 @@ Content-Type: application/json
 
 ### Connecting to a discovered device's web UI
 
-The asset modal includes a **Proxy Access** section that lets you open a LAN device's built-in web interface (router admin page, NAS panel, printer UI, switch management port, etc.) directly inside Breeze — no VPN required.
+The asset panel on the **Discovery** page includes a **Proxy Access** section that lets you open a LAN device's built-in web interface (router admin page, NAS panel, printer UI, switch management port, etc.) directly inside Breeze — no VPN required.
 
 <Steps>
 
-1. Open the asset modal by clicking any discovered asset in the list.
+1. Open the asset panel: on the **Discovery** page, click any discovered asset in the list. If you're on a network device's detail page (`/devices/network/:id`) instead, click **Manage in Discovery** to jump to the same panel for that asset.
 
 2. Go to the **Proxy Access** section.
 
@@ -456,6 +466,7 @@ The asset list endpoint (`GET /discovery/assets`) includes `snmpMonitoringEnable
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/discovery/assets` | List assets (`?orgId=&status=&assetType=`) |
+| GET | `/discovery/assets/:id` | Get single asset detail (identity, monitoring status, discovery metadata) |
 | POST | `/discovery/assets/:id/link` | Link asset to enrolled device |
 | POST | `/discovery/assets/:id/ignore` | Mark asset as ignored |
 | DELETE | `/discovery/assets/:id` | Delete asset and associated monitors |

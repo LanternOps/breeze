@@ -50,7 +50,7 @@ Alerts move through a lifecycle:
 | **Active** | The condition is still true and no one has responded yet |
 | **Acknowledged** | A technician has seen the alert and is investigating |
 | **Resolved** | The issue is fixed (manually or auto-resolved by the rule) |
-| **Suppressed** | Temporarily silenced until a specified time |
+| **Suppressed** | Silenced until a specified time, or indefinitely if suppressed **Forever** |
 
 ## Responding to Alerts
 
@@ -64,11 +64,23 @@ Once the underlying issue is fixed, click **Resolve**. You can optionally add a 
 
 ### Suppress an Alert
 
-If you need to silence a noisy alert during planned maintenance, click **Suppress** and pick a date/time. The alert moves to "suppressed" status until that time, then returns to active if the condition is still true.
+If you need to silence a noisy alert during planned maintenance, click **Suppress** and choose how long it should stay silenced:
+
+- **1 hour**
+- **8 hours**
+- **24 hours**
+- **7 days**
+- **Forever** -- suppresses the alert indefinitely, with no automatic expiration
+
+The alert moves to "suppressed" status and stops sending notifications. Timed suppressions are cleared automatically once the window elapses -- the alert quietly returns to **Active** status on its own (so don't be surprised if a suppressed alert reappears in the active list later without anyone touching it). **Forever** suppressions are the exception: they are never auto-expired and stay suppressed until you manually un-suppress the alert.
+
+<Aside>
+  Resolved alerts can't be suppressed. Once an alert is marked **Resolved**, the **Suppress** control is no longer shown for it -- suppression only makes sense for alerts that are still open.
+</Aside>
 
 ### Bulk Actions
 
-Select multiple alerts using the checkboxes, then choose **Acknowledge Selected** or **Resolve Selected** from the bulk action menu. You can act on up to 100 alerts at once.
+Select multiple alerts using the checkboxes, then choose **Acknowledge Selected**, **Resolve Selected**, or **Suppress Selected** from the bulk action menu. Bulk suppressing prompts for the same duration options as a single alert, including **Forever**. You can act on up to 100 alerts at once.
 
 ## Alert Correlation
 

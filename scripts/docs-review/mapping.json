@@ -354,7 +354,8 @@
     {
       "pattern": "apps/api/src/routes/incidents.ts",
       "docs": [
-        "features/incident-response.mdx"
+        "features/incident-response.mdx",
+        "reference/api.mdx"
       ]
     },
     {
@@ -1458,7 +1459,26 @@
     {
       "pattern": "apps/api/src/services/softwareDeployment.ts",
       "docs": [
-        "features/automations.mdx"
+        "features/automations.mdx",
+        "features/deployments.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/maintenanceRebootWorker.ts",
+      "docs": [
+        "features/maintenance-windows.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/pages/devices/network/**",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/NetworkDeviceDetailPage.tsx",
+      "docs": [
+        "features/discovery.mdx"
       ]
     },
     {

@@ -65,12 +65,20 @@ Breeze supports the following DNS filter providers:
 | Cisco Umbrella | `umbrella` | `apiKey`, `apiSecret`, `config.organizationId` |
 | Cloudflare Gateway | `cloudflare` | `apiKey`, `config.accountId` |
 | DNSFilter | `dnsfilter` | `apiKey` |
-| Pi-hole | `pihole` | `apiKey`, `config.apiEndpoint` |
+| Pi-hole | `pihole` | `apiKey`, `config.apiEndpoint`, optional `config.piholeVersion` |
 | AdGuard Home | `adguard_home` | `apiKey`, `apiSecret`, `config.apiEndpoint` |
 | OpenDNS | `opendns` | `apiKey` |
 | Quad9 | `quad9` | `apiKey` |
 
 For AdGuard Home, `apiKey` is the admin username and `apiSecret` is the admin password (the provider uses HTTP Basic Auth). `config.apiEndpoint` is the base URL of your AdGuard Home instance (e.g., `https://adguard.example.com`).
+
+Pi-hole supports both the legacy v5 admin API and the newer v6 session-based API. Set `config.piholeVersion` to `v5` or `v6` to match your Pi-hole installation's major version.
+
+<Aside type="caution">
+  **`config.piholeVersion` defaults to `v5` when not set.** If your Pi-hole instance is on v6, you must explicitly set `config.piholeVersion` to `v6` in the integration config — otherwise Breeze will talk to it using the legacy v5 API, which will fail or behave unpredictably against a v6 instance.
+</Aside>
+
+The meaning of `apiKey` also changes between versions: for Pi-hole **v5**, `apiKey` is the legacy admin API token (found under the Pi-hole web interface's API/Web settings). For Pi-hole **v6**, `apiKey` instead holds the **app password** — a separate v6-specific credential generated in Pi-hole's admin settings for API access. These two credential types are not interchangeable — pasting a v5 admin token into a v6 integration (or an app password into a v5 integration) will cause authentication to fail.
 
 <Aside>
   Breeze also detects DNS filtering tools during management posture assessment. If Cisco Umbrella, DNSFilter, or Netskope agents are installed on a device, they appear in the device's posture report regardless of whether an API integration is configured.
@@ -112,11 +120,12 @@ Authorization: Bearer <token>
 | `provider` | string | DNS provider: `umbrella`, `cloudflare`, `dnsfilter`, `pihole`, `adguard_home`, `opendns`, `quad9` |
 | `name` | string | Human-readable name (max 200 chars) |
 | `description` | string | Optional description (max 2,000 chars) |
-| `apiKey` | string | Provider API key (required, max 5,000 chars) |
+| `apiKey` | string | Provider API key (required, max 5,000 chars). For Pi-hole, the expected value depends on `config.piholeVersion` — see below |
 | `apiSecret` | string | Provider API secret (required for Cisco Umbrella) |
 | `config.organizationId` | string | Provider's organization ID (required for Cisco Umbrella) |
 | `config.accountId` | string | Provider's account ID (required for Cloudflare Gateway) |
 | `config.apiEndpoint` | string | Custom API endpoint URL (required for Pi-hole) |
+| `config.piholeVersion` | string | Pi-hole API version: `v5` or `v6`. **Defaults to `v5` if unset.** Determines whether `apiKey` is treated as the legacy admin token (v5) or the app password (v6) |
 | `config.syncInterval` | integer | Event sync interval in minutes (5-1440, default varies by provider) |
 | `config.retentionDays` | integer | Event retention period in days (1-365) |
 | `config.categories` | string[] | Threat categories to sync (max 100 entries) |
@@ -390,3 +399,6 @@ After adding domains to a policy, verify the `syncStatus` is `synced` (not `pend
 
 **MFA required error when creating or deleting integrations.**
 Creating and deleting DNS filter integrations require MFA verification. Ensure the authenticated user has completed MFA for the current session. The `requireMfa()` middleware returns a 403 if MFA has not been verified.
+
+**Pi-hole v6 sync fails with HTTP 429 and `no_seats`.**
+Pi-hole v6's admin API is session-based and only allows a limited number of concurrent API sessions ("seats"). If a sync attempt fails with HTTP 429 and an error body containing `no_seats`, all available session seats are currently in use — this is not a generic rate limit, so retrying immediately usually won't help. This typically happens when other clients (Pi-hole's own admin web UI, another integration, or a stale session that hasn't expired yet) are holding the remaining seats. Wait for existing sessions to expire, close other concurrent connections to the Pi-hole API, and then retry the sync. If this happens repeatedly, consider reducing how many other tools or browser tabs stay logged into the Pi-hole admin interface at the same time.
