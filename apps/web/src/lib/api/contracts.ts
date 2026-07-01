@@ -12,6 +12,7 @@
 // (e.g. '150.00'), matching the invoice client's string-money convention.
 
 import { fetchWithAuth } from '../../stores/auth';
+import type { StatusPillRole } from '../../components/billing/invoiceTypes';
 
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type ContractBillingTiming = 'advance' | 'arrears';
@@ -170,13 +171,17 @@ export const CONTRACT_STATUS_LABELS: Record<ContractStatus, string> = {
   expired: 'Expired',
 };
 
-// Tailwind badge classes per status (mirrors the invoice STATUS_COLORS style).
-export const CONTRACT_STATUS_COLORS: Record<ContractStatus, string> = {
-  draft: 'border-border bg-muted text-muted-foreground',
-  active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  paused: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  cancelled: 'border-border bg-muted text-muted-foreground line-through',
-  expired: 'border-border bg-muted text-muted-foreground',
+// Contracts share the invoice/quote semantic pill vocabulary (STATUS_PILL roles)
+// instead of raw emerald/amber palette hues, so a contract's "Active" green
+// matches an invoice's "Paid" green. Rendered via the shared <StatusPill role>.
+// active→success, draft→neutral, paused/expired→warning (lapsing),
+// cancelled→neutral with the historical line-through preserved as className.
+export const CONTRACT_STATUS_ROLES: Record<ContractStatus, { role: StatusPillRole; label: string; className?: string }> = {
+  draft: { role: 'neutral', label: CONTRACT_STATUS_LABELS.draft },
+  active: { role: 'success', label: CONTRACT_STATUS_LABELS.active },
+  paused: { role: 'warning', label: CONTRACT_STATUS_LABELS.paused },
+  cancelled: { role: 'neutral', label: CONTRACT_STATUS_LABELS.cancelled, className: 'line-through' },
+  expired: { role: 'warning', label: CONTRACT_STATUS_LABELS.expired },
 };
 
 /** Human cadence from intervalMonths: 1→Monthly, 3→Quarterly, 12→Annual, else "Every N months". */

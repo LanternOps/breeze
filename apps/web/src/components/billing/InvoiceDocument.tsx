@@ -6,7 +6,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import {
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLine,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   formatDate,
   formatMoney,
@@ -16,6 +16,7 @@ import {
   pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
+import { StatusPill } from './shared/StatusPill';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -107,12 +108,11 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
             {/* The "Invoice" type label is redundant on an unnumbered draft, where the
                 heading above already reads "Invoice" and the status pill reads "Draft". */}
             {invoice.invoiceNumber && <p className="text-sm font-medium text-muted-foreground">Invoice</p>}
-            <span
-              className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`}
-              aria-label={`Status: ${statusLabel(invoice)}`}
-            >
-              {statusLabel(invoice)}
-            </span>
+            <StatusPill
+              role={STATUS_ROLES[invoice.status].role}
+              label={statusLabel(invoice)}
+              className={STATUS_ROLES[invoice.status].className}
+            />
             <dl className="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
               {invoice.issueDate && (
                 <div className="flex gap-2"><dt>Issued</dt><dd className="font-medium text-foreground/80">{formatDate(invoice.issueDate)}</dd></div>

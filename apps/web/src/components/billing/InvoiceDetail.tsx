@@ -12,7 +12,7 @@ import {
   type InvoicePayment,
   type PaymentMethod,
   PAYMENT_METHOD_LABELS,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   formatDate,
   formatMoney,
@@ -23,6 +23,7 @@ import {
   sellerLines,
   computeInvoiceProfit,
 } from './invoiceTypes';
+import { StatusPill } from './shared/StatusPill';
 import { MarginPanel } from './billingUi';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -320,9 +321,12 @@ export default function InvoiceDetail({ detail, onChanged }: Props) {
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
-              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`} data-testid="invoice-detail-status" aria-label={`Status: ${statusLabel(invoice)}`}>
-                {statusLabel(invoice)}
-              </span>
+              <StatusPill
+                role={STATUS_ROLES[invoice.status].role}
+                label={statusLabel(invoice)}
+                className={STATUS_ROLES[invoice.status].className}
+                testId="invoice-detail-status"
+              />
               <span className="text-xs text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
             </div>
             <dl className="space-y-1 text-sm tabular-nums">

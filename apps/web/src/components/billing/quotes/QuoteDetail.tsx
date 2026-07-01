@@ -10,7 +10,7 @@ import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
   type QuoteLine,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   stripHtml,
   formatDate,
@@ -22,6 +22,7 @@ import {
   pctFromFraction,
   sellerLines,
 } from './quoteTypes';
+import { StatusPill } from '../shared/StatusPill';
 
 interface Props {
   detail: QuoteDetailData;
@@ -143,14 +144,12 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4" data-testid="quote-detail-summary">
             <div className="mb-3 flex items-center justify-between">
-              <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[quote.status]}`}
-                data-testid="quote-detail-status"
-              >
-                {/* Real visually-hidden text rather than aria-label on a non-
-                    interactive span, which screen readers don't reliably announce. */}
-                <span className="sr-only">Status: </span>{statusLabel(quote)}
-              </span>
+              <StatusPill
+                role={STATUS_ROLES[quote.status].role}
+                label={statusLabel(quote)}
+                className={STATUS_ROLES[quote.status].className}
+                testId="quote-detail-status"
+              />
               {quote.expiryDate && (
                 <span className="text-xs text-muted-foreground">Expires {formatDate(quote.expiryDate)}</span>
               )}

@@ -13,11 +13,12 @@ import { BulkActionBar } from '../bulk/BulkActionBar';
 import {
   type Quote,
   type QuoteStatus,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   formatDate,
   formatMoney,
 } from './quoteTypes';
+import { StatusPill } from '../shared/StatusPill';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
@@ -448,14 +449,12 @@ export function QuotesPage() {
                       </td>
                       <td className="px-3 py-3">{orgName(qt.orgId)}</td>
                       <td className="px-3 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[qt.status]}`}
-                          data-testid={`quotes-status-${qt.id}`}
-                        >
-                          {/* Real visually-hidden text, not aria-label on a non-interactive
-                              span (unreliable for screen readers) — mirrors QuoteDetail. */}
-                          <span className="sr-only">Status: </span>{statusLabel(qt)}
-                        </span>
+                        <StatusPill
+                          role={STATUS_ROLES[qt.status].role}
+                          label={statusLabel(qt)}
+                          className={STATUS_ROLES[qt.status].className}
+                          testId={`quotes-status-${qt.id}`}
+                        />
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums">{formatMoney(qt.total, qt.currencyCode)}</td>
                       <td className="px-3 py-3 text-muted-foreground">{formatDate(qt.createdAt)}</td>

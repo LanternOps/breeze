@@ -14,12 +14,13 @@ import AccessDenied from '../shared/AccessDenied';
 import {
   type InvoiceStatus,
   type InvoiceSummary,
-  STATUS_COLORS,
+  STATUS_ROLES,
   STATUS_LABELS,
   statusLabel,
   formatDate,
   formatMoney,
 } from './invoiceTypes';
+import { StatusPill } from './shared/StatusPill';
 import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
@@ -580,13 +581,12 @@ export function InvoicesPage() {
                           {formatMoney(inv.balance, inv.currencyCode)}
                         </td>
                         <td className="px-3 py-3">
-                          <span
-                            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
-                            data-testid={`invoices-status-${inv.id}`}
-                            aria-label={`Status: ${statusLabel(inv)}`}
-                          >
-                            {statusLabel(inv)}
-                          </span>
+                          <StatusPill
+                            role={STATUS_ROLES[inv.status].role}
+                            label={statusLabel(inv)}
+                            className={STATUS_ROLES[inv.status].className}
+                            testId={`invoices-status-${inv.id}`}
+                          />
                         </td>
                       </tr>
                     );
@@ -621,13 +621,12 @@ export function InvoicesPage() {
                           </span>
                         )}
                       </label>
-                      <span
-                        className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
-                        data-testid={`invoices-card-status-${inv.id}`}
-                        aria-label={`Status: ${statusLabel(inv)}`}
-                      >
-                        {statusLabel(inv)}
-                      </span>
+                      <StatusPill
+                        role={STATUS_ROLES[inv.status].role}
+                        label={statusLabel(inv)}
+                        className={['shrink-0', STATUS_ROLES[inv.status].className].filter(Boolean).join(' ')}
+                        testId={`invoices-card-status-${inv.id}`}
+                      />
                     </div>
                     <div className="mt-3 space-y-1.5">
                       <CardField label="Organization">{orgName(inv.orgId)}</CardField>

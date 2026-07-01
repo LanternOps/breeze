@@ -7,12 +7,12 @@ import {
   listContracts,
   formatCadence,
   monthlyValue,
-  CONTRACT_STATUS_COLORS,
-  CONTRACT_STATUS_LABELS,
+  CONTRACT_STATUS_ROLES,
   type ContractStatus,
   type ContractSummary,
 } from '../../lib/api/contracts';
-import { formatMoney } from '../billing/invoiceTypes';
+import { formatMoney, formatDate } from '../billing/invoiceTypes';
+import { StatusPill } from '../billing/shared/StatusPill';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { useBulkSelection } from '../billing/bulk/useBulkSelection';
@@ -57,14 +57,6 @@ function writeFilters(f: Filters): void {
   if (f.status) params.set('status', f.status);
   const next = params.toString();
   window.location.hash = next ? `#${next}` : '';
-}
-
-/** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */
-function formatDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
 }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -361,12 +353,12 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                       <td className="px-3 py-3 font-medium">{ctr.name}</td>
                       {!lockedOrgId && <td className="px-3 py-3">{orgName(ctr.orgId)}</td>}
                       <td className="px-3 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[ctr.status]}`}
-                          data-testid={`contract-status-${ctr.id}`}
-                        >
-                          {CONTRACT_STATUS_LABELS[ctr.status]}
-                        </span>
+                        <StatusPill
+                          role={CONTRACT_STATUS_ROLES[ctr.status].role}
+                          label={CONTRACT_STATUS_ROLES[ctr.status].label}
+                          className={CONTRACT_STATUS_ROLES[ctr.status].className}
+                          testId={`contract-status-${ctr.id}`}
+                        />
                       </td>
                       <td className="px-3 py-3">{formatCadence(ctr.intervalMonths)}</td>
                       <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
