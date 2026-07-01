@@ -513,6 +513,7 @@ export async function generateSecurityCompliancePostureReport(
       privilegedAccess: {
         uacInterceptionEnabled: Boolean(pamCfg?.uacInterceptionEnabled),
         activePamRules: pamRuleRows.length,
+        windowDays: cfg.windowDays,
         elevationsInWindow: elevationRows.length,
         elevationsApproved,
         elevationsDenied,

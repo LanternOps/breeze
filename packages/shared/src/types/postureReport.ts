@@ -50,6 +50,8 @@ export type PostureControls = {
 export type PosturePrivilegedAccess = {
   uacInterceptionEnabled?: boolean;
   activePamRules?: number;
+  /** Length of the elevation-activity window in days (report config; default 30). */
+  windowDays?: number;
   elevationsInWindow?: number;
   elevationsApproved?: number;
   elevationsDenied?: number;

@@ -356,7 +356,7 @@ type Metric = { label: string; value: string; status: MetricStatus; target?: str
 /** Two-column metric grid: dot + label … coloured value + muted target hint. */
 function drawMetricGrid(doc: jsPDF, metrics: Metric[], top: number): number {
   const colW = (PAGE.w - PAGE.mx * 2 - 8) / 2;
-  const rowH = 6.4;
+  const rowH = 6.0;
   const rows = Math.ceil(metrics.length / 2);
   metrics.forEach((m, i) => {
     const col = i % 2;
@@ -476,6 +476,16 @@ function renderPostureCover(
       { label: 'Unprotected', value: String(unprotected), tone: unprotected > 0 ? C.danger : C.success },
     ];
     y = drawScorecard(doc, summary.postureScore, caption, stats, y);
+    // Methodology in one muted line, so "79 — GOOD" is auditable rather than oracular.
+    set.text(doc, C.faint);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text(
+      'Score: weighted per-device security factors — patching 25%, encryption 15%, AV health 15%, firewall / open ports / password policy / OS currency 10% each, admin exposure 5% — averaged across assessed devices.',
+      PAGE.mx,
+      y - 2.5,
+    );
+    y += 1.5;
   }
 
   const ccHeadingY = y + 2;
@@ -513,12 +523,13 @@ function renderPostureCover(
   }
   y = drawMetricGrid(doc, metrics, y);
 
-  y = drawSectionHeading(doc, 'Privileged access (PAM)', y + 3);
+  y = drawSectionHeading(doc, 'Privileged access (PAM)', y + 2.5);
   const pamMetrics: Metric[] = [
     { label: 'UAC interception', value: p.uacInterceptionEnabled ? 'Enabled' : 'Disabled', status: p.uacInterceptionEnabled ? 'good' : 'warn' },
     { label: 'Active PAM rules', value: String(p.activePamRules ?? 0), status: (p.activePamRules ?? 0) > 0 ? 'good' : 'neutral' },
     {
-      label: 'Elevations in window',
+      // Legacy snapshots predate windowDays; fall back to the undated label.
+      label: p.windowDays ? `Elevations (last ${p.windowDays} days)` : 'Elevations in window',
       value: `${p.elevationsInWindow ?? 0} (${p.elevationsApproved ?? 0} approved / ${p.elevationsDenied ?? 0} denied)`,
       status: 'neutral',
     },
@@ -526,13 +537,19 @@ function renderPostureCover(
   ];
   y = drawMetricGrid(doc, pamMetrics, y);
 
+  // Recommendations come before the product inventory: the reader's next step
+  // matters more than the tooling list. Reserve one product line of space so
+  // the inventory is never squeezed off the page entirely.
   const products = summary.securityProducts ?? [];
-  if (products.length > 0) {
-    y = drawSectionHeading(doc, 'Security products in use', y + 3);
+  const productReserve = products.length > 0 ? 13.5 : 0;
+  y = drawRecommendedActions(doc, summary, agg, y + 2.5, productReserve);
+
+  if (products.length > 0 && y + 8 < PAGE.footY - 9) {
+    y = drawSectionHeading(doc, 'Security products in use', y + 2.5);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     for (const prod of products) {
-      if (y > PAGE.footY - 8) break; // never draw into the footer
+      if (y > PAGE.footY - 9) break; // never draw into the glossary/footer
       const catLabel = PRODUCT_CATEGORY_LABELS[prod.category] ?? prod.category;
       // Skip the category tag when the product name already conveys it
       // (avoids "Backup (local) (Backup)").
@@ -552,11 +569,20 @@ function renderPostureCover(
         set.text(doc, C.warning);
         doc.text(`${sync}${degraded}`, PAGE.mx + 5 + baseW, y);
       }
-      y += 5.6;
+      y += 5.2;
     }
   }
 
-  drawRecommendedActions(doc, summary, agg, y + 3);
+  // Plain-language key for the acronyms a non-technical client will hit above,
+  // pinned just over the footer rule.
+  set.text(doc, C.faint);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.text(
+    'EDR: endpoint detection & response   ·   AV: antivirus   ·   MFA: multi-factor authentication   ·   UAC: Windows admin-consent prompting   ·   PAM: privileged access management   ·   CIS: Center for Internet Security benchmark',
+    PAGE.mx,
+    PAGE.footY - 2,
+  );
 }
 
 // ----------------------------------------------------------------------------
@@ -614,18 +640,24 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
   return [...recs.filter((r) => r.severity === 'bad'), ...recs.filter((r) => r.severity === 'warn')];
 }
 
-/** Numbered, priority-ordered next steps; renders only what fits above the footer. */
+/**
+ * Numbered, priority-ordered next steps; renders only what fits above the
+ * glossary/footer. Returns the y after the drawn content (or `top` if skipped).
+ */
 function drawRecommendedActions(
   doc: jsPDF,
   summary: PostureSummary,
   agg: PostureAggregates,
   top: number,
-): void {
+  reservedBelow = 0,
+): number {
   const all = buildRecommendations(summary, agg);
-  if (all.length === 0) return;
-  const rowH = 5.4;
-  const maxY = PAGE.footY - 6;
-  if (top + 5 + rowH > maxY) return; // no room for even one item — skip cleanly
+  if (all.length === 0) return top;
+  const rowH = 5.2;
+  // Keep clear of the glossary line above the footer, plus any space the
+  // caller has reserved for content that must follow this section.
+  const maxY = PAGE.footY - 9 - reservedBelow;
+  if (top + 5 + rowH > maxY) return top; // no room for even one item — skip cleanly
   const fit = Math.min(all.length, 5, Math.floor((maxY - top - 5) / rowH));
   let y = drawSectionHeading(doc, 'Recommended actions', top);
   const recs = all.slice(0, fit);
@@ -643,7 +675,9 @@ function drawRecommendedActions(
     set.text(doc, C.muted);
     doc.setFontSize(7.5);
     doc.text(`+ ${all.length - recs.length} further recommendation${all.length - recs.length === 1 ? '' : 's'} available in Breeze`, PAGE.mx + 6.5, y);
+    y += 4;
   }
+  return y;
 }
 
 // ----------------------------------------------------------------------------
