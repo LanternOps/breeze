@@ -209,7 +209,7 @@ registerTool({
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
       if (orgCondition) {
         conditions.push(
-          auth.partnerId
+          auth.scope === 'partner' && auth.partnerId
             ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
             : orgCondition
         );
@@ -236,7 +236,7 @@ registerTool({
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
       if (orgCondition) {
         conditions.push(
-          auth.partnerId
+          auth.scope === 'partner' && auth.partnerId
             ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
             : orgCondition
         );
@@ -300,7 +300,7 @@ registerTool({
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
       if (orgCondition) {
         conditions.push(
-          auth.partnerId
+          auth.scope === 'partner' && auth.partnerId
             ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
             : orgCondition
         );
@@ -364,7 +364,7 @@ registerTool({
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
       if (orgCondition) {
         conditions.push(
-          auth.partnerId
+          auth.scope === 'partner' && auth.partnerId
             ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
             : orgCondition
         );

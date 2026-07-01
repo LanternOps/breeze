@@ -82,9 +82,12 @@ function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any)
 // Dual-axis access for alert_rules (#2128): org-owned rules the caller can
 // reach OR partner-wide rules (org_id NULL) owned by the caller's own partner.
 function alertRuleWhere(auth: AuthContext): SQL | undefined {
-  const oc = alertRuleWhere(auth);
+  const oc = orgWhere(auth, alertRules.orgId);
   if (!oc) return undefined; // system scope
-  if (auth.partnerId) {
+  // Only partner-scope callers hold the partner axis — RLS's
+  // breeze_has_partner_access is false for org-scope tokens even when they
+  // carry a partnerId, so adding the branch for them would be dead code.
+  if (auth.scope === 'partner' && auth.partnerId) {
     return sql`(${oc} OR (${alertRules.orgId} IS NULL AND ${alertRules.partnerId} = ${auth.partnerId}))`;
   }
   return oc;

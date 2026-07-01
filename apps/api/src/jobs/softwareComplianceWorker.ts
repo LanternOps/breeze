@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { softwareComplianceStatus, softwarePolicies } from '../db/schema';
+import { devices, softwareComplianceStatus, softwarePolicies } from '../db/schema';
 import {
   recordSoftwarePolicyEvaluation,
   recordSoftwarePolicyViolation,
@@ -316,6 +316,18 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   const existingByDevice = await readComplianceStateByDevice(policy.id, deviceIds);
   const inventoryByDevice = await getSoftwareInventoryByDeviceIds(deviceIds);
 
+  // Device→org map for the dual-owner audit rows (#2126): a per-device event
+  // under a partner-wide policy (policy.orgId NULL) must carry the DEVICE's
+  // org so the org admin can see it, alongside the policy's partnerId.
+  const orgByDevice = new Map<string, string>();
+  for (const chunk of chunkArray(deviceIds)) {
+    const rows = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(inArray(devices.id, chunk));
+    for (const row of rows) orgByDevice.set(row.id, row.orgId);
+  }
+
   let violations = 0;
   const remediationTargets = new Set<string>();
   const complianceUpserts: Parameters<typeof upsertSoftwareComplianceStatuses>[0] = [];
@@ -361,7 +373,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         recordSoftwarePolicyViolation(policy.mode, violationsWithStableTimestamps.length);
 
         fireAudit({
-          orgId: policy.orgId,
+          orgId: policy.orgId ?? orgByDevice.get(deviceId) ?? null,
           partnerId: policy.partnerId,
           policyId: policy.id,
           deviceId,
@@ -413,7 +425,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       recordSoftwarePolicyEvaluation(policy.mode, 'unknown', Date.now() - startedAt, 'error');
 
       fireAudit({
-        orgId: policy.orgId,
+        orgId: policy.orgId ?? orgByDevice.get(deviceId) ?? null,
         partnerId: policy.partnerId,
         policyId: policy.id,
         deviceId,

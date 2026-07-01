@@ -446,8 +446,9 @@ describe('featureLinks routes', () => {
     });
 
     it('still rejects linking an org-scoped feature policy (compliance) on a partner-owned policy → 400', async () => {
-      // compliance links automationPolicies, which is still org-only (#2129
-      // will migrate it). security graduated to PARTNER_LINKABLE in #2127.
+      // TODO(#2129): compliance links automationPolicies, which is still
+      // org-only — when #2129 migrates it, switch this test to another
+      // org-only linked type. security graduated to PARTNER_LINKABLE in #2127.
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

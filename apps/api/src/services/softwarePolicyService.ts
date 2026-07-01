@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { captureException } from './sentry';
 import {
   devices,
   softwareComplianceStatus,
@@ -498,6 +499,9 @@ export async function recordSoftwarePolicyAudit(input: {
       details: input.details ?? null,
     });
   } catch (err) {
+    // Audit rows exist for accountability — losing one silently defeats the
+    // point, so surface to Sentry (mirrors auditService's exhausted-retry
+    // posture) in addition to the structured log.
     console.error('[softwarePolicyService] Failed to write policy audit record', {
       orgId: input.orgId,
       partnerId: input.partnerId,
@@ -506,5 +510,6 @@ export async function recordSoftwarePolicyAudit(input: {
       action: input.action,
       error: err,
     });
+    captureException(err);
   }
 }

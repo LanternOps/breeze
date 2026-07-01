@@ -135,18 +135,19 @@ export interface EffectiveConfiguration {
  * access (the original shape) OR owned by their own partner (partner-wide /
  * all-orgs policies, org_id NULL). System scope returns undefined (no filter).
  *
- * RLS already enforces this at the DB layer; this app-layer condition keeps
- * partner-owned policies visible to org/partner-scoped reads that filter by
- * `auth.orgCondition` (which would otherwise exclude org_id IS NULL rows).
+ * This app-layer condition keeps partner-owned policies visible to
+ * partner-scoped reads that filter by `auth.orgCondition` (which would
+ * otherwise exclude org_id IS NULL rows). RLS is STRICTER, not identical:
+ * breeze_has_partner_access only passes for partner-scope callers, so
+ * org-scope tokens (which also carry a partnerId) never see partner-wide
+ * rows — see configurationPoliciesPartnerRls.integration.test.ts. The branch
+ * is therefore gated on partner scope so app and DB agree.
  */
 function policyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(configurationPolicies.orgId);
   // System scope: no filter on either axis.
   if (!orgCond) return undefined;
-  // Org-owned rows the caller can reach, OR partner-owned rows for the caller's
-  // own partner. partner-scope callers have a partnerId; org-scope callers do
-  // not own partner-wide policies, so the partner branch is a no-op for them.
-  if (auth.partnerId) {
+  if (auth.scope === 'partner' && auth.partnerId) {
     return and(
       sql`(${orgCond} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${auth.partnerId}))`
     );

@@ -17,16 +17,17 @@ import { getPolicyOrgId } from './helpers';
 export const policiesRoutes = new Hono();
 
 // Dual-axis access condition (#2127): org-owned rows the caller can reach OR
-// partner-wide rows (org_id NULL) owned by the caller's own partner. RLS
-// enforces the same at the DB layer; this app-layer condition keeps
-// partner-owned templates visible to reads that filter by auth.orgCondition
-// (which would otherwise exclude org_id IS NULL rows). Mirrors
-// softwarePolicyAccessCondition in routes/softwarePolicies.ts (#2126).
+// partner-wide rows (org_id NULL) owned by the caller's own partner. This
+// app-layer condition keeps partner-owned templates visible to reads that
+// filter by auth.orgCondition (which would otherwise exclude org_id IS NULL
+// rows). RLS is STRICTER, not identical: breeze_has_partner_access only passes
+// for partner-scope callers, so the branch is gated on partner scope to keep
+// app and DB in agreement. Mirrors softwarePolicyAccessCondition (#2126).
 function securityPolicyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(securityPolicies.orgId);
   // System scope: no filter on either axis.
   if (!orgCond) return undefined;
-  if (auth.partnerId) {
+  if (auth.scope === 'partner' && auth.partnerId) {
     return sql`(${orgCond} OR (${securityPolicies.orgId} IS NULL AND ${securityPolicies.partnerId} = ${auth.partnerId}))`;
   }
   return orgCond;

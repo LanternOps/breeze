@@ -15,11 +15,14 @@ import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { alertRules, alertTemplates } from '../../db/schema';
+import { alertRules, alertTemplates, devices, sites } from '../../db/schema';
+import { getApplicableRules } from '../../services/alertService';
 import { createOrganization, createPartner } from './db-utils';
 
 const createdRules: string[] = [];
 const createdTemplates: string[] = [];
+const createdDevices: string[] = [];
+const createdSites: string[] = [];
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -30,7 +33,7 @@ const SYSTEM_CTX: DbAccessContext = {
 };
 
 afterEach(async () => {
-  if (createdRules.length === 0 && createdTemplates.length === 0) return;
+  if (createdRules.length === 0 && createdTemplates.length === 0 && createdDevices.length === 0) return;
   await withDbAccessContext(SYSTEM_CTX, async () => {
     for (const id of createdRules) {
       await db.delete(alertRules).where(eq(alertRules.id, id));
@@ -38,9 +41,17 @@ afterEach(async () => {
     for (const id of createdTemplates) {
       await db.delete(alertTemplates).where(eq(alertTemplates.id, id));
     }
+    for (const id of createdDevices) {
+      await db.delete(devices).where(eq(devices.id, id));
+    }
+    for (const id of createdSites) {
+      await db.delete(sites).where(eq(sites.id, id));
+    }
   });
   createdRules.length = 0;
   createdTemplates.length = 0;
+  createdDevices.length = 0;
+  createdSites.length = 0;
 });
 
 function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
@@ -258,5 +269,75 @@ describe('alert_rules RLS — dual-axis (2026-07-01 migration)', () => {
     );
     expect(deleted).toHaveLength(1);
     createdRules.splice(createdRules.indexOf(ruleId), 1);
+  });
+});
+
+
+// ============================================================
+// Evaluation fan-out (#2128): the load-bearing SQL that makes a stored
+// partner-wide rule actually FIRE. Every unit test mocks
+// alertRuleOwnershipConditionForOrg away, so this is the only place the
+// real query shape is proven against Postgres.
+// ============================================================
+
+describe('getApplicableRules — partner-wide evaluation fan-out (#2128)', () => {
+  async function seedDevice(orgId: string): Promise<string> {
+    const [site] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(sites).values({ orgId, name: 'HQ' }).returning(),
+    );
+    createdSites.push(site!.id);
+    const [device] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .insert(devices)
+        .values({
+          orgId,
+          siteId: site!.id,
+          agentId: `agent-${site!.id.slice(0, 18)}`,
+          hostname: 'fanout-test-host',
+          osType: 'windows',
+          osVersion: '10.0',
+          architecture: 'x64',
+          agentVersion: '1.0.0',
+        })
+        .returning(),
+    );
+    createdDevices.push(device!.id);
+    return device!.id;
+  }
+
+  it('a partner-wide rule matches devices in a member org; a FOREIGN partner-wide rule does not', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const deviceId = await seedDevice(orgA.id);
+
+    const templateA = await seedPartnerTemplate(partnerA.id);
+    const templateB = await seedPartnerTemplate(partnerB.id);
+    const partnerWideRuleA = await seedPartnerRule(partnerA.id, templateA);
+    const partnerWideRuleB = await seedPartnerRule(partnerB.id, templateB);
+
+    // Also an org-owned rule, to prove both axes coexist.
+    const [orgRule] = await withDbAccessContext(orgContext(orgA.id), () =>
+      db
+        .insert(alertRules)
+        .values({
+          orgId: orgA.id,
+          partnerId: null,
+          templateId: templateA,
+          name: 'Org-owned rule',
+          targetType: 'all',
+          targetId: orgA.id,
+        })
+        .returning(),
+    );
+    createdRules.push(orgRule!.id);
+
+    // The worker evaluates under system context (RLS bypass) — mirror that.
+    const applicable = await withDbAccessContext(SYSTEM_CTX, () => getApplicableRules(deviceId));
+    const ids = applicable.map((r) => r.rule.id);
+
+    expect(ids).toContain(partnerWideRuleA); // partner-wide rule FIRES for member-org device
+    expect(ids).toContain(orgRule!.id); // org-owned rule still fires
+    expect(ids).not.toContain(partnerWideRuleB); // another partner's rule NEVER matches
   });
 });

@@ -17,8 +17,8 @@
 --
 -- RLS: replaces the four legacy per-command breeze_org_isolation_* policies
 -- (0001-baseline) with a single dual-axis policy + system short-circuit,
--- matching the software_policies / configuration_policies shape. FORCE was not
--- asserted for this table in the baseline; assert ENABLE + FORCE here.
+-- matching the software_policies / configuration_policies shape. ENABLE/FORCE
+-- are re-asserted here for idempotence (0001-baseline already set both).
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS, guarded CHECK, DROP POLICY IF EXISTS
 -- then CREATE. Re-applying is a no-op. No inner BEGIN/COMMIT (autoMigrate

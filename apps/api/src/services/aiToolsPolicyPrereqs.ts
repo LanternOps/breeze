@@ -69,7 +69,9 @@ function partnerWhere(auth: AuthContext, partnerIdCol: any): SQL | undefined {
 function softwarePolicyWhere(auth: AuthContext): SQL | undefined {
   const oc = orgWhere(auth, softwarePolicies.orgId);
   if (!oc) return undefined; // system scope
-  if (auth.partnerId) {
+  // Partner scope only — RLS's breeze_has_partner_access is false for
+  // org-scope tokens even when they carry a partnerId.
+  if (auth.scope === 'partner' && auth.partnerId) {
     return sql`(${oc} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
   }
   return oc;

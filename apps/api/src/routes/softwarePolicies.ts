@@ -158,16 +158,19 @@ export function resolveOrgIdForWrite(
 }
 
 // Dual-axis access condition (#2126): org-owned rows the caller can reach OR
-// partner-wide rows (org_id NULL) owned by the caller's own partner. RLS
-// enforces the same at the DB layer; this app-layer condition keeps
-// partner-owned templates visible to reads that filter by auth.orgCondition
-// (which would otherwise exclude org_id IS NULL rows). Mirrors
-// policyAccessCondition in services/configurationPolicy.ts.
+// partner-wide rows (org_id NULL) owned by the caller's own partner. This
+// app-layer condition keeps partner-owned templates visible to reads that
+// filter by auth.orgCondition (which would otherwise exclude org_id IS NULL
+// rows). RLS is STRICTER, not identical: breeze_has_partner_access only passes
+// for partner-scope callers, so org-scope tokens (which also carry a
+// partnerId) never see partner-wide rows regardless of the app condition —
+// proven by softwarePoliciesPartnerRls.integration.test.ts. Gate the branch on
+// partner scope so app and DB agree.
 function softwarePolicyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(softwarePolicies.orgId);
   // System scope: no filter on either axis.
   if (!orgCond) return undefined;
-  if (auth.partnerId) {
+  if (auth.scope === 'partner' && auth.partnerId) {
     return sql`(${orgCond} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
   }
   return orgCond;

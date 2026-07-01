@@ -213,8 +213,16 @@ async function resolveDeviceIdsForAssignment(
 
   // Every remaining level is org-scoped and clamps to the policy's owning org.
   // A partner-wide policy never carries one (validateAssignmentTarget rejects),
-  // so a null policyOrgId here means there is nothing to resolve.
-  if (!policyOrgId) return [];
+  // so a null policyOrgId here should be unreachable — but if a future path
+  // bypasses assignment validation, silently scheduling ZERO patch jobs is a
+  // patch-compliance hole, so make the no-op loud.
+  if (!policyOrgId) {
+    console.warn(
+      `[PatchScheduler] ${assignmentLevel}-level assignment on a policy with no owning org — resolving no devices`,
+      { assignmentLevel, assignmentTargetId }
+    );
+    return [];
+  }
 
   switch (assignmentLevel) {
     case 'device': {
