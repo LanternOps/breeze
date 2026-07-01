@@ -468,10 +468,16 @@ const partnerSettingsSchema = z.object({
       address: z.string().email().optional().or(z.literal('')),
       defaultTriageOrgId: z.string().guid().nullable().optional(),
       autoresponderEnabled: z.boolean().optional(),
-      // NOTE: triageUnknownSenders was already sent by InboundEmailCard but missing
-      // from this schema (closed object → stripped). Add it here while we're in the
-      // object so it actually persists, alongside the new auto-reply fields.
+      // Unknown-sender routing. `unknownSenderMode` is the current 3-way control;
+      // `triageUnknownSenders` is the legacy boolean still accepted for back-compat
+      // (loadPartnerInboundPolicy maps it true→'triage'). The card now sends
+      // `unknownSenderMode`, which retires the legacy key on the next save (the
+      // inbound sub-object is replaced wholesale).
+      unknownSenderMode: z.enum(['quarantine', 'triage', 'drop']).optional(),
       triageUnknownSenders: z.boolean().optional(),
+      // When true, senders failing the SPF/DKIM/DMARC gate are dropped silently
+      // instead of quarantined. Default-off; applies to all unverified senders.
+      dropUnverifiedSenders: z.boolean().optional(),
       autoresponseSubject: z.string().max(200).nullable().optional(),
       autoresponseBody: z.string().max(5000).nullable().optional(),
     }).optional(),

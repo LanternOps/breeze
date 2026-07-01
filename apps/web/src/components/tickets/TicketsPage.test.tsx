@@ -44,6 +44,16 @@ vi.mock('./TicketWorkbench', () => ({
   }
 }));
 
+// The review-queue surface has its own suite (InboundReviewQueue.test.tsx); here
+// we only verify the tab gating/badge and that selecting it swaps in the pane.
+const capturedReviewProps: Array<{ onTotalChange?: (n: number) => void }> = [];
+vi.mock('./InboundReviewQueue', () => ({
+  default: (props: { onTotalChange?: (n: number) => void }) => {
+    capturedReviewProps.push(props);
+    return <div data-testid="inbound-review-queue-mock" />;
+  }
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -103,7 +113,7 @@ const BULK_RESULT = { data: { updated: 2, skipped: 0, failed: 0, total: 2 } };
 
 function mockListApi(
   tickets: TicketSummary[] | ((url: string) => TicketSummary[]),
-  opts: { usersFail?: boolean; bulkResult?: typeof BULK_RESULT; stats?: unknown } = {}
+  opts: { usersFail?: boolean; bulkResult?: typeof BULK_RESULT; stats?: unknown; reviewTotal?: number } = {}
 ) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
@@ -112,6 +122,13 @@ function mockListApi(
     if (url.startsWith('/tickets?')) return makeJsonResponse({ data: typeof tickets === 'function' ? tickets(url) : tickets });
     if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
     if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
+    // The inbound review-queue probe. Default: 403 (non-admin) so the tab stays
+    // hidden, matching the bulk of these tests. opts.reviewTotal opts it in.
+    if (url.startsWith('/ticket-config/email-inbound')) {
+      return opts.reviewTotal === undefined
+        ? makeJsonResponse({ error: 'admin' }, false, 403)
+        : makeJsonResponse({ data: [], pagination: { page: 1, limit: 1, total: opts.reviewTotal } });
+    }
     if (url === '/users') {
       return opts.usersFail ? makeJsonResponse({ error: 'forbidden' }, false, 403) : makeJsonResponse(USERS);
     }
@@ -787,6 +804,46 @@ describe('TicketsPage', () => {
         const tokenAfter = Number(screen.getByTestId('ticket-workbench-mock').getAttribute('data-refresh') ?? '0');
         expect(tokenAfter).toBeGreaterThan(tokenBefore);
       });
+    });
+  });
+
+  describe('inbound review queue tab', () => {
+    it('hides the Review queue tab when the queue probe is forbidden (non-admin)', async () => {
+      mockListApi([healthy]); // default: probe 403s
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      // Give the probe a tick to resolve before asserting absence.
+      await waitFor(() => expect(screen.getByTestId('tickets-tab-open')).toBeInTheDocument());
+      expect(screen.queryByTestId('tickets-tab-review')).toBeNull();
+    });
+
+    it('shows the Review queue tab with a pending-count badge when the probe succeeds', async () => {
+      mockListApi([healthy], { reviewTotal: 3 });
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      await screen.findByTestId('tickets-tab-review');
+      expect(screen.getByTestId('tickets-tab-review-badge')).toHaveTextContent('3');
+    });
+
+    it('omits the badge when there is nothing pending', async () => {
+      mockListApi([healthy], { reviewTotal: 0 });
+      render(<TicketsPage />);
+      await screen.findByTestId('tickets-tab-review');
+      expect(screen.queryByTestId('tickets-tab-review-badge')).toBeNull();
+    });
+
+    it('selecting the Review queue tab swaps in the review pane and hides the ticket filters', async () => {
+      mockListApi([healthy], { reviewTotal: 2 });
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+
+      fireEvent.click(await screen.findByTestId('tickets-tab-review'));
+
+      await screen.findByTestId('tickets-review-pane');
+      expect(screen.getByTestId('inbound-review-queue-mock')).toBeInTheDocument();
+      // The ticket filter bar and queue list are not rendered on the review tab.
+      expect(screen.queryByTestId('tickets-filter-bar')).toBeNull();
+      expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull();
     });
   });
 });
