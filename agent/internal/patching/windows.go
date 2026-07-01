@@ -454,34 +454,28 @@ func (w *WindowsUpdateProvider) mapCategory(update *ole.IDispatch) string {
 		return "application"
 	}
 
-	itemVar, err := getCollectionItem(cats, 0)
-	if err != nil {
-		return "application"
+	// Collect ALL category names, not just index 0. A single update carries
+	// several categories (e.g. a product name plus a classification); reading
+	// only the first frequently landed on the product name and mislabelled the
+	// update. classifyWindowsUpdateCategory picks the most-specific match.
+	names := make([]string, 0, catCount)
+	for i := 0; i < catCount; i++ {
+		itemVar, err := getCollectionItem(cats, i)
+		if err != nil {
+			continue
+		}
+		cat := itemVar.ToIDispatch()
+		if cat == nil {
+			continue
+		}
+		name, _ := w.getStringProperty(cat, "Name")
+		cat.Release()
+		if name != "" {
+			names = append(names, name)
+		}
 	}
 
-	cat := itemVar.ToIDispatch()
-	if cat == nil {
-		return "application"
-	}
-	defer cat.Release()
-
-	name, _ := w.getStringProperty(cat, "Name")
-	nameLower := strings.ToLower(name)
-
-	switch {
-	case strings.Contains(nameLower, "security") || strings.Contains(nameLower, "critical"):
-		return "security"
-	case strings.Contains(nameLower, "definition"):
-		return "definitions"
-	case strings.Contains(nameLower, "driver"):
-		return "driver"
-	case strings.Contains(nameLower, "feature"):
-		return "feature"
-	case strings.Contains(nameLower, "service pack") || strings.Contains(nameLower, "update rollup"):
-		return "system"
-	default:
-		return "application"
-	}
+	return classifyWindowsUpdateCategory(names)
 }
 
 func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, patchID string) (*ole.IDispatch, error) {
