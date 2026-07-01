@@ -301,7 +301,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_patches',
-      description: 'Manage patches: list available patches, check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
+      description: 'Manage patches: list patches present on the org\'s devices (optionally scoped to a single device via deviceId, which also returns per-device install status), check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -309,6 +309,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           patchId: { type: 'string', description: 'Patch UUID (for approve/decline/defer/rollback)' },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs (for bulk_approve/install)' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs (for scan/install)' },
+          deviceId: { type: 'string', description: 'Single device UUID to scope the patch list to one device (for list); returns per-device install status' },
           source: { type: 'string', enum: ['microsoft', 'apple', 'linux', 'third_party', 'custom'], description: 'Filter by source' },
           severity: { type: 'string', enum: ['critical', 'important', 'moderate', 'low', 'unknown'], description: 'Filter by severity' },
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
@@ -337,12 +338,20 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'list') {
-        const conditions: SQL[] = [];
-        if (typeof input.source === 'string') conditions.push(eq(patches.source, input.source as any));
-        if (typeof input.severity === 'string') conditions.push(eq(patches.severity, input.severity as any));
+        // `patches` is a global vendor catalog (no org/device columns). Always
+        // scope to the caller's tenant via device_patches so the list reflects
+        // patches actually present on this org's fleet — never the raw catalog,
+        // which would be identical for every device/tenant (issue #2112).
+        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
+        const deviceId = typeof input.deviceId === 'string' ? input.deviceId : undefined;
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-        const rows = await db.select({
+
+        const catalogConds: SQL[] = [];
+        if (typeof input.source === 'string') catalogConds.push(eq(patches.source, input.source as any));
+        if (typeof input.severity === 'string') catalogConds.push(eq(patches.severity, input.severity as any));
+
+        const patchCols = {
           id: patches.id,
           source: patches.source,
           externalId: patches.externalId,
@@ -351,12 +360,31 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           category: patches.category,
           releaseDate: patches.releaseDate,
           requiresReboot: patches.requiresReboot,
-        }).from(patches)
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
+        };
+
+        if (deviceId) {
+          // Per-device: patches on this specific device, with install status.
+          const rows = await db.select({ ...patchCols, status: devicePatches.status })
+            .from(devicePatches)
+            .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+            .where(and(eq(devicePatches.orgId, orgId), eq(devicePatches.deviceId, deviceId), ...catalogConds))
+            .orderBy(desc(patches.createdAt))
+            .limit(limit);
+          return JSON.stringify({ patches: rows, showing: rows.length, scope: { deviceId } });
+        }
+
+        // Org-wide: distinct catalog entries present on any of the org's
+        // devices. selectDistinct collapses the per-device fan-out to one row
+        // per patch; createdAt is in the projection so the DISTINCT + ORDER BY
+        // is valid in Postgres.
+        const rows = await db.selectDistinct({ ...patchCols, createdAt: patches.createdAt })
+          .from(patches)
+          .innerJoin(devicePatches, eq(devicePatches.patchId, patches.id))
+          .where(and(eq(devicePatches.orgId, orgId), ...catalogConds))
           .orderBy(desc(patches.createdAt))
           .limit(limit);
 
-        return JSON.stringify({ patches: rows, showing: rows.length });
+        return JSON.stringify({ patches: rows, showing: rows.length, scope: { orgId } });
       }
 
       if (action === 'compliance') {

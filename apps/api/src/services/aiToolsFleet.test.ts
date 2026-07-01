@@ -25,6 +25,25 @@ vi.mock('../db', () => ({
             limit: vi.fn(() => Promise.resolve([])),
           })),
         })),
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn(() => ({
+              limit: vi.fn(() => Promise.resolve([])),
+            })),
+            limit: vi.fn(() => Promise.resolve([])),
+          })),
+        })),
+      })),
+    })),
+    selectDistinct: vi.fn(() => ({
+      from: vi.fn(() => ({
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn(() => ({
+              limit: vi.fn(() => Promise.resolve([])),
+            })),
+          })),
+        })),
       })),
     })),
     insert: vi.fn(() => ({
@@ -312,6 +331,25 @@ describe('manage_patches handler', () => {
     const result = JSON.parse(await tool.handler({ action: 'setup_auto_approval' }, noOrgAuth));
     expect(result.error).toContain('Action "setup_auto_approval" is disabled');
     expect(result.error).toContain('configuration policies');
+  });
+
+  it('list requires org context (never returns the unscoped global catalog)', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'list' }, noOrgAuth));
+    expect(result.error).toContain('Organization context required');
+    expect(result.patches).toBeUndefined();
+  });
+
+  it('list scopes org-wide to the caller org when no deviceId given', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'list' }, orgAuth));
+    expect(result.scope).toEqual({ orgId: 'org-1' });
+    expect(Array.isArray(result.patches)).toBe(true);
+  });
+
+  it('list scopes to a single device when deviceId is given', async () => {
+    const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const result = JSON.parse(await tool.handler({ action: 'list', deviceId }, orgAuth));
+    expect(result.scope).toEqual({ deviceId });
+    expect(Array.isArray(result.patches)).toBe(true);
   });
 
   it('approve action calls upsertPatchApproval with correct call shape', async () => {
