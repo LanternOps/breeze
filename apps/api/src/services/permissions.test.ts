@@ -1,18 +1,23 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// hasDbAccessContext defaults to false (simulating a contextless caller, e.g. the
-// #1448 self-managed-DB-context pay routes whose permission read runs with no
-// ambient transaction). withSystemDbAccessContext is a transparent pass-through so
-// the wrapped reads still run against the mocked db. Individual tests can override
-// hasDbAccessContext to assert the no-op-nest path when a context is already active.
-const mockHasDbAccessContext = vi.fn(() => false);
+// getUserPermissions resolves a user's role per-axis on a cache miss, escalating to a
+// fresh SYSTEM RLS context only for the axis the ambient context can't see: it
+// runOutsideDbContext (to exit the narrower ambient context, e.g. the org-scoped
+// MCP/API-key context from #2019) then withSystemDbAccessContext. When the ambient
+// context (getCurrentDbAccessContext) already grants visibility it reuses it — no
+// escalation. Both wrappers are transparent pass-throughs here so the wrapped reads
+// still run against the mocked db; the spies + the mocked ambient context let tests
+// assert when escalation happens vs. when the request transaction is reused.
 const mockWithSystemDbAccessContext = vi.fn(<T>(fn: () => Promise<T>) => fn());
+const mockRunOutsideDbContext = vi.fn(<T>(fn: () => T) => fn());
+const mockGetCurrentDbAccessContext = vi.fn<() => unknown>(() => undefined);
 vi.mock('../db', () => ({
   db: {
     select: vi.fn()
   },
-  hasDbAccessContext: () => mockHasDbAccessContext(),
-  withSystemDbAccessContext: <T>(fn: () => Promise<T>) => mockWithSystemDbAccessContext(fn)
+  withSystemDbAccessContext: <T>(fn: () => Promise<T>) => mockWithSystemDbAccessContext(fn),
+  runOutsideDbContext: <T>(fn: () => T) => mockRunOutsideDbContext(fn),
+  getCurrentDbAccessContext: () => mockGetCurrentDbAccessContext()
 }));
 
 vi.mock('../db/schema', () => ({
@@ -63,8 +68,9 @@ describe('permissions service', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.mocked(getRedis).mockReturnValue(null);
-    mockHasDbAccessContext.mockReturnValue(false);
     mockWithSystemDbAccessContext.mockImplementation(<T>(fn: () => Promise<T>) => fn());
+    mockRunOutsideDbContext.mockImplementation(<T>(fn: () => T) => fn());
+    mockGetCurrentDbAccessContext.mockReturnValue(undefined); // contextless by default
     await clearPermissionCache();
   });
 
@@ -428,34 +434,123 @@ describe('permissions service', () => {
         } as any);
     }
 
-    it('establishes a system context for its RLS-protected reads when none is active (the #1448 pay-route path)', async () => {
-      // The self-managed-DB-context pay routes run requirePermission with NO ambient
-      // transaction. Without the wrapper the membership reads would RLS-filter to 0
-      // rows under breeze_app → null → 403 (the #1375 class). Assert it wraps instead.
-      mockHasDbAccessContext.mockReturnValue(false);
+    it('escalates RLS reads to a fresh system context, runOutsideDbContext BEFORE withSystemDbAccessContext (#1448 contextless + #2019 narrower-ctx)', async () => {
+      // On a cache miss the membership reads must resolve under SYSTEM scope so they
+      // aren't RLS-filtered to 0 rows → null → 403 / "no role assigned". This covers
+      // both failure classes the wrap exists for: NO ambient context (#1448 pay-route)
+      // and a NARROWER ambient context (#2019 org-scoped MCP key, accessiblePartnerIds=[]).
+      // The mock layer can't distinguish the two (production no longer reads
+      // hasDbAccessContext) — the real per-scenario RLS proof lives in
+      // permissionsContext.integration.test.ts. What this unit test pins that the
+      // integration test can't run cheaply is the ORDER: withDbAccessContext is a no-op
+      // while a context is active, so runOutsideDbContext MUST run first. A swapped
+      // wrap (withSystemDbAccessContext(() => runOutsideDbContext(fn))) would keep the
+      // call COUNTS identical but silently reintroduce #2019 — the order assertion is
+      // the only unit-level guard against that regression.
       mockMembershipAndRoleReads();
 
       const perms = await getUserPermissions('user-123', { orgId: 'org-123' });
 
       expect(perms).not.toBeNull();
       expect(perms?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      expect(mockRunOutsideDbContext).toHaveBeenCalledTimes(1);
       expect(mockWithSystemDbAccessContext).toHaveBeenCalledTimes(1);
+      // runOutsideDbContext must be entered before withSystemDbAccessContext.
+      expect(mockRunOutsideDbContext.mock.invocationCallOrder[0]!)
+        .toBeLessThan(mockWithSystemDbAccessContext.mock.invocationCallOrder[0]!);
     });
 
-    it('does NOT open a redundant context when one is already active (no-op nest on normal routes)', async () => {
-      // Normal routes already run inside an org/partner withDbAccessContext; opening a
-      // second system context there would override the request scope. Assert pass-through.
-      mockHasDbAccessContext.mockReturnValue(true);
+    it('does NOT open the system-context wrapper on a warm cache hit (conn-hold guard, #1105 class)', async () => {
+      // The wrap runs only on a cache MISS — the comment in permissions.ts promises the
+      // extra context churn stays off the warm path. A regression that re-escalates on
+      // every hit would, under a cluster-wide cache bump, hold 2 pooled connections per
+      // request and risk pool starvation (the documented #1105 conn-hold class). Pin it:
+      // a second call for the same key must be served from cache with zero wrap calls.
+      mockMembershipAndRoleReads();
+
+      await getUserPermissions('user-123', { orgId: 'org-123' }); // miss → escalates once
+      const before = mockRunOutsideDbContext.mock.calls.length;
+      const cached = await getUserPermissions('user-123', { orgId: 'org-123' }); // hit
+
+      expect(cached?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      expect(mockRunOutsideDbContext.mock.calls.length).toBe(before); // no new escalation
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2); // both reads only on the miss
+    });
+
+    it('propagates (does NOT swallow into null) when the system-context read throws', async () => {
+      // The whole point of the fix is that RLS-filtered-0-rows must not look like a DB
+      // error AND a real DB error (pool exhausted, txn timeout) must not look like
+      // "no role". A future careless `try { ... } catch { return null }` around the wrap
+      // would silently turn infra faults into 403s — assert the throw reaches the caller.
+      mockRunOutsideDbContext.mockImplementationOnce(() => {
+        throw new Error('pool exhausted');
+      });
+
+      await expect(getUserPermissions('user-123', { orgId: 'org-123' }))
+        .rejects.toThrow('pool exhausted');
+    });
+
+    it('REUSES the ambient transaction (no escalation) when it already grants the axis visibility', async () => {
+      // The common dashboard path: an org user inside their own org-scope context. The
+      // ambient context's accessibleOrgIds already covers the org, so canSee('org') is
+      // true and the org-membership read must run in-place — NO runOutsideDbContext, NO
+      // extra pooled connection. This is the conn-hold mitigation (#1105) made concrete.
+      mockGetCurrentDbAccessContext.mockReturnValue({
+        scope: 'organization',
+        accessibleOrgIds: ['org-123'],
+        accessiblePartnerIds: [],
+      });
       mockMembershipAndRoleReads();
 
       const perms = await getUserPermissions('user-123', { orgId: 'org-123' });
 
       expect(perms?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      expect(mockRunOutsideDbContext).not.toHaveBeenCalled();
       expect(mockWithSystemDbAccessContext).not.toHaveBeenCalled();
     });
 
+    it('escalates ONLY the blind partner-axis fallback, reusing the ambient txn for the org read (#2019 MCP org-key)', async () => {
+      // The exact #2019 shape at unit level: org-scope context (sees its org) with an
+      // empty partner allowlist. A membership-less Partner Admin has NO org_users row,
+      // so the org read is reused-but-empty, then the partner fallback — which the
+      // ambient context is blind to — must escalate. Proves escalation is scoped to the
+      // blind axis, not applied wholesale.
+      mockGetCurrentDbAccessContext.mockReturnValue({
+        scope: 'organization',
+        accessibleOrgIds: ['org-123'],
+        accessiblePartnerIds: [], // blind to the partner axis
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ // org_users read → empty (no org membership)
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          })
+        } as any)
+        .mockReturnValueOnce({ // partner_users read → the partner role
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-partner', orgAccess: 'all', orgIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({ // role_permissions read
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ resource: 'devices', action: 'read' }])
+            })
+          })
+        } as any);
+
+      const perms = await getUserPermissions('user-123', { orgId: 'org-123', partnerId: 'partner-1' });
+
+      expect(perms?.scope).toBe('partner');
+      expect(perms?.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+      // Exactly one escalation — for the partner fallback only; the org read was reused.
+      expect(mockRunOutsideDbContext).toHaveBeenCalledTimes(1);
+      expect(mockWithSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    });
+
     it('returns null (→ 403) when the user has no membership, regardless of context', async () => {
-      mockHasDbAccessContext.mockReturnValue(false);
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({

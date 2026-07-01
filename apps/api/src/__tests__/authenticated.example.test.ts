@@ -47,6 +47,7 @@ vi.mock('../db', () => ({
     }))
   },
   hasDbAccessContext: vi.fn(() => true),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
   runOutsideDbContext: vi.fn((fn: any) => fn()),

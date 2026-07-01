@@ -38,6 +38,14 @@ const client = postgres(connectionString, {
 });
 const baseDb = drizzle(client, { schema });
 const dbContextStorage = new AsyncLocalStorage<typeof baseDb>();
+// Parallel store holding the DbAccessContext METADATA (scope + allowlists) for
+// the active request transaction. Kept separate from dbContextStorage (which
+// resolves to the tx for query routing) so the tx-resolution hot path is
+// untouched. Set/cleared in lockstep with dbContextStorage. Lets callers cheaply
+// ask "does the active context already grant visibility to row X?" before
+// deciding whether they must escalate to a system context (see
+// getCurrentDbAccessContext + permissions.getUserPermissions).
+const dbContextMetaStorage = new AsyncLocalStorage<DbAccessContext>();
 
 function getCurrentDb(): typeof baseDb {
   return dbContextStorage.getStore() ?? baseDb;
@@ -194,7 +202,9 @@ export async function withDbAccessContext<T>(
     const warnMs = getHeldContextWarnMs();
     const startedAt = warnMs > 0 ? Date.now() : 0;
     try {
-      return await dbContextStorage.run(tx as unknown as typeof baseDb, fn);
+      return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
+        dbContextMetaStorage.run(context, fn),
+      );
     } finally {
       // The whole point of this block is to SURFACE problems, so it must never
       // BECOME one: any throw here (e.g. a Sentry transport hiccup) would, from
@@ -241,16 +251,32 @@ export function hasDbAccessContext(): boolean {
   return dbContextStorage.getStore() !== undefined;
 }
 
+/**
+ * The DbAccessContext metadata (scope + org/partner allowlists) of the active
+ * request transaction, or undefined when no context is established. Use this to
+ * decide whether the ambient context already grants RLS visibility to a specific
+ * row BEFORE deciding to escalate to a system context — its `scope`,
+ * `accessibleOrgIds`, and `accessiblePartnerIds` mirror exactly what
+ * `breeze_has_org_access` / `breeze_has_partner_access` evaluate, so an
+ * allowlist hit here means RLS will return the row. Returns the same object
+ * passed to `withDbAccessContext`; do not mutate it.
+ */
+export function getCurrentDbAccessContext(): DbAccessContext | undefined {
+  return dbContextMetaStorage.getStore();
+}
+
 export type RunOutsideDbContextFn = <T>(fn: () => T) => T;
 
 /**
  * Runs a function outside any active AsyncLocalStorage DB context,
  * ensuring `db` resolves to `baseDb` (the connection pool) rather
  * than a request-scoped transaction. Use this for long-lived background
- * tasks that outlive the originating HTTP request.
+ * tasks that outlive the originating HTTP request. Exits BOTH the tx-routing
+ * store and the metadata store so a nested withSystemDbAccessContext opens a
+ * genuinely fresh context and getCurrentDbAccessContext reflects reality.
  */
 export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T => {
-  return dbContextStorage.exit(fn);
+  return dbContextStorage.exit(() => dbContextMetaStorage.exit(fn));
 };
 
 // Query-builder write methods that, when invoked on the bare pool (no active

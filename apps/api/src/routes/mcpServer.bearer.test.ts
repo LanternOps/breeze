@@ -50,6 +50,7 @@ vi.mock('../db', () => {
       select: () => ({ from: () => ({ where: makeWhere }) }),
     },
     hasDbAccessContext: vi.fn(() => true),
+    getCurrentDbAccessContext: vi.fn(() => undefined),
     withDbAccessContext: vi.fn(),
     withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
     runOutsideDbContext: vi.fn((fn: () => any) => fn()),

@@ -1,4 +1,4 @@
-import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { roles, permissions, rolePermissions, partnerUsers, organizationUsers } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
@@ -97,95 +97,100 @@ export async function getUserPermissions(
   }
 
   // The membership/role reads below hit RLS-protected tables (organization_users,
-  // partner_users, role_permissions). They must run under an RLS access context or
-  // the unprivileged breeze_app role silently filters them to 0 rows — returning a
-  // spurious `null` (→ 403) instead of the real permission set (the #1375 class).
-  // Most callers (normal routes via authMiddleware) already have an org/partner
-  // context active, in which case this is a no-op nest that keeps that context.
-  // The self-managed-DB-context pay routes (#1448) run requirePermission with NO
-  // ambient context, so without this wrapper getUserPermissions would 403 on a
-  // cold/expired permission cache. The explicit userId + orgId/partnerId equality
-  // filters mean a system-scope read returns the same single row a narrower scope
-  // would, so widening the read scope here doesn't change the result set.
-  const wrap = hasDbAccessContext()
-    ? <T>(fn: () => Promise<T>) => fn()
-    : withSystemDbAccessContext;
+  // partner_users, role_permissions). If they run under a context that can't SEE the
+  // role row, forced RLS silently filters them to 0 rows → a spurious `null`
+  // (→ 403 / "no role assigned") instead of the real permission set. Resolving a
+  // user's role is an IDENTITY question, not a tenant-data one, so it must not be
+  // filtered by the request's tenant visibility. Two failure classes:
+  //   - #1375/#1448: NO ambient context (contextless pay-link route) → bare breeze_app
+  //     pool, RLS denies, cold-cache 403.
+  //   - #2019: a NARROWER ambient context — an org-scoped MCP/API-key request runs
+  //     inside withDbAccessContext with scope='organization' + accessiblePartnerIds=[]
+  //     (apiKeyAuth withholds partner-axis visibility from manual keys). A Partner
+  //     Admin's role lives in partner_users (FORCE-RLS gated by
+  //     breeze_has_partner_access() → false for an empty partner allowlist) → the role
+  //     row is filtered to 0 rows → every tools/call dies "no role assigned".
+  //
+  // Fix: resolve each axis under a context that can read it, escalating to a fresh
+  // system transaction ONLY for the axis the ambient context is blind to. `canSee`
+  // mirrors breeze_has_org_access / breeze_has_partner_access exactly, so an allowlist
+  // hit ⇒ RLS returns the row (reuse the ambient txn — zero extra connection); a miss
+  // (or no ambient context) ⇒ escalate. Because the reads are equality-keyed by the
+  // explicit userId + orgId/partnerId args, a system-scope read can only surface that
+  // one pinned row or nothing — never another user's/tenant's row — so over-escalation
+  // is at worst a perf miss, never a leak. Escalation runs only on a cache MISS, and
+  // only for the blind axis: org-members and same-tenant callers keep reusing their
+  // request transaction (no extra pooled connection on the hot path — the #1105 class).
+  //
+  // withDbAccessContext early-returns (no-op) when a context is already active, so
+  // withSystemDbAccessContext alone can't widen a narrower ambient context — we must
+  // runOutsideDbContext FIRST to exit it, then open a fresh system-scoped transaction.
+  const ambient = getCurrentDbAccessContext();
+  const canSee = (axis: 'org' | 'partner', id: string): boolean => {
+    if (!ambient) return false; // contextless → must escalate
+    if (ambient.scope === 'system') return true; // system reads every row
+    const ids = axis === 'org' ? ambient.accessibleOrgIds : ambient.accessiblePartnerIds;
+    return ids?.includes(id) ?? false;
+  };
+  const runForAxis = <T>(visible: boolean, fn: () => Promise<T>): Promise<T> =>
+    visible ? fn() : runOutsideDbContext(() => withSystemDbAccessContext(fn));
 
-  const userPerms = await wrap(async (): Promise<UserPermissions | null> => {
-    let roleId: string | null = null;
-    let scope: 'system' | 'partner' | 'organization' = 'system';
-    let orgAccess: 'all' | 'selected' | 'none' | undefined;
-    let allowedOrgIds: string[] | undefined;
-    let allowedSiteIds: string[] | undefined;
-
-    // Check organization-level access first
-    if (context.orgId) {
-      const [orgUser] = await db
-        .select()
-        .from(organizationUsers)
-        .where(
-          and(
-            eq(organizationUsers.userId, userId),
-            eq(organizationUsers.orgId, context.orgId)
-          )
-        )
-        .limit(1);
-
-      if (orgUser) {
-        roleId = orgUser.roleId;
-        scope = 'organization';
-        allowedSiteIds = orgUser.siteIds || undefined;
-      }
-    }
-
-    // Check partner-level access
-    if (!roleId && context.partnerId) {
-      const [partnerUser] = await db
-        .select()
-        .from(partnerUsers)
-        .where(
-          and(
-            eq(partnerUsers.userId, userId),
-            eq(partnerUsers.partnerId, context.partnerId)
-          )
-        )
-        .limit(1);
-
-      if (partnerUser) {
-        roleId = partnerUser.roleId;
-        scope = 'partner';
-        orgAccess = partnerUser.orgAccess;
-        allowedOrgIds = partnerUser.orgIds || undefined;
-      }
-    }
-
-    if (!roleId) {
-      return null;
-    }
-
-    // Get role permissions
+  const buildPerms = async (
+    roleId: string,
+    scope: 'partner' | 'organization',
+    extra: Pick<UserPermissions, 'orgAccess' | 'allowedOrgIds' | 'allowedSiteIds'>,
+  ): Promise<UserPermissions> => {
     const rolePerms = await db
-      .select({
-        resource: permissions.resource,
-        action: permissions.action
-      })
+      .select({ resource: permissions.resource, action: permissions.action })
       .from(rolePermissions)
       .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
       .where(eq(rolePermissions.roleId, roleId));
-
-    const perms = rolePerms.map(p => ({ resource: p.resource, action: p.action }));
-
     return {
-      permissions: perms,
+      permissions: rolePerms.map(p => ({ resource: p.resource, action: p.action })),
       partnerId: context.partnerId || null,
       orgId: context.orgId || null,
       roleId,
       scope,
-      orgAccess,
-      allowedOrgIds,
-      allowedSiteIds
+      ...extra,
     };
-  });
+  };
+
+  // Org-axis first (org membership takes precedence over partner membership).
+  const resolveOrgAxis = async (): Promise<UserPermissions | null> => {
+    const [orgUser] = await db
+      .select()
+      .from(organizationUsers)
+      .where(and(eq(organizationUsers.userId, userId), eq(organizationUsers.orgId, context.orgId!)))
+      .limit(1);
+    // No membership row, or one without a usable role, means "nothing on this
+    // axis" — fall through to the partner axis (mirrors the original
+    // `if (orgUser) roleId = ...; if (!roleId && partnerId) ...` precedence).
+    if (!orgUser?.roleId) return null;
+    return buildPerms(orgUser.roleId, 'organization', {
+      allowedSiteIds: orgUser.siteIds || undefined,
+    });
+  };
+
+  const resolvePartnerAxis = async (): Promise<UserPermissions | null> => {
+    const [partnerUser] = await db
+      .select()
+      .from(partnerUsers)
+      .where(and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, context.partnerId!)))
+      .limit(1);
+    if (!partnerUser?.roleId) return null;
+    return buildPerms(partnerUser.roleId, 'partner', {
+      orgAccess: partnerUser.orgAccess,
+      allowedOrgIds: partnerUser.orgIds || undefined,
+    });
+  };
+
+  let userPerms: UserPermissions | null = null;
+  if (context.orgId) {
+    userPerms = await runForAxis(canSee('org', context.orgId), resolveOrgAxis);
+  }
+  if (!userPerms && context.partnerId) {
+    userPerms = await runForAxis(canSee('partner', context.partnerId), resolvePartnerAxis);
+  }
 
   if (!userPerms) {
     return null;
