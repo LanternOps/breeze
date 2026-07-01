@@ -353,14 +353,18 @@ const STATUS_COLOR: Record<MetricStatus, RGB> = {
 
 type Metric = { label: string; value: string; status: MetricStatus; target?: string };
 
-/** Two-column metric grid: dot + label … coloured value + muted target hint. */
+/**
+ * Two-column metric grid: dot + label … coloured value + muted target hint.
+ * Fills column-major (top-to-bottom, then the right column) so the caller's
+ * array order reads as two thematic clusters instead of interleaving them.
+ */
 function drawMetricGrid(doc: jsPDF, metrics: Metric[], top: number): number {
   const colW = (PAGE.w - PAGE.mx * 2 - 8) / 2;
   const rowH = 6.0;
   const rows = Math.ceil(metrics.length / 2);
   metrics.forEach((m, i) => {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
+    const col = Math.floor(i / rows);
+    const row = i % rows;
     const x = PAGE.mx + col * (colW + 8);
     const y = top + row * rowH;
     // Status dot; informational metrics (no pass/fail judgement) get a hollow
@@ -491,7 +495,9 @@ function renderPostureCover(
   const ccHeadingY = y + 2;
   y = drawSectionHeading(doc, 'Control coverage', ccHeadingY);
   drawLegend(doc, ccHeadingY); // color key, right-aligned to the heading
-  const metrics: Metric[] = [
+  // Left column: device protection & hygiene. Right column: access, identity
+  // & network. The grid fills column-major, so array order = reading order.
+  const protectionMetrics: Metric[] = [
     { label: 'Managed EDR coverage', value: pctStr(c.edrCoveragePct), status: pctStatus(c.edrCoveragePct), target: '>=90%' },
     { label: 'AV + real-time protection', value: pctStr(c.anyAvCoveragePct), status: pctStatus(c.anyAvCoveragePct), target: '>=95%' },
     {
@@ -502,8 +508,17 @@ function renderPostureCover(
     },
     { label: 'AV definitions current', value: pctStr(c.avDefinitionsCurrentPct), status: pctStatus(c.avDefinitionsCurrentPct), target: '>=95%' },
     { label: 'Disk encryption', value: pctStr(c.encryptionPct), status: pctStatus(c.encryptionPct), target: '>=90%' },
-    { label: 'Host firewall', value: pctStr(c.firewallPct), status: pctStatus(c.firewallPct), target: '>=95%' },
     { label: 'Patch current (no critical pending)', value: pctStr(c.patchCurrentPct), status: pctStatus(c.patchCurrentPct, 90, 70), target: '>=90%' },
+  ];
+  if (c.cisIncluded !== false) {
+    const cisVal =
+      c.cisAvgPassRate == null
+        ? 'Not assessed'
+        : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
+    protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
+  }
+  const accessMetrics: Metric[] = [
+    { label: 'Host firewall', value: pctStr(c.firewallPct), status: pctStatus(c.firewallPct), target: '>=95%' },
     { label: 'Password complexity', value: pctStr(c.passwordComplexityPct), status: pctStatus(c.passwordComplexityPct), target: '>=90%' },
     { label: 'Local-admin exposure', value: pctStr(c.localAdminExposurePct), status: pctStatus(c.localAdminExposurePct == null ? null : 100 - c.localAdminExposurePct), target: '<=10%' },
     { label: 'Identity provider connected', value: yesNo(c.identityProviderConnected), status: boolStatus(c.identityProviderConnected) },
@@ -514,14 +529,7 @@ function renderPostureCover(
     },
     { label: 'DNS filtering active', value: yesNo(c.dnsFilteringActive), status: boolStatus(c.dnsFilteringActive) },
   ];
-  if (c.cisIncluded !== false) {
-    const cisVal =
-      c.cisAvgPassRate == null
-        ? 'Not assessed'
-        : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
-    metrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
-  }
-  y = drawMetricGrid(doc, metrics, y);
+  y = drawMetricGrid(doc, [...protectionMetrics, ...accessMetrics], y);
 
   y = drawSectionHeading(doc, 'Privileged access (PAM)', y + 2.5);
   const pamMetrics: Metric[] = [
@@ -840,8 +848,12 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
       switch (col.key) {
         case 'hostname':
           return `Totals · ${rows.length} device${rows.length === 1 ? '' : 's'}`;
-        case 'localAdmins':
-          return String(sum('localAdmins'));
+        case 'localAdmins': {
+          // Summing admin accounts across devices double-counts shared accounts;
+          // the honest fleet rollup is the worst single device.
+          const counts = rows.map((r) => num(r.localAdmins)).filter((n): n is number => n != null);
+          return counts.length ? `max ${Math.max(...counts)}` : '—';
+        }
         case 'pendingPatches':
           return String(sum('pendingPatches'));
         case 'criticalPatches':
@@ -866,6 +878,7 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
     foot,
     showFoot: 'lastPage',
     theme: 'grid',
+    rowPageBreak: 'avoid', // never split a device row across pages (orphaned cell fragments)
     styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },
     headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold', fontSize: 7.5, lineColor: C.white, lineWidth: 0.15 },
     footStyles: { fillColor: C.panel, textColor: C.ink, fontStyle: 'bold', fontSize: 7.5, lineColor: C.rule },
@@ -954,6 +967,7 @@ function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: 
     head,
     body,
     theme: 'grid',
+    rowPageBreak: 'avoid', // never split a record row across pages
     styles: { fontSize: 8, cellPadding: 2, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle', overflow: 'linebreak' },
     headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold', lineColor: C.primary },
     alternateRowStyles: { fillColor: C.zebra },
