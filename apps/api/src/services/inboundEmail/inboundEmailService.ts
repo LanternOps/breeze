@@ -6,7 +6,7 @@ import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, findOrCreateEmailContact, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
 import { emitTicketEvent } from '../ticketEvents';
-import { captureException } from '../sentry';
+import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 
@@ -171,6 +171,24 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
     // boundary (aligned SPF+DKIM, or DMARC pass). When NOT verified, route the message to
     // the EXISTING quarantine/review path instead of auto-acting — mail is never dropped.
     if (!n.senderAuth?.verified) {
+      // A `senderAuthDiagnostic` means we're acting NOT because of a genuine DMARC fail but
+      // because no usable provider verdict could be read — the silent mass-quarantine (or, when
+      // the partner opts to drop, mass-DROP) failure mode from a provider MX/host or
+      // payload-format change. Surface it: enrich the audit reason AND raise a Sentry warning,
+      // since the inbound webhook was already signature-verified, so a missing verdict is
+      // anomalous rather than ordinary spam rejection. Raise it regardless of the drop policy —
+      // a systemic verdict-reading gap matters even more when unverified mail is being dropped.
+      const gap = n.senderAuthDiagnostic;
+      if (gap) {
+        captureMessage(
+          'Inbound email quarantined: no usable provider sender-auth verdict on a signature-verified webhook',
+          'warning',
+          { provider: n.provider, recipient: n.to, diagnostic: gap, providerMessageId: n.providerMessageId }
+        );
+      }
+      const reason = gap
+        ? `unverified sender (SPF/DKIM/DMARC): ${gap}`
+        : 'unverified sender (SPF/DKIM/DMARC)';
       // Default: route to the review queue. If the partner opted into dropping
       // unverified mail, silently ignore it instead (audit row only, no review
       // queue, no autoresponse). This gate runs before any sender matching, so
@@ -178,9 +196,9 @@ export async function processInboundEmail(n: NormalizedInboundEmail): Promise<vo
       // PartnerInboundPolicy.dropUnverifiedSenders).
       const policy = await loadPartnerInboundPolicy(partnerId);
       if (policy.dropUnverifiedSenders) {
-        await logInbound(n, partnerId, 'ignored', null, 'drop: unverified sender (SPF/DKIM/DMARC)');
+        await logInbound(n, partnerId, 'ignored', null, `drop: ${reason}`);
       } else {
-        await logInbound(n, partnerId, 'quarantined', null, 'unverified sender (SPF/DKIM/DMARC)');
+        await logInbound(n, partnerId, 'quarantined', null, reason);
       }
       return;
     }

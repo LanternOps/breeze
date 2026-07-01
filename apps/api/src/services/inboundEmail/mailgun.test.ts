@@ -138,6 +138,83 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n.senderAuth!.verified).toBe(true);
   });
 
+  // Mailgun's standard inbound MX hosts are mxa/mxb.mailgun.org (US) and
+  // mxa/mxb.eu.mailgun.org (EU) — NOT the bare `mx.mailgun.org`. A genuine verdict
+  // stamped under any of these must be trusted (issue: inbound DMARC-pass quarantined).
+  it.each([
+    'mxa.mailgun.org',
+    'mxb.mailgun.org',
+    'mxa.eu.mailgun.org',
+    'mxb.eu.mailgun.org',
+  ])('trusts a DMARC pass stamped by Mailgun receiving host %s', async (authservId) => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', `${authservId}; dkim=pass header.d=customer.com; dmarc=pass`],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.dmarc).toBe('pass');
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
+  // M365 → Mailgun relays carry TWO Authentication-Results headers: M365 stamps its own
+  // (foreign authserv-id) and Mailgun stamps its own. We must scan ALL A-R headers for the
+  // Mailgun-authoritative one, not just the first — RFC 8601 guarantees Mailgun strips any
+  // inbound A-R bearing its own authserv-id, so only its genuine header survives.
+  it('finds the Mailgun verdict when an M365 Authentication-Results header precedes it', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'protection.outlook.com; dmarc=none; spf=fail'],
+        ['Authentication-Results', 'mxa.mailgun.org; dkim=pass header.d=customer.com; dmarc=pass'],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.dmarc).toBe('pass');
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
+  it('does NOT trust a mailgun.org-lookalike authserv-id', async () => {
+    // `evilmailgun.org` and `mailgun.org.attacker.com` are NOT subdomains of mailgun.org;
+    // the label-boundary check must reject both.
+    for (const forged of ['evilmailgun.org', 'mailgun.org.attacker.com', 'notmailgun.org']) {
+      const n = await provider.parse({ parseBody: async () => ({
+        ...fields,
+        'message-headers': JSON.stringify([
+          ['Authentication-Results', `${forged}; dmarc=pass; spf=pass; dkim=pass`],
+        ])
+      }) } as any);
+      expect(n.senderAuth!.verified).toBe(false);
+    }
+  });
+
+  // Sibling-host forgery: RFC 8601 only guarantees Mailgun strips inbound A-R headers bearing
+  // the RECEIVING instance's own authserv-id. A message relayed through mxa is NOT guaranteed
+  // to have a forged `mxb.mailgun.org` header stripped. If the attacker positions that forged
+  // DMARC=pass header before the genuine mxa DMARC=fail verdict, first-match selection would
+  // wrongly verify a spoofed sender. We must fail closed when trusted verdicts disagree.
+  it('does NOT verify when a forged sibling-host DMARC pass conflicts with a genuine DMARC fail', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'mxb.mailgun.org; dmarc=pass'], // attacker-embedded, not stripped by mxa
+        ['Authentication-Results', 'mxa.mailgun.org; dkim=fail; dmarc=fail'], // genuine receiving-host verdict
+      ])
+    }) } as any);
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  // Two genuine-looking Mailgun headers that AGREE on pass stay verified (e.g. benign duplication).
+  it('verifies when multiple Mailgun-authoritative headers all report DMARC pass', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([
+        ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass'],
+        ['Authentication-Results', 'mxb.mailgun.org; dmarc=pass'],
+      ])
+    }) } as any);
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
   it('does NOT trust a forged Authentication-Results header with a foreign authserv-id', async () => {
     // An external sender stuffs their own Authentication-Results header claiming a
     // DMARC/SPF/DKIM pass. The authserv-id ("evil.example") is NOT Mailgun's receiving
@@ -152,6 +229,48 @@ describe('MailgunInboundProvider.parse', () => {
     }) } as any);
     expect(n.senderAuth!.dmarc).not.toBe('pass');
     expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  // senderAuthDiagnostic distinguishes the SILENT-quarantine failure modes (no usable Mailgun
+  // verdict) from an ordinary DMARC fail, so a Mailgun host/format change is observable instead
+  // of looking like routine spam rejection.
+  it('sets no diagnostic when a genuine Mailgun DMARC verdict was read (pass)', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([['Authentication-Results', 'mxa.mailgun.org; dmarc=pass']])
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBeUndefined();
+  });
+
+  it('sets no diagnostic on a genuine Mailgun DMARC fail (real verdict, not a gap)', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([['Authentication-Results', 'mxa.mailgun.org; dmarc=fail']])
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBeUndefined();
+  });
+
+  it('flags no-mailgun-authserv when no Mailgun-family Authentication-Results header is present', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': JSON.stringify([['Authentication-Results', 'protection.outlook.com; dmarc=pass']])
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBe('no-mailgun-authserv');
+  });
+
+  it('flags no-mailgun-authserv when message-headers is absent', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      recipient: 'acme@tickets.example.com', sender: 'jane@customer.com', subject: 'x', 'stripped-text': 'y'
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBe('no-mailgun-authserv');
+  });
+
+  it('flags headers-unparseable when message-headers is present but not valid JSON', async () => {
+    const n = await provider.parse({ parseBody: async () => ({
+      ...fields,
+      'message-headers': '{not valid json'
+    }) } as any);
+    expect(n.senderAuthDiagnostic).toBe('headers-unparseable');
   });
 
   it('treats absent verdicts as NOT verified (fail closed)', async () => {

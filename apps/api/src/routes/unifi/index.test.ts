@@ -287,6 +287,13 @@ describe('unifi routes', () => {
     vi.mocked(db.insert).mockReturnValueOnce({
       values: valuesMock,
     } as any);
+    // Replace-all step: existing-mappings read returns exactly the submitted row, so
+    // the complement is empty and nothing is deleted.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => [{ id: 'existing-1', unifiHostId: 'host-1', unifiSiteId: 'site-1' }]),
+      })),
+    } as any);
 
     const res = await unifiRoutes.request('/mappings', {
       method: 'PUT',
@@ -305,6 +312,188 @@ describe('unifi routes', () => {
     await expect(res.json()).resolves.toMatchObject({ success: true });
     expect(db.insert).toHaveBeenCalled();
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }));
+    // Nothing stale → no delete.
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings replaces all — deletes saved mappings absent from the payload', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    // Site lookup for the single submitted mapping.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })),
+      })),
+    } as any);
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })),
+    } as any);
+    // Existing rows: the submitted one (keep) + a stale "undefined" row on the SAME
+    // enumerated host (must delete).
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => [
+          { id: 'keep-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-1' },
+          { id: 'stale-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'undefined' },
+        ]),
+      })),
+    } as any);
+    const deleteWhere = vi.fn(async () => undefined);
+    vi.mocked(db.delete).mockReturnValueOnce({ where: deleteWhere } as any);
+
+    const res = await unifiRoutes.request('/mappings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }],
+        hostIds: ['host-1'],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(db.delete).toHaveBeenCalledTimes(1);
+    expect(deleteWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('PUT /mappings does NOT delete mappings for hosts absent from hostIds (transient-host guard)', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })),
+      })),
+    } as any);
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })),
+    } as any);
+    // host-2 has a saved mapping but was NOT enumerated this save (offline/absent) —
+    // it must survive even though it's absent from the submitted set.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => [
+          { id: 'keep-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-1' },
+          { id: 'survivor', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-2', unifiSiteId: 'site-2' },
+        ]),
+      })),
+    } as any);
+    vi.mocked(db.delete).mockReturnValueOnce({ where: vi.fn(async () => undefined) } as any);
+
+    const res = await unifiRoutes.request('/mappings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }],
+        hostIds: ['host-1'], // host-2 deliberately not enumerated
+      }),
+    });
+    expect(res.status).toBe(200);
+    // host-1's set is unchanged and host-2 is out of scope → nothing to delete.
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings with no hostIds is upsert-only — never deletes (safe fallback)', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })),
+      })),
+    } as any);
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })),
+    } as any);
+
+    const res = await unifiRoutes.request('/mappings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }],
+        // no hostIds
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings rejects a literal "undefined" unifiSiteId (the parse-bug guard)', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    const res = await unifiRoutes.request('/mappings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'undefined', siteId: SITE_ID }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    // Must never reach the DB write with a poisoned site id.
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings also rejects a literal "null" and a poisoned unifiHostId', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    for (const bad of [
+      { unifiHostId: 'host-1', unifiSiteId: 'null', siteId: SITE_ID },
+      { unifiHostId: 'undefined', unifiSiteId: 'site-1', siteId: SITE_ID },
+    ]) {
+      const res = await unifiRoutes.request('/mappings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mappings: [bad] }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('POST /sync returns 400 when not connected', async () => {
@@ -394,7 +583,7 @@ describe('unifi routes', () => {
     vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
-      listHosts: vi.fn(async () => [{ id: 'host-1', name: 'My Host' }]),
+      listHosts: vi.fn(async () => [{ id: 'host-1', name: 'My Host', type: 'console', model: 'UDM Pro' }]),
       listSites: vi.fn(async () => [{ id: 'usite-1', name: 'My Site', hostId: 'host-1' }]),
       listDevices: vi.fn(async () => []),
       getIspMetrics: vi.fn(async () => null),
@@ -402,8 +591,42 @@ describe('unifi routes', () => {
     const res = await unifiRoutes.request('/hosts', { method: 'GET' });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
-      hosts: [{ id: 'host-1', name: 'My Host', sites: [{ id: 'usite-1', name: 'My Site' }] }],
+      hosts: [{ id: 'host-1', name: 'My Host', model: 'UDM Pro', sites: [{ id: 'usite-1', name: 'My Site' }] }],
     });
+  });
+
+  it('GET /hosts returns only mappable consoles — drops non-consoles and console without sites', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+    vi.mocked(createUnifiClient).mockReturnValueOnce({
+      listHosts: vi.fn(async () => [
+        { id: 'console-1', name: 'Mappable UDM', type: 'console', model: 'UDM Pro' },
+        { id: 'server-1', name: 'Cloud Key', type: 'network-server', model: null }, // non-console → drop
+        { id: 'console-2', name: 'No-site UDM', type: 'console', model: 'UDM SE' },  // no sites → drop
+      ]),
+      listSites: vi.fn(async () => [
+        { id: 'usite-1', name: 'HQ', hostId: 'console-1' },
+        { id: 'usite-2', name: 'Orphan', hostId: 'server-1' },
+      ]),
+      listDevices: vi.fn(async () => []),
+      getIspMetrics: vi.fn(async () => null),
+    });
+    const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { hosts: Array<{ id: string }> };
+    expect(body.hosts.map((h) => h.id)).toEqual(['console-1']);
   });
 
   // PUT /mappings — cross-org security

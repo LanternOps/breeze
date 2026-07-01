@@ -29,6 +29,16 @@ export interface SenderAuth {
   verified: boolean;
 }
 
+// Why a message ended up WITHOUT a usable provider sender-auth verdict, as opposed to a
+// genuine DMARC fail. These are the SILENT mass-quarantine failure modes (a provider MX/host
+// or payload-format change makes every inbound look unauthenticated). Set only when no real
+// verdict could be read; absent on a normal pass/fail. Used by the dispatcher to enrich the
+// quarantine audit reason and raise a Sentry warning, so the next recurrence of the apex-host
+// bug is observable on day one instead of after users report missing tickets.
+//   - 'headers-unparseable'  : a message-headers payload was present but not valid JSON array
+//   - 'no-mailgun-authserv'  : no Mailgun-authoritative Authentication-Results header at all
+export type SenderAuthDiagnostic = 'headers-unparseable' | 'no-mailgun-authserv';
+
 export interface NormalizedInboundEmail {
   provider: InboundProviderName;
   providerMessageId: string;
@@ -50,6 +60,10 @@ export interface NormalizedInboundEmail {
   // Sender-authentication verdicts for the From domain (R4). Absent => caller must
   // treat the sender as NOT verified (fail closed).
   senderAuth?: SenderAuth;
+  // Set ONLY when the sender could not be authenticated because no usable verdict was
+  // obtained (vs a genuine DMARC fail) — observability for the silent-quarantine failure
+  // modes. Absent on a normal pass/fail. See SenderAuthDiagnostic.
+  senderAuthDiagnostic?: SenderAuthDiagnostic;
   attachments: { filename: string; contentType: string; size: number }[]; // metadata only
   raw: Record<string, unknown>;
 }

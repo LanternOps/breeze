@@ -139,8 +139,11 @@ vi.mock('../../db/schema', () => ({
   partners: { __t: 'partners', id: 'id', status: 'status' }
 }));
 
-const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
-vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+const { captureExceptionMock, captureMessageMock } = vi.hoisted(() => ({
+  captureExceptionMock: vi.fn(),
+  captureMessageMock: vi.fn()
+}));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock, captureMessage: captureMessageMock }));
 
 // createFromEmail's stable-anchor fallback reads TICKETS_INBOUND_DOMAIN via getConfig().
 vi.mock('../../config/validate', () => ({ getConfig: () => ({ TICKETS_INBOUND_DOMAIN: 'tickets.example.com' }) }));
@@ -220,6 +223,7 @@ beforeEach(() => {
   emitMock.mockReset();
   maybeSendAutoresponseMock.mockReset();
   captureExceptionMock.mockReset();
+  captureMessageMock.mockReset();
   createTicketMock.mockResolvedValue({ id: 't-new', internalNumber: 'T-2026-0009' });
   // Phase 5 default: no sender-domain mapping, triage off — so an unmatched
   // unknown sender still quarantines (preserves the pre-Phase-5 behavior).
@@ -496,6 +500,37 @@ describe('processInboundEmail', () => {
     expect(log[0]!.parseStatus).toBe('quarantined');
     expect(log[0]!.partnerId).toBe('p-1');
     expect(log[0]!.ticketId).toBeNull();
+  });
+
+  it('records the diagnostic and alerts Sentry when an unverified sender has no usable Mailgun verdict', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    await processInboundEmail(email({
+      senderAuth: { spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', verified: false },
+      senderAuthDiagnostic: 'no-mailgun-authserv'
+    }));
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    // The quarantine reason carries the WHY so the audit row is self-explaining.
+    expect(log[0]!.error).toContain('no-mailgun-authserv');
+    // A signature-verified webhook with no usable verdict is anomalous -> Sentry warning.
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock.mock.calls[0]![1]).toBe('warning');
+    expect(captureMessageMock.mock.calls[0]![2]).toMatchObject({ diagnostic: 'no-mailgun-authserv' });
+  });
+
+  it('does NOT alert Sentry for an ordinary unverified sender (genuine DMARC fail, no diagnostic)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    await processInboundEmail(email({
+      senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false }
+      // no senderAuthDiagnostic -> a real verdict was read, just not a pass
+    }));
+
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.error).toBe('unverified sender (SPF/DKIM/DMARC)');
+    expect(captureMessageMock).not.toHaveBeenCalled();
   });
 
   it('creates a NEW linked ticket when the matched ticket is closed', async () => {
