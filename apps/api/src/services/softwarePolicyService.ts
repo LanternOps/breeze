@@ -470,7 +470,12 @@ export async function upsertSoftwareComplianceStatus(params: {
 }
 
 export async function recordSoftwarePolicyAudit(input: {
-  orgId: string;
+  // Dual-owner audit (#2126): a device-level event under a partner-wide policy
+  // carries BOTH the device's orgId (org-admin visibility) and the policy's
+  // partnerId (partner-admin visibility); policy-level events carry whichever
+  // axis owns the policy. At least one must be set (DB CHECK enforces it).
+  orgId: string | null;
+  partnerId?: string | null;
   policyId?: string | null;
   deviceId?: string | null;
   action: string;
@@ -479,8 +484,12 @@ export async function recordSoftwarePolicyAudit(input: {
   details?: Record<string, unknown> | null;
 }): Promise<void> {
   try {
+    if (!input.orgId && !input.partnerId) {
+      throw new Error('software policy audit requires at least one owner axis (orgId or partnerId)');
+    }
     await db.insert(softwarePolicyAudit).values({
       orgId: input.orgId,
+      partnerId: input.partnerId ?? null,
       policyId: input.policyId ?? null,
       deviceId: input.deviceId ?? null,
       action: input.action,
@@ -491,6 +500,7 @@ export async function recordSoftwarePolicyAudit(input: {
   } catch (err) {
     console.error('[softwarePolicyService] Failed to write policy audit record', {
       orgId: input.orgId,
+      partnerId: input.partnerId,
       policyId: input.policyId,
       deviceId: input.deviceId,
       action: input.action,

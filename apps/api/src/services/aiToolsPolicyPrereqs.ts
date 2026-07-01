@@ -16,6 +16,7 @@ import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { ringAutoApproveSchema } from '@breeze/shared/validators';
+import { canManagePartnerWidePolicies } from './partnerWideAccess';
 
 /**
  * Defense-in-depth (#1317): the manage_update_rings AI tool writes `autoApprove`
@@ -60,6 +61,18 @@ function partnerWhere(auth: AuthContext, partnerIdCol: any): SQL | undefined {
   if (auth.partnerId) return eq(partnerIdCol, auth.partnerId);
   // org scope or partnerless: match nothing
   return sql`false`;
+}
+
+// Dual-axis access for software_policies (#2126): org-owned rows the caller can
+// reach OR partner-wide rows (org_id NULL) owned by the caller's own partner.
+// Mirrors softwarePolicyAccessCondition in routes/softwarePolicies.ts.
+function softwarePolicyWhere(auth: AuthContext): SQL | undefined {
+  const oc = orgWhere(auth, softwarePolicies.orgId);
+  if (!oc) return undefined; // system scope
+  if (auth.partnerId) {
+    return sql`(${oc} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
 }
 
 function safeHandler(toolName: string, fn: Handler): Handler {
@@ -259,6 +272,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         properties: {
           action: { type: 'string', enum: ['list', 'get', 'create', 'update'], description: 'Action to perform' },
           policyId: { type: 'string', description: 'Software policy UUID (required for get/update)' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Ownership for create: "organization" (default, owned by the current org) or "partner" (partner-wide "all orgs" template usable by every org under the partner; requires full partner org access)' },
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           mode: { type: 'string', enum: ['allowlist', 'blocklist', 'audit'], description: 'Policy mode (required for create)' },
@@ -277,8 +291,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, softwarePolicies.orgId);
-        if (oc) conditions.push(oc);
+        const access = softwarePolicyWhere(auth);
+        if (access) conditions.push(access);
         if (typeof input.mode === 'string') conditions.push(eq(softwarePolicies.mode, input.mode as any));
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
@@ -305,8 +319,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
         const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, softwarePolicies.orgId);
-        if (oc) conditions.push(oc);
+        const access = softwarePolicyWhere(auth);
+        if (access) conditions.push(access);
 
         const [policy] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
         if (!policy) return JSON.stringify({ error: 'Software policy not found or access denied' });
@@ -314,12 +328,26 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        // Ownership axis (#2126): partner-wide templates apply to every org
+        // under the partner, so creation is gated on the same capability as
+        // the HTTP route. The partner is derived from the caller's own token.
+        let owner: { orgId: string | null; partnerId: string | null };
+        if (input.ownerScope === 'partner') {
+          if (!auth.partnerId) return JSON.stringify({ error: 'Partner-wide software policies require partner scope' });
+          if (!canManagePartnerWidePolicies(auth)) {
+            return JSON.stringify({ error: 'Partner-wide software policies require full partner org access (orgAccess must be "all")' });
+          }
+          owner = { orgId: null, partnerId: auth.partnerId };
+        } else {
+          if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+          owner = { orgId, partnerId: null };
+        }
         if (!input.name) return JSON.stringify({ error: 'name is required' });
         if (!input.mode) return JSON.stringify({ error: 'mode is required (allowlist, blocklist, or audit)' });
 
         const rows = await db.insert(softwarePolicies).values({
-          orgId,
+          orgId: owner.orgId,
+          partnerId: owner.partnerId,
           name: input.name as string,
           description: (input.description as string) ?? null,
           mode: input.mode as any,
@@ -343,11 +371,17 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
         const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, softwarePolicies.orgId);
-        if (oc) conditions.push(oc);
+        const access = softwarePolicyWhere(auth);
+        if (access) conditions.push(access);
 
         const [existing] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Software policy not found or access denied' });
+
+        // Partner-wide templates are readable partner-wide but administrable
+        // only with the partner-wide capability (same gate as the HTTP route).
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;

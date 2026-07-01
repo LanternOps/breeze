@@ -100,6 +100,7 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
     .select({
       id: softwarePolicies.id,
       orgId: softwarePolicies.orgId,
+      partnerId: softwarePolicies.partnerId,
       name: softwarePolicies.name,
       isActive: softwarePolicies.isActive,
       remediationOptions: softwarePolicies.remediationOptions,
@@ -159,6 +160,7 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
 
       fireAudit({
         orgId: policy.orgId,
+        partnerId: policy.partnerId,
         policyId: policy.id,
         deviceId: data.deviceId,
         action: 'remediation_deferred',
@@ -295,6 +297,7 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
       : (skippedInFlight > 0 && commandsQueued === 0 ? 'remediation_deferred' : 'remediation_queued');
     fireAudit({
       orgId: policy.orgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       deviceId: data.deviceId,
       action,

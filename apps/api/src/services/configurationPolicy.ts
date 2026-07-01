@@ -29,7 +29,8 @@ import {
   sensitiveDataPolicies,
   peripheralPolicies,
 } from '../db/schema';
-import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { and, eq, desc, or, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
@@ -153,33 +154,17 @@ function policyAccessCondition(auth: AuthContext): SQL | undefined {
   return orgCond;
 }
 
-/**
- * Capability gate for creating/modifying PARTNER-WIDE ("all organizations")
- * policies. Partner-wide state pushes config to every org under the partner —
- * including orgs created later — so only full-partner admins (orgAccess='all')
- * and system scope qualify. Contexts that never resolved a partner membership
- * (org scope, agent, helper, MCP keys) have no partnerOrgAccess and fail closed.
- *
- * This is the single source of truth: HTTP routes gate with it directly, and
- * updateConfigPolicy/deleteConfigPolicy enforce it via
- * PartnerWideWriteDeniedError so non-route callers (AI tools) are covered too.
- */
-export function canManagePartnerWidePolicies(
-  auth: Pick<AuthContext, 'scope' | 'partnerOrgAccess'>
-): boolean {
-  return auth.scope === 'system' || (auth.scope === 'partner' && auth.partnerOrgAccess === 'all');
-}
-
-export const PARTNER_WIDE_WRITE_DENIED_MESSAGE =
-  'Modifying a partner-wide policy requires full partner org access (orgAccess must be "all")';
-
-/** Thrown by update/delete when a partner-wide policy is visible to the caller but not administrable. Routes map it to 403. */
-export class PartnerWideWriteDeniedError extends Error {
-  constructor() {
-    super(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
-    this.name = 'PartnerWideWriteDeniedError';
-  }
-}
+// The partner-wide capability gate lives in the dependency-free leaf module
+// services/partnerWideAccess.ts (so routes/workers/AI tools can import it
+// without this service's schema graph). Re-exported here for back-compat:
+// HTTP routes gate with it directly, and updateConfigPolicy/deleteConfigPolicy
+// enforce it via PartnerWideWriteDeniedError so non-route callers (AI tools)
+// are covered too.
+export {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PartnerWideWriteDeniedError,
+} from './partnerWideAccess';
 
 export async function createConfigPolicy(
   owner: { orgId: string; partnerId?: null } | { orgId?: null; partnerId: string },
@@ -1551,16 +1536,30 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch is handled separately in validateFeaturePolicyExists (partner-scoped, not org-scoped)
+  // patch and software_policy are handled separately in
+  // validateFeaturePolicyExists: rings are pure partner-axis, and software
+  // policies are dual-ownership (org XOR partner, #2126) — neither fits the
+  // org-only lookup below.
   alert_rule: { table: alertRules, orgIdCol: alertRules.orgId },
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
   security: { table: securityPolicies, orgIdCol: securityPolicies.orgId },
   compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
-  software_policy: { table: softwarePolicies, orgIdCol: softwarePolicies.orgId },
   sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
   peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
 };
+
+/**
+ * Feature types whose LINKED standalone table supports partner ownership, and
+ * may therefore carry a featurePolicyId on a PARTNER-WIDE config policy:
+ * update rings are pure partner-axis; software policies are dual-ownership
+ * (#2126). Grows as more template tables migrate to dual-axis (epic #2135).
+ * The featureLinks routes consult this set instead of hardcoding 'patch'.
+ */
+export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set([
+  'patch',
+  'software_policy',
+]);
 
 export async function validateFeaturePolicyExists(
   featureType: ConfigFeatureType,
@@ -1594,6 +1593,46 @@ export async function validateFeaturePolicyExists(
 
     if (!ring) {
       return { valid: false, error: `Update ring "${featurePolicyId}" not found for this partner` };
+    }
+
+    return { valid: true };
+  }
+
+  if (featureType === 'software_policy') {
+    if (!featurePolicyId) {
+      return { valid: true };
+    }
+
+    // Software policies are dual-ownership (#2126). A config policy may link:
+    //  - an org-owned software policy belonging to the config policy's own org
+    //  - a partner-owned ("all orgs") software policy belonging to the config
+    //    policy's partner (derived from its org for org-owned config policies)
+    // A partner-wide config policy (orgId null) can only link partner-owned
+    // templates — there is no owning org to anchor an org-owned one.
+    const partnerId =
+      owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
+
+    const ownershipConditions: SQL[] = [];
+    if (owner.orgId) {
+      ownershipConditions.push(eq(softwarePolicies.orgId, owner.orgId));
+    }
+    if (partnerId) {
+      ownershipConditions.push(
+        sql`(${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${partnerId})`
+      );
+    }
+    if (ownershipConditions.length === 0) {
+      return { valid: false, error: `Software policy "${featurePolicyId}" not found — no owning organization or partner` };
+    }
+
+    const [row] = await db
+      .select({ id: softwarePolicies.id })
+      .from(softwarePolicies)
+      .where(and(eq(softwarePolicies.id, featurePolicyId), or(...ownershipConditions)))
+      .limit(1);
+
+    if (!row) {
+      return { valid: false, error: `Software policy "${featurePolicyId}" not found for this organization or partner` };
     }
 
     return { valid: true };

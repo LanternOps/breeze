@@ -404,6 +404,27 @@ describe('featureLinks routes', () => {
       expect(addFeatureLinkMock).toHaveBeenCalled();
     });
 
+    it('ALLOWS linking a partner-owned SOFTWARE POLICY template on a partner-owned policy → 201 (#2126)', async () => {
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'software_policy' });
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'software_policy',
+          featurePolicyId: '55555555-5555-4555-8555-555555555555',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(validateFeaturePolicyExistsMock).toHaveBeenCalledWith(
+        'software_policy',
+        '55555555-5555-4555-8555-555555555555',
+        expect.objectContaining({ orgId: null, partnerId: PARTNER_POLICY.partnerId })
+      );
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+
     it('still rejects linking an org-scoped feature policy (non-patch) on a partner-owned policy → 400', async () => {
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',

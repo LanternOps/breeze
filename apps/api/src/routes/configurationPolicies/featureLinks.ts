@@ -18,6 +18,7 @@ import {
   remoteAccessInlineSettingsSchema,
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PARTNER_LINKABLE_FEATURE_TYPES,
 } from '../../services/configurationPolicy';
 import {
   addFeatureLinkSchema,
@@ -98,10 +99,11 @@ featureLinkRoutes.post(
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
     if (data.featurePolicyId) {
-      // Referenced feature policies are org-scoped and can't be linked to a
-      // partner-owned policy (org_id NULL, #1724) — EXCEPT patch update rings,
-      // which are partner-axis and belong on a partner-wide policy.
-      if (policy.orgId === null && data.featureType !== 'patch') {
+      // Most referenced feature policies are org-scoped and can't be linked to
+      // a partner-owned policy (org_id NULL, #1724) — EXCEPT the feature types
+      // whose standalone table supports partner ownership (update rings,
+      // software policies, ... — see PARTNER_LINKABLE_FEATURE_TYPES).
+      if (policy.orgId === null && !PARTNER_LINKABLE_FEATURE_TYPES.has(data.featureType)) {
         return c.json({ error: 'Cannot link an org-scoped feature policy to a partner-owned policy' }, 400);
       }
       const validation = await validateFeaturePolicyExists(
@@ -224,10 +226,8 @@ featureLinkRoutes.patch(
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
-      // Referenced feature policies are org-scoped and can't be linked to a
-      // partner-owned policy (org_id NULL, #1724) — EXCEPT patch update rings,
-      // which are partner-axis and belong on a partner-wide policy.
-      if (policy.orgId === null && existingLink.featureType !== 'patch') {
+      // Same partner-linkable exception as the POST route above.
+      if (policy.orgId === null && !PARTNER_LINKABLE_FEATURE_TYPES.has(existingLink.featureType as any)) {
         return c.json({ error: 'Cannot link an org-scoped feature policy to a partner-owned policy' }, 400);
       }
       const validation = await validateFeaturePolicyExists(

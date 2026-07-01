@@ -362,6 +362,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
         fireAudit({
           orgId: policy.orgId,
+          partnerId: policy.partnerId,
           policyId: policy.id,
           deviceId,
           action: 'violation_detected',
@@ -413,6 +414,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
       fireAudit({
         orgId: policy.orgId,
+        partnerId: policy.partnerId,
         policyId: policy.id,
         deviceId,
         action: 'compliance_check_failed',
@@ -451,6 +453,7 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
     fireAudit({
       orgId: policy.orgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       action: 'remediation_scheduled',
       actor: 'system',

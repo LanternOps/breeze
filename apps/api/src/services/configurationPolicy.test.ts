@@ -720,3 +720,41 @@ describe('updateConfigPolicy / deleteConfigPolicy — partner-wide administratio
     expect(updated?.name).toBe('Renamed');
   });
 });
+
+// ============================================================
+// validateFeaturePolicyExists — software_policy dual-axis (#2126)
+// ============================================================
+
+describe('validateFeaturePolicyExists — software_policy dual-axis linking (#2126)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  function mockLookupReturns(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValue(selectLimitRows(rows) as never);
+  }
+
+  it('accepts inline-only (no featurePolicyId)', async () => {
+    const result = await validateFeaturePolicyExists('software_policy', null, { orgId: 'org-1', partnerId: null });
+    expect(result.valid).toBe(true);
+  });
+
+  it('a PARTNER-WIDE config policy can link a partner-owned software template', async () => {
+    mockLookupReturns([{ id: 'sw-1' }]);
+    const result = await validateFeaturePolicyExists('software_policy', 'sw-1', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(true);
+  });
+
+  it('an ORG-owned config policy can link a software policy (own org or its partner template)', async () => {
+    mockLookupReturns([{ id: 'sw-1' }]);
+    const result = await validateFeaturePolicyExists('software_policy', 'sw-1', { orgId: 'org-1', partnerId: null });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a software policy id that resolves to neither axis', async () => {
+    mockLookupReturns([]);
+    const result = await validateFeaturePolicyExists('software_policy', 'missing', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/not found/i);
+  });
+});

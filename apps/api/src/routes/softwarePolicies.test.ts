@@ -33,7 +33,7 @@ vi.mock('../db/schema', () => ({
     remediationStatus: 'softwareComplianceStatus.remediationStatus',
     lastRemediationAttempt: 'softwareComplianceStatus.lastRemediationAttempt',
   },
-  softwarePolicies: { id: 'id', orgId: 'orgId', mode: 'mode', name: 'name', isActive: 'isActive' },
+  softwarePolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId', mode: 'mode', name: 'name', isActive: 'isActive', updatedAt: 'updatedAt' },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -533,5 +533,166 @@ describe('GET /violations — site scope', () => {
     expect((await res.json()).total).toBe(2);
     expect(whereArgs).toHaveLength(1);
     expect(dumpSql(whereArgs[0])).not.toContain('devices.siteId');
+  });
+});
+
+// ============================================================
+// Partner-wide ownership (#2126, epic #2135)
+// ============================================================
+
+describe('partner-wide software policies (#2126)', () => {
+  const PARTNER_ID = '99999999-9999-4999-8999-999999999999';
+  const ORG_ID = '11111111-1111-1111-1111-111111111111';
+  const POLICY_ID = '22222222-2222-2222-2222-222222222222';
+
+  let app: Hono;
+
+  function setPartnerAuth(partnerOrgAccess?: 'all' | 'selected' | 'none') {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        partnerOrgAccess,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        user: { id: 'user-123', email: 'test@example.com' },
+      });
+      return next();
+    });
+  }
+
+  function mockPartnerPolicyLookup() {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, mode: 'blocklist', name: 'Partner template' },
+          ]),
+        }),
+      }),
+    } as any);
+  }
+
+  const CREATE_BODY = {
+    ownerScope: 'partner',
+    name: 'Fleet blocklist',
+    mode: 'blocklist',
+    rules: { software: [{ name: 'BitTorrent' }] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/', softwarePoliciesRoutes);
+  });
+
+  it('creates a partner-wide policy (org NULL, partner from token) for a full partner admin', async () => {
+    setPartnerAuth('all');
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet blocklist', mode: 'blocklist', enforceMode: false },
+      ]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREATE_BODY),
+    });
+
+    expect(res.status).toBe(201);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: null, partnerId: PARTNER_ID })
+    );
+  });
+
+  it('denies partner-wide create without full partner org access (orgAccess selected)', async () => {
+    setPartnerAuth('selected');
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREATE_BODY),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/full partner org access/);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('denies partner-wide create for an org-scope caller (no partner)', async () => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        user: { id: 'user-123' },
+      });
+      return next();
+    });
+
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREATE_BODY),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('denies PATCH on a partner-wide policy without the partner-wide capability', async () => {
+    setPartnerAuth('selected');
+    mockPartnerPolicyLookup();
+
+    const res = await app.request(`/${POLICY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hijacked' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/full partner org access/);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('denies DELETE on a partner-wide policy without the partner-wide capability', async () => {
+    setPartnerAuth('none');
+    mockPartnerPolicyLookup();
+
+    const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/full partner org access/);
+  });
+
+  it('allows PATCH on a partner-wide policy for a full partner admin', async () => {
+    setPartnerAuth('all');
+    mockPartnerPolicyLookup();
+    const updateChain: any = {
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Renamed', mode: 'blocklist' },
+          ]),
+        }),
+      }),
+    };
+    vi.mocked(db.update).mockReturnValue(updateChain);
+
+    const res = await app.request(`/${POLICY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(db.update).toHaveBeenCalled();
   });
 });
