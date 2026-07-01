@@ -251,6 +251,22 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     catalogItemId: uuid,
   }),
 
+  manage_catalog: z.object({
+    action: z.enum([
+      'create_item',
+      'update_item',
+      'archive_item',
+      'set_org_price',
+      'remove_org_price',
+      'set_bundle_components',
+    ]),
+    catalogId: uuid.optional(),
+    orgId: uuid.optional(),
+    item: z.record(z.string(), z.unknown()).optional(),
+    override: z.record(z.string(), z.unknown()).optional(),
+    components: z.array(z.record(z.string(), z.unknown())).optional(),
+  }),
+
   list_contracts: z.object({
     orgId: uuid.optional(),
     status: z.string().optional(),
