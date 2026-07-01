@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   devices,
   deviceMetrics,
@@ -115,7 +115,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const scoped = await withDbAccessContext(
     dbContext,
-    async (): Promise<Response | { mainResponse: Record<string, unknown> }> => {
+    async (): Promise<Response | { deviceOrgId: string; mainResponse: Record<string, unknown> }> => {
 
   const [device] = await db
     .select()
@@ -520,12 +520,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const commands = await claimPendingCommandsForDevice(device.id, 10);
 
-  let configUpdate: PolicyProbeConfigUpdate | null = null;
-  try {
-    configUpdate = await buildPolicyProbeConfigUpdate(device.orgId);
-  } catch (err) {
-    console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
-  }
+  // Policy probe config (buildPolicyProbeConfigUpdate) is deliberately NOT
+  // built here: partner-wide compliance policies (org_id NULL, #2129) are
+  // invisible to this org-scoped RLS context, so it runs AFTER this block
+  // closes, under a system context — same #1105 pattern as the manifest
+  // trust keyset below.
 
   // Org > General > Agent update policy. Governs whether we may hand the agent
   // (or its helper/watchdog) an auto-upgrade target right now. `manual` blocks
@@ -727,8 +726,8 @@ if (latestHelper) {
   }
 
   let mergedConfigUpdate: Record<string, unknown> | null = null;
-  if (configUpdate || eventLogSettings || monitoringSettings || onedriveSettings || patchSourceSettings) {
-    mergedConfigUpdate = { ...(configUpdate ?? {}) };
+  if (eventLogSettings || monitoringSettings || onedriveSettings || patchSourceSettings) {
+    mergedConfigUpdate = {};
     if (eventLogSettings) {
       mergedConfigUpdate.event_log_settings = eventLogSettings;
     }
@@ -757,8 +756,10 @@ if (latestHelper) {
   }
 
   // Main-branch response payload — built inside the org context, but the
-  // manifest-trust-keyset is fetched AFTER this context closes (see below).
+  // manifest-trust-keyset and policy probe config are fetched AFTER this
+  // context closes (see below).
   return {
+    deviceOrgId: device.orgId,
     mainResponse: {
       commands: commands.map(cmd => ({
         id: cmd.id,
@@ -800,7 +801,26 @@ if (latestHelper) {
     captureException(err);
   }
 
-  return c.json({ ...scoped.mainResponse, manifestTrustKeys });
+  // Policy probe config also runs OUTSIDE the org context (#1105 pattern
+  // above) — and MUST: partner-wide compliance policies (org_id NULL, #2129)
+  // are invisible to the org-scoped RLS context, and the agent has to collect
+  // registry/config state for them too. The system context here is anchored to
+  // the authenticated device's own org, so it cannot pivot tenants.
+  let policyProbeConfig: PolicyProbeConfigUpdate | null = null;
+  try {
+    policyProbeConfig = await withSystemDbAccessContext(() =>
+      buildPolicyProbeConfigUpdate(scoped.deviceOrgId)
+    );
+  } catch (err) {
+    console.error(`[agents] failed to build policy probe config update for ${agentId}:`, err);
+  }
+
+  const scopedConfigUpdate = scoped.mainResponse.configUpdate as Record<string, unknown> | null;
+  const configUpdate = policyProbeConfig || scopedConfigUpdate
+    ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}) }
+    : null;
+
+  return c.json({ ...scoped.mainResponse, configUpdate, manifestTrustKeys });
 });
 
 // Receive service/process monitoring check results from agent

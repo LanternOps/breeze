@@ -6,6 +6,9 @@ export type AuthContext = {
   orgId: string | null;
   accessibleOrgIds: string[] | null;
   canAccessOrg?: (orgId: string) => boolean;
+  // Partner-membership org access ('all' unlocks partner-wide administration
+  // via canManagePartnerWidePolicies); absent on org/system tokens.
+  partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
   user: {
     id: string;
     email?: string;

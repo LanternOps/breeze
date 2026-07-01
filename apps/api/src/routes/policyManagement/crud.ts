@@ -13,6 +13,7 @@ import {
   getPagination,
   ensureOrgAccess,
   getPolicyWithOrgCheck,
+  automationPolicyOwnershipCondition,
   normalizePolicyResponse,
   getPolicyComplianceMap,
   buildComplianceSummary,
@@ -45,11 +46,14 @@ crudRoutes.get(
         }
         conditions.push(eq(automationPolicies.orgId, query.orgId));
       } else {
+        // "All orgs" view: org-owned policies across accessible orgs PLUS this
+        // partner's own partner-wide templates (org_id NULL, #2129).
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
+        const ownership = automationPolicyOwnershipCondition(auth, orgIds, true);
+        if (!ownership) {
           return c.json({ data: [], pagination: { page, limit, total: 0 } });
         }
-        conditions.push(inArray(automationPolicies.orgId, orgIds));
+        conditions.push(ownership);
       }
     } else if (auth.scope === 'system' && query.orgId) {
       conditions.push(eq(automationPolicies.orgId, query.orgId));

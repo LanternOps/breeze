@@ -1,15 +1,36 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { automationPolicies, automationRuns, automations } from '../../db/schema';
+import { automationPolicies, automationRuns, automations, organizations } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { evaluatePolicy, resolvePolicyRemediationAutomationId } from '../../services/policyEvaluationService';
 import { AuthContext, policyIdSchema } from './schemas';
 import { getPolicyWithOrgCheck, normalizePolicyResponse } from './helpers';
 
 export const actionRoutes = new Hono();
+
+/**
+ * Partner-wide policies (org_id NULL, #2129) mutate enforcement across every
+ * org under the partner — administrable only with the partner-wide capability
+ * (partner_users.org_access = 'all', same gate as the config-policy routes).
+ */
+function partnerWideWriteDenied(policy: { orgId: string | null }, auth: AuthContext): boolean {
+  // The route-local AuthContext types scope as plain string; narrow for the
+  // shared capability check (unknown scopes fail closed inside it anyway).
+  return (
+    policy.orgId === null &&
+    !canManagePartnerWidePolicies({
+      scope: auth.scope as 'system' | 'partner' | 'organization',
+      partnerOrgAccess: auth.partnerOrgAccess ?? null,
+    })
+  );
+}
 
 // POST /policies/:id/activate
 actionRoutes.post(
@@ -26,6 +47,10 @@ actionRoutes.post(
     const policy = await getPolicyWithOrgCheck(id, auth);
     if (!policy) {
       return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    if (partnerWideWriteDenied(policy, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     const [updated] = await db
@@ -61,6 +86,10 @@ actionRoutes.post(
     const policy = await getPolicyWithOrgCheck(id, auth);
     if (!policy) {
       return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    if (partnerWideWriteDenied(policy, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     const [updated] = await db
@@ -138,6 +167,10 @@ actionRoutes.post(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
+    if (partnerWideWriteDenied(policy, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const targetAutomationId = await resolvePolicyRemediationAutomationId(policy);
     if (!targetAutomationId) {
       return c.json({
@@ -146,13 +179,26 @@ actionRoutes.post(
       }, 400);
     }
 
+    // Automations are org-owned. An org-owned policy anchors the lookup to its
+    // own org; a partner-wide policy (org_id NULL, #2129) accepts an explicit
+    // automation from any org under the owning partner.
+    const automationOwnerCondition = policy.orgId
+      ? eq(automations.orgId, policy.orgId)
+      : inArray(
+          automations.orgId,
+          db
+            .select({ id: organizations.id })
+            .from(organizations)
+            .where(eq(organizations.partnerId, policy.partnerId ?? ''))
+        );
+
     const [automation] = await db
       .select()
       .from(automations)
       .where(
         and(
           eq(automations.id, targetAutomationId),
-          eq(automations.orgId, policy.orgId)
+          automationOwnerCondition
         )
       )
       .limit(1);

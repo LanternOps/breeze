@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { alerts, alertRules, alertTemplates, automationPolicies } from '../db/schema';
+import { alerts, alertRules, alertTemplates, automationPolicies, organizations } from '../db/schema';
 import { createAlert, resolveAlert } from './alertService';
 import { getEventBus } from './eventBus';
 
@@ -149,19 +149,32 @@ async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload)
   const policyName = payload.policyName ?? 'Policy';
   const hostname = payload.hostname ?? payload.deviceId;
 
+  // The event's orgId is the DEVICE's org. The policy is either owned by that
+  // org, or partner-wide (org_id NULL, #2129) and owned by that org's partner.
   const [policy] = await db
-    .select({ id: automationPolicies.id })
+    .select({ id: automationPolicies.id, orgId: automationPolicies.orgId, partnerId: automationPolicies.partnerId })
     .from(automationPolicies)
-    .where(
-      and(
-        eq(automationPolicies.id, payload.policyId),
-        eq(automationPolicies.orgId, orgId)
-      )
-    )
+    .where(eq(automationPolicies.id, payload.policyId))
     .limit(1);
 
   if (!policy) {
     return;
+  }
+
+  if (policy.orgId !== null) {
+    if (policy.orgId !== orgId) {
+      return;
+    }
+  } else {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+
+    if (!org || !policy.partnerId || org.partnerId !== policy.partnerId) {
+      return;
+    }
   }
 
   const ruleId = await ensureRule(orgId, payload.policyId, policyName, payload.enforcement);

@@ -521,8 +521,16 @@ registerTool({
     const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
 
     const conditions: SQL[] = [];
+    // Dual-axis (#2129): org-owned rows the caller can reach OR partner-wide
+    // rows (org_id NULL) owned by the caller's own partner.
     const orgCond = auth.orgCondition(automationPolicies.orgId);
-    if (orgCond) conditions.push(orgCond);
+    if (orgCond) {
+      conditions.push(
+        auth.scope === 'partner' && auth.partnerId
+          ? sql`(${orgCond} OR (${automationPolicies.orgId} IS NULL AND ${automationPolicies.partnerId} = ${auth.partnerId}))`
+          : orgCond
+      );
+    }
 
     if (input.enabled !== undefined) {
       conditions.push(eq(automationPolicies.enabled, input.enabled as boolean));

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automationPolicies,
@@ -27,6 +27,10 @@ type PolicyRow = typeof automationPolicies.$inferSelect;
 
 type TargetDevice = {
   id: string;
+  // The device's own org — for an org-owned policy this equals policy.orgId;
+  // for a partner-wide policy (#2129) it varies per device and is what child
+  // rows, events, and remediation lookups must be scoped to.
+  orgId: string;
   hostname: string;
   osType: string;
   osVersion: string;
@@ -761,6 +765,7 @@ export function __evaluateRulesForDevice(
   const evaluation = evaluateDeviceRules(parsedRules, {
     device: {
       id: 'debug-device',
+      orgId: 'debug-org',
       hostname: 'debug-host',
       osType: input.device.osType,
       osVersion: input.device.osVersion,
@@ -924,12 +929,24 @@ function extractScriptIdFromAction(action: unknown): string | null {
 }
 
 export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): Promise<string | null> {
+  return resolvePolicyRemediationAutomationIdForOrg(policy, policy.orgId);
+}
+
+/**
+ * Automations are org-owned, so script-based remediation matching must be
+ * anchored to a specific org. For an org-owned policy that is policy.orgId;
+ * for a partner-wide policy (#2129) evaluatePolicy resolves per DEVICE org.
+ */
+export async function resolvePolicyRemediationAutomationIdForOrg(
+  policy: PolicyRow,
+  orgId: string | null
+): Promise<string | null> {
   const explicitAutomationId = extractRemediationAutomationId(policy.rules);
   if (explicitAutomationId) {
     return explicitAutomationId;
   }
 
-  if (!policy.remediationScriptId) {
+  if (!policy.remediationScriptId || !orgId) {
     return null;
   }
 
@@ -938,7 +955,7 @@ export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): P
     .from(automations)
     .where(
       and(
-        eq(automations.orgId, policy.orgId),
+        eq(automations.orgId, orgId),
         eq(automations.enabled, true)
       )
     );
@@ -959,21 +976,57 @@ export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): P
   return null;
 }
 
+/**
+ * Ownership → device-scope condition. An org-owned policy targets devices in
+ * its own org; a partner-wide policy (orgId NULL, #2129) fans out to every
+ * device in every org under the owning partner. Returns null when the owner
+ * resolves to no orgs — i.e. zero target devices.
+ */
+async function policyDeviceScopeCondition(policy: PolicyRow): Promise<SQL | null> {
+  if (policy.orgId) {
+    return eq(devices.orgId, policy.orgId);
+  }
+
+  if (!policy.partnerId) {
+    // The one-owner CHECK makes this unreachable; guard against bad legacy data.
+    return null;
+  }
+
+  const orgRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, policy.partnerId));
+
+  if (orgRows.length === 0) {
+    return null;
+  }
+
+  return inArray(devices.orgId, orgRows.map((row) => row.id));
+}
+
+const TARGET_DEVICE_COLUMNS = {
+  id: devices.id,
+  orgId: devices.orgId,
+  hostname: devices.hostname,
+  osType: devices.osType,
+  osVersion: devices.osVersion,
+};
+
 async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> {
   const targets = normalizeTargetConfig(policy.targets);
+  const scopeCondition = await policyDeviceScopeCondition(policy);
+
+  if (!scopeCondition) {
+    return [];
+  }
 
   if (targets.deviceIds && targets.deviceIds.length > 0) {
     return db
-      .select({
-        id: devices.id,
-        hostname: devices.hostname,
-        osType: devices.osType,
-        osVersion: devices.osVersion,
-      })
+      .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
       .where(
         and(
-          eq(devices.orgId, policy.orgId),
+          scopeCondition,
           inArray(devices.id, targets.deviceIds)
         )
       );
@@ -981,16 +1034,11 @@ async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> 
 
   if (targets.siteIds && targets.siteIds.length > 0) {
     return db
-      .select({
-        id: devices.id,
-        hostname: devices.hostname,
-        osType: devices.osType,
-        osVersion: devices.osVersion,
-      })
+      .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
       .where(
         and(
-          eq(devices.orgId, policy.orgId),
+          scopeCondition,
           inArray(devices.siteId, targets.siteIds)
         )
       );
@@ -998,17 +1046,12 @@ async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> 
 
   if (targets.groupIds && targets.groupIds.length > 0) {
     return db
-      .select({
-        id: devices.id,
-        hostname: devices.hostname,
-        osType: devices.osType,
-        osVersion: devices.osVersion,
-      })
+      .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
       .innerJoin(deviceGroupMemberships, eq(deviceGroupMemberships.deviceId, devices.id))
       .where(
         and(
-          eq(devices.orgId, policy.orgId),
+          scopeCondition,
           inArray(deviceGroupMemberships.groupId, targets.groupIds)
         )
       );
@@ -1016,30 +1059,20 @@ async function resolveTargetDevices(policy: PolicyRow): Promise<TargetDevice[]> 
 
   if (targets.tags && targets.tags.length > 0) {
     return db
-      .select({
-        id: devices.id,
-        hostname: devices.hostname,
-        osType: devices.osType,
-        osVersion: devices.osVersion,
-      })
+      .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
       .where(
         and(
-          eq(devices.orgId, policy.orgId),
+          scopeCondition,
           sql<boolean>`${devices.tags} && ${targets.tags}`
         )
       );
   }
 
   return db
-    .select({
-      id: devices.id,
-      hostname: devices.hostname,
-      osType: devices.osType,
-      osVersion: devices.osVersion,
-    })
+    .select(TARGET_DEVICE_COLUMNS)
     .from(devices)
-    .where(eq(devices.orgId, policy.orgId));
+    .where(scopeCondition);
 }
 
 async function triggerRemediationAutomation(
@@ -1052,13 +1085,16 @@ async function triggerRemediationAutomation(
     return null;
   }
 
+  // Automations are org-owned: anchor the lookup to the DEVICE's org. For an
+  // org-owned policy that equals policy.orgId (resolveTargetDevices filters by
+  // it); for a partner-wide policy it is the only org that makes sense.
   const [automation] = await db
     .select()
     .from(automations)
     .where(
       and(
         eq(automations.id, remediationAutomationId),
-        eq(automations.orgId, policy.orgId)
+        eq(automations.orgId, device.orgId)
       )
     )
     .limit(1);
@@ -1152,7 +1188,11 @@ async function publishPolicyEvents(
 
   const publishSafely = async (eventType: 'policy.evaluated' | 'policy.violation' | 'policy.compliant' | 'policy.remediation.triggered') => {
     try {
-      await publishEvent(eventType, policy.orgId, basePayload, source);
+      // Events are per-device, so they carry the DEVICE's org — identical to
+      // policy.orgId for org-owned policies, and the only correct org for
+      // partner-wide ones (policy.orgId is NULL there, #2129). Downstream
+      // consumers (policyAlertBridge) create org-scoped rows from this.
+      await publishEvent(eventType, device.orgId, basePayload, source);
     } catch (error) {
       console.error(`[PolicyEvaluation] Failed to publish ${eventType}:`, error);
     }
@@ -1176,9 +1216,24 @@ export async function evaluatePolicy(
 ): Promise<PolicyEvaluationResponse> {
   const source = options.source ?? 'policy-evaluation-service';
   const requestRemediation = options.requestRemediation ?? true;
-  const remediationAutomationId = requestRemediation && policy.enforcement === 'enforce'
-    ? await resolvePolicyRemediationAutomationId(policy)
-    : null;
+  const wantsRemediation = requestRemediation && policy.enforcement === 'enforce';
+
+  // Remediation automations are org-owned, so a partner-wide policy resolves
+  // them per DEVICE org (memoized); an org-owned policy hits the cache with a
+  // single key — its own org — preserving the previous resolve-once behavior.
+  const remediationIdByOrg = new Map<string, string | null>();
+  const remediationAutomationIdForOrg = async (deviceOrgId: string): Promise<string | null> => {
+    if (!wantsRemediation) {
+      return null;
+    }
+    if (!remediationIdByOrg.has(deviceOrgId)) {
+      remediationIdByOrg.set(
+        deviceOrgId,
+        await resolvePolicyRemediationAutomationIdForOrg(policy, deviceOrgId)
+      );
+    }
+    return remediationIdByOrg.get(deviceOrgId) ?? null;
+  };
 
   const targetDevices = dedupeTargetDevices(await resolveTargetDevices(policy));
   const targetDeviceIds = targetDevices.map((device) => device.id);
@@ -1334,7 +1389,7 @@ export async function evaluatePolicy(
     }
 
     const remediationRunId = requestRemediation
-      ? await triggerRemediationAutomation(policy, device, status, remediationAutomationId)
+      ? await triggerRemediationAutomation(policy, device, status, await remediationAutomationIdForOrg(device.orgId))
       : null;
 
     evaluationResults.push({
@@ -1550,6 +1605,7 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
 
   const targetDevice: TargetDevice = {
     id: device.id,
+    orgId: device.orgId,
     hostname: device.hostname,
     osType: device.osType,
     osVersion: device.osVersion,

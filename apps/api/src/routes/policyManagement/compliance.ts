@@ -20,6 +20,7 @@ import {
   getPagination,
   ensureOrgAccess,
   getPolicyWithOrgCheck,
+  automationPolicyOwnershipCondition,
   getPolicyComplianceMap,
   buildComplianceSummary,
   extractViolationsFromComplianceDetails,
@@ -60,9 +61,13 @@ complianceRoutes.get(
       orgIds = [orgId];
     }
 
-    const policyCondition = orgIds.length > 0
-      ? inArray(automationPolicies.orgId, orgIds)
-      : undefined;
+    // Partner "all orgs" view also counts this partner's partner-wide
+    // templates (org_id NULL, #2129); a specific-org view stays org-only.
+    const policyCondition = automationPolicyOwnershipCondition(
+      auth,
+      orgIds,
+      auth.scope === 'partner' && !orgId
+    );
 
     const configPolicyCondition = orgIds.length > 0
       ? inArray(configurationPolicies.orgId, orgIds)
@@ -178,9 +183,13 @@ complianceRoutes.get(
       orgIds = [orgId];
     }
 
-    const policyCondition = orgIds.length > 0
-      ? inArray(automationPolicies.orgId, orgIds)
-      : undefined;
+    // Partner "all orgs" view also counts this partner's partner-wide
+    // templates (org_id NULL, #2129); a specific-org view stays org-only.
+    const policyCondition = automationPolicyOwnershipCondition(
+      auth,
+      orgIds,
+      auth.scope === 'partner' && !orgId
+    );
 
     const configPolicyCondition = orgIds.length > 0
       ? inArray(configurationPolicies.orgId, orgIds)

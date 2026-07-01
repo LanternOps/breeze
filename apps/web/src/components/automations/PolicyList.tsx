@@ -11,7 +11,8 @@ import {
   ShieldAlert,
   Calendar,
   CheckCircle,
-  XCircle
+  XCircle,
+  Globe
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -19,6 +20,9 @@ export type EnforcementLevel = 'monitor' | 'warn' | 'enforce';
 
 export type Policy = {
   id: string;
+  // null = partner-wide ("All organizations") compliance rule set (#2129).
+  // Optional because older callers/fixtures omit it.
+  orgId?: string | null;
   name: string;
   description?: string;
   enforcementLevel: EnforcementLevel;
@@ -264,7 +268,19 @@ export default function PolicyList({
                   <tr key={policy.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3">
                       <div>
-                        <p className="text-sm font-medium">{policy.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium">{policy.name}</p>
+                          {policy.orgId === null && (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                              title="Partner-wide policy — evaluates devices in every organization"
+                              data-testid="automation-policy-partner-wide-badge"
+                            >
+                              <Globe className="h-3 w-3" />
+                              All orgs
+                            </span>
+                          )}
+                        </div>
                         {policy.description && (
                           <p className="text-xs text-muted-foreground truncate max-w-xs">
                             {policy.description}

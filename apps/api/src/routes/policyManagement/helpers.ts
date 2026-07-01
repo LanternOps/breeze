@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   automationPolicies,
@@ -44,12 +44,56 @@ export async function getPolicyWithOrgCheck(policyId: string, auth: AuthContext)
     return null;
   }
 
-  const hasAccess = ensureOrgAccess(policy.orgId, auth);
-  if (!hasAccess) {
-    return null;
+  // Dual-ownership (#2129): org-owned rows keep the org check; partner-wide
+  // rows (org_id NULL) are visible to system scope and to the owning partner's
+  // own tokens. Org-scope tokens never see partner-wide templates (RLS is
+  // stricter than this app-layer check, never looser).
+  if (policy.orgId !== null) {
+    if (!ensureOrgAccess(policy.orgId, auth)) {
+      return null;
+    }
+    return policy;
   }
 
-  return policy;
+  if (auth.scope === 'system') {
+    return policy;
+  }
+
+  if (auth.scope === 'partner' && auth.partnerId && policy.partnerId === auth.partnerId) {
+    return policy;
+  }
+
+  return null;
+}
+
+/**
+ * List-scoping condition for automation policies over a set of accessible
+ * orgs (#2129 dual-ownership). When `includePartnerWide` is set, partner
+ * tokens additionally see partner-wide templates (org_id NULL) owned by their
+ * OWN partner. The branch is gated on scope === 'partner' because org tokens
+ * also carry a partnerId yet never hold the partner RLS axis — RLS is
+ * stricter than this app-layer condition, never looser.
+ *
+ * Returns undefined when nothing constrains the query (system scope) — and
+ * ALSO when an org/partner caller has no visible axis at all, so callers must
+ * short-circuit to an empty result instead of querying with undefined.
+ */
+export function automationPolicyOwnershipCondition(
+  auth: AuthContext,
+  orgIds: string[],
+  includePartnerWide: boolean
+): SQL | undefined {
+  const orgCondition = orgIds.length > 0 ? inArray(automationPolicies.orgId, orgIds) : undefined;
+
+  if (includePartnerWide && auth.scope === 'partner' && auth.partnerId) {
+    const partnerCondition = and(
+      isNull(automationPolicies.orgId),
+      eq(automationPolicies.partnerId, auth.partnerId)
+    ) as SQL;
+    return orgCondition ? (or(orgCondition, partnerCondition) as SQL) : partnerCondition;
+  }
+
+  return orgCondition;
 }
 
 export function sanitizeStringArray(value: unknown): string[] {

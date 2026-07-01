@@ -93,6 +93,18 @@ function alertRuleWhere(auth: AuthContext): SQL | undefined {
   return oc;
 }
 
+// Dual-axis access for automation_policies (#2129): same shape as
+// alertRuleWhere — org-owned compliance policies the caller can reach OR
+// partner-wide ones (org_id NULL) owned by the caller's own partner.
+function automationPolicyWhere(auth: AuthContext): SQL | undefined {
+  const oc = orgWhere(auth, automationPolicies.orgId);
+  if (!oc) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${oc} OR (${automationPolicies.orgId} IS NULL AND ${automationPolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
+}
+
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth) => {
@@ -1607,8 +1619,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
 
         if (reportType === 'compliance') {
-          // Get policy compliance summary
-          const oc = orgWhere(auth, automationPolicies.orgId);
+          // Get policy compliance summary (dual-axis, #2129)
+          const oc = automationPolicyWhere(auth);
           const conditions: SQL[] = [];
           if (oc) conditions.push(oc);
 

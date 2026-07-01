@@ -1537,12 +1537,12 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch, software_policy, security, and alert_rule are handled separately in
-  // validateFeaturePolicyExists: rings are pure partner-axis, and software /
-  // security / alert-rule policies are dual-ownership (org XOR partner,
-  // #2126/#2127/#2128) — none fits the org-only lookup below.
+  // patch, software_policy, security, alert_rule, and compliance are handled
+  // separately in validateFeaturePolicyExists: rings are pure partner-axis,
+  // and software / security / alert-rule / compliance (automation) policies
+  // are dual-ownership (org XOR partner, #2126/#2127/#2128/#2129) — none fits
+  // the org-only lookup below.
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
-  compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
   sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
   peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
@@ -1560,6 +1560,7 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'software_policy',
   'security',
   'alert_rule',
+  'compliance',
 ]);
 
 export async function validateFeaturePolicyExists(
@@ -1599,13 +1600,19 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  if (featureType === 'software_policy' || featureType === 'security' || featureType === 'alert_rule') {
+  if (
+    featureType === 'software_policy' ||
+    featureType === 'security' ||
+    featureType === 'alert_rule' ||
+    featureType === 'compliance'
+  ) {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
-    // Software (#2126), security (#2127), and alert-rule (#2128) policies are
-    // dual-ownership. A config policy may link:
+    // Software (#2126), security (#2127), alert-rule (#2128), and compliance
+    // (#2129, automation_policies) policies are dual-ownership. A config
+    // policy may link:
     //  - an org-owned policy belonging to the config policy's own org
     //  - a partner-owned ("all orgs") template belonging to the config
     //    policy's partner (derived from its org for org-owned config policies)
@@ -1615,7 +1622,9 @@ export async function validateFeaturePolicyExists(
       ? { table: softwarePolicies, label: 'Software policy' }
       : featureType === 'security'
         ? { table: securityPolicies, label: 'Security policy' }
-        : { table: alertRules, label: 'Alert rule' };
+        : featureType === 'alert_rule'
+          ? { table: alertRules, label: 'Alert rule' }
+          : { table: automationPolicies, label: 'Compliance policy' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 
