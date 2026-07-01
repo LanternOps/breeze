@@ -602,12 +602,12 @@ describe('updateFeatureLink — vulnerability inlineSettings service-layer valid
 
 describe('validateFeaturePolicyExists — vulnerability is inline-only', () => {
   it('rejects a featurePolicyId (vulnerability has no standalone policy table)', async () => {
-    const result = await validateFeaturePolicyExists('vulnerability', 'some-uuid', 'org-1');
+    const result = await validateFeaturePolicyExists('vulnerability', 'some-uuid', { orgId: 'org-1', partnerId: null });
     expect(result.valid).toBe(false);
   });
 
   it('accepts inline-only (no featurePolicyId)', async () => {
-    const result = await validateFeaturePolicyExists('vulnerability', null, 'org-1');
+    const result = await validateFeaturePolicyExists('vulnerability', null, { orgId: 'org-1', partnerId: null });
     expect(result.valid).toBe(true);
   });
 });

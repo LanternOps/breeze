@@ -19,7 +19,10 @@ vi.mock('../db', () => {
   const where = vi.fn(() => Promise.resolve(mockRows));
   const leftJoinSites = vi.fn(() => ({ where }));
   const leftJoinPartners = vi.fn(() => ({ leftJoin: leftJoinSites }));
-  const innerJoinOrgs = vi.fn(() => ({ leftJoin: leftJoinPartners }));
+  // innerJoinOrgs terminates two shapes: loadDeviceSchedulingContexts chains
+  // two more leftJoins; resolveDeviceIdsForAssignment's partner branch calls
+  // .where() directly after the single innerJoin.
+  const innerJoinOrgs = vi.fn(() => ({ leftJoin: leftJoinPartners, where }));
   const from = vi.fn(() => ({ innerJoin: innerJoinOrgs }));
   const select = vi.fn(() => ({ from }));
   return {
@@ -65,7 +68,39 @@ import { __testOnly } from './patchSchedulerWorker';
 import { enqueuePatchJob, filterOrphanedJobIds } from './patchJobExecutor';
 import { captureException } from '../services/sentry';
 
-const { loadDeviceSchedulingContexts, enqueueScanResults } = __testOnly;
+const { loadDeviceSchedulingContexts, enqueueScanResults, resolveDeviceIdsForAssignment } = __testOnly;
+
+describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
+  beforeEach(() => {
+    mockRows = [];
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resolves every device under the partner when the policy has no owning org (partner-wide)', async () => {
+    // A partner-wide patch policy carries policyOrgId === null and is assigned
+    // at the partner level. Resolution must NOT early-return or clamp to an org
+    // — it returns all the partner's devices for the scheduler to group by org.
+    mockRows = [{ id: 'dev-a' }, { id: 'dev-b' }];
+    const ids = await resolveDeviceIdsForAssignment(
+      'partner',
+      '88888888-8888-4888-8888-888888888888',
+      null
+    );
+    expect(ids).toEqual(['dev-a', 'dev-b']);
+  });
+
+  it('returns [] without querying for an org-scoped level when the policy has no owning org', async () => {
+    // Org/site/group/device levels are never carried by a partner-wide policy
+    // (validateAssignmentTarget rejects them); a null policyOrgId here is a
+    // no-op, guarded before the org-equality queries run.
+    const { db } = await import('../db');
+    const ids = await resolveDeviceIdsForAssignment('organization', 'org-x', null);
+    expect(ids).toEqual([]);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+});
 
 describe('loadDeviceSchedulingContexts (#1318 partner tz)', () => {
   beforeEach(() => {

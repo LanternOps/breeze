@@ -17,9 +17,11 @@
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { configurationPolicies } from '../../db/schema';
+import { listConfigPolicies } from '../../services/configurationPolicy';
 import { createOrganization, createPartner } from './db-utils';
 
 const created: string[] = [];
@@ -192,6 +194,63 @@ describe('configuration_policies RLS — dual-axis (2026-06-27 migration)', () =
             .returning(),
       ),
     ).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('listConfigPolicies filtered by orgId ALSO returns the partner-wide policies that govern that org (#1724 follow-up)', async () => {
+    // A partner admin viewing org X should see both X's own policies AND the
+    // partner-wide policies that also apply to X — otherwise the org-filtered
+    // list hides policies that genuinely govern the org's devices.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    const orgPolicyId = (
+      await withDbAccessContext(orgContext(org.id), () =>
+        db
+          .insert(configurationPolicies)
+          .values({ orgId: org.id, partnerId: null, name: 'Org-owned' })
+          .returning(),
+      )
+    )[0]!.id;
+    created.push(orgPolicyId);
+    const partnerPolicyId = await seedPartnerPolicy(partner.id);
+
+    // Minimal AuthContext surface listConfigPolicies actually reads: orgCondition
+    // (single accessible org) + partnerId (partner axis).
+    const auth = {
+      scope: 'partner',
+      partnerId: partner.id,
+      orgId: null,
+      accessibleOrgIds: [org.id],
+      orgCondition: (col: PgColumn): SQL | undefined => eq(col, org.id),
+    } as never;
+
+    const result = await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+      listConfigPolicies(auth, { orgId: org.id }, { page: 1, limit: 50 }),
+    );
+    const ids = result.data.map((p) => p.id);
+
+    expect(ids).toContain(orgPolicyId); // org-owned still shows
+    expect(ids).toContain(partnerPolicyId); // partner-wide ALSO shows (the fix)
+  });
+
+  it('an org-filtered list does NOT surface another partner\'s partner-wide policy', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const foreignPartnerPolicyId = await seedPartnerPolicy(partnerB.id);
+
+    const authA = {
+      scope: 'partner',
+      partnerId: partnerA.id,
+      orgId: null,
+      accessibleOrgIds: [orgA.id],
+      orgCondition: (col: PgColumn): SQL | undefined => eq(col, orgA.id),
+    } as never;
+
+    const result = await withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
+      listConfigPolicies(authA, { orgId: orgA.id }, { page: 1, limit: 50 }),
+    );
+    expect(result.data.map((p) => p.id)).not.toContain(foreignPartnerPolicyId);
   });
 
   it('partner scope can UPDATE and DELETE its own partner-wide policy', async () => {

@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
+import { eq } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { db } from '../../db';
+import { organizations } from '../../db/schema';
 import {
   createConfigPolicy,
   getConfigPolicy,
@@ -83,29 +85,13 @@ crudRoutes.post(
       // otherwise a partner-wide policy resolves to NO devices until the user
       // separately discovers the Assignments tab (#1724 follow-up).
       //
-      // The two inserts aren't in one transaction, so guard the seed: a
-      // UNIQUE(configPolicyId, level, targetId) collision is impossible on a
-      // fresh policy and is tolerated defensively; any OTHER failure would leave
-      // a committed-but-unassigned partner-wide policy (the exact "resolves to no
-      // devices" state this feature prevents), so roll the orphan back and
-      // surface the failure with its id rather than a bare, anonymous 500.
-      try {
-        await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
-      } catch (err) {
-        if (!isPgUniqueViolation(err)) {
-          console.error(
-            `[ConfigPolicy] Partner-wide auto-assign failed for policy ${policy.id} (partner ${auth.partnerId}); rolling back orphan`,
-            err
-          );
-          await deleteConfigPolicy(policy.id, auth).catch((cleanupErr) => {
-            console.error(
-              `[ConfigPolicy] Failed to roll back orphaned partner-wide policy ${policy.id}`,
-              cleanupErr
-            );
-          });
-          throw err;
-        }
-      }
+      // Both writes run inside the request-level transaction: authMiddleware
+      // wraps the handler in withDbAccessContext, which is a single
+      // baseDb.transaction. If this seed throws, the policy insert above rolls
+      // back with it — a committed-but-unassigned partner-wide policy (the exact
+      // "resolves to no devices" state this feature prevents) can't be left
+      // behind, and no compensating delete is needed.
+      await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
       writeRouteAudit(c, {
         orgId: null,
         action: 'config_policy.create',
@@ -119,22 +105,48 @@ crudRoutes.post(
 
     let orgId = data.orgId;
     if (auth.scope === 'organization') {
+      // Org scope always owns the policy in its own org — a client-supplied
+      // orgId is ignored so an org user can't create a policy in another org.
       if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
       orgId = auth.orgId;
     } else if (auth.scope === 'partner') {
       if (!orgId) {
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
+        const accessibleOrgs = auth.accessibleOrgIds ?? [];
+        const [onlyOrg] = accessibleOrgs;
+        if (accessibleOrgs.length === 1 && onlyOrg) {
+          orgId = onlyOrg;
         } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+          // Distinguish "nothing to own it" from "ambiguous which org" so the
+          // caller gets an actionable message rather than a misleading one.
+          return c.json(
+            {
+              error:
+                accessibleOrgs.length === 0
+                  ? 'No accessible organization to own this policy'
+                  : 'orgId is required when the partner has multiple organizations',
+            },
+            400
+          );
         }
       }
       if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access to this organization denied' }, 403);
-    } else if (auth.scope === 'system' && !orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
+    } else if (auth.scope === 'system') {
+      if (!orgId) return c.json({ error: 'orgId is required' }, 400);
+      // System scope bypasses the org-access checks above, so a non-existent
+      // orgId would otherwise fail as a raw FK 500 at insert time. Surface a
+      // clean 404 instead. (System context sees all orgs — no RLS filter.)
+      const [org] = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      if (!org) return c.json({ error: 'Organization not found' }, 404);
     }
 
+    // Org-owned policies are intentionally NOT auto-assigned (unlike partner-wide
+    // above): an org policy is commonly meant for a specific site/group/device,
+    // so auto-assigning it at the org level would silently over-apply to every
+    // device in the org. The user picks the assignment target explicitly.
     const policy = await createConfigPolicy({ orgId: orgId as string }, data, auth.user.id);
 
     writeRouteAudit(c, {

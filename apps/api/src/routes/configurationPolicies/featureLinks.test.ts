@@ -285,24 +285,75 @@ describe('featureLinks routes', () => {
 
     // onedrive_helper is also in ORG_SCOPED_ONLY_FEATURES but isn't accepted by
     // addFeatureLinkSchema's enum, so it can't reach the route at all — only
-    // backup and patch are exercisable here.
-    it.each(['backup', 'patch'])(
-      'rejects the %s feature on a partner-owned policy → 400 (no insert)',
-      async (featureType) => {
-        const res = await app.request(`/${POLICY_ID}/features`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          // Valid body (passes the schema refine) so we exercise the
-          // partner-wide guard, not the generic validator.
-          body: JSON.stringify({ featureType, inlineSettings: { enabled: true } }),
-        });
+    // backup is exercisable here. patch is deliberately NOT rejected: rings are
+    // partner-axis and the scheduler groups by device org (#1724 follow-up).
+    it('rejects the backup feature on a partner-owned policy → 400 (no insert)', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Valid body (passes the schema refine) so we exercise the
+        // partner-wide guard, not the generic validator.
+        body: JSON.stringify({ featureType: 'backup', inlineSettings: { enabled: true } }),
+      });
 
-        expect(res.status).toBe(400);
-        const body = await res.json();
-        expect(String(body.error)).toContain('partner-wide');
-        expect(addFeatureLinkMock).not.toHaveBeenCalled();
-      }
-    );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(String(body.error)).toContain('partner-wide');
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('ALLOWS the patch feature on a partner-owned policy → 201 (rings are partner-axis)', async () => {
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Minimal valid patch inline settings (defaults fill the rest).
+        body: JSON.stringify({ featureType: 'patch', inlineSettings: { scheduleTime: '02:00' } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('ALLOWS linking a patch update ring (featurePolicyId) on a partner-owned policy → 201', async () => {
+      validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'patch',
+          featurePolicyId: '44444444-4444-4444-4444-444444444444',
+          inlineSettings: { scheduleTime: '02:00' },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      // Validation must receive the policy's partnerId so it resolves the
+      // partner-axis ring without an owning org.
+      expect(validateFeaturePolicyExistsMock).toHaveBeenCalledWith(
+        'patch',
+        '44444444-4444-4444-4444-444444444444',
+        expect.objectContaining({ orgId: null, partnerId: PARTNER_POLICY.partnerId })
+      );
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('still rejects linking an org-scoped feature policy (non-patch) on a partner-owned policy → 400', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'security',
+          featurePolicyId: '44444444-4444-4444-4444-444444444444',
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(String(body.error)).toContain('partner-owned');
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
 
     it('still allows an org-derived feature (security) on a partner-owned policy', async () => {
       addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'security' });

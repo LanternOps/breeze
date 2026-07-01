@@ -9,6 +9,7 @@ const {
   updateConfigPolicyMock,
   deleteConfigPolicyMock,
   assignPolicyMock,
+  dbSelectMock,
 } = vi.hoisted(() => ({
   listConfigPoliciesMock: vi.fn(),
   createConfigPolicyMock: vi.fn(),
@@ -16,6 +17,7 @@ const {
   updateConfigPolicyMock: vi.fn(),
   deleteConfigPolicyMock: vi.fn(),
   assignPolicyMock: vi.fn(),
+  dbSelectMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', () => ({
@@ -26,6 +28,18 @@ vi.mock('../../services/configurationPolicy', () => ({
   deleteConfigPolicy: deleteConfigPolicyMock,
   assignPolicy: assignPolicyMock,
 }));
+
+// crud.ts uses db.select only for the system-scope org-existence check.
+vi.mock('../../db', () => ({ db: { select: dbSelectMock } }));
+vi.mock('../../db/schema', () => ({ organizations: { id: 'organizations.id' } }));
+
+// Configure the db.select().from().where().limit() chain to report whether the
+// target org exists (system-scope create path).
+function mockOrgExists(exists: boolean) {
+  dbSelectMock.mockReturnValue({
+    from: () => ({ where: () => ({ limit: () => Promise.resolve(exists ? [{ id: ORG_ID }] : []) }) }),
+  });
+}
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
@@ -81,6 +95,7 @@ describe('configurationPolicies CRUD routes', () => {
     // auto-assign error-path test leaks into later cases.
     assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
     deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
+    mockOrgExists(true); // default: system-scope org-existence check passes
     app = new Hono();
     // Set auth context before mounting routes
     app.use('*', async (c, next) => {
@@ -284,6 +299,101 @@ describe('configurationPolicies CRUD routes', () => {
       expect(assignPolicyMock).not.toHaveBeenCalled();
     });
 
+    function systemCreateApp() {
+      const appSystem = new Hono();
+      appSystem.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'system', orgId: null, accessibleOrgIds: null, canAccessOrg: () => true }));
+        await next();
+      });
+      appSystem.route('/', crudRoutes);
+      return appSystem;
+    }
+
+    it('system scope: returns 404 (not a raw 500) when the target org does not exist', async () => {
+      mockOrgExists(false);
+
+      const res = await systemCreateApp().request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Policy', orgId: ORG_ID }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('system scope: creates the policy when the target org exists', async () => {
+      mockOrgExists(true);
+      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Policy', orgId: ORG_ID, partnerId: null, status: 'active' });
+
+      const res = await systemCreateApp().request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Policy', orgId: ORG_ID }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_ID }, expect.objectContaining({ name: 'Policy' }), 'user-1');
+    });
+
+    it('partner scope: distinct message when the partner has NO accessible orgs', async () => {
+      const appPartnerNoOrg = new Hono();
+      appPartnerNoOrg.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [], canAccessOrg: () => false }));
+        await next();
+      });
+      appPartnerNoOrg.route('/', crudRoutes);
+
+      const res = await appPartnerNoOrg.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Policy' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/No accessible organization/i);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('partner scope: distinct message when the partner has MULTIPLE orgs and no orgId given', async () => {
+      const ORG_B = '55555555-5555-5555-5555-555555555555';
+      const appPartnerMulti = new Hono();
+      appPartnerMulti.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID, ORG_B], canAccessOrg: (o: string) => o === ORG_ID || o === ORG_B }));
+        await next();
+      });
+      appPartnerMulti.route('/', crudRoutes);
+
+      const res = await appPartnerMulti.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Policy' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/multiple organizations/i);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('partner scope: defaults to the single accessible org when none is supplied', async () => {
+      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Policy', orgId: ORG_ID, partnerId: null, status: 'active' });
+      const appPartnerSingle = new Hono();
+      appPartnerSingle.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID], canAccessOrg: (o: string) => o === ORG_ID }));
+        await next();
+      });
+      appPartnerSingle.route('/', crudRoutes);
+
+      const res = await appPartnerSingle.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Policy' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalledWith({ orgId: ORG_ID }, expect.objectContaining({ name: 'Policy' }), 'user-1');
+    });
+
     function partnerCreateApp() {
       const appPartner = new Hono();
       appPartner.use('*', async (c, next) => {
@@ -295,28 +405,10 @@ describe('configurationPolicies CRUD routes', () => {
       return appPartner;
     }
 
-    it('tolerates a UNIQUE violation on the auto-assign (still 201, no rollback)', async () => {
-      const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
-      createConfigPolicyMock.mockResolvedValue(policy);
-      // Real isPgUniqueViolation is used (not mocked) — SQLSTATE 23505 must be swallowed.
-      assignPolicyMock.mockRejectedValue({ code: '23505' });
-
-      const res = await partnerCreateApp().request('/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Partner-wide', ownerScope: 'partner' }),
-      });
-
-      expect(res.status).toBe(201);
-      // The policy already has its partner assignment — do NOT roll it back.
-      expect(deleteConfigPolicyMock).not.toHaveBeenCalled();
-    });
-
-    it('rolls back the orphaned policy and 500s when the auto-assign fails for a non-unique reason', async () => {
+    it('surfaces a 500 when the auto-assign fails, WITHOUT a compensating delete (request transaction rolls back)', async () => {
       const policy = { id: POLICY_ID, name: 'Partner-wide', orgId: null, partnerId: PARTNER_ID, status: 'active' };
       createConfigPolicyMock.mockResolvedValue(policy);
       assignPolicyMock.mockRejectedValue(new Error('RLS 0-row write'));
-      deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
 
       const res = await partnerCreateApp().request('/', {
         method: 'POST',
@@ -324,10 +416,12 @@ describe('configurationPolicies CRUD routes', () => {
         body: JSON.stringify({ name: 'Partner-wide', ownerScope: 'partner' }),
       });
 
-      // A committed-but-unassigned partner-wide policy is the exact failure this
-      // feature prevents, so the orphan is deleted and the failure surfaced.
+      // Both inserts share the request-level withDbAccessContext transaction, so
+      // the failed seed rolls the policy insert back automatically — the handler
+      // must NOT issue an explicit compensating delete (which would double-handle
+      // rollback and, on a UNIQUE violation, run against an already-aborted txn).
       expect(res.status).toBe(500);
-      expect(deleteConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything());
+      expect(deleteConfigPolicyMock).not.toHaveBeenCalled();
     });
 
     it('rejects ownerScope:partner for an org-scope caller (no partner) (#1724)', async () => {

@@ -201,7 +201,17 @@ export async function listConfigPolicies(
   if (accessCond) conditions.push(accessCond);
 
   if (filters.orgId) {
-    conditions.push(eq(configurationPolicies.orgId, filters.orgId));
+    // Include the caller's partner-wide policies (org_id NULL) alongside the
+    // org-owned ones. A partner-wide policy applies to EVERY org under the
+    // partner, so an org-filtered list that hid them would misrepresent which
+    // policies actually govern that org's devices (and the UI has no separate
+    // surface for them). policyAccessCondition already bounds the org_id IS NULL
+    // rows to the caller's own partner, so this cannot leak another partner's
+    // policies; for org-scope callers (no partner axis) the NULL branch matches
+    // nothing, leaving their behavior unchanged. (#1724 follow-up)
+    conditions.push(
+      sql`(${configurationPolicies.orgId} = ${filters.orgId} OR ${configurationPolicies.orgId} IS NULL)`
+    );
   }
   if (filters.status) {
     conditions.push(eq(configurationPolicies.status, filters.status as 'active' | 'inactive' | 'archived'));
@@ -1497,15 +1507,17 @@ const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCo
 export async function validateFeaturePolicyExists(
   featureType: ConfigFeatureType,
   featurePolicyId: string | undefined | null,
-  orgId: string
+  owner: { orgId: string | null; partnerId: string | null }
 ): Promise<{ valid: boolean; error?: string }> {
   if (featureType === 'patch') {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
-    // Rings are partner-scoped: derive the partner from the config policy's org.
-    const partnerId = await resolvePartnerIdForOrg(orgId);
+    // Rings are partner-axis. A partner-wide policy (#1724) carries partnerId
+    // directly (orgId null); an org-scoped policy derives it from its org.
+    const partnerId =
+      owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
     if (!partnerId) {
       return { valid: false, error: `Update ring "${featurePolicyId}" not found — organization has no partner` };
     }
@@ -1547,6 +1559,18 @@ export async function validateFeaturePolicyExists(
 
   if (!featurePolicyId) {
     return { valid: true }; // inline-only is allowed; schema ensures inlineSettings is present
+  }
+
+  // Every remaining feature type references an org-scoped policy table. A
+  // partner-wide policy (orgId null, #1724) cannot link one — patch (rings,
+  // partner-axis) is the only linked feature valid partner-wide and returned
+  // above. The route blocks this upstream; guard here as defense-in-depth.
+  const orgId = owner.orgId;
+  if (!orgId) {
+    return {
+      valid: false,
+      error: `The "${featureType}" feature policy is organization-scoped and cannot be linked to a partner-wide configuration policy`,
+    };
   }
 
   // Check if it's a reference to another Configuration Policy (whole-policy linking)

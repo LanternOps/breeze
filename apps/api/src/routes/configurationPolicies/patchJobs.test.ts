@@ -72,6 +72,10 @@ vi.mock('../../db/schema', () => ({
     siteId: 'devices.siteId',
     hostname: 'devices.hostname',
   },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
+  },
 }));
 
 import { db } from '../../db';
@@ -451,6 +455,134 @@ describe('configurationPolicies patchJob routes', () => {
       expect(res.status).toBe(403);
       const json = await res.json();
       expect(json.error).toContain('policy organization');
+      expect(json.skipped.crossOrgDeviceIds).toEqual([device2]);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // ── Partner-wide policies (#1724 follow-up): one policy patches every org
+    //    under the partner. Scope guard verifies device.org.partnerId matches. ──
+    const PARTNER_ID = '88888888-8888-4888-8888-888888888888';
+
+    it('creates a partner-wide patch job spanning multiple orgs under the partner', async () => {
+      const orgA = ORG_ID;
+      const orgB = '99999999-9999-4999-8999-999999999999';
+      const device2 = '66666666-6666-4666-8666-666666666666';
+      getConfigPolicyMock.mockResolvedValue({
+        id: POLICY_ID,
+        status: 'active',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        name: 'Partner-wide',
+      });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal({ orgId: null }));
+      vi.mocked(db.select)
+        // 1) device select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: orgA, hostname: 'host-a' },
+              { id: device2, orgId: orgB, hostname: 'host-b' },
+            ]),
+          }),
+        } as any)
+        // 2) organizations→partner select (partner-wide scope guard)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: orgA, partnerId: PARTNER_ID },
+              { id: orgB, partnerId: PARTNER_ID },
+            ]),
+          }),
+        } as any);
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValuesMock } as any);
+
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [orgA, orgB],
+          canAccessOrg: (orgId: string) => orgId === orgA || orgId === orgB,
+        }));
+        await next();
+      });
+      app.route('/', patchJobRoutes);
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID, device2] }),
+      });
+
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json.totalDevices).toBe(2);
+      // One patch_jobs row per device org (job insert grouped by org).
+      expect(insertValuesMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('denies a partner-wide patch job for a device whose org belongs to another partner', async () => {
+      const orgA = ORG_ID;
+      const foreignOrg = '99999999-9999-4999-8999-999999999999';
+      const foreignPartner = '55555555-5555-4555-8555-555555555555';
+      const device2 = '66666666-6666-4666-8666-666666666666';
+      getConfigPolicyMock.mockResolvedValue({
+        id: POLICY_ID,
+        status: 'active',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        name: 'Partner-wide',
+      });
+      loadPolicyLocalPatchConfigMock.mockResolvedValue(makePolicyLocal({ orgId: null }));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: DEVICE_ID, orgId: orgA, hostname: 'host-a' },
+              { id: device2, orgId: foreignOrg, hostname: 'host-foreign' },
+            ]),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: orgA, partnerId: PARTNER_ID },
+              { id: foreignOrg, partnerId: foreignPartner },
+            ]),
+          }),
+        } as any);
+
+      checkDeviceMaintenanceWindowMock.mockResolvedValue(inactiveMaintenance);
+
+      app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          partnerId: PARTNER_ID,
+          // Caller can technically reach both orgs; the partner-scope guard is
+          // what must reject the foreign-partner device, not just RLS/access.
+          accessibleOrgIds: [orgA, foreignOrg],
+          canAccessOrg: () => true,
+        }));
+        await next();
+      });
+      app.route('/', patchJobRoutes);
+
+      const res = await app.request(`/${POLICY_ID}/patch-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_ID, device2] }),
+      });
+
+      expect(res.status).toBe(403);
+      const json = await res.json();
+      expect(json.error).toContain('policy partner');
       expect(json.skipped.crossOrgDeviceIds).toEqual([device2]);
       expect(db.insert).not.toHaveBeenCalled();
     });

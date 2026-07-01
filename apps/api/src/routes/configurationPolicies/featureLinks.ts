@@ -30,12 +30,16 @@ const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.res
 
 // Feature types whose per-feature config is fundamentally org-scoped and cannot
 // be authored on a partner-wide policy (#1724): backup/onedrive_helper settings
-// carry a concrete org_id FK, and patch scheduling is org-batch only (the
-// scheduler iterates orgs, not partners). Rejecting these at the feature-link
-// write layer keeps the read side (effective-config resolution) and the write
-// side consistent — a partner-wide policy never advertises coverage the
-// scheduler won't deliver. See the PR scope note.
-const ORG_SCOPED_ONLY_FEATURES = new Set(['backup', 'onedrive_helper', 'patch']);
+// carry a concrete org_id FK, so a partner-wide policy has no owning org to
+// anchor them to. Rejecting these at the feature-link write layer keeps the
+// read side (effective-config resolution) and the write side consistent — a
+// partner-wide policy never advertises coverage that can't be delivered.
+//
+// patch is deliberately NOT here: update rings are partner-axis (partner_id, no
+// org_id) and the patch scheduler groups by each device's own org, so a
+// partner-wide patch policy resolves and schedules end-to-end across every org
+// under the partner. See configPolicyPatching.ts.
+const ORG_SCOPED_ONLY_FEATURES = new Set(['backup', 'onedrive_helper']);
 
 // GET /:id/features — list feature links for a policy
 featureLinkRoutes.get(
@@ -85,15 +89,16 @@ featureLinkRoutes.post(
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
     if (data.featurePolicyId) {
-      // Referenced feature policies are org-scoped; a partner-owned config
-      // policy (org_id NULL, #1724) cannot link one.
-      if (policy.orgId === null) {
+      // Referenced feature policies are org-scoped and can't be linked to a
+      // partner-owned policy (org_id NULL, #1724) — EXCEPT patch update rings,
+      // which are partner-axis and belong on a partner-wide policy.
+      if (policy.orgId === null && data.featureType !== 'patch') {
         return c.json({ error: 'Cannot link an org-scoped feature policy to a partner-owned policy' }, 400);
       }
       const validation = await validateFeaturePolicyExists(
         data.featureType,
         data.featurePolicyId,
-        policy.orgId
+        { orgId: policy.orgId, partnerId: policy.partnerId }
       );
       if (!validation.valid) {
         return c.json({ error: validation.error }, 400);
@@ -204,15 +209,16 @@ featureLinkRoutes.patch(
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
-      // Referenced feature policies are org-scoped; a partner-owned config
-      // policy (org_id NULL, #1724) cannot link one.
-      if (policy.orgId === null) {
+      // Referenced feature policies are org-scoped and can't be linked to a
+      // partner-owned policy (org_id NULL, #1724) — EXCEPT patch update rings,
+      // which are partner-axis and belong on a partner-wide policy.
+      if (policy.orgId === null && existingLink.featureType !== 'patch') {
         return c.json({ error: 'Cannot link an org-scoped feature policy to a partner-owned policy' }, 400);
       }
       const validation = await validateFeaturePolicyExists(
         existingLink.featureType as any,
         data.featurePolicyId,
-        policy.orgId
+        { orgId: policy.orgId, partnerId: policy.partnerId }
       );
       if (!validation.valid) {
         return c.json({ error: validation.error }, 400);
