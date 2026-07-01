@@ -102,5 +102,23 @@ describe('suppressionExpiryReaper.reapExpiredSuppressions', () => {
     const reaped = await reapExpiredSuppressions();
 
     expect(reaped).toBe(1);
+    expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('audits every row even when an earlier row\'s audit write throws (best-effort, per-row)', async () => {
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        { id: 'a1', org_id: 'o1', title: 'A' },
+        { id: 'a2', org_id: 'o2', title: 'B' },
+      ],
+    });
+    vi.mocked(writeAuditEvent).mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+
+    const reaped = await reapExpiredSuppressions();
+
+    expect(reaped).toBe(2);
+    expect(writeAuditEvent).toHaveBeenCalledTimes(2);
   });
 });

@@ -552,4 +552,31 @@ describe('AlertsPage — bulk suppress', () => {
       );
     });
   });
+
+  it('sends no "until" in the /alerts/bulk body when Forever is chosen', async () => {
+    bulkMock();
+    render(<AlertsPage />);
+
+    // Select the alert, open the bulk menu, choose Suppress.
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Select High CPU on SRV-01/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Bulk Actions/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Suppress/i }));
+
+    expect(await screen.findByTestId('suppress-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('suppress-duration-forever'));
+    fireEvent.click(screen.getByTestId('suppress-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/alerts/bulk',
+        expect.objectContaining({ method: 'POST', body: expect.any(String) }),
+      );
+    });
+
+    const call = fetchMock.mock.calls.find(([url]) => url === '/alerts/bulk')!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.action).toBe('suppress');
+    // Forever == no deadline: the body carries no `until` key at all.
+    expect(body).not.toHaveProperty('until');
+  });
 });

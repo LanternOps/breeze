@@ -188,6 +188,7 @@ const DEVICE_B = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd';
 const ALERT_A = 'a1a1a1a1-1111-4111-8111-111111111111'; // SITE_A device
 const ALERT_B = 'a2a2a2a2-2222-4222-8222-222222222222'; // SITE_B device
 const ALERT_ORGWIDE = 'a3a3a3a3-3333-4333-8333-333333333333'; // deviceless
+const ALERT_RESOLVED = 'a4a4a4a4-4444-4444-8444-444444444444'; // deviceless, already resolved
 const ALERTS_WRITE = 'alerts:write';
 const ALERTS_ACKNOWLEDGE = 'alerts:acknowledge';
 
@@ -200,6 +201,7 @@ function resetState() {
     { id: ALERT_A, orgId: ORG, deviceId: DEVICE_A, status: 'active', ruleId: null, title: 'A' },
     { id: ALERT_B, orgId: ORG, deviceId: DEVICE_B, status: 'active', ruleId: null, title: 'B' },
     { id: ALERT_ORGWIDE, orgId: ORG, deviceId: null, status: 'active', ruleId: null, title: 'org' },
+    { id: ALERT_RESOLVED, orgId: ORG, deviceId: null, status: 'resolved', ruleId: null, title: 'resolved' },
   ];
 }
 
@@ -315,6 +317,45 @@ describe('alert by-id site-axis scope (T9, #1051)', () => {
       });
       expect(res.status).toBe(200);
       expect(state.alerts.find((a) => a.id === ALERT_A)?.status).toBe('suppressed');
+    });
+
+    // `until` omitted => indefinite ("Forever") suppression: 200, status
+    // becomes 'suppressed', suppressedUntil stays null.
+    it('suppresses indefinitely (Forever) when `until` is omitted', async () => {
+      const res = await makeApp().request(`/alerts/${ALERT_A}/suppress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('suppressed');
+      expect(body.suppressedUntil).toBeNull();
+      const a = state.alerts.find((x) => x.id === ALERT_A)!;
+      expect(a.status).toBe('suppressed');
+      expect(a.suppressedUntil).toBeNull();
+    });
+
+    it('400 when `until` is in the past, and leaves the alert unchanged', async () => {
+      const res = await makeApp().request(`/alerts/${ALERT_A}/suppress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ until: '2000-01-01T00:00:00.000Z' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Suppression time must be in the future' });
+      expect(state.alerts.find((x) => x.id === ALERT_A)?.status).toBe('active');
+    });
+
+    it('400 when the target alert is already resolved, and leaves it resolved', async () => {
+      const res = await makeApp().request(`/alerts/${ALERT_RESOLVED}/suppress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ until: '2030-01-01T00:00:00.000Z' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Cannot suppress a resolved alert' });
+      expect(state.alerts.find((x) => x.id === ALERT_RESOLVED)?.status).toBe('resolved');
     });
   });
 });
