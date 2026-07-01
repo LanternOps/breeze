@@ -1143,6 +1143,71 @@ export async function deleteTicketComment(
   return { id: commentId };
 }
 
+// ─── Soft-delete / restore (Phase 6, issue #2140) ─────────────────────────────
+
+/**
+ * Soft-delete a ticket. Stamps deleted_at/deleted_by so the ticket drops out of
+ * every staff/portal list, stats count, and by-id mutation (getScopedTicketOr404
+ * excludes deleted rows by default), while the row is preserved for audit and
+ * admin restore. Deliberately emits NO ticket lifecycle event — deletion must
+ * not send a portal notification (mirrors deleteTicketComment). Re-deleting an
+ * already-deleted ticket is a 409 so a double-click can't overwrite deleted_by.
+ * Gated at the route on tickets:manage.
+ */
+export async function softDeleteTicket(ticketId: string, actor: TicketActor): Promise<{ id: string }> {
+  const ticket = await getTicketOrThrow(ticketId);
+  if (ticket.deletedAt) throw new TicketServiceError('Ticket already deleted', 409);
+
+  const now = new Date();
+  const deleted = await db
+    .update(tickets)
+    .set({ deletedAt: now, deletedBy: actor.userId, updatedAt: now })
+    .where(and(eq(tickets.id, ticketId), isNull(tickets.deletedAt)))
+    .returning({ id: tickets.id });
+  // CAS on deleted_at IS NULL: an empty result means we lost a race to a
+  // concurrent delete — report it rather than emit a second audit entry.
+  if (deleted.length === 0) throw new TicketServiceError('Ticket already deleted', 409);
+
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.delete',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { ticketNumber: ticket.ticketNumber, subject: ticket.subject, status: ticket.status },
+    result: 'success'
+  });
+  return { id: ticketId };
+}
+
+/**
+ * Restore a soft-deleted ticket. Clears deleted_at/deleted_by. Restoring a
+ * ticket that isn't deleted is a 409 (nothing to restore). Audited as
+ * ticket.restore. Gated at the route on tickets:manage.
+ */
+export async function restoreTicket(ticketId: string, actor: TicketActor): Promise<typeof tickets.$inferSelect> {
+  const ticket = await getTicketOrThrow(ticketId);
+  if (!ticket.deletedAt) throw new TicketServiceError('Ticket is not deleted', 409);
+
+  const [updated] = await db
+    .update(tickets)
+    .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
+    .where(and(eq(tickets.id, ticketId), sql`${tickets.deletedAt} IS NOT NULL`))
+    .returning();
+  if (!updated) throw new TicketServiceError('Ticket is not deleted', 409);
+
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.restore',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { ticketNumber: ticket.ticketNumber, subject: ticket.subject },
+    result: 'success'
+  });
+  return updated;
+}
+
 // ─── Org re-assignment (Phase 6a) ─────────────────────────────────────────────
 
 // Child tables that denormalize org_id and reference a ticket. Mirrors the

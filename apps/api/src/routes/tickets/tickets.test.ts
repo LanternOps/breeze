@@ -16,6 +16,8 @@ const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, l
       getAssigneeForValidation: vi.fn(),
       editTicketComment: vi.fn(),
       deleteTicketComment: vi.fn(),
+      softDeleteTicket: vi.fn(),
+      restoreTicket: vi.fn(),
       listRequestersForOrg: vi.fn(),
     },
     ticketTriageMocks: {
@@ -67,6 +69,10 @@ vi.mock('../../middleware/auth', async () => ({
       return c.json({ error: 'Not authenticated' }, 401);
     }
     c.set('auth', authRef.current);
+    // Mirror the real permission middleware for the handful of handlers that
+    // read c.get('permissions') directly (archived-view + bulk-delete gates).
+    const perms = (authRef.current as any).permissions;
+    if (perms) c.set('permissions', perms);
     await next();
   }),
   requireScope: () => async (c: any, next: any) => {
@@ -162,7 +168,8 @@ vi.mock('../../db/schema', () => ({
     source: 'source', slaBreachedAt: 'sla_breached_at', firstResponseAt: 'first_response_at',
     responseSlaMinutes: 'response_sla_minutes', resolutionSlaMinutes: 'resolution_sla_minutes',
     slaPausedAt: 'sla_paused_at', slaPausedMinutes: 'sla_paused_minutes',
-    slaBreachReason: 'sla_breach_reason', statusId: 'statusId'
+    slaBreachReason: 'sla_breach_reason', statusId: 'statusId',
+    deletedAt: 'deletedAt', deletedBy: 'deletedBy'
   },
   ticketStatuses: { id: 'id', name: 'name', color: 'color' },
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
@@ -903,6 +910,109 @@ describe('POST /tickets/:id/assign', () => {
     });
     expect(res.status).toBe(404);
     expect(serviceMocks.assignTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /tickets/:id — soft-delete', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('calls softDeleteTicket and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404
+    serviceMocks.softDeleteTicket.mockResolvedValue({ id: TICKET_ID });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.softDeleteTicket).toHaveBeenCalledWith(
+      TICKET_ID,
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('returns 404 when the ticket is out of scope / already deleted (scoped pre-check empty)', async () => {
+    dbSelectMock.mockResolvedValueOnce([]); // getScopedTicketOr404 excludes deleted rows
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.softDeleteTicket).not.toHaveBeenCalled();
+  });
+
+  it('maps a 409 TicketServiceError (already deleted) through from the service', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.softDeleteTicket.mockRejectedValue(new TicketServiceError('Ticket already deleted', 409));
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /tickets/:id/restore', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('calls restoreTicket (finding the deleted row) and returns 200', async () => {
+    dbSelectMock.mockResolvedValueOnce([{ ...STUB_TICKET, deletedAt: new Date().toISOString() }]); // getScopedTicketOr404 includeDeleted
+    serviceMocks.restoreTicket.mockResolvedValue({ ...STUB_TICKET, deletedAt: null });
+
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/restore`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.restoreTicket).toHaveBeenCalledWith(
+      TICKET_ID,
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('returns 404 when the id is out of scope', async () => {
+    dbSelectMock.mockResolvedValueOnce([]);
+    const res = await makeApp().request(`/tickets/${TICKET_ID}/restore`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(serviceMocks.restoreTicket).not.toHaveBeenCalled();
+  });
+});
+
+const MANAGE_PERMS = { permissions: [{ resource: 'tickets', action: 'manage' }] };
+
+describe('GET /tickets?deleted=only — archived queue gate', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('403s without ticket-management permission (no permissions on context)', async () => {
+    const res = await makeApp().request('/tickets?deleted=only');
+    expect(res.status).toBe(403);
+  });
+
+  it('returns the archived queue for a ticket-manager', async () => {
+    (authRef.current as any).permissions = MANAGE_PERMS;
+    dbSelectMock.mockResolvedValue([{ id: 't-1', subject: 'Spam', deletedAt: new Date().toISOString() }]);
+    const res = await makeApp().request('/tickets?deleted=only');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({ deletedAt: expect.any(String) });
+  });
+});
+
+describe('POST /tickets/bulk — delete action', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('403s when the caller lacks tickets:manage', async () => {
+    const res = await makeApp().request('/tickets/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketIds: [TICKET_ID], action: 'delete' })
+    });
+    expect(res.status).toBe(403);
+    expect(serviceMocks.softDeleteTicket).not.toHaveBeenCalled();
+  });
+
+  it('soft-deletes each in-scope ticket for a manager', async () => {
+    (authRef.current as any).permissions = MANAGE_PERMS;
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404 for the one id
+    serviceMocks.softDeleteTicket.mockResolvedValue({ id: TICKET_ID });
+
+    const res = await makeApp().request('/tickets/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketIds: [TICKET_ID], action: 'delete' })
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toMatchObject({ updated: 1, total: 1 });
+    expect(serviceMocks.softDeleteTicket).toHaveBeenCalledWith(TICKET_ID, expect.objectContaining({ userId: 'u-1' }));
   });
 });
 

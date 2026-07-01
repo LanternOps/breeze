@@ -31,6 +31,9 @@ export interface TicketSummary {
   firstResponseAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // Only present on the soft-deleted "Archived" queue (GET /tickets?deleted=only).
+  // ISO timestamp of when the ticket was soft-deleted; null/absent on live rows.
+  deletedAt?: string | null;
 }
 
 export interface TicketComment {

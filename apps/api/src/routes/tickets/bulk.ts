@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { requireScope, requirePermission } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { bulkTicketActionSchema } from '@breeze/shared';
-import { assignTicket, changeTicketStatus, getAssigneeForValidation, TicketServiceError } from '../../services/ticketService';
+import { assignTicket, changeTicketStatus, softDeleteTicket, getAssigneeForValidation, TicketServiceError } from '../../services/ticketService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { actorFrom, getScopedTicketOr404 } from './tickets';
 
@@ -38,6 +38,17 @@ ticketsBulkRoutes.post(
 
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
+    }
+
+    // 'delete' is a soft-delete and needs the elevated tickets:manage grant
+    // (the route-level requirePermission only asserts tickets:write, which
+    // assign/status share). Partner Admin (*:*) and Org Admin hold manage.
+    if (body.action === 'delete') {
+      const perms = c.get('permissions') as UserPermissions | undefined;
+      const canManage = perms
+        ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action)
+        : false;
+      if (!canManage) return c.json({ error: 'Deleting tickets requires ticket management permission' }, 403);
     }
 
     // Request-level assignee pre-validation: an unknown assignee (or, for
@@ -76,6 +87,10 @@ ticketsBulkRoutes.post(
         if (body.action === 'assign') {
           // Schema refine guarantees assigneeId is present (null = unassign).
           await assignTicket(ticketId, body.assigneeId ?? null, actor);
+        } else if (body.action === 'delete') {
+          // Soft-delete. Already-deleted ids can't reach here (getScopedTicketOr404
+          // excludes deleted rows → counted as OUT_OF_SCOPE skip above).
+          await softDeleteTicket(ticketId, actor);
         } else {
           // Schema refine guarantees status is present and not 'resolved'.
           await changeTicketStatus(ticketId, { status: body.status! }, {}, actor);

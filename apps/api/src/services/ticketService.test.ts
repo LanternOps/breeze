@@ -121,7 +121,7 @@ import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
   updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
-  moveTicketOrg,
+  moveTicketOrg, softDeleteTicket, restoreTicket,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 
@@ -2088,6 +2088,99 @@ describe('deleteTicketComment', () => {
     // Audit and event must NOT have fired.
     expect(auditMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('softDeleteTicket', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('stamps deletedAt/deletedBy, audits ticket.delete, and emits NO event', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ ...BASE_TICKET, ticketNumber: 'ABC123', subject: 'Spam', deletedAt: null }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't1' }]); // CAS returns the row
+
+    const res = await softDeleteTicket('t1', actor);
+    expect(res).toEqual({ id: 't1' });
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload.deletedAt).toBeInstanceOf(Date);
+    expect(updatePayload.deletedBy).toBe('u-1');
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ticket.delete',
+      resourceType: 'ticket',
+      resourceId: 't1',
+      details: expect.objectContaining({ ticketNumber: 'ABC123', subject: 'Spam' }),
+      result: 'success'
+    }));
+    // Deleting must not emit a lifecycle event (would notify the portal requester).
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an already-deleted ticket (409) without updating or auditing', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ ...BASE_TICKET, deletedAt: new Date() }]);
+
+    const err = await softDeleteTicket('t1', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('throws 409 when the CAS update loses a race (no row returned)', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ ...BASE_TICKET, deletedAt: null }]);
+    dbMocks.updateReturning.mockResolvedValue([]); // concurrent delete won
+
+    const err = await softDeleteTicket('t1', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('throws 404 when the ticket does not exist', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([]);
+    const err = await softDeleteTicket('nope', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+  });
+});
+
+describe('restoreTicket', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('clears deletedAt/deletedBy and audits ticket.restore', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ ...BASE_TICKET, ticketNumber: 'ABC123', subject: 'Spam', deletedAt: new Date() }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't1', deletedAt: null }]);
+
+    const res = await restoreTicket('t1', actor);
+    expect(res).toMatchObject({ id: 't1', deletedAt: null });
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload.deletedAt).toBeNull();
+    expect(updatePayload.deletedBy).toBeNull();
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ticket.restore',
+      resourceId: 't1',
+      result: 'success'
+    }));
+  });
+
+  it('rejects restoring a ticket that is not deleted (409)', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ ...BASE_TICKET, deletedAt: null }]);
+
+    const err = await restoreTicket('t1', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
   });
 });
 

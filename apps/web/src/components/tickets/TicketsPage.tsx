@@ -7,11 +7,17 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
+import TicketArchivedList from './TicketArchivedList';
 import TicketWorkbench from './TicketWorkbench';
 import InboundReviewQueue from './InboundReviewQueue';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { usePermissions } from '../../lib/permissions';
 import { useQueueKeyboard } from './useQueueKeyboard';
 import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { fetchTicketConfig, priorityLabel, statusLabel, type TicketConfig } from '../../lib/ticketConfigApi';
+
+// Aggregate outcome of a POST /tickets/bulk call.
+interface BulkResult { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> }
 
 // Human-readable labels for bulk-skip reason codes returned by POST /tickets/bulk.
 const SKIP_REASON_LABELS: Record<string, string> = {
@@ -24,10 +30,28 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   OTHER: 'other errors'
 };
 
+// Shared toast for a POST /tickets/bulk aggregate result. `verb` is the past-
+// tense action word ('updated' for status/assign, 'deleted' for delete) so the
+// message reads naturally. Failures are reported distinctly from skips: "skipped"
+// implies pre-validation, "failed" means the write itself errored.
+function showBulkOutcomeToast(result: BulkResult, verb: string): void {
+  const { updated, skipped, failed, skippedReasons } = result;
+  if (skipped + failed > 0) {
+    const reasons = Object.entries(skippedReasons ?? {})
+      .map(([code, n]) => `${n} ${SKIP_REASON_LABELS[code] ?? code.toLowerCase().replace(/_/g, ' ')}`)
+      .join(', ');
+    showToast({ type: 'warning', message: `${updated} ${verb}, ${skipped} skipped${failed ? `, ${failed} failed` : ''}${reasons ? ` — ${reasons}` : ''}` });
+  } else {
+    showToast({ type: 'success', message: `${updated} ${verb}` });
+  }
+}
+
 // 'review' is the inbound email review queue — a sibling surface, not a ticket
 // query. It renders InboundReviewQueue instead of the queue/workbench split, and
 // is only present for admins (visibility gated by a 200 from the queue endpoint).
-type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed' | 'review';
+// 'archived' is the soft-deleted queue (GET /tickets?deleted=only) — a ticket
+// query, but rendered as a restore-only list (no workbench). tickets:manage-gated.
+type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed' | 'review' | 'archived';
 type TicketSort = 'triage' | 'newest' | 'oldest' | 'due';
 
 const SORT_OPTIONS: Array<{ value: TicketSort; label: string }> = [
@@ -54,7 +78,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'closed', label: 'Closed' }
 ];
 
-function tabQuery(tab: Exclude<Tab, 'review'>): string {
+function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
   switch (tab) {
     case 'mine': return 'statusGroup=open&assignee=me';
     case 'unassigned': return 'statusGroup=open&assignee=unassigned';
@@ -101,6 +125,11 @@ export default function TicketsPage() {
   // keeps the filter hidden either way (belt and braces).
   const orgScoped = getJwtClaims().scope === 'organization';
 
+  // Soft-delete / restore / archived queue are all tickets:manage-gated (server
+  // re-enforces). UX-only: hides controls the caller can't use. Partner/Org Admin.
+  const { can } = usePermissions();
+  const canManage = can('tickets', 'manage');
+
   const [tab, setTab] = useState<Tab>('open');
   const [resolveToken, setResolveToken] = useState(0);
   const [paneRefresh, setPaneRefresh] = useState(0);
@@ -126,6 +155,10 @@ export default function TicketsPage() {
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAssignee, setBulkAssignee] = useState(''); // '' = none; 'unassign' sentinel = null assignee
   const [bulkStatus, setBulkStatus] = useState('');
+  // Bulk delete is confirm-gated (soft-delete hides from all queues).
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  // Ids with an in-flight restore (archived queue) — disables their row button.
+  const [restoringIds, setRestoringIds] = useState<Set<string>>(new Set());
   // Ticket config (custom statuses + priority labels). null = not loaded / fetch
   // failed; chips and bulk-status options fall back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
@@ -191,7 +224,11 @@ export default function TicketsPage() {
     setLoading(true);
     setError(undefined);
     try {
-      const params = new URLSearchParams(tabQuery(tab));
+      // The archived tab is a normal ticket query with deleted=only (the server
+      // gates it on tickets:manage and stamps each row with deletedAt).
+      const params = tab === 'archived'
+        ? new URLSearchParams({ deleted: 'only' })
+        : new URLSearchParams(tabQuery(tab));
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (orgFilter) params.set('orgId', orgFilter);
       if (priorityFilter) params.set('priority', priorityFilter);
@@ -315,7 +352,8 @@ export default function TicketsPage() {
 
   // Auto-select first row when nothing valid is selected (UI brief: no-selection state auto-selects)
   useEffect(() => {
-    if (tab === 'review') return; // the review tab has no ticket selection
+    // The review + archived tabs have no ticket selection / workbench pane.
+    if (tab === 'review' || tab === 'archived') return;
     if (!loading && tickets.length > 0 && !selected) {
       const first = tickets[0];
       const key = first.internalNumber ?? first.id;
@@ -388,22 +426,12 @@ export default function TicketsPage() {
       ? { ticketIds, action: 'status', status: bulkStatus }
       : { ticketIds, action: 'assign', assigneeId: bulkAssignee === 'unassign' ? null : bulkAssignee };
     try {
-      const result = await runAction<{ data: { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> } }>({
+      const result = await runAction<{ data: BulkResult }>({
         request: () => fetchWithAuth('/tickets/bulk', { method: 'POST', body: JSON.stringify(body) }),
         errorFallback: 'Bulk update failed. Retry.',
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
-      const { updated, skipped, failed, skippedReasons } = result.data;
-      if (skipped + failed > 0) {
-        const reasons = Object.entries(skippedReasons ?? {})
-          .map(([code, n]) => `${n} ${SKIP_REASON_LABELS[code] ?? code.toLowerCase().replace(/_/g, ' ')}`)
-          .join(', ');
-        // Failures are reported distinctly from skips — "skipped" implies a
-        // pre-validation outcome, "failed" means the write itself errored.
-        showToast({ type: 'warning', message: `${updated} updated, ${skipped} skipped${failed ? `, ${failed} failed` : ''}${reasons ? ` — ${reasons}` : ''}` });
-      } else {
-        showToast({ type: 'success', message: `${updated} updated` });
-      }
+      showBulkOutcomeToast(result.data, 'updated');
       clearBulkSelection();
       setPaneRefresh((t) => t + 1);
       void fetchTickets();
@@ -413,6 +441,47 @@ export default function TicketsPage() {
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Bulk update failed. Retry.' });
     }
   }, [bulkSelectedIds, bulkAssignee, bulkStatus, clearBulkSelection, fetchTickets, fetchStats]);
+
+  // Bulk soft-delete (tickets:manage). Confirm-gated by the ConfirmDialog below;
+  // this runs on confirm. Same aggregate-result toast + refresh as applyBulk.
+  const applyBulkDelete = useCallback(async () => {
+    const ticketIds = Array.from(bulkSelectedIds);
+    if (ticketIds.length === 0) return;
+    setBulkDeleteOpen(false);
+    try {
+      const result = await runAction<{ data: BulkResult }>({
+        request: () => fetchWithAuth('/tickets/bulk', { method: 'POST', body: JSON.stringify({ ticketIds, action: 'delete' }) }),
+        errorFallback: 'Bulk delete failed. Retry.',
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      showBulkOutcomeToast(result.data, 'deleted');
+      clearBulkSelection();
+      setPaneRefresh((t) => t + 1);
+      void fetchTickets();
+      void fetchStats();
+    } catch (err) {
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Bulk delete failed. Retry.' });
+    }
+  }, [bulkSelectedIds, clearBulkSelection, fetchTickets, fetchStats]);
+
+  // Restore a soft-deleted ticket from the archived queue (tickets:manage).
+  const restoreTicket = useCallback(async (id: string) => {
+    setRestoringIds((prev) => new Set(prev).add(id));
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${id}/restore`, { method: 'POST' }),
+        errorFallback: 'Restore failed. Retry.',
+        successMessage: 'Ticket restored',
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      void fetchTickets();
+      void fetchStats();
+    } catch (err) {
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: 'Restore failed. Retry.' });
+    } finally {
+      setRestoringIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    }
+  }, [fetchTickets, fetchStats]);
 
   const focusComposer = useCallback((internal: boolean) => {
     const tabBtn = document.querySelector<HTMLButtonElement>(
@@ -503,6 +572,21 @@ export default function TicketsPage() {
             )}
           </button>
         )}
+        {canManage && (
+          // Soft-deleted queue. tickets:manage only (server re-enforces via
+          // deleted=only → 403 for non-managers), so the tab stays hidden otherwise.
+          <button
+            type="button"
+            onClick={() => setTab('archived')}
+            data-testid="tickets-tab-archived"
+            className={cn(
+              'border-b-2 px-3 py-2 text-sm font-medium -mb-px',
+              tab === 'archived' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Archived
+          </button>
+        )}
         <input
           type="search"
           value={search}
@@ -591,6 +675,25 @@ export default function TicketsPage() {
       {tab === 'review' ? (
         <div className="min-h-0 flex-1 overflow-y-auto" data-testid="tickets-review-pane">
           <InboundReviewQueue onTotalChange={setReviewTotal} />
+        </div>
+      ) : tab === 'archived' ? (
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border" data-testid="tickets-archived-pane">
+          {error ? (
+            <div className="flex h-full items-center justify-center" data-testid="tickets-archived-error">
+              <div className="text-center">
+                <p className="text-sm text-muted-foreground">{error}</p>
+                <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Retry</button>
+              </div>
+            </div>
+          ) : (
+            <TicketArchivedList
+              tickets={tickets}
+              loading={loading}
+              config={config}
+              onRestore={(t) => void restoreTicket(t.id)}
+              restoringIds={restoringIds}
+            />
+          )}
         </div>
       ) : trueEmpty ? (
         <div className="flex flex-1 flex-col items-center justify-center text-center" data-testid="tickets-empty">
@@ -687,6 +790,16 @@ export default function TicketsPage() {
                   >
                     Apply
                   </button>
+                  {canManage && (
+                    <button
+                      type="button"
+                      onClick={() => setBulkDeleteOpen(true)}
+                      data-testid="tickets-bulk-delete"
+                      className="rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10"
+                    >
+                      Delete
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={clearBulkSelection}
@@ -710,6 +823,16 @@ export default function TicketsPage() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onClose={() => setBulkDeleteOpen(false)}
+        onConfirm={() => void applyBulkDelete()}
+        title={`Delete ${bulkSelectedIds.size} ticket${bulkSelectedIds.size === 1 ? '' : 's'}?`}
+        message="This hides them from all queues; an admin can restore them from Archived."
+        confirmLabel="Delete tickets"
+        confirmTestId="tickets-bulk-delete-confirm"
+      />
     </div>
   );
 }

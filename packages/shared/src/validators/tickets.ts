@@ -65,11 +65,13 @@ export const assignTicketSchema = z.object({
   assigneeId: z.string().guid().nullable()
 });
 
-// Bulk queue actions (assign / status). Resolving is intentionally excluded:
-// it requires a per-ticket resolution note, so it stays a per-ticket action.
+// Bulk queue actions (assign / status / delete). Resolving is intentionally
+// excluded: it requires a per-ticket resolution note, so it stays a per-ticket
+// action. 'delete' is a soft-delete and carries no extra fields; the route gates
+// it on tickets:manage (assign/status only need tickets:write).
 export const bulkTicketActionSchema = z.object({
   ticketIds: z.array(z.string().guid()).min(1).max(100),
-  action: z.enum(['assign', 'status']),
+  action: z.enum(['assign', 'status', 'delete']),
   assigneeId: z.string().guid().nullable().optional(),
   status: ticketStatusSchema.optional()
 }).refine(
@@ -108,7 +110,10 @@ export const listTicketsQuerySchema = z.object({
   priority: ticketPrioritySchema.optional(),
   slaState: z.enum(['ok', 'at_risk', 'breached', 'breaching']).optional(),
   search: z.string().max(200).optional(),
-  sort: z.enum(['triage', 'newest', 'oldest', 'due']).default('triage')
+  sort: z.enum(['triage', 'newest', 'oldest', 'due']).default('triage'),
+  // deleted=only returns the soft-deleted "Archived" queue (tickets:manage only).
+  // Omitted/any other value returns live tickets (deleted rows excluded).
+  deleted: z.enum(['only']).optional()
 });
 
 export const ticketCategoryInputSchema = z.object({

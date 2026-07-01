@@ -17,6 +17,7 @@ import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, updateTicketFields,
   editTicketComment, deleteTicketComment, listRequestersForOrg,
+  softDeleteTicket, restoreTicket,
   TicketServiceError
 } from '../../services/ticketService';
 import {
@@ -107,12 +108,18 @@ export function handleServiceError(c: { json: (b: unknown, s: number) => Respons
  * - system scope: no extra condition (unrestricted)
  * - site axis: device-bound tickets are additionally gated by the caller's
  *   `allowedSiteIds` allowlist (see deviceInSiteScope).
+ * - soft-delete: deleted tickets are treated as not-found (404) by default so
+ *   every by-id mutation (status/assign/comment/patch/alerts/delete) rejects
+ *   them. Pass `{ includeDeleted: true }` on the restore path, which needs to
+ *   load the deleted row.
  */
 export async function getScopedTicketOr404(
   auth: AuthContext,
-  id: string
+  id: string,
+  opts: { includeDeleted?: boolean } = {}
 ): Promise<(typeof tickets.$inferSelect) | null> {
   const conditions: SQL[] = [eq(tickets.id, id)];
+  if (!opts.includeDeleted) conditions.push(isNull(tickets.deletedAt));
 
   if (auth.scope === 'organization') {
     if (!auth.orgId) return null; // 403 callers: treat as not-found for consistency
@@ -192,6 +199,7 @@ ticketsRoutes.get(
     // device-bound tickets (deviceless tickets remain counted).
     const siteCondition = ticketSiteScopeCondition(auth);
     if (siteCondition) conditions.push(siteCondition);
+    conditions.push(isNull(tickets.deletedAt)); // soft-deleted tickets never count toward queue tabs
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -298,6 +306,19 @@ ticketsRoutes.get(
     }
     const siteCondition = ticketSiteScopeCondition(auth);
     if (siteCondition) conditions.push(siteCondition);
+    // Soft-delete: default list excludes deleted tickets. `deleted=only` returns
+    // the admin "Archived" queue and requires tickets:manage (the same grant that
+    // gates delete/restore) so viewers/technicians can't enumerate deleted rows.
+    if (q.deleted === 'only') {
+      const perms = c.get('permissions') as UserPermissions | undefined;
+      const canManage = perms
+        ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action)
+        : false;
+      if (!canManage) return c.json({ error: 'Viewing deleted tickets requires ticket management permission' }, 403);
+      conditions.push(sql`${tickets.deletedAt} IS NOT NULL`);
+    } else {
+      conditions.push(isNull(tickets.deletedAt));
+    }
     if (q.status) conditions.push(eq(tickets.status, q.status));
     else if (q.statusGroup === 'open') conditions.push(inArray(tickets.status, [...OPEN_STATUSES]));
     else if (q.statusGroup === 'closed') conditions.push(inArray(tickets.status, [...CLOSED_STATUSES]));
@@ -351,6 +372,7 @@ ticketsRoutes.get(
         slaBreachReason: tickets.slaBreachReason,
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt,
+        deletedAt: tickets.deletedAt,
         statusName: ticketStatuses.name,
         statusColor: ticketStatuses.color
       })
@@ -710,6 +732,56 @@ ticketsRoutes.post(
 
     try {
       const ticket = await assignTicket(id, assigneeId, actorFrom(c));
+      return c.json({ data: ticket });
+    } catch (err) {
+      return handleServiceError(c, err);
+    }
+  }
+);
+
+// DELETE /tickets/:id — soft-delete a ticket (Phase 6, issue #2140).
+// tickets:manage (Partner Admin / Org Admin) — the same elevated grant that
+// already gates "delete any comment" and "reassign ticket org". Hides the
+// ticket from every list/stats/by-id path; reversible via POST /:id/restore.
+ticketsRoutes.delete(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action),
+  zValidator('param', idParam),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id);
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    try {
+      const result = await softDeleteTicket(id, actorFrom(c));
+      return c.json({ data: result });
+    } catch (err) {
+      return handleServiceError(c, err);
+    }
+  }
+);
+
+// POST /tickets/:id/restore — undo a soft-delete (Phase 6). includeDeleted so
+// the scope lookup can find the already-deleted row; same tickets:manage gate.
+ticketsRoutes.post(
+  '/:id/restore',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action),
+  zValidator('param', idParam),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return c.json({ error: 'Organization context required' }, 403);
+    }
+    const found = await getScopedTicketOr404(auth, id, { includeDeleted: true });
+    if (!found) return c.json({ error: 'Ticket not found' }, 404);
+    try {
+      const ticket = await restoreTicket(id, actorFrom(c));
       return c.json({ data: ticket });
     } catch (err) {
       return handleServiceError(c, err);

@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketEmailInbound, tickets, ticketComments, portalUsers, organizations, partners } from '../../db/schema';
 import { createTicket } from '../ticketService';
@@ -346,6 +346,7 @@ async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string)
       .where(and(
         eq(tickets.partnerId, partnerId),
         ne(tickets.status, 'closed'),
+        isNull(tickets.deletedAt), // never thread a reply onto a soft-deleted ticket
         or(
           inArray(tickets.emailThreadKey, candidateKeys),
           inArray(tickets.emailMessageId, candidateKeys)
@@ -364,6 +365,7 @@ async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string)
       .where(and(
         eq(tickets.partnerId, partnerId),
         ne(tickets.status, 'closed'),
+        isNull(tickets.deletedAt),
         eq(tickets.internalNumber, m[0])
       ))
       .limit(1);
@@ -387,6 +389,7 @@ async function findClosedTicketInPartner(n: NormalizedInboundEmail, partnerId: s
       .where(and(
         eq(tickets.partnerId, partnerId),
         eq(tickets.status, 'closed'),
+        isNull(tickets.deletedAt), // a deleted closed original must not spawn a continuation
         inArray(tickets.emailThreadKey, candidateKeys)
       ))
       .limit(1);
@@ -401,6 +404,7 @@ async function findClosedTicketInPartner(n: NormalizedInboundEmail, partnerId: s
       .where(and(
         eq(tickets.partnerId, partnerId),
         eq(tickets.status, 'closed'),
+        isNull(tickets.deletedAt),
         eq(tickets.internalNumber, m[0])
       ))
       .limit(1);

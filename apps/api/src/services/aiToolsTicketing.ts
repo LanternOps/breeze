@@ -6,7 +6,7 @@
  * All mutations delegate to ticketService — this file is a thin adapter.
  */
 
-import { and, desc, eq, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -58,7 +58,7 @@ function timeEntryActorFrom(auth: AuthContext) {
  * Returns the ticket row, or null when not found / out of the caller's scope.
  */
 async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(tickets.id, ticketId)];
+  const conditions: SQL[] = [eq(tickets.id, ticketId), isNull(tickets.deletedAt)];
   const orgCond = auth.orgCondition(tickets.orgId);
   if (orgCond) conditions.push(orgCond);
   const [ticket] = await db.select().from(tickets).where(and(...conditions)).limit(1);
@@ -166,7 +166,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── list ──────────────────────────────────────────────────────────────
       if (action === 'list') {
-        const conditions: SQL[] = [];
+        const conditions: SQL[] = [isNull(tickets.deletedAt)]; // never surface soft-deleted tickets to the AI
         const orgCond = auth.orgCondition(tickets.orgId);
         if (orgCond) conditions.push(orgCond);
         // Site axis: mirror the HTTP list route (routes/tickets/tickets.ts) —

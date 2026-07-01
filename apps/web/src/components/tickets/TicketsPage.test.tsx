@@ -6,11 +6,20 @@ import { fetchWithAuth } from '../../stores/auth';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import type { TicketSummary } from './ticketConfig';
 
+// Mutable grant set the mocked auth store reads from. usePermissions() reads
+// `user.permissions` via the selector form; assignMe reads `getState().user.id`.
+type Perm = { resource: string; action: string };
+const authState = vi.hoisted(() => ({ permissions: [] as Perm[] }));
+const userState = () => ({ id: 'user-1', permissions: authState.permissions });
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  useAuthStore: Object.assign(vi.fn(), {
-    getState: () => ({ user: { id: 'user-1' } })
-  })
+  useAuthStore: Object.assign(
+    (selector?: (s: { user: ReturnType<typeof userState> }) => unknown) => {
+      const s = { user: userState() };
+      return selector ? selector(s) : s;
+    },
+    { getState: () => ({ user: userState() }) }
+  )
 }));
 
 // Stub fetchTicketConfig; real display helpers (statusLabel/priorityLabel) run unchanged.
@@ -119,6 +128,7 @@ function mockListApi(
     const url = String(input);
     if (url === '/tickets/stats') return makeJsonResponse(opts.stats ?? STATS);
     if (url === '/tickets/bulk') return makeJsonResponse(opts.bulkResult ?? BULK_RESULT);
+    if (url.startsWith('/tickets/') && url.endsWith('/restore')) return makeJsonResponse({ data: { id: url.split('/')[2] } });
     if (url.startsWith('/tickets?')) return makeJsonResponse({ data: typeof tickets === 'function' ? tickets(url) : tickets });
     if (url.startsWith('/orgs/organizations')) return makeJsonResponse(ORGS);
     if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
@@ -148,6 +158,8 @@ describe('TicketsPage', () => {
     vi.clearAllMocks();
     clearHash();
     capturedWorkbenchProps.length = 0;
+    // Default: no manage grant → delete/archived controls hidden. Manage tests opt in.
+    authState.permissions = [];
     // Default to partner scope so existing tests behave as before.
     mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
     fetchConfigMock.mockResolvedValue(null);
@@ -844,6 +856,95 @@ describe('TicketsPage', () => {
       // The ticket filter bar and queue list are not rendered on the review tab.
       expect(screen.queryByTestId('tickets-filter-bar')).toBeNull();
       expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull();
+    });
+  });
+
+  describe('soft-delete + archived (tickets:manage)', () => {
+    const grantManage = () => { authState.permissions = [{ resource: 'tickets', action: 'manage' }]; };
+
+    it('hides the Archived tab and the bulk Delete button without tickets:manage', async () => {
+      mockListApi([healthy, atRisk]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      expect(screen.queryByTestId('tickets-tab-archived')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      // Bulk bar is present, but the Delete affordance is manage-gated.
+      expect(screen.getByTestId('tickets-bulk-bar')).toBeInTheDocument();
+      expect(screen.queryByTestId('tickets-bulk-delete')).toBeNull();
+    });
+
+    it('shows the Archived tab and bulk Delete for a manager', async () => {
+      grantManage();
+      mockListApi([healthy, atRisk]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      expect(screen.getByTestId('tickets-tab-archived')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      expect(screen.getByTestId('tickets-bulk-delete')).toBeInTheDocument();
+    });
+
+    it('bulk delete confirms first, then POSTs action=delete and clears the bar', async () => {
+      grantManage();
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+
+      // Clicking Delete opens the confirm dialog — no request yet.
+      fireEvent.click(screen.getByTestId('tickets-bulk-delete'));
+      expect(fetchMock.mock.calls.some((c) => String(c[0]) === '/tickets/bulk')).toBe(false);
+
+      fireEvent.click(await screen.findByTestId('tickets-bulk-delete-confirm'));
+
+      await waitFor(() => {
+        const bulkCall = fetchMock.mock.calls.find((call) => String(call[0]) === '/tickets/bulk');
+        expect(bulkCall).toBeTruthy();
+        const body = JSON.parse(String((bulkCall![1] as RequestInit).body));
+        expect(body).toEqual({ ticketIds: expect.arrayContaining(['tk-healthy', 'tk-risk']), action: 'delete' });
+        expect(body.ticketIds).toHaveLength(2);
+      });
+
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '2 deleted' });
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull();
+      });
+    });
+
+    it('Archived tab fetches ?deleted=only and restores a row', async () => {
+      grantManage();
+      const archived = makeTicket({ id: 'tk-arch', internalNumber: 'T-2026-0100', subject: 'Deleted ticket', deletedAt: minutesAgo(60 * 24 * 3) });
+      mockListApi((url) => (url.includes('deleted=only') ? [archived] : [healthy]));
+      render(<TicketsPage />);
+
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.click(screen.getByTestId('tickets-tab-archived'));
+
+      await waitFor(() => {
+        expect(ticketFetchUrls().at(-1)).toContain('deleted=only');
+      });
+      const row = await screen.findByTestId('ticket-archived-row-tk-arch');
+      expect(row).toHaveTextContent('deleted 3d ago');
+      // No workbench on the archived tab.
+      expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('ticket-restore-tk-arch'));
+
+      await waitFor(() => {
+        const restoreCall = fetchMock.mock.calls.find((call) => String(call[0]) === '/tickets/tk-arch/restore');
+        expect(restoreCall).toBeTruthy();
+        expect((restoreCall![1] as RequestInit).method).toBe('POST');
+      });
+      await waitFor(() => {
+        expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Ticket restored' });
+      });
     });
   });
 });

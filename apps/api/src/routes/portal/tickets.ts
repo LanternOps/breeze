@@ -30,7 +30,8 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
 
   const conditions = and(
     eq(tickets.orgId, auth.user.orgId),
-    eq(tickets.submittedBy, auth.user.id)
+    eq(tickets.submittedBy, auth.user.id),
+    isNull(tickets.deletedAt) // soft-deleted tickets are invisible to portal customers
   );
 
   const ticketCountResult = await db
@@ -166,7 +167,8 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       and(
         eq(tickets.id, id),
         eq(tickets.orgId, auth.user.orgId),
-        eq(tickets.submittedBy, auth.user.id)
+        eq(tickets.submittedBy, auth.user.id),
+        isNull(tickets.deletedAt)
       )
     )
     .limit(1);
@@ -229,7 +231,8 @@ ticketRoutes.post(
         and(
           eq(tickets.id, id),
           eq(tickets.orgId, auth.user.orgId),
-          eq(tickets.submittedBy, auth.user.id)
+          eq(tickets.submittedBy, auth.user.id),
+          isNull(tickets.deletedAt)
         )
       )
       .limit(1);

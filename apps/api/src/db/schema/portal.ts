@@ -92,6 +92,12 @@ export const tickets = pgTable('tickets', {
   closedBy: uuid('closed_by').references(() => users.id),
   resolutionNote: text('resolution_note'),
   statusId: uuid('status_id'),  // FK + ON DELETE SET NULL added in SQL (ticketStatuses lives in ticketConfig.ts — avoid a circular import; same pattern as categoryId above)
+  // Soft-delete (Phase 6). A non-null deletedAt hides the ticket from every
+  // staff/portal list, stats count, and by-id mutation (getScopedTicketOr404),
+  // but preserves the row for audit and admin restore. Mirrors ticket_comments'
+  // deletedAt above. Hard purge (if ever added) is a separate retention job.
+  deletedAt: timestamp('deleted_at'),
+  deletedBy: uuid('deleted_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

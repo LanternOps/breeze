@@ -6,12 +6,16 @@ import { fetchWithAuth } from '../../stores/auth';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import type { TicketDetail } from './ticketConfig';
 
+// Mutable grant set read by usePermissions() (via the selector form). Delete is
+// tickets:manage-gated; most tests run without it, delete tests opt in.
+type Perm = { resource: string; action: string };
+const authState = vi.hoisted(() => ({ permissions: [] as Perm[] }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   // Selector hook stub — the composer reads the signed-in agent's name for the
-  // {{agent_name}} canned-response variable.
-  useAuthStore: (selector: (s: { user: { name: string } | null }) => unknown) =>
-    selector({ user: { name: 'Test Agent' } })
+  // {{agent_name}} canned-response variable; usePermissions reads user.permissions.
+  useAuthStore: (selector: (s: { user: { name: string; permissions: Perm[] } | null }) => unknown) =>
+    selector({ user: { name: 'Test Agent', permissions: authState.permissions } })
 }));
 
 // Stub only fetchTicketConfig; the real display/grouping helpers run unchanged.
@@ -85,6 +89,9 @@ function mockTicketApi(detailById: Record<string, TicketDetail>) {
 
 const mutationCalls = () =>
   fetchMock.mock.calls.filter(([, init]) => init?.method && init.method !== 'GET');
+
+// Reset the grant set before every test (some opt into tickets:manage).
+beforeEach(() => { authState.permissions = []; });
 
 describe('TicketWorkbench resolve-flow gating', () => {
   beforeEach(() => {
@@ -1735,5 +1742,60 @@ describe('TicketWorkbench move-org action', () => {
     expect(
       fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/move-org'))
     ).toHaveLength(0);
+  });
+});
+
+describe('TicketWorkbench soft-delete (tickets:manage)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('hides the Delete button without tickets:manage', async () => {
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-delete-button')).toBeNull();
+  });
+
+  it('confirms first, then DELETEs the ticket and signals the host via onChanged', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'manage' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    const onChanged = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-delete-button'));
+
+    // Dialog is up; no DELETE fired yet.
+    expect(
+      fetchMock.mock.calls.some(([url, init]) => init?.method === 'DELETE' && String(url) === '/tickets/tk-1')
+    ).toBe(false);
+
+    fireEvent.click(await screen.findByTestId('ticket-delete-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1', expect.objectContaining({ method: 'DELETE' }));
+    });
+    await waitFor(() => {
+      expect(onChanged).toHaveBeenCalled();
+    });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Ticket deleted' }));
+    // Split-pane mode: the host handles re-selection, so no navigation here.
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('in full-page (expanded) mode, navigates back to the queue after delete', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'manage' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" expanded />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-delete-button'));
+    fireEvent.click(await screen.findByTestId('ticket-delete-confirm'));
+
+    await waitFor(() => {
+      expect(navigateTo).toHaveBeenCalledWith('/tickets');
+    });
   });
 });

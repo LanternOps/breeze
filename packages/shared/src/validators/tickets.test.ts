@@ -186,6 +186,14 @@ describe('ticket validators', () => {
       const tooMany = Array.from({ length: 101 }, () => ID);
       expect(bulkTicketActionSchema.safeParse({ ticketIds: tooMany, action: 'status', status: 'closed' }).success).toBe(false);
     });
+
+    it('accepts action:delete with no extra fields (soft-delete)', () => {
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'delete' }).success).toBe(true);
+    });
+
+    it('rejects an unknown action', () => {
+      expect(bulkTicketActionSchema.safeParse({ ticketIds: [ID], action: 'purge' }).success).toBe(false);
+    });
   });
 
   describe('editCommentSchema', () => {

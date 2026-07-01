@@ -443,11 +443,16 @@ describe('manage_tickets list — site-axis scoping', () => {
     expect(JSON.stringify(whereArg)).toContain('is null');
   });
 
-  it("leaves an unrestricted caller's list unchanged (no site condition)", async () => {
+  it("adds no site condition for an unrestricted caller (only the soft-delete filter)", async () => {
     const out = await getTool().handler({ action: 'list' }, auth);
     expect(JSON.parse(out)).toHaveProperty('tickets');
+    // One select (no devices subquery) → no site-axis condition was applied.
     expect(mockSelect).toHaveBeenCalledTimes(1);
-    expect(mockWhere.mock.calls.at(-1)?.[0]).toBeUndefined();
+    // The list still always excludes soft-deleted tickets (Phase 6), so where()
+    // now carries the deleted_at IS NULL filter instead of being undefined.
+    const whereArg = mockWhere.mock.calls.at(-1)?.[0];
+    expect(whereArg).toBeDefined();
+    expect(JSON.stringify(whereArg)).toContain('is null');
   });
 });
 

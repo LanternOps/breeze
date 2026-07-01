@@ -7,6 +7,8 @@ import { listCannedResponses, type CannedResponse } from '../../lib/ticketRespon
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { usePermissions } from '../../lib/permissions';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import TicketFeed from './TicketFeed';
 import TicketComposer from './TicketComposer';
 import SlaChip from './SlaChip';
@@ -124,6 +126,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   const [moveOrgOpen, setMoveOrgOpen] = useState(false);
   const [moveOrgTargetId, setMoveOrgTargetId] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
+  const { can } = usePermissions();
+  const canManage = can('tickets', 'manage');
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
@@ -264,6 +271,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingOpen(null);
     setPendingReason('');
     setPendingStatusId(null);
+    setDeleteOpen(false);
   }, [ticketId]);
 
   // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens the resolution-note form)
@@ -397,6 +405,31 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
   }, [ticketId, load]);
+
+  // Soft-delete this ticket (tickets:manage). Confirm-gated by the ConfirmDialog
+  // below. On success the ticket leaves every queue: in full-page mode we
+  // navigate back to the queue; in the split pane we lean on onChanged (the same
+  // reconcile hook status changes use) — the list refetch drops the deleted row,
+  // and the host re-selects a live ticket.
+  const handleDelete = useCallback(async () => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'DELETE' }),
+        errorFallback: 'Delete failed. Retry.',
+        successMessage: 'Ticket deleted',
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setDeleteOpen(false);
+      onChanged?.();
+      if (expanded) void navigateTo('/tickets');
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+    } finally {
+      setDeleting(false);
+    }
+  }, [deleting, ticketId, onChanged, expanded]);
 
   const applyTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || applyingTriage) return;
@@ -767,6 +800,16 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           >
             Move to another org…
           </button>
+          {canManage && (
+            <button
+              type="button"
+              data-testid="ticket-delete-button"
+              className="text-xs text-destructive hover:underline"
+              onClick={() => setDeleteOpen(true)}
+            >
+              Delete
+            </button>
+          )}
         </div>
         {moveOrgOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
@@ -1142,6 +1185,17 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           </aside>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => void handleDelete()}
+        isLoading={deleting}
+        title="Delete this ticket?"
+        message="This hides the ticket from all queues. An admin can restore it from the Archived queue."
+        confirmLabel="Delete ticket"
+        confirmTestId="ticket-delete-confirm"
+      />
     </div>
   );
 }
