@@ -508,6 +508,14 @@ const patchSourceValueSchema = z.enum([
   'linux',
 ]);
 
+/**
+ * Patch sources with no backing patch provider yet: they expand to an empty
+ * allow-set at approval time (see patchApprovalEvaluator.buildAllowedPatchSources).
+ * A selection made up ONLY of these would silently approve zero patches, so it
+ * is rejected rather than saved as a no-op. Keep in sync with that expander.
+ */
+const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
+
 export const policyAppRuleSchema = z.object({
   source: z.enum(['third_party', 'custom']),
   packageId: z.string().min(1).max(256),
@@ -582,6 +590,14 @@ export const patchInlineSettingsSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['autoApproveSeverities'],
       message: 'Select at least one severity for auto-approval.',
+    });
+  }
+
+  if (data.sources.length > 0 && data.sources.every((s) => PROVIDERLESS_PATCH_SOURCES.has(s))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sources'],
+      message: 'The selected patch sources (firmware/drivers) have no patch provider yet and would approve nothing. Include at least one of: os, third_party, custom.',
     });
   }
 

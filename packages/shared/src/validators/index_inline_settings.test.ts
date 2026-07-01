@@ -84,6 +84,19 @@ describe('patchInlineSettingsSchema', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('rejects a firmware/drivers-only selection (no provider — would approve nothing)', () => {
+    const result = patchInlineSettingsSchema.safeParse({ sources: ['firmware', 'drivers'] });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path.includes('sources'))).toBe(true);
+    }
+  });
+
+  it('accepts firmware/drivers when combined with a provider-backed source', () => {
+    const result = patchInlineSettingsSchema.safeParse({ sources: ['os', 'drivers'] });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('patchInlineSettingsSchema app rules + deferral', () => {
