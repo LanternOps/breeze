@@ -81,7 +81,12 @@ export const alerts = pgTable('alerts', {
   // Backs the `alerts.critical` device-filter field (#968).
   activeCriticalIdx: index('idx_alerts_active_critical')
     .on(table.deviceId)
-    .where(sql`status = 'active' AND severity = 'critical'`)
+    .where(sql`status = 'active' AND severity = 'critical'`),
+  // Backs the suppression-expiry reaper's due-rows scan
+  // (apps/api/src/jobs/suppressionExpiryReaper.ts).
+  suppressedExpiryIdx: index('idx_alerts_suppressed_expiry')
+    .on(table.suppressedUntil)
+    .where(sql`status = 'suppressed' AND suppressed_until IS NOT NULL`)
 }));
 
 export const alertCorrelations = pgTable('alert_correlations', {

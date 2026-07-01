@@ -240,6 +240,7 @@ import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializeStripeReconcileSweep, shutdownStripeReconcileSweep } from './jobs/stripeReconcileSweep';
 import { initializeQuoteExpiryReaper, shutdownQuoteExpiryReaper } from './jobs/quoteExpiryReaper';
+import { initializeSuppressionExpiryReaper, shutdownSuppressionExpiryReaper } from './jobs/suppressionExpiryReaper';
 import { initializeTicketNotifyWorker, shutdownTicketNotifyWorker } from './jobs/ticketNotifyWorker';
 import { initializeTicketSlaWorker, shutdownTicketSlaWorker } from './jobs/ticketSlaWorker';
 import { initializeInboundEmailWorker, shutdownInboundEmailWorker } from './jobs/inboundEmailWorker';
@@ -1191,6 +1192,7 @@ async function initializeWorkers(): Promise<void> {
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
     ['stripeReconcileSweep', initializeStripeReconcileSweep],
     ['quoteExpiryReaper', initializeQuoteExpiryReaper],
+    ['suppressionExpiryReaper', initializeSuppressionExpiryReaper],
     ['ticketNotifyWorker', initializeTicketNotifyWorker],
     ['ticketSlaWorker', initializeTicketSlaWorker],
     ['inboundEmailWorker', initializeInboundEmailWorker],
@@ -1363,6 +1365,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownApprovalExpiryReaper,
     shutdownStripeReconcileSweep,
     shutdownQuoteExpiryReaper,
+    shutdownSuppressionExpiryReaper,
     shutdownTicketNotifyWorker,
     shutdownTicketSlaWorker,
     shutdownInboundEmailWorker,

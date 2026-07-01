@@ -29,6 +29,10 @@ export default defineConfig({
       'src/services/cpeMap.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',
       'src/jobs/vulnerability*.integration.test.ts',
+      // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
+      // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
+      // no-DB environment fails the suite on connect. Belongs to vitest.integration.config.ts.
+      'src/jobs/suppressionExpiryReaper.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

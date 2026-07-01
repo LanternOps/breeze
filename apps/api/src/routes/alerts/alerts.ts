@@ -387,9 +387,11 @@ alertsRoutes.post(
 
     // Resolve + validate the suppression deadline once (mirrors the single
     // POST /alerts/:id/suppress contract) so every alert gets the same `until`.
+    // A missing `until` on a suppress action means indefinite ("Forever")
+    // suppression — leave suppressedUntil null.
     let suppressedUntil: Date | null = null;
-    if (action === 'suppress') {
-      suppressedUntil = new Date(until!);
+    if (action === 'suppress' && until !== undefined) {
+      suppressedUntil = new Date(until);
       if (Number.isNaN(suppressedUntil.getTime()) || suppressedUntil <= new Date()) {
         return c.json({ error: 'Suppression time must be in the future' }, 400);
       }
@@ -755,9 +757,13 @@ alertsRoutes.post(
       return c.json({ error: 'Cannot suppress a resolved alert' }, 400);
     }
 
-    const suppressedUntil = new Date(data.until);
-    if (suppressedUntil <= new Date()) {
-      return c.json({ error: 'Suppression time must be in the future' }, 400);
+    // No `until` => indefinite ("Forever") suppression: leave suppressedUntil null.
+    let suppressedUntil: Date | null = null;
+    if (data.until !== undefined) {
+      suppressedUntil = new Date(data.until);
+      if (Number.isNaN(suppressedUntil.getTime()) || suppressedUntil <= new Date()) {
+        return c.json({ error: 'Suppression time must be in the future' }, 400);
+      }
     }
 
     const [updated] = await db
@@ -776,14 +782,14 @@ alertsRoutes.post(
       orgId: alert.orgId,
       alertId: updated.id,
       eventType: 'alert.suppressed',
-      dedupeKey: `suppress:${suppressedUntil.toISOString()}`,
+      dedupeKey: `suppress:${suppressedUntil ? suppressedUntil.toISOString() : 'forever'}`,
       outcome: 'suppressed',
       actorUserId: auth.user.id,
       occurredAt: new Date(),
       metadata: {
         source: 'alerts.route',
         previousStatus: alert.status,
-        suppressedUntil: suppressedUntil.toISOString(),
+        suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
       },
     });
 
@@ -796,7 +802,7 @@ alertsRoutes.post(
       details: {
         previousStatus: alert.status,
         nextStatus: updated.status,
-        suppressedUntil: suppressedUntil.toISOString(),
+        suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
       },
     });
 

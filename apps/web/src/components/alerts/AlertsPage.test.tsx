@@ -432,6 +432,27 @@ describe('AlertsPage — suppress duration picker', () => {
     expect(untilMs).toBeLessThanOrEqual(Date.now() + 24 * 60 * 60 * 1000 + 2000);
   });
 
+  it('sends no "until" in the body when Forever is chosen', async () => {
+    listOnlyMock(() => Promise.resolve(makeJsonResponse({ id: ALERT_ID, status: 'suppressed' })));
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i }));
+    fireEvent.click(await screen.findByTestId('suppress-duration-forever'));
+    fireEvent.click(await screen.findByTestId('suppress-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/${ALERT_ID}/suppress`,
+        expect.objectContaining({ method: 'POST', body: expect.any(String) }),
+      );
+    });
+
+    const call = fetchMock.mock.calls.find(([url]) => url === `/alerts/${ALERT_ID}/suppress`)!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    // Forever == no deadline: the body carries no `until` key at all.
+    expect(body).not.toHaveProperty('until');
+  });
+
   it('reverts the optimistic update and surfaces the server error when suppression fails', async () => {
     listOnlyMock(() => Promise.resolve(makeJsonResponse({ error: 'Cannot suppress a resolved alert' }, false, 400)));
 
@@ -447,6 +468,28 @@ describe('AlertsPage — suppress duration picker', () => {
     });
     // Optimistic suppression is rolled back: the row's Suppress button returns.
     expect(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i })).toBeInTheDocument();
+  });
+
+  it('hides the Mute button on resolved alerts (the suppress endpoint rejects them)', async () => {
+    const resolvedAlert = { ...activeAlert, status: 'resolved' };
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [resolvedAlert] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsPage />);
+    // The row renders...
+    expect(await screen.findByText('High CPU on SRV-01')).toBeInTheDocument();
+    // ...but with no Mute/Suppress action, since the backend returns
+    // "Cannot suppress a resolved alert" for resolved alerts.
+    expect(screen.queryByRole('button', { name: /Suppress: High CPU on SRV-01/i })).not.toBeInTheDocument();
   });
 });
 
@@ -508,5 +551,65 @@ describe('AlertsPage — bulk suppress', () => {
         expect.objectContaining({ message: '1 alert suppressed' }),
       );
     });
+  });
+
+  it('sends no "until" in the /alerts/bulk body when Forever is chosen', async () => {
+    bulkMock();
+    render(<AlertsPage />);
+
+    // Select the alert, open the bulk menu, choose Suppress.
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Select High CPU on SRV-01/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Bulk Actions/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Suppress/i }));
+
+    expect(await screen.findByTestId('suppress-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('suppress-duration-forever'));
+    fireEvent.click(screen.getByTestId('suppress-confirm'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/alerts/bulk',
+        expect.objectContaining({ method: 'POST', body: expect.any(String) }),
+      );
+    });
+
+    const call = fetchMock.mock.calls.find(([url]) => url === '/alerts/bulk')!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.action).toBe('suppress');
+    // Forever == no deadline: the body carries no `until` key at all.
+    expect(body).not.toHaveProperty('until');
+  });
+
+  it('warns (not success) when the bulk suppress changes nothing (all skipped)', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/alerts' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/alerts/bulk' && method === 'POST') {
+        // Server processed the request but nothing changed (e.g. every selected
+        // alert was already resolved, so suppress skipped them all).
+        return Promise.resolve(makeJsonResponse({ updated: 0, skipped: 1, failed: 0 }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+    render(<AlertsPage />);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Select High CPU on SRV-01/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Bulk Actions/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Suppress/i }));
+    fireEvent.click(await screen.findByTestId('suppress-confirm'));
+
+    // A truthful warning, NOT a green "1 suppressed".
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'warning', message: 'No alerts suppressed — 1 skipped' }),
+      );
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 });

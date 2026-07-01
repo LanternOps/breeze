@@ -2785,15 +2785,18 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         summary: 'Suppress alert',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
-          required: true,
+          required: false,
           content: {
             'application/json': {
               schema: {
                 type: 'object',
                 properties: {
-                  until: { type: 'string', format: 'date-time' }
-                },
-                required: ['until']
+                  until: {
+                    type: 'string',
+                    format: 'date-time',
+                    description: 'Absolute deadline the alert stays muted until. Omit for indefinite ("Forever") suppression.'
+                  }
+                }
               }
             }
           }

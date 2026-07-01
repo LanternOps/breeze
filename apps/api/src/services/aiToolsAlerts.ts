@@ -64,7 +64,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           deviceId: { type: 'string', description: 'Filter by device UUID (for list)' },
           limit: { type: 'number', description: 'Max results (for list, default 25)' },
           resolutionNote: { type: 'string', description: 'Note when resolving or suppressing an alert' },
-          suppressDuration: { type: 'number', description: 'Hours to suppress the alert (default: 24, max: 720)' }
+          suppressDuration: { type: 'number', description: 'Hours to suppress the alert (default: 24, max: 720). Use 0 to suppress forever (indefinitely).' }
         },
         required: ['action']
       }
@@ -250,10 +250,24 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const alert = await findAlertWithAccess(input.alertId as string, auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
-        const durationHours = Math.min(Math.max(1, Number(input.suppressDuration) || 24), 720);
-        const suppressedUntil = new Date(Date.now() + durationHours * 60 * 60 * 1000);
+        // Mirror the REST endpoints (POST /alerts/:id/suppress): a resolved alert
+        // has nothing to silence, so refuse rather than silently re-open it.
+        if (alert.status === 'resolved') {
+          return JSON.stringify({ error: 'Cannot suppress a resolved alert' });
+        }
+
+        // suppressDuration: 0 => indefinite ("Forever") suppression, leaving
+        // suppressedUntil null (mirrors POST /alerts/:id/suppress with no `until`).
+        const forever = Number(input.suppressDuration) === 0;
+        const durationHours = forever
+          ? null
+          : Math.min(Math.max(1, Number(input.suppressDuration) || 24), 720);
+        const suppressedUntil = durationHours === null
+          ? null
+          : new Date(Date.now() + durationHours * 60 * 60 * 1000);
         const occurredAt = new Date();
-        const resolutionNote = (input.resolutionNote as string) ?? `Suppressed for ${durationHours}h via AI assistant`;
+        const resolutionNote = (input.resolutionNote as string)
+          ?? (forever ? 'Suppressed indefinitely via AI assistant' : `Suppressed for ${durationHours}h via AI assistant`);
 
         await db
           .update(alerts)
@@ -274,7 +288,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
               ruleId: alert.ruleId,
               deviceId: alert.deviceId,
               suppressedBy: auth.user.id,
-              suppressedUntil: suppressedUntil.toISOString(),
+              suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
               durationHours
             },
             'ai-tools',
@@ -289,22 +303,24 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           orgId: alert.orgId,
           alertId: alert.id,
           eventType: 'alert.suppressed',
-          dedupeKey: `suppress:${suppressedUntil.toISOString()}`,
+          dedupeKey: `suppress:${suppressedUntil ? suppressedUntil.toISOString() : 'forever'}`,
           outcome: 'suppressed',
           actorUserId: auth.user.id,
           occurredAt,
           metadata: {
             source: 'ai_tools.manage_alerts',
             previousStatus: alert.status,
-            suppressedUntil: suppressedUntil.toISOString(),
+            suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
             durationHours,
           },
         });
 
         return JSON.stringify({
           success: true,
-          message: `Alert "${alert.title}" suppressed until ${suppressedUntil.toISOString()}`,
-          suppressedUntil: suppressedUntil.toISOString(),
+          message: suppressedUntil
+            ? `Alert "${alert.title}" suppressed until ${suppressedUntil.toISOString()}`
+            : `Alert "${alert.title}" suppressed indefinitely (Forever)`,
+          suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
           durationHours,
           warning: suppressEventWarning
         });
