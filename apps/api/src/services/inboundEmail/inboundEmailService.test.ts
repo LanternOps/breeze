@@ -48,11 +48,32 @@ function extractStatusConstraint(cond: unknown): { op: string; value: string } |
   return null;
 }
 
+// Walk a drizzle SQL condition's queryChunks to detect an `isNull(tickets.deletedAt)`
+// predicate. The schema mock makes `tickets.deletedAt` the plain string 'deletedAt',
+// so isNull serializes as the chunk sequence ["deletedAt", { value: [" is null"] }].
+// When present, the tickets-select mock filters out any soft-deleted candidate row
+// (deletedAt != null) — so if production ever drops the isNull filter, the mock will
+// (correctly) surface the deleted row and the exclusion tests below fail.
+function whereExcludesDeleted(cond: unknown): boolean {
+  const chunks = (cond as { queryChunks?: unknown[] })?.queryChunks;
+  if (!Array.isArray(chunks)) return false;
+  for (let i = 0; i < chunks.length; i++) {
+    if (chunks[i] === 'deletedAt') {
+      const opChunk = chunks[i + 1] as { value?: string[] } | undefined;
+      const op = opChunk?.value?.[0];
+      if (typeof op === 'string' && op.includes('is null')) return true;
+    }
+    if (whereExcludesDeleted(chunks[i])) return true;
+  }
+  return false;
+}
+
 vi.mock('../../db', () => {
   // select(cols).from(table).where().limit() and .innerJoin().where().limit()
   function makeSelect() {
     let resolvedTable = 'unknown';
     let statusConstraint: { op: string; value: string } | null = null;
+    let excludesDeleted = false;
     const chain: Record<string, unknown> = {
       from(tbl: unknown) {
         resolvedTable = tableName(tbl);
@@ -63,6 +84,7 @@ vi.mock('../../db', () => {
       },
       where(w: unknown) {
         statusConstraint = extractStatusConstraint(w);
+        excludesDeleted = whereExcludesDeleted(w);
         return chain;
       },
       limit(_n: number) {
@@ -75,6 +97,11 @@ vi.mock('../../db', () => {
             const s = (r as { status?: string }).status;
             return op.includes('<>') ? s !== value : s === value;
           });
+        }
+        // Honor isNull(tickets.deletedAt): a soft-deleted candidate must never match,
+        // so the reply forks a new ticket instead of re-threading onto the deleted one.
+        if (resolvedTable === 'tickets' && excludesDeleted) {
+          rows = rows.filter((r) => (r as { deletedAt?: unknown }).deletedAt == null);
         }
         return Promise.resolve(rows);
       }
@@ -131,7 +158,8 @@ vi.mock('../../db/schema', () => ({
     __t: 'tickets',
     id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status', subject: 'subject',
     emailThreadKey: 'emailThreadKey', emailMessageId: 'emailMessageId',
-    internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt'
+    internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt',
+    deletedAt: 'deletedAt'
   },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
@@ -559,6 +587,63 @@ describe('processInboundEmail', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.parseStatus).toBe('created');
     expect(log[0]!.ticketId).toBe('t-linked');
+  });
+
+  // SOFT-DELETE EXCLUSION (Phase 6): findTicketInPartner gates the live thread-key /
+  // subject-token match on isNull(tickets.deletedAt). A reply whose thread key matches
+  // a SOFT-DELETED ticket must NOT re-thread onto it — the deleted row is invisible to
+  // the matcher, so the reply forks a brand-new ticket instead.
+  it('does NOT thread onto a soft-deleted ticket — forks a new ticket instead (live match)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no dup
+    // A resolved ticket matches the thread key BUT has been soft-deleted.
+    state.selectRows['tickets'] = [{
+      id: 't-deleted', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001',
+      deletedAt: new Date()
+    }];
+    // Known portal user + org so the fall-through create path succeeds.
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-fresh', internalNumber: 'T-2026-0050' });
+
+    await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    // The soft-deleted ticket must NOT be appended to or reopened.
+    expect(state.inserts.filter((i) => i.table === 'ticket_comments')).toHaveLength(0);
+    expect(state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open')).toHaveLength(0);
+    // Instead, a brand-new ticket is created for the reply.
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('created');
+    expect(log[0]!.ticketId).toBe('t-fresh');
+  });
+
+  // findClosedTicketInPartner is likewise gated on isNull(tickets.deletedAt): a reply to
+  // a soft-deleted CLOSED original must not spawn a continuation from the deleted row.
+  it('does NOT spawn a continuation from a soft-deleted CLOSED original — quarantines instead', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no dup
+    // A CLOSED ticket matches the subject token / thread key BUT is soft-deleted.
+    state.selectRows['tickets'] = [{
+      id: 't-closed-deleted', partnerId: 'p-1', orgId: 'o-1', status: 'closed',
+      emailThreadKey: '<thread-key-old>', internalNumber: 'T-2026-0001',
+      deletedAt: new Date()
+    }];
+    // Unknown sender (no portal user, no domain mapping) so the ONLY path that could
+    // create a ticket is the closed-continuation — which must NOT fire for a deleted original.
+    state.selectRows['portal_users'] = [];
+
+    await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer down', inReplyTo: '<thread-key-old>' }));
+
+    // The soft-deleted closed original is excluded → no continuation ticket created.
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.ticketId).toBeNull();
   });
 
   // TEST 2 — durable failed-log path: when a WORK write throws, logInboundFailedDurable

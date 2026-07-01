@@ -741,8 +741,8 @@ ticketsRoutes.post(
 
 // DELETE /tickets/:id — soft-delete a ticket (Phase 6, issue #2140).
 // tickets:manage (Partner Admin / Org Admin) — the same elevated grant that
-// already gates "delete any comment" and "reassign ticket org". Hides the
-// ticket from every list/stats/by-id path; reversible via POST /:id/restore.
+// already gates deleting/editing another user's comment. Hides the ticket from
+// every list/stats/by-id path; reversible via POST /:id/restore.
 ticketsRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),

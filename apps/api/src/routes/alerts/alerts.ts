@@ -954,7 +954,9 @@ alertsRoutes.get(
       })
       .from(ticketAlertLinks)
       .innerJoin(tickets, eq(ticketAlertLinks.ticketId, tickets.id))
-      .where(eq(ticketAlertLinks.alertId, id))
+      // Exclude soft-deleted tickets: a deleted ticket must not surface in the
+      // alert's linked-tickets panel (dead link + false open-duplicate detection).
+      .where(and(eq(ticketAlertLinks.alertId, id), isNull(tickets.deletedAt)))
       .orderBy(desc(ticketAlertLinks.createdAt));
 
     return c.json({ data });

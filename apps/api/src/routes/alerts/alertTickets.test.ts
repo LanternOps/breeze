@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbJoinResult, getAlertWithOrgCheckMock } = vi.hoisted(() => ({
+const { authRef, dbJoinResult, getAlertWithOrgCheckMock, capturedWhere } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -13,7 +13,10 @@ const { authRef, dbJoinResult, getAlertWithOrgCheckMock } = vi.hoisted(() => ({
     }
   },
   dbJoinResult: vi.fn(),
-  getAlertWithOrgCheckMock: vi.fn()
+  getAlertWithOrgCheckMock: vi.fn(),
+  // Captures the arg the linked-tickets join hands to .where() so the soft-delete
+  // exclusion can be asserted on the serialized SQL.
+  capturedWhere: { args: [] as unknown[] }
 }));
 
 // requireScope injects auth here because alertsRoutes gets authMiddleware from
@@ -35,9 +38,12 @@ vi.mock('../../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         innerJoin: vi.fn(() => ({
-          where: vi.fn(() => ({
-            orderBy: vi.fn(() => dbJoinResult())
-          }))
+          where: vi.fn((...args: unknown[]) => {
+            capturedWhere.args = args;
+            return {
+              orderBy: vi.fn(() => dbJoinResult())
+            };
+          })
         })),
         // GET /:id and friends use other chains; tolerate them.
         where: vi.fn(() => ({
@@ -54,7 +60,7 @@ vi.mock('../../db/schema', () => ({
   alertNotifications: {}, devices: {},
   tickets: {
     id: 'id', internalNumber: 'internalNumber', subject: 'subject',
-    status: 'status', priority: 'priority'
+    status: 'status', priority: 'priority', deletedAt: 'deletedAt'
   },
   ticketAlertLinks: {
     ticketId: 'ticketId', alertId: 'alertId', linkType: 'linkType', createdAt: 'createdAt'
@@ -112,6 +118,19 @@ describe('GET /alerts/:id/tickets', () => {
     expect(body.data).toHaveLength(1);
     expect(body.data[0].internalNumber).toBe('T-2026-0042');
     expect(body.data[0].linkType).toBe('created_from');
+  });
+
+  it('excludes soft-deleted tickets from the linked-tickets panel (deleted_at IS NULL)', async () => {
+    // Phase 6: the join filters on and(eq(alertId), isNull(tickets.deletedAt)) so a
+    // soft-deleted ticket never surfaces as a dead link / false open-duplicate.
+    getAlertWithOrgCheckMock.mockResolvedValue({ id: ALERT_ID, orgId: 'org-1' });
+    dbJoinResult.mockResolvedValue([]);
+    const res = await makeApp().request(`/alerts/${ALERT_ID}/tickets`);
+    expect(res.status).toBe(200);
+
+    const whereStr = JSON.stringify(capturedWhere.args);
+    expect(whereStr).toContain('deletedAt');
+    expect(whereStr).toContain('is null');
   });
 
   it('returns an empty list when nothing is linked', async () => {

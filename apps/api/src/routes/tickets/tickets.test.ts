@@ -308,6 +308,20 @@ describe('GET /tickets', () => {
     expect(serialized).toContain('resolution_sla_minutes');
   });
 
+  it('default (non-archived) list excludes soft-deleted tickets (deleted_at IS NULL)', async () => {
+    // Phase 6: the default GET /tickets branch appends isNull(tickets.deletedAt)
+    // so soft-deleted tickets never appear in the staff queue. The `deleted=only`
+    // archived view is gated + tested separately; this guards the DEFAULT branch.
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('deletedAt');
+    expect(serialized).toContain('is null');
+  });
+
   it('triage sort orders breached first, then at-risk, then priority', async () => {
     dbSelectMock.mockResolvedValue([]);
     const res = await makeApp().request('/tickets?sort=triage');
@@ -517,6 +531,20 @@ describe('GET /tickets/stats', () => {
 
     // Ensure groupBy was used (not orderBy) — the mock resolves via dbGroupByMock
     expect(dbGroupByMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('excludes soft-deleted tickets from queue counts (deleted_at IS NULL)', async () => {
+    // Phase 6: /stats appends isNull(tickets.deletedAt) so soft-deleted tickets
+    // never inflate the queue tab / dashboard-widget counts.
+    dbGroupByMock.mockResolvedValue([]);
+    dbSelectMock.mockResolvedValue([{ atRisk: 0 }]);
+    const res = await makeApp().request('/tickets/stats');
+    expect(res.status).toBe(200);
+
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('deletedAt');
+    expect(serialized).toContain('is null');
   });
 
   it('403 when partner scope has null partnerId (broken context)', async () => {

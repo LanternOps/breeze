@@ -199,6 +199,18 @@ describe('manage_tickets tool', () => {
     expect(parsed.error).toMatch(/not found/i);
   });
 
+  it('get always applies the soft-delete filter (excludes deleted tickets)', async () => {
+    // Phase 6: findTicketWithAccess must gate on isNull(tickets.deletedAt) so a
+    // soft-deleted ticket resolves as not-found even when its id is guessed.
+    // Regression guard: dropping that predicate would remove the "is null" clause
+    // from the WHERE the scoped by-id select hands to .where().
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    await getTool().handler({ action: 'get', ticketId: 't-1' }, auth);
+    const whereArg = mockWhere.mock.calls.at(-1)?.[0];
+    expect(whereArg).toBeDefined();
+    expect(JSON.stringify(whereArg)).toContain('is null');
+  });
+
   // ── comment ───────────────────────────────────────────────────────────────
 
   it('comment delegates to addTicketComment when ticket is in scope', async () => {

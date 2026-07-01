@@ -64,7 +64,7 @@ vi.mock('../../db/schema', () => ({
     id: 'id', orgId: 'orgId', ticketNumber: 'ticketNumber',
     subject: 'subject', description: 'description', status: 'status',
     priority: 'priority', submittedBy: 'submittedBy', createdAt: 'createdAt',
-    updatedAt: 'updatedAt', statusId: 'statusId'
+    updatedAt: 'updatedAt', statusId: 'statusId', deletedAt: 'deletedAt'
   },
   ticketComments: {
     id: 'id', ticketId: 'ticketId', authorName: 'authorName',
@@ -256,6 +256,92 @@ describe('GET /tickets/:id — portal internal-note isolation', () => {
     });
 
     expect(res.status).toBe(404);
+  });
+});
+
+// ── Soft-delete exclusion: customer list + detail (Phase 6) ──────────────────
+
+describe('portal ticket soft-delete exclusion', () => {
+  let app: ReturnType<typeof buildApp>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildApp();
+  });
+
+  it('GET /tickets: customer list WHERE includes isNull(tickets.deletedAt)', async () => {
+    // The list query builds `conditions` (org + submittedBy + isNull(deletedAt))
+    // once and reuses it for both the count and the data select. Capturing either
+    // proves a soft-deleted ticket can never appear in the customer's own list.
+    let capturedListWhere: unknown[] = [];
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        // count query: `.from(tickets).where(conditions)` awaited directly
+        where: vi.fn((...args: unknown[]) => {
+          capturedListWhere = args;
+          return Promise.resolve([{ count: 0 }]);
+        }),
+        // data query: `.from(tickets).leftJoin().where(conditions).orderBy().limit().offset()`
+        leftJoin: vi.fn(() => ({
+          where: vi.fn((...args: unknown[]) => {
+            capturedListWhere = args;
+            return {
+              orderBy: vi.fn(() => ({
+                limit: vi.fn(() => ({ offset: vi.fn(() => Promise.resolve([])) }))
+              }))
+            };
+          })
+        }))
+      }))
+    }));
+
+    const res = await app.request('/tickets', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(200);
+
+    const whereStr = JSON.stringify(capturedListWhere);
+    expect(whereStr).toContain('deletedAt');
+    expect(whereStr).toContain('is null');
+  });
+
+  it('GET /tickets/:id: detail lookup WHERE includes isNull(tickets.deletedAt)', async () => {
+    // A customer must never resolve their OWN soft-deleted ticket by id — the
+    // by-id lookup gates on isNull(tickets.deletedAt) alongside the org/submitter
+    // predicates.
+    let capturedDetailWhere: unknown[] = [];
+    let callCount = 0;
+    dbSelectMock.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        // ticket lookup — .from().leftJoin().where().limit()
+        return {
+          from: vi.fn(() => ({
+            leftJoin: vi.fn(() => ({
+              where: vi.fn((...args: unknown[]) => {
+                capturedDetailWhere = args;
+                return { limit: vi.fn(() => Promise.resolve([TICKET_ROW])) };
+              })
+            }))
+          }))
+        };
+      }
+      // comments lookup — .from().where().orderBy()
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ orderBy: vi.fn(() => Promise.resolve([])) }))
+        }))
+      };
+    });
+
+    const res = await app.request(`/tickets/${TICKET_ID}`, {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(200);
+
+    const whereStr = JSON.stringify(capturedDetailWhere);
+    expect(whereStr).toContain('deletedAt');
+    expect(whereStr).toContain('is null');
   });
 });
 
