@@ -364,8 +364,9 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           )
         ) : (
           <div className="relative">
-            {/* BulkActionBar reserves its own space via an in-flow spacer, so no
-                bottom-padding hack is needed here. */}
+            {/* BulkActionBar is an in-flow `sticky bottom-0` element (last child),
+                so it reserves its own layout space and never occludes the last
+                row — no bottom-padding hack is needed here. */}
             <div className="overflow-x-auto">
               <table className="w-full text-sm" data-testid="contracts-list">
                 <thead>

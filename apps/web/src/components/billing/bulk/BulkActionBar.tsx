@@ -16,16 +16,15 @@ export interface BulkActionBarProps {
 export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkActionBarProps) {
   if (count === 0) return null;
   return (
-    <>
-      {/* In-flow spacer: the bar itself is absolutely positioned and would float
-          over the last table row(s). This sibling reserves an equal slice of
-          height in normal flow so the bar overlays blank space, never data — the
-          caller needs no `pb-*` padding hack of its own. */}
-      <div aria-hidden="true" data-testid="bulk-bar-spacer" className="h-14" />
-      <div
-        className="absolute inset-x-0 bottom-0 z-10 border-t bg-background px-3 py-2 shadow-[0_-4px_12px_-6px_rgba(0,0,0,0.15)] animate-[fade-up_0.18s_ease-out_both]"
-        data-testid={`${testIdPrefix}-bulk-bar`}
-      >
+    // In-flow `sticky` bar: a sticky element occupies its own layout box, so the
+    // last table row can never be occluded no matter how tall the bar grows (e.g.
+    // when its actions wrap to two lines on a narrow viewport). It still floats
+    // above the viewport bottom while the table scrolls. No spacer / `pb-*` hack
+    // needed — the height guarantee is structural, not a magic number.
+    <div
+      className="sticky bottom-0 z-10 border-t bg-background px-3 py-2 shadow-[0_-4px_12px_-6px_rgba(0,0,0,0.15)] animate-[fade-up_0.18s_ease-out_both]"
+      data-testid={`${testIdPrefix}-bulk-bar`}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium tabular-nums">{count} selected</span>
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -55,7 +54,6 @@ export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkAct
           </button>
         </div>
       </div>
-      </div>
-    </>
+    </div>
   );
 }

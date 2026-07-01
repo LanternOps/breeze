@@ -26,7 +26,7 @@ describe('BulkActionBar', () => {
     expect(onClear).toHaveBeenCalledTimes(1);
   });
 
-  it('reserves its own space with an in-flow spacer so the last row is never occluded', () => {
+  it('renders the bar in-flow (sticky, not absolute) so the last row is never occluded', () => {
     render(
       <BulkActionBar
         count={2}
@@ -35,13 +35,17 @@ describe('BulkActionBar', () => {
         testIdPrefix="quotes"
       />
     );
-    // The floating bar is absolutely positioned; a sibling spacer in normal flow
-    // pushes the container taller by the bar's height so callers need no padding hack.
-    expect(screen.getByTestId('bulk-bar-spacer')).toBeInTheDocument();
+    // A `sticky` in-flow bar occupies its own layout box, so the last table row
+    // can never be occluded regardless of the bar's height — no spacer needed.
+    const bar = screen.getByTestId('quotes-bulk-bar');
+    expect(bar).toHaveClass('sticky');
+    expect(bar).not.toHaveClass('absolute');
+    // The old in-flow spacer sibling is gone.
+    expect(screen.queryByTestId('bulk-bar-spacer')).not.toBeInTheDocument();
   });
 
-  it('renders no spacer when count is 0', () => {
+  it('renders nothing (no bar) when count is 0', () => {
     render(<BulkActionBar count={0} actions={[]} onClear={() => {}} testIdPrefix="quotes" />);
-    expect(screen.queryByTestId('bulk-bar-spacer')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quotes-bulk-bar')).not.toBeInTheDocument();
   });
 });
