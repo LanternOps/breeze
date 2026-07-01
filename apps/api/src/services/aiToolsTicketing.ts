@@ -17,6 +17,7 @@ import {
   changeTicketStatus,
   assignTicket,
   addTicketComment,
+  TicketServiceError,
   updateTicketFields,
   linkAlertToTicket,
   unlinkAlertFromTicket,
@@ -41,6 +42,13 @@ type ParseResult<T> = { value: T } | { error: string };
 
 function actorFrom(auth: AuthContext) {
   return { userId: auth.user.id, name: auth.user.name };
+}
+
+function serviceErrorToJson(err: unknown): string | null {
+  if (err instanceof TicketServiceError) {
+    return JSON.stringify({ error: err.message, code: err.code });
+  }
+  return null;
 }
 
 function timeEntryActorFrom(auth: AuthContext) {
@@ -203,7 +211,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_tickets',
       description:
-        'Search, view, create, comment on, assign, change the status of, and log time against support tickets. ' +
+        'Search, view, create, comment on, assign, update fields, change status, link/unlink alerts, create from alerts, edit/delete comments, move tickets between orgs with approval, and log time against support tickets. ' +
         'Use action "list" to search, "get" for full detail, "create" to open a new ticket, ' +
         '"comment" to add a reply or internal note, "assign" to set the assignee, ' +
         '"update_status" to move the lifecycle (resolving requires resolutionNote), ' +
@@ -500,8 +508,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // Scoped pre-check: ensure ticket is visible before the service mutates by id.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
-        const ticket = await updateTicketFields(String(input.ticketId), parsedFields.value, actor);
-        return JSON.stringify({ ticket });
+        try {
+          const ticket = await updateTicketFields(String(input.ticketId), parsedFields.value, actor);
+          return JSON.stringify({ ticket });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── link_alert ────────────────────────────────────────────────────────
@@ -512,8 +526,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
         const alert = await findAlertWithAccess(String(input.alertId), auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found' });
-        const link = await linkAlertToTicket(String(input.ticketId), String(input.alertId), actor);
-        return JSON.stringify({ link });
+        try {
+          const link = await linkAlertToTicket(String(input.ticketId), String(input.alertId), actor);
+          return JSON.stringify({ link });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── unlink_alert ──────────────────────────────────────────────────────
@@ -522,8 +542,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!input.alertId) return JSON.stringify({ error: 'alertId is required for unlink_alert action' });
         const found = await findTicketWithAccess(String(input.ticketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
-        const result = await unlinkAlertFromTicket(String(input.ticketId), String(input.alertId), actor);
-        return JSON.stringify({ unlinked: result });
+        try {
+          const result = await unlinkAlertFromTicket(String(input.ticketId), String(input.alertId), actor);
+          return JSON.stringify({ unlinked: result });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── create_from_alert ─────────────────────────────────────────────────
@@ -533,8 +559,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!alert) return JSON.stringify({ error: 'Alert not found' });
         const parsedOverrides = parseAlertOverrides(input.overrides);
         if ('error' in parsedOverrides) return JSON.stringify({ error: parsedOverrides.error });
-        const ticket = await createTicketFromAlert(String(input.alertId), actor, parsedOverrides.value);
-        return JSON.stringify({ ticket });
+        try {
+          const ticket = await createTicketFromAlert(String(input.alertId), actor, parsedOverrides.value);
+          return JSON.stringify({ ticket });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── edit_comment ──────────────────────────────────────────────────────
@@ -545,13 +577,19 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         const found = await findTicketWithAccess(String(input.expectedTicketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
         const canManageAny = await canManageAnyTicketComment(auth);
-        const comment = await editTicketComment(
-          String(input.commentId),
-          { content: String(input.content) },
-          actor,
-          { canManageAny, expectedTicketId: String(input.expectedTicketId) }
-        );
-        return JSON.stringify({ comment });
+        try {
+          const comment = await editTicketComment(
+            String(input.commentId),
+            { content: String(input.content) },
+            actor,
+            { canManageAny, expectedTicketId: String(input.expectedTicketId) }
+          );
+          return JSON.stringify({ comment });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── delete_comment ────────────────────────────────────────────────────
@@ -561,12 +599,18 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         const found = await findTicketWithAccess(String(input.expectedTicketId), auth);
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
         const canManageAny = await canManageAnyTicketComment(auth);
-        const deleted = await deleteTicketComment(
-          String(input.commentId),
-          actor,
-          { canManageAny, expectedTicketId: String(input.expectedTicketId) }
-        );
-        return JSON.stringify({ deleted });
+        try {
+          const deleted = await deleteTicketComment(
+            String(input.commentId),
+            actor,
+            { canManageAny, expectedTicketId: String(input.expectedTicketId) }
+          );
+          return JSON.stringify({ deleted });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── move_org ──────────────────────────────────────────────────────────
@@ -578,8 +622,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!auth.canAccessOrg(String(input.targetOrgId))) {
           return JSON.stringify({ error: 'Access to target organization denied' });
         }
-        const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
-        return JSON.stringify({ ticket });
+        try {
+          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
+          return JSON.stringify({ ticket });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── log_time_entry ────────────────────────────────────────────────────

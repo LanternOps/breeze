@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { INVOICE_STATUSES } from '@breeze/shared';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import {
@@ -247,7 +248,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   list_invoices: z.object({
     orgId: uuid.optional(),
-    status: z.string().optional(),
+    status: z.enum(INVOICE_STATUSES).optional(),
     limit: z.number().optional(),
   }),
 
@@ -346,7 +347,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   list_contracts: z.object({
     orgId: uuid.optional(),
-    status: z.string().optional(),
+    status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
     limit: z.number().optional(),
   }),
 

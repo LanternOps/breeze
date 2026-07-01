@@ -1,9 +1,10 @@
 /**
  * AI Catalog Tools
  *
- * Provides read-only AI tools over the partner product catalog:
+ * Provides AI tools over the partner product catalog:
  *  - `search_catalog`   — list/search active catalog items (hardware/software/service/bundle)
  *  - `get_catalog_item` — full detail for one item, plus bundle components if it is a bundle
+ *  - `manage_catalog`   — create/update/archive items, bundle components, and org price overrides
  *
  * The catalog is partner-scoped (RLS shape 3). Every query is filtered by
  * `auth.partnerId`; a context without a partner gets an error string. Listing

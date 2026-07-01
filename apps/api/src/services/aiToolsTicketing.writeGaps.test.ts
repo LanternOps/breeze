@@ -68,6 +68,7 @@ vi.mock('./ticketConfigService', () => ({
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { TicketServiceError } from './ticketService';
 
 function getTool(): AiTool {
   const tools = new Map<string, AiTool>();
@@ -142,6 +143,33 @@ describe('manage_tickets write-gap actions', () => {
 
     expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
     expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+  });
+
+  it('update_fields maps TicketServiceError to error JSON with code', async () => {
+    mockAccessibleTicket();
+    serviceMocks.updateTicketFields.mockRejectedValue(
+      new TicketServiceError('Invalid ticket update', 400, 'INVALID_INPUT')
+    );
+
+    const out = await getTool().handler(
+      { action: 'update_fields', ticketId: TICKET_ID, fields: { subject: 'Updated' } },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Invalid ticket update', code: 'INVALID_INPUT' });
+  });
+
+  it('update_fields re-throws non-service errors', async () => {
+    mockAccessibleTicket();
+    const err = new Error('database unavailable');
+    serviceMocks.updateTicketFields.mockRejectedValue(err);
+
+    await expect(
+      getTool().handler(
+        { action: 'update_fields', ticketId: TICKET_ID, fields: { subject: 'Updated' } },
+        makeAuth()
+      )
+    ).rejects.toBe(err);
   });
 
   it('move_org requires target org access and does not call moveTicketOrg when denied', async () => {

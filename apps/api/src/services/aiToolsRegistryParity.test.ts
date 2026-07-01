@@ -6,6 +6,7 @@ import { TOOL_PERMISSIONS } from './aiGuardrails';
 describe('aiTools registry parity', () => {
   const toolNames = Array.from(aiTools.keys());
 
+  // Pre-existing registered tools missing schemas/permissions; tracked as known debt for a separate follow-up.
   const legacySchemaGaps = new Set([
     'query_analytics',
     'get_executive_summary',
@@ -39,6 +40,7 @@ describe('aiTools registry parity', () => {
     'manage_saved_filters',
   ]);
 
+  // Pre-existing registered tools missing schemas/permissions; tracked as known debt for a separate follow-up.
   const legacyPermissionGaps = new Set([
     'manage_update_rings',
     'manage_software_policies',
