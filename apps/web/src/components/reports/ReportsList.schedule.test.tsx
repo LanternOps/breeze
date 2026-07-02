@@ -18,7 +18,7 @@ const monthlyReport = {
   type: 'device_inventory',
   schedule: 'monthly',
   format: 'csv',
-  config: { schedule: { time: '09:00', date: '1' }, emailRecipients: ['a@b.co', 'c@d.co'] },
+  config: { schedule: { time: '09:00', date: '1' }, emailRecipients: ['a@b.co', 'second@example.com'] },
   lastGeneratedAt: null,
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',

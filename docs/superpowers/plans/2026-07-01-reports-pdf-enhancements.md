@@ -943,7 +943,7 @@ In the Schedule `<td>` (currently just the pill), render for recurring reports a
 </td>
 ```
 
-- [ ] **Step 5: Web test.** Extend an existing ReportsList test file (or add `ReportsList.schedule.test.tsx` following `ReportsList.templates.test.tsx`'s fetch-mock setup): a monthly report with `config: { schedule: { time: '09:00', date: '1' }, emailRecipients: ['a@b.co', 'c@d.co'] }` renders text matching `/Next: .+/` and the recipient count `2`; a `one_time` report renders no "Next:" line. Run web reports tests.
+- [ ] **Step 5: Web test.** Extend an existing ReportsList test file (or add `ReportsList.schedule.test.tsx` following `ReportsList.templates.test.tsx`'s fetch-mock setup): a monthly report with `config: { schedule: { time: '09:00', date: '1' }, emailRecipients: ['a@b.co', 'second@example.com'] }` renders text matching `/Next: .+/` and the recipient count `2`; a `one_time` report renders no "Next:" line. Run web reports tests.
 
 - [ ] **Step 6: Commit** — `feat(reports): next-run time and recipient count on report rows`
 
