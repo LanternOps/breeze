@@ -32,4 +32,14 @@ ignore = [
   # rand 0.7.3 / 0.8.5 unsoundness — only triggered with custom logger using
   # rand::rng(); transitive via phf_generator → markup5ever → html5ever.
   "RUSTSEC-2026-0097",
+  # quick-xml DoS pair — quadratic-time duplicate-attribute check (0194) and
+  # unbounded namespace-declaration allocation in NsReader (0195). Both fixed
+  # in quick-xml >= 0.41.0, but our only consumers are `plist` (Apple
+  # property-list parsing of our OWN bundle metadata) and `wayland-scanner`
+  # (build-time codegen from system Wayland protocol XML) — both trusted-input
+  # paths, neither parses attacker-controlled XML at runtime. The fix is gated
+  # behind plist/wayland-scanner releases pinned by the Tauri/Linux stack, so
+  # it is unfixable from this crate's perspective.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
 ]

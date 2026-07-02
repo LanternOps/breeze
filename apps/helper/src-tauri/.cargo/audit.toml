@@ -33,4 +33,13 @@ ignore = [
   # rand::rng(); transitive via phf_generator → markup5ever → html5ever.
   # Direct rand usage in this crate is on 0.9.4 (patched).
   "RUSTSEC-2026-0097",
+  # quick-xml DoS pair — quadratic-time duplicate-attribute check (0194) and
+  # unbounded namespace-declaration allocation in NsReader (0195). Both fixed
+  # in quick-xml >= 0.41.0, but our only consumer is `plist` (Apple
+  # property-list parsing of our OWN bundle metadata) — a trusted-input path
+  # that never parses attacker-controlled XML at runtime. The fix is gated
+  # behind a plist release pinned by the Tauri stack, so it is unfixable from
+  # this crate's perspective.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
 ]
