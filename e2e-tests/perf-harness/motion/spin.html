@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+  spin.html — rAF-driven fullscreen canvas motion source.
+
+  Unlike motion-video.html (a 60fps <video>, whose presents cap at the clip
+  rate and whatever the browser's video cadence delivers), this animates via
+  requestAnimationFrame, which runs at the DISPLAY refresh rate while the
+  window is foreground (e.g. 144Hz on Kit). Use it when the change under test
+  needs the compositor to present FASTER than the 60fps capture target —
+  e.g. validating capture-loop pacing/throttling (Change #7).
+
+  Caveat: rAF is throttled when the window loses focus/visibility — launch
+  fullscreen on the console via the RDMotion kiosk task, like motion-video.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>rd-perf spin</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000;cursor:none}canvas{display:block;width:100vw;height:100vh}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+function resize(){ c.width = innerWidth; c.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+let frame = 0;
+function draw(t){
+  frame++;
+  const w = c.width, h = c.height;
+  // Full-canvas repaint every frame so DXGI sees whole-frame dirty rects.
+  const hue = (t / 20) % 360;
+  ctx.fillStyle = `hsl(${hue} 40% 12%)`;
+  ctx.fillRect(0, 0, w, h);
+  // Orbiting blocks — coarse structure, cheap to draw and to encode.
+  for (let i = 0; i < 12; i++) {
+    const a = t / 800 + i * Math.PI / 6;
+    const r = Math.min(w, h) * (0.15 + 0.02 * i);
+    ctx.fillStyle = `hsl(${(hue + i * 30) % 360} 80% 55%)`;
+    ctx.fillRect(w / 2 + Math.cos(a) * r, h / 2 + Math.sin(a) * r, 120, 120);
+  }
+  // Scrolling bars for horizontal motion.
+  const off = (t / 4) % 160;
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  for (let x = -160 + off; x < w; x += 160) ctx.fillRect(x, h - 80, 80, 80);
+  // Frame counter (verifies the page really runs at display rate).
+  ctx.fillStyle = '#fff'; ctx.font = '28px monospace';
+  ctx.fillText('frame ' + frame, 24, 44);
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

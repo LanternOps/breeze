@@ -54,8 +54,15 @@ async function getJson(url: string, token: string): Promise<Response> {
   return fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 }
 
-/** Step 1: admin login -> access token. */
+/**
+ * Step 1: admin login -> access token.
+ * RD_ACCESS_TOKEN skips the login POST entirely — the auth rate limiter
+ * (~5 logins/window) otherwise blocks back-to-back A/B runs, and failed
+ * retries keep the window saturated.
+ */
 export async function login(cfg: SignalingConfig): Promise<string> {
+  const preset = process.env.RD_ACCESS_TOKEN;
+  if (preset) return preset;
   const origin = apiOrigin(cfg.baseUrl);
   const res = await postJson(`${origin}/api/v1/auth/login`, {
     email: cfg.adminEmail,

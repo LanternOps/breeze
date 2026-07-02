@@ -258,6 +258,10 @@ func (s *Session) captureLoop() {
 func (s *Session) captureLoopDXGI() captureMode {
 	fps := s.getFPS()
 	frameDuration := time.Second / time.Duration(fps)
+	// Sent frames are paced against an absolute schedule (see framePacer) —
+	// AcquireNextFrame's blocking does the pacing on displays at or below the
+	// target rate, and the pacer only sleeps when producing above target.
+	var pacer framePacer
 	hwChecked := false
 	s.mu.RLock()
 	initCap := s.capturer
@@ -589,7 +593,11 @@ func (s *Session) captureLoopDXGI() captureMode {
 					lastIdleKeyframe = time.Time{} // reset idle keyframe timer
 				}
 				wasIdle = consecutiveSkips >= idleThreshold
-				if elapsed := time.Since(loopStart); elapsed < sleepDur {
+				if frameSent {
+					if wait := pacer.next(time.Now(), frameDuration); wait > 0 {
+						time.Sleep(wait)
+					}
+				} else if elapsed := time.Since(loopStart); elapsed < sleepDur {
 					time.Sleep(sleepDur - elapsed)
 				}
 				continue
@@ -600,10 +608,12 @@ func (s *Session) captureLoopDXGI() captureMode {
 			swCapped = true
 			s.adaptive.CapForSoftwareEncoder()
 		}
-		s.captureAndSendFrame(frameDuration)
-		sleepDur := frameDuration
-		if elapsed := time.Since(loopStart); elapsed < sleepDur {
-			time.Sleep(sleepDur - elapsed)
+		if s.captureAndSendFrame(frameDuration) {
+			if wait := pacer.next(time.Now(), frameDuration); wait > 0 {
+				time.Sleep(wait)
+			}
+		} else if elapsed := time.Since(loopStart); elapsed < frameDuration {
+			time.Sleep(frameDuration - elapsed)
 		}
 	}
 }
@@ -760,12 +770,14 @@ func (s *Session) captureLoopTicker() captureMode {
 	}
 }
 
-// captureAndSendFrame captures, encodes H264, and sends via WebRTC
-func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
+// captureAndSendFrame captures, encodes H264, and sends via WebRTC.
+// Returns true only when a fresh frame was written to the video track
+// (cached-frame resends and skips return false).
+func (s *Session) captureAndSendFrame(frameDuration time.Duration) bool {
 	s.mu.RLock()
 	if !s.isActive {
 		s.mu.RUnlock()
-		return
+		return false
 	}
 	cap := s.capturer
 	s.mu.RUnlock()
@@ -773,7 +785,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	enc := s.encoder.Load()
 	if enc == nil {
 		slog.Warn("captureAndSendFrame: encoder is nil, skipping", "session", s.id)
-		return
+		return false
 	}
 
 	// GPU-only encoders (AMF, NVENC) cannot accept CPU pixel data via
@@ -786,7 +798,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		slog.Info("GPU-only encoder reached CPU path, swapping to software",
 			"session", s.id, "backend", enc.BackendName())
 		s.swapToSoftwareEncoder()
-		return
+		return false
 	}
 
 	// 1. Capture screen
@@ -794,7 +806,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	img, err := cap.Capture()
 	if err != nil {
 		slog.Warn("Screen capture error (CPU path)", "session", s.id, "error", err.Error())
-		return
+		return false
 	}
 	if img == nil {
 		// DXGI: no new frame available (AccumulatedFrames==0)
@@ -803,7 +815,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 			s.maybeResendCachedFrameOnIdle(frameDuration)
 		}
 		s.metrics.RecordSkip()
-		return
+		return false
 	}
 	s.metrics.RecordCapture(time.Since(t0))
 
@@ -857,7 +869,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 			captureImagePool.Put(img)
 			_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
 			s.metrics.RecordSkip()
-			return
+			return false
 		}
 	}
 
@@ -880,7 +892,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		if s.cpuEncodeErrors >= 5 && enc.BackendName() != "openh264" {
 			s.swapToSoftwareEncoder()
 		}
-		return
+		return false
 	}
 	s.cpuEncodeErrors = 0
 
@@ -892,7 +904,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 				"session", s.id, "backend", enc.BackendName())
 			s.swapToSoftwareEncoder()
 		}
-		return
+		return false
 	}
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
@@ -906,7 +918,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		s.metrics.RecordDrop()
 		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
 		_ = enc.ForceKeyframe()
-		return
+		return false
 	}
 
 	// 5. Write as pion media.Sample
@@ -917,13 +929,14 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	if err := s.videoTrack.WriteSample(sample); err != nil {
 		slog.Debug("Failed to write H264 sample", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
-		return
+		return false
 	}
 
 	s.cacheEncodedFrame(h264Data)
 	s.noteVideoWrite()
 	s.noteSampleWrite()
 	s.metrics.RecordSend(len(h264Data))
+	return true
 }
 
 // captureAndSendFrameGPU captures a GPU texture and encodes via the zero-copy pipeline.

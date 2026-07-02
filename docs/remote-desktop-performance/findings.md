@@ -18,9 +18,24 @@ with final disposition. Ordered by original ranking.
 | T3 | CRC32 IEEE→Castagnoli on GDI/software path | 2 | ⬜ Open | planned (after VM leg enrolled) |
 | T4 | Input handled inline on the SCTP goroutine | 2 | ⬜ Open | planned #9 |
 | T5 | Redundant per-frame `Flush` in `CaptureTexture` | 2 | ⬜ Open | planned #8 |
-| F1 | Delivered fps caps at ~48–50, not 60 (capture/display pacing, exposed by #1) | Follow-up | ⬜ Open | planned #7 — root cause: `time.Sleep` frame-pad quantized to 15.6ms (`session_capture.go:592`) |
+| F1 | Delivered fps caps at ~48–50, not 60 (capture/display pacing, exposed by #1) | Follow-up | ✅ Resolved (root cause revised) | #7 — cap is the motion-source present rate, not the loop; #7 fixes the loop's real defects (exact-target pacing, coalescing recovery) |
 
 ## Detail — fixed findings
+
+### F1 / frame pacing (Change #7) — a hypothesis corrected by measurement
+
+The register originally blamed the ~48fps cap on the capture loop's
+`time.Sleep(frameDuration - elapsed)` pad (quantization). A diagnostic build
+with pacing fully removed still delivered 46.5fps — the cap is the
+**compositor's present rate for the motion source** (~46.6–47/s in Edge on
+Kit's 144Hz display; ~53 on Intel's 59Hz panel). `AcquireNextFrame` syncs to
+the *next* present, so the feared pad+present-wait resonance cannot occur.
+What WAS real: quantization overshoot made any below-supply target undershoot
+(45 → 44.4), and jitter-triggered pads coalesced presents at the default
+target (−1.5fps). Change #7's absolute-schedule `framePacer` fixes both
+(exact-target: 47.0×3; full-supply delivery at 60-target). Lesson: measure
+the *supply* (present rate) before blaming the consumer — and `skipped=0`
+with `captured < target` is the supply-limited signature.
 
 ### Intel async-MFT stall (Change #3) — the root cause worth remembering
 

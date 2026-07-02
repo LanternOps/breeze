@@ -170,7 +170,10 @@ async function main(): Promise<void> {
     console.log(`[node-peer] connection state: ${state}`);
   });
 
-  controlChannel.onopen = () => {
+  // Drive commands are sent 2s after the channel opens (not immediately) —
+  // a send racing the agent's OnMessage attach can be dropped — and re-sent
+  // once mid-run since they're idempotent.
+  const sendDriveCmds = () => {
     if (driveCmds.length === 0) return;
     for (const cmd of driveCmds) {
       const [type, rawVal] = cmd.split('=');
@@ -179,6 +182,10 @@ async function main(): Promise<void> {
       controlChannel.send(Buffer.from(JSON.stringify(msg)));
       console.log(`[node-peer] control -> ${JSON.stringify(msg)}`);
     }
+  };
+  controlChannel.onopen = () => {
+    setTimeout(sendDriveCmds, 2000);
+    setTimeout(sendDriveCmds, 7000);
   };
 
   // ── Offer / ICE gather / answer (steps 5-7) ──────────────────────────────

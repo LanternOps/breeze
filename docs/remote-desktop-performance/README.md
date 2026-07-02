@@ -443,6 +443,65 @@ per-frame budget is ~2.5ms — this is noise. Caching by reference instead would
 require a cross-backend guarantee that encoder output buffers are never reused
 (false for pooled outputs), i.e. real risk for negligible win. Skipped.
 
+### Change #7 — absolute-schedule frame pacing (finding F1) ✅ KEEP — and F1 root cause REVISED
+`pacer.go` (new `framePacer` + 6 unit tests), `session_capture.go`
+(`captureLoopDXGI` GPU/CPU tails; `captureAndSendFrame` now returns whether a
+frame was sent). Branch `ToddHebebrand/rd-perf-change7-capture-pacing`.
+
+**What the rig showed — two separate facts:**
+
+1. **F1's "~48fps cap" is the motion source, not the capture loop.** A
+   diagnostic build with pacing fully removed still delivered 46.5fps. Edge
+   composites both the 60fps video AND a 144Hz rAF canvas (`spin.html`) at
+   ~46.6–47 presents/s on Kit — whose display is actually **144Hz** 2560×1440,
+   not 60 — and Intel's 59Hz panel yields ~53. `skipped=0` in every run: the
+   loop captures every present. Delivered fps == compositor present rate on
+   both boxes, before and after the fix.
+2. **The old relative sleep-pad still had two real, measured defects:**
+   (a) at any target below the supply rate it systematically undershot the
+   target (sleep-quantization overshoot accumulates): `set_fps` 45 → 44.4,
+   47 → 46.1–46.3; (b) at the default 60-target, pad sleeps triggered by
+   present jitter swallowed presents into `AccumulatedFrames` (coalescing
+   loss): agent-side 45.0–45.8 fps out of a 46.6 supply.
+
+**Fix:** `framePacer` — sent frames are paced against an **absolute schedule**
+instead of per-iteration `time.Sleep(frameDuration - elapsed)`. A late frame
+(oversleep, slow encode) makes the next wait negative so the deficit is repaid
+instead of compounded; >1 period behind resyncs without a catch-up burst; in
+supply-limited steady state it never sleeps at all — `AcquireNextFrame`'s
+blocking is the pacing. Long-run rate = min(supply, target) exactly.
+
+**Result (Kit / RX 590 / constant video motion, steady-state fps, 3× each):**
+
+| target fps | old (relative pad) | Change #7 (pacer) |
+|---|---|---|
+| 45 | 44.4 | **45.0 (exact)** |
+| 47 (≈ supply) | 46.1–46.3 | **47.0 / 47.0 / 47.0 (exact)** |
+| 60 (default) | 45.0–45.8 (agent-side) | **46.5–46.9 (= full supply)** |
+
+Intel (zero-copy MFT): 51.7–52.2 → **53.0–53.6** agent fps, encodeMs 1.1–2.5
+(unchanged), skip/drop 0/0. No jitter/freeze regression on either box. Also
+removes the per-frame `time.Sleep` syscall in the supply-limited common case.
+Small win, exact-target correctness, no regression — kept.
+
+**Harness additions (were needed to measure this):**
+- `RD_ACCESS_TOKEN` env (`signaling.ts`) — reuse one admin token per batch;
+  the auth rate limiter (~5 logins/window, and failed retries keep the window
+  saturated) blocks back-to-back A/B runs. Tokens expire ~15min.
+- `RD_DRIVE` commands now send 2s + 7s **after** the control channel opens
+  (`run.ts`) — a send racing the agent's `OnMessage` attach is silently
+  dropped (set_fps never applied; cost three misleading runs before caught).
+- `spin.html` — rAF/canvas motion source (follows display refresh, foreground
+  only). NB: Edge still presented it at only ~47/s on the 144Hz box, so it
+  does NOT raise the supply ceiling; its per-run supply also drifts more than
+  the video loop (42–52 observed) — prefer `motion-video.html` for A/B.
+
+**F1 disposition:** capture loop exonerated; the loop-side defects that did
+exist are fixed. Verifying true 60fps delivery needs a motion source that
+*presents* ≥60/s steadily — the browser tops out ~47/s on Kit regardless of
+refresh rate; a native fullscreen renderer (or browser tuning) is a future
+rig upgrade, tracked in the plan below.
+
 ---
 
 ## Finding — Intel UHD 630 MFT stalls → software fallback ✅ FIXED (Change #3)
@@ -456,39 +515,32 @@ handshake so the hardware encoder produces output and the stall never occurs.
 Files: `comutil_windows.go`, `mft_windows.go`, `mft_encode_windows.go`.
 
 ## Legs & status
-- **Kit — Radeon RX 590 (AMF):** enrolled, live, on the **Change #6 binary**.
-  Constant-motion regression-verified: 49.7fps, 0 freezes, encodeMs 0.5,
-  skip/drop 0/0 — identical to the Change #1 reference. RDMotion swapped back
-  to `motion-video.html` (constant). ⚠️ Gotcha hit while swapping: PowerShell
-  `Set-ScheduledTask` argument strings with `\"` get truncated — use a
-  single-quoted PS string with inner double quotes.
-- **Intel — dell70601 / UHD 630 (MFT):** enrolled, live, on the **Change #6
-  binary**. QuickSync hardware encoder end-to-end with **zero-copy DXGI input**
-  (`encodeMs ~2.5ms`, 0 downgrades, 0 software-swaps).
+- **Kit — Radeon RX 590 (AMF), display 2560×1440 @ 144Hz:** enrolled, live, on
+  the **Change #7 binary**. Motion supply ceiling ~46.6–47 presents/s (Edge
+  compositing — see Change #7); agent delivers the full supply, skip/drop 0/0,
+  encodeMs ~0.5. RDMotion on `motion-video.html` (constant). ⚠️ Gotcha:
+  PowerShell `Set-ScheduledTask` argument strings with `\"` get truncated —
+  use a single-quoted PS string with inner double quotes.
+- **Intel — dell70601 / UHD 630 (MFT), display 1920×1080 @ 59Hz:** enrolled,
+  live, on the **Change #7 binary**. QuickSync end-to-end with **zero-copy
+  DXGI input** (encodeMs ~1–2.5ms, 0 downgrades, 0 software-swaps), ~53 fps
+  (59Hz panel minus compositor losses).
 - **VM .55 (Hyper-V):** GDI + software OpenH264 only. Not enrolled.
 
 ---
 
-## Next phase — plan (drafted 2026-07-01, not yet started)
+## Next phase — plan (drafted 2026-07-01; Change #7 done)
 
 Same methodology: one change at a time, 3× runs per condition, agent-side
 `encodeMs`/fps as truth. Priority order:
 
-### Change #7 — capture-loop pacing fix (finding F1) — DO FIRST
-**Root cause (code-confirmed, high confidence):** `captureLoopDXGI` pads every
-iteration with `time.Sleep(frameDuration - elapsed)` (`session_capture.go:592-594`,
-CPU path `:604-607`; `frameDuration = 16.67ms` at 60fps). Windows' 15.6ms timer
-granularity quantizes the sleep upward → real period ~20.8ms → **~48fps cap**.
-Same footgun as Change #3's 1ms sleep-poll. (The `AcquireNextFrame` 50ms timeout
-is NOT the limiter — it returns immediately when a frame is ready.)
-**Fix direction:** let DXGI pace the loop — `AcquireNextFrame`'s blocking timeout
-already wakes on the next presented frame; skip the sleep padding when a frame was
-just delivered and only pad when producing above target fps (then hybrid
-coarse-sleep + bounded `Gosched` spin, like Change #3's credit wait). Avoid
-`timeBeginPeriod(1)` (process-global, power cost) unless simpler options fail.
-The ticker path (`captureLoopTicker`, GDI) has the same quantization — touch only
-if trivial. **Expected:** delivered fps 48→~58-60 on both boxes, constant motion;
-watch skips/encodeMs/CPU for regressions.
+### Change #7 — capture-loop pacing fix (finding F1) ✅ DONE
+Implemented and measured — see the Change #7 entry in the change log above.
+Outcome differed from the hypothesis here: the ~48fps cap turned out to be the
+motion-source present rate (proven with a no-pacing diagnostic build), while
+the old sleep-pad's real defects (target undershoot + present-coalescing loss)
+were fixed by the absolute-schedule `framePacer`. Rig follow-up: a motion
+source that presents ≥60/s (browser tops out ~47/s on Kit).
 
 ### Change #8 — remove per-frame Flush in CaptureTexture (T5)
 `dxgi_capture_windows.go:539-541` flushes the **immediate** D3D11 context every
@@ -535,26 +587,23 @@ hardware encoding instead of stalling to software.
 
 ---
 
-## RESUME — session state (checkpoint 2026-07-01, updated)
+## RESUME — session state (checkpoint 2026-07-02, updated)
 
-**Branch:** `ToddHebebrand/remote-desktop-performance-review` (9 commits: harness,
-Change #1, motion+proxy, Change #2, drift-metric, **Change #3 async-MFT**,
-**Change #4 zero-copy DXGI input**, **Change #5 dead dirty-rect fetch**,
-**Change #6 adaptive slow-start**). Working tree clean.
+**Branches:** Changes #1–#6 merged to `main` via PR #2145 (squash). Current
+work: `ToddHebebrand/rd-perf-change7-capture-pacing` — Change #7 (framePacer)
++ harness additions (RD_ACCESS_TOKEN, delayed RD_DRIVE send, spin.html).
 
-**Latest:** Changes #3–#6 landed. Intel QuickSync runs end-to-end via the async
-event handshake with true zero-copy DXGI-surface input: `encodeMs` ~18.7ms
-(openh264 sw) → ~10ms (hw + readback) → **~2.5ms (hw zero-copy)**. Dead
-per-frame dirty-rect fetch removed. Adaptive bitrate recovers from a deep dip
-in ~13 clean samples instead of ~60 (slow-start streak, unit-test pinned).
-cacheEncodedFrame gating (#2) investigated and **skipped** (µs-scale, risk >
-win — see Skipped entry). **Both boxes are on the Change #6 binary** and
-regression-verified (Kit constant-motion 49.7fps / encodeMs 0.5 / skip 0;
-Intel zero-copy ~2.5ms). Kit's RDMotion restored to `motion-video.html`.
-Remaining Tier-2 candidate: CRC32→Castagnoli (software/GDI path only).
-Outstanding: human visual pass in the real viewer (node-peer can't see
-tearing), live bursty-loss validation of Change #6 when a network shaper is
-available.
+**Latest:** Change #7 measured and kept (see change log): F1 root cause
+revised — the ~48fps cap is the **motion-source present rate** (Edge
+composites ~46.6–47/s on Kit's 144Hz display; Intel's 59Hz panel ~53), proven
+with a no-pacing diagnostic build. The pacer fixes what was real: exact-target
+delivery (`set_fps` 47 → 47.0 vs 46.1–46.3 old) and +~1.5fps present-
+coalescing recovery at the default target on both boxes. **Both boxes are on
+the Change #7 binary**, video motion restored, skip/drop 0/0, encodeMs
+unchanged. Next per the plan: Change #8 (remove per-frame Flush), Change #9
+(input off SCTP goroutine), rig follow-up (≥60fps-presenting motion source).
+Outstanding: human visual pass in the real viewer on the #7 binary, live
+bursty-loss validation of Change #6 when a network shaper is available.
 
 **To bring the rig back up next session:**
 1. **Stack:** `pnpm wt-stack up` in the worktree. Ports are ephemeral — read
