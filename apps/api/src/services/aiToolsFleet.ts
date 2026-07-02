@@ -60,6 +60,7 @@ import { devices, sites } from '../db/schema';
 import { eq, and, desc, sql, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
@@ -89,6 +90,18 @@ function alertRuleWhere(auth: AuthContext): SQL | undefined {
   // carry a partnerId, so adding the branch for them would be dead code.
   if (auth.scope === 'partner' && auth.partnerId) {
     return sql`(${oc} OR (${alertRules.orgId} IS NULL AND ${alertRules.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
+}
+
+// Dual-axis access for maintenance_windows (#2131): same shape as
+// alertRuleWhere — org-owned windows the caller can reach OR partner-wide
+// ones (org_id NULL) owned by the caller's own partner.
+function maintenanceWindowWhere(auth: AuthContext): SQL | undefined {
+  const oc = maintenanceWindowWhere(auth);
+  if (!oc) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${oc} OR (${maintenanceWindows.orgId} IS NULL AND ${maintenanceWindows.partnerId} = ${auth.partnerId}))`;
   }
   return oc;
 }
@@ -954,7 +967,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, maintenanceWindows.orgId);
+        const oc = maintenanceWindowWhere(auth);
         if (oc) conditions.push(oc);
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
@@ -979,7 +992,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get') {
         if (!input.windowId) return JSON.stringify({ error: 'windowId is required' });
         const conditions: SQL[] = [eq(maintenanceWindows.id, input.windowId as string)];
-        const oc = orgWhere(auth, maintenanceWindows.orgId);
+        const oc = maintenanceWindowWhere(auth);
         if (oc) conditions.push(oc);
 
         const [win] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
@@ -1001,7 +1014,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           gte(maintenanceWindows.endTime, now),
           eq(maintenanceWindows.status, 'active'),
         ];
-        const oc = orgWhere(auth, maintenanceWindows.orgId);
+        const oc = maintenanceWindowWhere(auth);
         if (oc) conditions.push(oc);
 
         const active = await db.select({
@@ -1021,7 +1034,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           gte(maintenanceWindows.endTime, now),
           eq(maintenanceWindows.status, 'scheduled'),
         ];
-        const oc2 = orgWhere(auth, maintenanceWindows.orgId);
+        const oc2 = maintenanceWindowWhere(auth);
         if (oc2) scheduledConditions.push(oc2);
 
         const scheduled = await db.select({
@@ -1067,11 +1080,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!input.windowId) return JSON.stringify({ error: 'windowId is required' });
         const windowId = input.windowId as string;
         const conditions: SQL[] = [eq(maintenanceWindows.id, windowId)];
-        const oc = orgWhere(auth, maintenanceWindows.orgId);
+        const oc = maintenanceWindowWhere(auth);
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
+
+        // Partner-wide windows are administrable only with the partner-wide
+        // capability (same gate as the HTTP route, #2131).
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide maintenance window requires full partner org access (orgAccess must be "all")' });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
@@ -1092,11 +1111,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!input.windowId) return JSON.stringify({ error: 'windowId is required' });
         const windowId = input.windowId as string;
         const conditions: SQL[] = [eq(maintenanceWindows.id, windowId)];
-        const oc = orgWhere(auth, maintenanceWindows.orgId);
+        const oc = maintenanceWindowWhere(auth);
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(maintenanceWindows).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
+
+        // Partner-wide windows are administrable only with the partner-wide
+        // capability (same gate as the HTTP route, #2131).
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide maintenance window requires full partner org access (orgAccess must be "all")' });
+        }
 
         await db.transaction(async (tx) => {
           await tx.delete(maintenanceOccurrences).where(eq(maintenanceOccurrences.windowId, existing.id));

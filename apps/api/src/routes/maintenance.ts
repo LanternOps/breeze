@@ -1,11 +1,15 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and, or, lte, gte, inArray, desc, asc, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, lte, gte, inArray, desc, asc, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { maintenanceWindows, maintenanceOccurrences } from '../db/schema/maintenance';
 import { devices } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 import { isDeviceInMaintenance } from '../services/maintenanceService';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
@@ -62,6 +66,36 @@ function resolveOrgId(
   return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
 }
 
+// Dual-ownership helpers (#2131). A window is org-owned (orgId set) or
+// partner-wide (orgId NULL, partnerId set).
+
+// Access to a LOADED window row: org-owned keeps the org check; partner-wide
+// rows are visible to system scope and the owning partner's own tokens. Org
+// tokens never see partner-wide windows (RLS is stricter than the app layer).
+function canAccessWindow(
+  auth: AuthContext,
+  window: { orgId: string | null; partnerId: string | null }
+): boolean {
+  if (window.orgId !== null) {
+    return auth.canAccessOrg(window.orgId);
+  }
+  if (auth.scope === 'system') return true;
+  return auth.scope === 'partner' && !!auth.partnerId && window.partnerId === auth.partnerId;
+}
+
+// Window-set condition for an org view: the org's own windows PLUS — for
+// partner-scope callers — their partner-wide windows, which now apply to the
+// org's devices via the enforcement checks.
+function windowOwnershipCondition(auth: AuthContext, orgId: string): SQL {
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return or(
+      eq(maintenanceWindows.orgId, orgId),
+      and(isNull(maintenanceWindows.orgId), eq(maintenanceWindows.partnerId, auth.partnerId))
+    ) as SQL;
+  }
+  return eq(maintenanceWindows.orgId, orgId);
+}
+
 // Validation schemas
 const recurrenceRuleSchema = z.object({
   interval: z.number().int().positive().optional(),
@@ -73,6 +107,9 @@ const recurrenceRuleSchema = z.object({
 
 const createWindowSchema = z.object({
   orgId: z.string().guid().optional(),
+  // 'partner' creates a partner-wide ("all orgs") window: orgId NULL,
+  // partnerId = caller's partner (#2131). Create-only.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(100),
   description: z.string().optional(),
   startTime: z.string().datetime(),
@@ -300,7 +337,7 @@ maintenanceRoutes.get(
       return c.json({ data: [] });
     }
 
-    const conditions = [eq(maintenanceWindows.orgId, orgResult.orgId)];
+    const conditions = [windowOwnershipCondition(auth, orgResult.orgId)];
 
     if (query.status) {
       conditions.push(eq(maintenanceWindows.status, query.status));
@@ -332,10 +369,21 @@ maintenanceRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
-    const orgResult = resolveOrgId(auth, body.orgId, true);
 
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
+    // Resolve the ownership axis (#2131): partner-wide creation requires the
+    // partner-wide capability; the default path stays org-owned.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (body.ownerScope === 'partner') {
+      if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgResult = resolveOrgId(auth, body.orgId, true);
+      if ('error' in orgResult) {
+        return c.json({ error: orgResult.error }, orgResult.status);
+      }
+      owner = { orgId: orgResult.orgId as string, partnerId: null };
     }
 
     const startTime = new Date(body.startTime);
@@ -345,7 +393,8 @@ maintenanceRoutes.post(
     const [createdWindow] = await db
       .insert(maintenanceWindows)
       .values({
-        orgId: orgResult.orgId as string,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         name: body.name,
         description: body.description,
         startTime,
@@ -417,7 +466,7 @@ maintenanceRoutes.get(
       .where(eq(maintenanceWindows.id, windowId))
       .limit(1);
 
-    if (!window || !(await canAccessOrg(auth, window.orgId))) {
+    if (!window || !canAccessWindow(auth, window)) {
       return c.json({ error: 'Maintenance window not found' }, 404);
     }
 
@@ -462,8 +511,14 @@ maintenanceRoutes.patch(
       .where(eq(maintenanceWindows.id, windowId))
       .limit(1);
 
-    if (!window || !(await canAccessOrg(auth, window.orgId))) {
+    if (!window || !canAccessWindow(auth, window)) {
       return c.json({ error: 'Maintenance window not found' }, 404);
+    }
+
+    // Partner-wide windows are administrable only with the partner-wide
+    // capability (#2131).
+    if (window.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     // Build update object
@@ -531,8 +586,14 @@ maintenanceRoutes.delete(
       .where(eq(maintenanceWindows.id, windowId))
       .limit(1);
 
-    if (!window || !(await canAccessOrg(auth, window.orgId))) {
+    if (!window || !canAccessWindow(auth, window)) {
       return c.json({ error: 'Maintenance window not found' }, 404);
+    }
+
+    // Partner-wide windows are administrable only with the partner-wide
+    // capability (#2131).
+    if (window.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     // Delete only future occurrences (preserve past ones for audit)
@@ -578,8 +639,14 @@ maintenanceRoutes.post(
       .where(eq(maintenanceWindows.id, windowId))
       .limit(1);
 
-    if (!window || !(await canAccessOrg(auth, window.orgId))) {
+    if (!window || !canAccessWindow(auth, window)) {
       return c.json({ error: 'Maintenance window not found' }, 404);
+    }
+
+    // Partner-wide windows are administrable only with the partner-wide
+    // capability (#2131).
+    if (window.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     if (window.status === 'cancelled') {
@@ -638,7 +705,7 @@ maintenanceRoutes.get(
       .where(eq(maintenanceWindows.id, windowId))
       .limit(1);
 
-    if (!window || !(await canAccessOrg(auth, window.orgId))) {
+    if (!window || !canAccessWindow(auth, window)) {
       return c.json({ error: 'Maintenance window not found' }, 404);
     }
 
@@ -667,11 +734,11 @@ maintenanceRoutes.get(
       return c.json({ error: orgResult.error }, orgResult.status);
     }
 
-    // Get all windows for this org first
+    // Get all windows for this org first (dual-axis, #2131)
     const windows = await db
       .select({ id: maintenanceWindows.id })
       .from(maintenanceWindows)
-      .where(eq(maintenanceWindows.orgId, orgResult.orgId as string));
+      .where(windowOwnershipCondition(auth, orgResult.orgId as string));
 
     const windowIds = windows.map(w => w.id);
 
@@ -745,8 +812,14 @@ maintenanceRoutes.patch(
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .limit(1);
 
-    if (!occurrence || !(await canAccessOrg(auth, occurrence.window.orgId))) {
+    if (!occurrence || !canAccessWindow(auth, occurrence.window)) {
       return c.json({ error: 'Occurrence not found' }, 404);
+    }
+
+    // Partner-wide windows are administrable only with the partner-wide
+    // capability (#2131).
+    if (occurrence.window.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     // Build overrides and update data
@@ -815,8 +888,14 @@ maintenanceRoutes.post(
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .limit(1);
 
-    if (!occurrence || !(await canAccessOrg(auth, occurrence.window.orgId))) {
+    if (!occurrence || !canAccessWindow(auth, occurrence.window)) {
       return c.json({ error: 'Occurrence not found' }, 404);
+    }
+
+    // Partner-wide windows are administrable only with the partner-wide
+    // capability (#2131).
+    if (occurrence.window.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     if (occurrence.occurrence.status !== 'scheduled') {
@@ -873,8 +952,14 @@ maintenanceRoutes.post(
       .where(eq(maintenanceOccurrences.id, occurrenceId))
       .limit(1);
 
-    if (!occurrence || !(await canAccessOrg(auth, occurrence.window.orgId))) {
+    if (!occurrence || !canAccessWindow(auth, occurrence.window)) {
       return c.json({ error: 'Occurrence not found' }, 404);
+    }
+
+    // Partner-wide windows are administrable only with the partner-wide
+    // capability (#2131).
+    if (occurrence.window.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     if (occurrence.occurrence.status !== 'active') {
@@ -926,11 +1011,11 @@ maintenanceRoutes.get(
 
     const now = new Date();
 
-    // Get all windows for this org
+    // Get all windows for this org (dual-axis, #2131)
     const windows = await db
       .select()
       .from(maintenanceWindows)
-      .where(eq(maintenanceWindows.orgId, orgResult.orgId as string));
+      .where(windowOwnershipCondition(auth, orgResult.orgId as string));
 
     if (windows.length === 0) {
       return c.json({ data: [] });

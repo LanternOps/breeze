@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { deployments, deploymentDevices, devices, deviceGroupMemberships, maintenanceWindows } from '../db/schema';
+import { deployments, deploymentDevices, devices, deviceGroupMemberships, maintenanceWindows, organizations } from '../db/schema';
 import { eq, and, sql, asc } from 'drizzle-orm';
 import { resolveDeploymentTargets } from './deploymentTargetResolver';
 import type { DeploymentTargetConfig } from './deploymentTargetResolver';
@@ -74,7 +74,9 @@ export async function isDeviceInMaintenanceWindow(
   deviceId: string,
   timezone: string = 'UTC'
 ): Promise<boolean> {
-  const now = new Date();
+  // ISO string: raw sql`` params skip Drizzle's column-type mapping, and
+  // postgres.js cannot serialize a bare Date instance there.
+  const now = new Date().toISOString();
 
   // Get device's org, site, and groups
   const [device] = await db
@@ -98,12 +100,25 @@ export async function isDeviceInMaintenanceWindow(
 
   const groupIds = deviceGroupIds.map(g => g.groupId);
 
+  // Ownership is dual-axis (#2131): the device's own org's windows OR
+  // partner-wide windows (org_id NULL) owned by the device org's partner.
+  // Partner id is bound as a plain value — a parameterized scalar subquery
+  // trips the postgres.js ParameterDescription bug.
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+  const ownershipPredicate = orgRow?.partnerId
+    ? sql`(${maintenanceWindows.orgId} = ${device.orgId} OR (${maintenanceWindows.orgId} IS NULL AND ${maintenanceWindows.partnerId} = ${orgRow.partnerId}))`
+    : sql`${maintenanceWindows.orgId} = ${device.orgId}`;
+
   // Check for active maintenance windows
   const activeWindows = await db
     .select({ id: maintenanceWindows.id })
     .from(maintenanceWindows)
     .where(
-      sql`${maintenanceWindows.orgId} = ${device.orgId}
+      sql`${ownershipPredicate}
         AND ${maintenanceWindows.status} = 'scheduled'
         AND ${maintenanceWindows.startTime} <= ${now}
         AND ${maintenanceWindows.endTime} >= ${now}
@@ -123,7 +138,8 @@ export async function isDeviceInMaintenanceWindow(
 export async function getNextMaintenanceWindow(
   deviceId: string
 ): Promise<{ start: Date; end: Date } | null> {
-  const now = new Date();
+  // ISO string - see isDeviceInMaintenanceWindow above.
+  const now = new Date().toISOString();
 
   const [device] = await db
     .select({
@@ -138,6 +154,16 @@ export async function getNextMaintenanceWindow(
     return null;
   }
 
+  // Dual-axis ownership (#2131) — see isDeviceInMaintenanceWindow above.
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+  const ownershipPredicate = orgRow?.partnerId
+    ? sql`(${maintenanceWindows.orgId} = ${device.orgId} OR (${maintenanceWindows.orgId} IS NULL AND ${maintenanceWindows.partnerId} = ${orgRow.partnerId}))`
+    : sql`${maintenanceWindows.orgId} = ${device.orgId}`;
+
   const [nextWindow] = await db
     .select({
       startTime: maintenanceWindows.startTime,
@@ -145,7 +171,7 @@ export async function getNextMaintenanceWindow(
     })
     .from(maintenanceWindows)
     .where(
-      sql`${maintenanceWindows.orgId} = ${device.orgId}
+      sql`${ownershipPredicate}
         AND ${maintenanceWindows.status} = 'scheduled'
         AND ${maintenanceWindows.startTime} > ${now}
         AND (

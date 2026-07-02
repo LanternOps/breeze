@@ -1537,13 +1537,14 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch, software_policy, security, alert_rule, compliance, sensitive_data,
-  // and peripheral_control are handled separately in
-  // validateFeaturePolicyExists: rings are pure partner-axis, and the rest
-  // are dual-ownership (org XOR partner, #2126/#2127/#2128/#2129/#2131) —
-  // none fits the org-only lookup below.
+  // Every other linked feature type is handled separately in
+  // validateFeaturePolicyExists: rings are pure partner-axis, and software /
+  // security / alert-rule / compliance / sensitive-data / peripheral /
+  // maintenance are dual-ownership (org XOR partner,
+  // #2126/#2127/#2128/#2129/#2131). backup stays org-only deliberately —
+  // backup configs carry org-owned storage credentials (see the
+  // partner-wide-first rule in CLAUDE.md; #2132 tracks its template design).
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
-  maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
 };
 
 /**
@@ -1561,6 +1562,7 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'compliance',
   'sensitive_data',
   'peripheral_control',
+  'maintenance',
 ]);
 
 export async function validateFeaturePolicyExists(
@@ -1606,7 +1608,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'alert_rule' ||
     featureType === 'compliance' ||
     featureType === 'sensitive_data' ||
-    featureType === 'peripheral_control'
+    featureType === 'peripheral_control' ||
+    featureType === 'maintenance'
   ) {
     if (!featurePolicyId) {
       return { valid: true };
@@ -1630,7 +1633,9 @@ export async function validateFeaturePolicyExists(
             ? { table: automationPolicies, label: 'Compliance policy' }
             : featureType === 'sensitive_data'
               ? { table: sensitiveDataPolicies, label: 'Sensitive data policy' }
-              : { table: peripheralPolicies, label: 'Peripheral policy' };
+              : featureType === 'peripheral_control'
+                ? { table: peripheralPolicies, label: 'Peripheral policy' }
+                : { table: maintenanceWindows, label: 'Maintenance window' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 

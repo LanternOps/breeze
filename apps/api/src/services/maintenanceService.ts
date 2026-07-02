@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { devices, deviceGroupMemberships, maintenanceWindows } from '../db/schema';
+import { devices, deviceGroupMemberships, maintenanceWindows, organizations } from '../db/schema';
 import { eq, sql } from 'drizzle-orm';
 import {
   resolveMaintenanceConfigForDevice,
@@ -84,7 +84,9 @@ export async function isDeviceInMaintenance(
 async function checkStandaloneMaintenanceWindows(
   deviceId: string
 ): Promise<DeviceMaintenanceStatus | null> {
-  const now = new Date();
+  // Bound as an ISO string: raw sql`` params skip Drizzle's column-type
+  // mapping, and postgres.js cannot serialize a bare Date instance there.
+  const now = new Date().toISOString();
 
   // Load device org/site
   const [device] = await db
@@ -108,6 +110,20 @@ async function checkStandaloneMaintenanceWindows(
 
   const groupIds = deviceGroupIds.map((g) => g.groupId);
 
+  // Ownership is dual-axis (#2131): the device's own org's windows OR
+  // partner-wide windows (org_id NULL) owned by the device org's partner.
+  // The partner id is resolved in a separate query and bound as a plain
+  // value — a parameterized scalar subquery trips the postgres.js
+  // ParameterDescription bug (same class as the nested-EXISTS RLS issue).
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, device.orgId))
+    .limit(1);
+  const ownershipPredicate = orgRow?.partnerId
+    ? sql`(${maintenanceWindows.orgId} = ${device.orgId} OR (${maintenanceWindows.orgId} IS NULL AND ${maintenanceWindows.partnerId} = ${orgRow.partnerId}))`
+    : sql`${maintenanceWindows.orgId} = ${device.orgId}`;
+
   // Query for active standalone windows matching this device
   const activeWindows = await db
     .select({
@@ -120,7 +136,7 @@ async function checkStandaloneMaintenanceWindows(
     })
     .from(maintenanceWindows)
     .where(
-      sql`${maintenanceWindows.orgId} = ${device.orgId}
+      sql`${ownershipPredicate}
         AND ${maintenanceWindows.status} IN ('scheduled', 'active')
         AND ${maintenanceWindows.startTime} <= ${now}
         AND ${maintenanceWindows.endTime} >= ${now}

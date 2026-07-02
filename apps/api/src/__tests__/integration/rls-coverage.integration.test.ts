@@ -286,6 +286,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // axis. Functional cross-partner forge + distribution fan-out proof:
   // peripheralPoliciesPartnerRls.integration.test.ts.
   'peripheral_policies',
+  // maintenance_windows (#2131, epic #2135): org-scoped OR partner-wide
+  // maintenance window. maintenance_occurrences stay window-join (their
+  // EXISTS policies gained the partner branch in the same migration).
+  // Converted in 2026-07-01-maintenance-windows-partner-ownership. CHECK
+  // maintenance_windows_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge + enforcement fan-out proof:
+  // maintenanceWindowsPartnerRls.integration.test.ts.
+  'maintenance_windows',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
