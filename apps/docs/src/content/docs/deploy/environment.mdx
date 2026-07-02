@@ -38,8 +38,6 @@ All configuration is done through environment variables, defined in your `.env.p
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `JWT_SECRET` | — | Yes | JWT signing key (min 32 chars). Generate: `openssl rand -base64 64` |
-| `JWT_EXPIRES_IN` | `15m` | | Access token lifetime |
-| `REFRESH_TOKEN_EXPIRES_IN` | `7d` | | Refresh token lifetime |
 | `AGENT_ENROLLMENT_SECRET` | — | Yes | Shared secret for agent enrollment. Generate: `openssl rand -hex 32` |
 | `APP_ENCRYPTION_KEY` | — | Yes | AES encryption key for sensitive data at rest |
 | `MFA_ENCRYPTION_KEY` | — | Yes | Encryption key for MFA secrets |
@@ -48,6 +46,10 @@ All configuration is done through environment variables, defined in your `.env.p
 | `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | | Default enrollment key expiry |
 | `SESSION_SECRET` | — | Yes | Express session signing secret |
 | `SESSION_MAX_AGE` | `86400000` | | Session max age in ms (24h) |
+
+Access-token (15m) and refresh-token (7d) lifetimes are fixed in code
+(`apps/api/src/services/jwt.ts`) — short-lived access tokens backed by
+refresh-token rotation — and are intentionally not env-configurable.
 
 ## Server
 

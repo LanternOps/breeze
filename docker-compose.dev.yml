@@ -55,8 +55,6 @@ services:
       DATABASE_URL: postgresql://breeze:breeze@postgres:5432/breeze
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - set in .env.dev}
-      JWT_EXPIRES_IN: 15m
-      REFRESH_TOKEN_EXPIRES_IN: 7d
       API_PORT: 3001
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?AGENT_ENROLLMENT_SECRET is required - set in .env.dev}
       S3_ENDPOINT: http://minio:9000
