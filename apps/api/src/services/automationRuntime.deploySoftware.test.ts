@@ -59,8 +59,8 @@ vi.mock('./notificationSenders', () => ({
 
 import { executeDeploySoftwareActions, normalizeAutomationActions } from './automationRuntime';
 
-const WIN = { id: 'd-win', osType: 'windows' as const };
-const MAC = { id: 'd-mac', osType: 'macos' as const };
+const WIN = { id: 'd-win', osType: 'windows' as const, orgId: 'org-1' };
+const MAC = { id: 'd-mac', osType: 'macos' as const, orgId: 'org-1' };
 
 beforeEach(() => {
   createDeploymentMock.mockReset().mockResolvedValue({ deploymentId: 'dep-1', status: 'pending', dispatchedDeviceIds: ['d-win'] });
@@ -99,7 +99,7 @@ describe('executeDeploySoftwareActions', () => {
   it('deploys to an eligible Windows device and records a deployed log', async () => {
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
-      devices: [WIN], orgId: 'org-1', createdBy: null, runId: 'run-1',
+      devices: [WIN], createdBy: null, runId: 'run-1',
     });
     expect(createDeploymentMock).toHaveBeenCalledTimes(1);
     expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual(['d-win']);
@@ -110,7 +110,7 @@ describe('executeDeploySoftwareActions', () => {
   it('skips a device whose OS is unsupported and does not create a deployment', async () => {
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
-      devices: [MAC], orgId: 'org-1', createdBy: null, runId: 'run-1',
+      devices: [MAC], createdBy: null, runId: 'run-1',
     });
     expect(createDeploymentMock).not.toHaveBeenCalled();
     expect(res.logs.some(l => /unsupported OS/i.test(l.message))).toBe(true);
@@ -123,7 +123,7 @@ describe('executeDeploySoftwareActions', () => {
     }]]));
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
-      devices: [WIN, MAC], orgId: 'org-1', createdBy: null, runId: 'run-1',
+      devices: [WIN, MAC], createdBy: null, runId: 'run-1',
     });
     expect(createDeploymentMock).toHaveBeenCalledTimes(1);
     expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual(
@@ -139,7 +139,7 @@ describe('executeDeploySoftwareActions', () => {
     }]]));
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
-      devices: [WIN, MAC], orgId: 'org-1', createdBy: null, runId: 'run-1',
+      devices: [WIN, MAC], createdBy: null, runId: 'run-1',
     });
     expect(createDeploymentMock).toHaveBeenCalledTimes(1);
     expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual(
@@ -152,7 +152,7 @@ describe('executeDeploySoftwareActions', () => {
     isCurrentMock.mockResolvedValue(true);
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
-      devices: [WIN], orgId: 'org-1', createdBy: null, runId: 'run-1',
+      devices: [WIN], createdBy: null, runId: 'run-1',
     });
     expect(createDeploymentMock).not.toHaveBeenCalled();
     expect(res.logs.some(l => /already current/i.test(l.message))).toBe(true);
@@ -162,10 +162,29 @@ describe('executeDeploySoftwareActions', () => {
     latestMapMock.mockResolvedValue(new Map());
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
-      devices: [WIN], orgId: 'org-1', createdBy: null, runId: 'run-1',
+      devices: [WIN], createdBy: null, runId: 'run-1',
     });
     expect(res.failed).toBe(true);
     expect(res.logs.some(l => /no latest version/i.test(l.message))).toBe(true);
+  });
+
+  it('creates one deployment per device org (partner-wide fan-out, #2133)', async () => {
+    latestMapMock.mockResolvedValueOnce(new Map([['cat-1', {
+      version: { id: 'ver-1', catalogId: 'cat-1', version: '1.0.0', supportedOs: null },
+      catalogName: 'CrossOrgTool',
+    }]]));
+    const winOrg2 = { id: 'd-win-2', osType: 'windows' as const, orgId: 'org-2' };
+    const res = await executeDeploySoftwareActions({
+      actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+      devices: [WIN, winOrg2], createdBy: null, runId: 'run-1',
+    });
+    expect(createDeploymentMock).toHaveBeenCalledTimes(2);
+    const calls = createDeploymentMock.mock.calls.map((c) => c[0]);
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ orgId: 'org-1', deviceIds: ['d-win'] }),
+      expect.objectContaining({ orgId: 'org-2', deviceIds: ['d-win-2'] }),
+    ]));
+    expect(res.failed).toBe(false);
   });
 
   it('marks failed when createSoftwareDeployment returns status "failed"', async () => {
@@ -174,7 +193,7 @@ describe('executeDeploySoftwareActions', () => {
     createDeploymentMock.mockResolvedValue({ deploymentId: 'dep-err', status: 'failed', message: 'db error', dispatchedDeviceIds: [] });
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
-      devices: [WIN], orgId: 'org-1', createdBy: null, runId: 'run-1',
+      devices: [WIN], createdBy: null, runId: 'run-1',
     });
     expect(res.failed).toBe(true);
     expect(res.logs.some(l => /deploy_software failed/i.test(l.message))).toBe(true);

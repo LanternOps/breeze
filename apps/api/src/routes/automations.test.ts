@@ -86,11 +86,11 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
-const mockState: { permissions: any } = { permissions: undefined };
+const mockState: { permissions: any; auth: any } = { permissions: undefined, auth: undefined };
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', {
+    c.set('auth', mockState.auth ?? {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
@@ -118,6 +118,7 @@ describe('automations routes', () => {
 	  beforeEach(() => {
 	    vi.clearAllMocks();
 	    mockState.permissions = undefined;
+	    mockState.auth = undefined;
 	    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
 	      ok: true,
 	      outOfScopeDeviceIds: [],
@@ -1213,5 +1214,238 @@ describe('automations routes', () => {
         }),
       }),
     );
+  });
+});
+
+// ============================================================
+// Dual-ownership (#2133): partner-wide automations (org_id NULL,
+// partner_id set). Create is gated on canManagePartnerWidePolicies;
+// loaded-row access allows the owning partner and system, never org
+// tokens; mutations/trigger on partner-wide rows require the capability.
+// ============================================================
+
+describe('automations routes — partner-wide dual-ownership (#2133)', () => {
+  let app: Hono;
+
+  const partnerAdminAuth = {
+    user: { id: 'user-123', email: 'admin@example.com', name: 'Partner Admin' },
+    scope: 'partner',
+    partnerId: 'partner-1',
+    partnerOrgAccess: 'all',
+    orgId: null,
+    token: { sub: 'user-123' },
+    accessibleOrgIds: ['org-123'],
+    canAccessOrg: (orgId: string) => orgId === 'org-123',
+  };
+
+  const partnerSelectedAuth = {
+    ...partnerAdminAuth,
+    partnerOrgAccess: 'selected',
+  };
+
+  const partnerWideAutomation = {
+    id: 'auto-pw',
+    name: 'Partner-wide automation',
+    orgId: null,
+    partnerId: 'partner-1',
+    trigger: { type: 'event', eventType: 'device.offline' },
+    conditions: null,
+    actions: [{ type: 'create_alert', alertSeverity: 'medium', alertMessage: 'x' }],
+    onFailure: 'stop',
+    notificationTargets: {},
+    enabled: true,
+    runCount: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  function mockSelectAutomationOnce(row: Record<string, unknown> | undefined) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(row ? [row] : []),
+        }),
+      }),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockState.permissions = undefined;
+    mockState.auth = undefined;
+    app = new Hono();
+    app.route('/automations', automationRoutes);
+  });
+
+  it('creates a partner-wide automation (orgId NULL, partnerId from token) for a full partner admin', async () => {
+    mockState.auth = partnerAdminAuth;
+    const valuesSpy = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([partnerWideAutomation]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        ownerScope: 'partner',
+        name: 'Partner-wide automation',
+        trigger: { type: 'event', eventType: 'device.offline' },
+        actions: [{ type: 'create_alert', alertSeverity: 'medium', alertMessage: 'x' }],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(valuesSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: null, partnerId: 'partner-1' }),
+    );
+  });
+
+  it('rejects ownerScope=partner for a partner user without full org access (403)', async () => {
+    mockState.auth = partnerSelectedAuth;
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        ownerScope: 'partner',
+        name: 'Denied',
+        trigger: { type: 'manual' },
+        actions: [{ type: 'create_alert', alertSeverity: 'medium', alertMessage: 'x' }],
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('rejects ownerScope=partner for an org-scope caller (403)', async () => {
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        ownerScope: 'partner',
+        name: 'Denied',
+        trigger: { type: 'manual' },
+        actions: [{ type: 'create_alert', alertSeverity: 'medium', alertMessage: 'x' }],
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('an org-scope caller gets 404 for a partner-wide automation (no existence oracle)', async () => {
+    mockSelectAutomationOnce(partnerWideAutomation);
+
+    const res = await app.request('/automations/auto-pw', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('the owning partner can read its partner-wide automation', async () => {
+    mockState.auth = partnerAdminAuth;
+    mockSelectAutomationOnce(partnerWideAutomation);
+    // recent runs + run stats queries
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ totalRuns: 0, completedRuns: 0, failedRuns: 0, partialRuns: 0 }]),
+        }),
+      } as any);
+
+    const res = await app.request('/automations/auto-pw', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe('auto-pw');
+    expect(body.orgId).toBeNull();
+  });
+
+  it('a DIFFERENT partner gets 404 for a partner-wide automation', async () => {
+    mockState.auth = { ...partnerAdminAuth, partnerId: 'partner-2' };
+    mockSelectAutomationOnce(partnerWideAutomation);
+
+    const res = await app.request('/automations/auto-pw', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('a partner user WITHOUT full org access can see but not update a partner-wide automation (403)', async () => {
+    mockState.auth = partnerSelectedAuth;
+    mockSelectAutomationOnce(partnerWideAutomation);
+
+    const res = await app.request('/automations/auto-pw', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('a partner user WITHOUT full org access cannot delete a partner-wide automation (403)', async () => {
+    mockState.auth = partnerSelectedAuth;
+    mockSelectAutomationOnce(partnerWideAutomation);
+
+    const res = await app.request('/automations/auto-pw', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+  });
+
+  it('a partner user WITHOUT full org access cannot manually trigger a partner-wide automation (403)', async () => {
+    mockState.auth = partnerSelectedAuth;
+    mockSelectAutomationOnce(partnerWideAutomation);
+
+    const res = await app.request('/automations/auto-pw/trigger', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(vi.mocked(createAutomationRunRecord)).not.toHaveBeenCalled();
+  });
+
+  it('a full partner admin CAN update its partner-wide automation', async () => {
+    mockState.auth = partnerAdminAuth;
+    mockSelectAutomationOnce(partnerWideAutomation);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ ...partnerWideAutomation, name: 'Renamed' }]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/auto-pw', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.name).toBe('Renamed');
   });
 });

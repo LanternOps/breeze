@@ -2,7 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automations,
@@ -25,6 +25,10 @@ import {
   withWebhookDefaults,
 } from '../services/automationRuntime';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -236,6 +240,24 @@ async function enforceAutomationSiteScope(
   return null;
 }
 
+// Dual-ownership (#2133): an automation is org-owned (orgId set) or
+// partner-wide (orgId NULL, partnerId set).
+
+// Access to a LOADED automation row: org-owned keeps the org check; partner-
+// wide rows are visible to system scope and the owning partner's own tokens.
+// Org tokens never see partner-wide automations (RLS is stricter than the app
+// layer — org contexts never pass breeze_has_partner_access).
+function canAccessAutomation(
+  auth: AuthContext,
+  automation: { orgId: string | null; partnerId: string | null },
+): boolean {
+  if (automation.orgId !== null) {
+    return auth.canAccessOrg(automation.orgId);
+  }
+  if (auth.scope === 'system') return true;
+  return auth.scope === 'partner' && !!auth.partnerId && automation.partnerId === auth.partnerId;
+}
+
 async function getAutomationWithOrgCheck(automationId: string, auth: AuthContext) {
   const [automation] = await db
     .select()
@@ -247,8 +269,7 @@ async function getAutomationWithOrgCheck(automationId: string, auth: AuthContext
     return null;
   }
 
-  const hasAccess = ensureOrgAccess(automation.orgId, auth);
-  if (!hasAccess) {
+  if (!canAccessAutomation(auth, automation)) {
     return null;
   }
 
@@ -369,6 +390,10 @@ const triggerTypeSchema = z.enum(['schedule', 'event', 'webhook', 'manual']);
 
 const createAutomationSchema = z.object({
   orgId: z.string().guid().optional(),
+  // 'partner' creates a partner-wide ("all orgs") automation: orgId NULL,
+  // partnerId = caller's partner (#2133). Create-only — ownership never
+  // changes after creation (updateAutomationSchema has no ownerScope).
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   enabled: z.boolean().default(true),
@@ -426,21 +451,35 @@ automationRoutes.get(
       }
       conditions.push(eq(automations.orgId, auth.orgId));
     } else if (auth.scope === 'partner') {
+      // Dual-axis (#2133): partner-scope callers also see their own
+      // partner-wide automations (orgId NULL). Org tokens never get this
+      // branch — they carry a partnerId but never pass partner access.
+      const partnerWideCondition = auth.partnerId
+        ? and(isNull(automations.orgId), eq(automations.partnerId, auth.partnerId))
+        : undefined;
       if (query.orgId) {
         const hasAccess = ensureOrgAccess(query.orgId, auth);
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        conditions.push(eq(automations.orgId, query.orgId));
+        conditions.push(
+          partnerWideCondition
+            ? (or(eq(automations.orgId, query.orgId), partnerWideCondition) as SQL)
+            : eq(automations.orgId, query.orgId),
+        );
       } else {
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
+        if (orgIds.length === 0 && !partnerWideCondition) {
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 },
           });
         }
-        conditions.push(inArray(automations.orgId, orgIds));
+        const orgCondition = orgIds.length > 0 ? inArray(automations.orgId, orgIds) : undefined;
+        const combined = orgCondition && partnerWideCondition
+          ? (or(orgCondition, partnerWideCondition) as SQL)
+          : orgCondition ?? partnerWideCondition;
+        if (combined) conditions.push(combined);
       }
     } else if (auth.scope === 'system' && query.orgId) {
       conditions.push(eq(automations.orgId, query.orgId));
@@ -655,28 +694,39 @@ automationRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    let orgId = data.orgId;
+    // Resolve the ownership axis (#2133): partner-wide creation requires the
+    // partner-wide capability; the default path stays org-owned.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (data.ownerScope === 'partner') {
+      if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      let orgId = data.orgId;
 
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
-        } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+      if (auth.scope === 'organization') {
+        if (!auth.orgId) {
+          return c.json({ error: 'Organization context required' }, 403);
         }
+        orgId = auth.orgId;
+      } else if (auth.scope === 'partner') {
+        if (!orgId) {
+          const singleOrg = auth.accessibleOrgIds?.[0];
+          if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+            orgId = singleOrg;
+          } else {
+            return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+          }
+        }
+        const hasAccess = ensureOrgAccess(orgId, auth);
+        if (!hasAccess) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+      } else if (auth.scope === 'system' && !orgId) {
+        return c.json({ error: 'orgId is required' }, 400);
       }
-      const hasAccess = ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
-      }
-    } else if (auth.scope === 'system' && !orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
+      owner = { orgId: orgId!, partnerId: null };
     }
 
     const triggerInput = normalizeIncomingTrigger(data);
@@ -710,7 +760,8 @@ automationRoutes.post(
       // whose resolvable target set escapes their allowlist. This is the only
       // gate for unattended schedule/event triggers (no caller context later).
       const siteScopeDenied = await enforceAutomationSiteScope(c, {
-        orgId: orgId!,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         conditions: data.conditions,
         trigger: storedTrigger,
       } as Parameters<typeof checkAutomationTargetsWithinSiteScope>[0]);
@@ -722,7 +773,8 @@ automationRoutes.post(
         .insert(automations)
         .values({
           id: automationId,
-          orgId: orgId!,
+          orgId: owner.orgId,
+          partnerId: owner.partnerId,
           name: data.name,
           description: data.description,
           enabled: data.enabled,
@@ -776,6 +828,12 @@ async function handleUpdateAutomation(c: Context) {
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // Partner-wide automations mutate behavior across every org under the
+  // partner — administrable only with the partner-wide capability (#2133).
+  if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
   }
 
   try {
@@ -914,6 +972,11 @@ automationRoutes.delete(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
+    // Deleting a partner-wide automation affects every org under the partner.
+    if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const runningRuns = await db
       .select({ count: sql<number>`count(*)` })
       .from(automationRuns)
@@ -962,6 +1025,13 @@ async function triggerAutomationRun(
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // Manually triggering a partner-wide automation fans actions out to devices
+  // in EVERY org under the partner — gate it like the mutators (#2133,
+  // matching the policy-evaluate precedent from the #2149 review).
+  if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
   }
 
   if (!automation.enabled) {

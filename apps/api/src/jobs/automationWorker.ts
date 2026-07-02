@@ -8,7 +8,7 @@
  */
 
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { automations, configPolicyAutomations, devices, deviceGroupMemberships, organizations } from '../db/schema';
 import { type BreezeEvent, getEventBus } from '../services/eventBus';
@@ -723,14 +723,33 @@ async function scheduleAutomationScans(): Promise<void> {
   );
 }
 
-async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): Promise<void> {
+// Exported for the partner-RLS integration suite, which proves the dual-axis
+// fan-out query against real Postgres (the BullMQ queue is mocked there).
+export async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): Promise<void> {
   const queue = getAutomationQueue();
 
   // --- Legacy standalone automations ---
+  // Dual-ownership fan-out (#2133): match the event org's own automations OR
+  // partner-wide automations (org_id NULL) owned by that org's partner. This
+  // callback already runs under a system DB context, so RLS is not the filter
+  // — a plain eq(orgId, ...) would silently never match partner-wide rows.
+  const [eventOrg] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, event.orgId))
+    .limit(1);
+
+  const ownershipCondition = eventOrg?.partnerId
+    ? or(
+        eq(automations.orgId, event.orgId),
+        and(isNull(automations.orgId), eq(automations.partnerId, eventOrg.partnerId)),
+      )
+    : eq(automations.orgId, event.orgId);
+
   const candidates = await db
     .select()
     .from(automations)
-    .where(and(eq(automations.orgId, event.orgId), eq(automations.enabled, true)));
+    .where(and(ownershipCondition, eq(automations.enabled, true)));
 
   const payload = normalizePayload(event.payload);
 

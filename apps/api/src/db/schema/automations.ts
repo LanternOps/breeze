@@ -10,9 +10,15 @@ export const automationRunStatusEnum = pgEnum('automation_run_status', ['running
 export const policyEnforcementEnum = pgEnum('policy_enforcement', ['monitor', 'warn', 'enforce']);
 export const complianceStatusEnum = pgEnum('compliance_status', ['compliant', 'non_compliant', 'pending', 'error']);
 
+// A standalone automation is owned by EITHER an org (orgId set, partnerId
+// NULL — the original shape) OR a partner (partnerId set, orgId NULL —
+// "partner-wide / all orgs", epic #2135 / #2133). Exactly one axis is set per
+// row; the CHECK constraint `automations_one_owner_chk` (migration 2026-07-02)
+// enforces it. Mirrors automationPolicies (#2129) below.
 export const automations = pgTable('automations', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),
@@ -26,7 +32,9 @@ export const automations = pgTable('automations', {
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  partnerIdIdx: index('automations_partner_id_idx').on(table.partnerId),
+}));
 
 export const automationRuns = pgTable('automation_runs', {
   id: uuid('id').primaryKey().defaultRandom(),

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automationPolicies,
@@ -933,9 +933,33 @@ export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): P
 }
 
 /**
- * Automations are org-owned, so script-based remediation matching must be
- * anchored to a specific org. For an org-owned policy that is policy.orgId;
- * for a partner-wide policy (#2129) evaluatePolicy resolves per DEVICE org.
+ * Automations reachable from a device org (#2133): the org's own automations
+ * OR partner-wide automations (org_id NULL) owned by the org's partner. A
+ * plain eq(orgId, ...) silently never matches partner-wide rows — evaluation
+ * runs under a system DB context, so RLS is not the filter here.
+ */
+async function automationOwnershipConditionForOrg(orgId: string): Promise<SQL> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org?.partnerId) {
+    return eq(automations.orgId, orgId);
+  }
+
+  return or(
+    eq(automations.orgId, orgId),
+    and(isNull(automations.orgId), eq(automations.partnerId, org.partnerId))
+  ) as SQL;
+}
+
+/**
+ * Script-based remediation matching is anchored to a specific org: the
+ * device's own automations plus partner-wide automations of the org's partner
+ * (#2133). For an org-owned policy the anchor is policy.orgId; for a
+ * partner-wide policy (#2129) evaluatePolicy resolves per DEVICE org.
  */
 export async function resolvePolicyRemediationAutomationIdForOrg(
   policy: PolicyRow,
@@ -955,7 +979,7 @@ export async function resolvePolicyRemediationAutomationIdForOrg(
     .from(automations)
     .where(
       and(
-        eq(automations.orgId, orgId),
+        await automationOwnershipConditionForOrg(orgId),
         eq(automations.enabled, true)
       )
     );
@@ -1085,16 +1109,17 @@ async function triggerRemediationAutomation(
     return null;
   }
 
-  // Automations are org-owned: anchor the lookup to the DEVICE's org. For an
-  // org-owned policy that equals policy.orgId (resolveTargetDevices filters by
-  // it); for a partner-wide policy it is the only org that makes sense.
+  // Anchor the lookup to the DEVICE's org (plus its partner's partner-wide
+  // automations, #2133). For an org-owned policy that equals policy.orgId
+  // (resolveTargetDevices filters by it); for a partner-wide policy it is the
+  // only org that makes sense.
   const [automation] = await db
     .select()
     .from(automations)
     .where(
       and(
         eq(automations.id, remediationAutomationId),
-        eq(automations.orgId, device.orgId)
+        await automationOwnershipConditionForOrg(device.orgId)
       )
     )
     .limit(1);
@@ -1218,9 +1243,10 @@ export async function evaluatePolicy(
   const requestRemediation = options.requestRemediation ?? true;
   const wantsRemediation = requestRemediation && policy.enforcement === 'enforce';
 
-  // Remediation automations are org-owned, so a partner-wide policy resolves
-  // them per DEVICE org (memoized); an org-owned policy hits the cache with a
-  // single key — its own org — preserving the previous resolve-once behavior.
+  // Remediation automations are anchored per DEVICE org (org-owned rows plus
+  // the org's partner's partner-wide rows, #2133), so a partner-wide policy
+  // resolves them per DEVICE org (memoized); an org-owned policy hits the
+  // cache with a single key — its own org — preserving resolve-once behavior.
   const remediationIdByOrg = new Map<string, string | null>();
   const remediationAutomationIdForOrg = async (deviceOrgId: string): Promise<string | null> => {
     if (!wantsRemediation) {
@@ -1773,13 +1799,15 @@ async function triggerConfigPolicyRemediation(
     return false;
   }
 
-  // Find an automation that uses the remediation script
+  // Find an automation that uses the remediation script — the device org's
+  // own automations plus its partner's partner-wide ones (#2133).
+  const deviceOrgAutomationCondition = await automationOwnershipConditionForOrg(deviceRow.orgId);
   const candidates = await db
     .select({ id: automations.id, actions: automations.actions })
     .from(automations)
     .where(
       and(
-        eq(automations.orgId, deviceRow.orgId),
+        deviceOrgAutomationCondition,
         eq(automations.enabled, true)
       )
     );
@@ -1815,7 +1843,7 @@ async function triggerConfigPolicyRemediation(
     .where(
       and(
         eq(automations.id, automationId),
-        eq(automations.orgId, deviceRow.orgId)
+        deviceOrgAutomationCondition
       )
     )
     .limit(1);
