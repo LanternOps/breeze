@@ -271,6 +271,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge + evaluation fan-out proof:
   // automationPoliciesPartnerRls.integration.test.ts.
   'automation_policies',
+  // automations (#2133, epic #2135): org-scoped OR partner-wide standalone
+  // automation ("on device.offline run diagnostic script" across all orgs).
+  // automation_runs stays parent-join (its EXISTS policies gained the partner
+  // branch on the automations parent in the same migration); worker-created
+  // child rows (alerts, deployments) always take the DEVICE's org. Converted
+  // in 2026-07-02-automations-partner-ownership. CHECK
+  // automations_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge + event-trigger fan-out proof:
+  // automationsPartnerRls.integration.test.ts.
+  'automations',
   // sensitive_data_policies (#2131, epic #2135): org-scoped OR partner-wide
   // data-discovery policy. Scans/findings stay org-owned by the scanned
   // DEVICE's org (the scheduler sources scan org_id from the device).

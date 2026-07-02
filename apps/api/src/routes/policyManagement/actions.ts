@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { automationPolicies, automationRuns, automations, organizations } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
@@ -186,18 +186,36 @@ actionRoutes.post(
       }, 400);
     }
 
-    // Automations are org-owned. An org-owned policy anchors the lookup to its
-    // own org; a partner-wide policy (org_id NULL, #2129) accepts an explicit
-    // automation from any org under the owning partner.
-    const automationOwnerCondition = policy.orgId
-      ? eq(automations.orgId, policy.orgId)
-      : inArray(
+    // Automations are dual-owned (#2133). An org-owned policy anchors the
+    // lookup to its own org OR its partner's partner-wide automations; a
+    // partner-wide policy (org_id NULL, #2129) accepts an explicit automation
+    // from any org under the owning partner OR the partner's own
+    // partner-wide automations.
+    let automationOwnerCondition;
+    if (policy.orgId) {
+      const [policyOrg] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, policy.orgId))
+        .limit(1);
+      automationOwnerCondition = policyOrg?.partnerId
+        ? or(
+            eq(automations.orgId, policy.orgId),
+            and(isNull(automations.orgId), eq(automations.partnerId, policyOrg.partnerId))
+          )
+        : eq(automations.orgId, policy.orgId);
+    } else {
+      automationOwnerCondition = or(
+        inArray(
           automations.orgId,
           db
             .select({ id: organizations.id })
             .from(organizations)
             .where(eq(organizations.partnerId, policy.partnerId ?? ''))
-        );
+        ),
+        and(isNull(automations.orgId), eq(automations.partnerId, policy.partnerId ?? ''))
+      );
+    }
 
     const [automation] = await db
       .select()

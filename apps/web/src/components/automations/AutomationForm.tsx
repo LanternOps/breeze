@@ -65,6 +65,11 @@ const actionSchema = z.object({
 
 const automationSchema = z.object({
   name: z.string().min(1, 'Automation name is required'),
+  // Ownership axis (#2133, mirrors software/PolicyForm): 'partner' =
+  // partner-wide / all-orgs automation. Only surfaced on create for
+  // partner-scope users (showOwnerScope); the server derives the partner
+  // from the caller's own token.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   description: z.string().optional(),
   triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']),
   cronExpression: z.string().optional(),
@@ -99,6 +104,8 @@ type AutomationFormProps = {
   scripts?: Script[];
   notificationChannels?: NotificationChannel[];
   softwareCatalog?: SoftwareCatalogItem[];
+  /** Show the ownership-scope selector (create-only, partner-scope users). */
+  showOwnerScope?: boolean;
 };
 
 const triggerTypeOptions: { value: TriggerType; label: string; description: string; icon: typeof Clock }[] = [
@@ -191,7 +198,8 @@ export default function AutomationForm({
   groups = [],
   scripts = [],
   notificationChannels = [],
-  softwareCatalog = []
+  softwareCatalog = [],
+  showOwnerScope = false
 }: AutomationFormProps) {
   const [conditionsExpanded, setConditionsExpanded] = useState(true);
   const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>(
@@ -271,6 +279,31 @@ export default function AutomationForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
+      {/* Ownership scope — partner-scope creators only (#2133) */}
+      {showOwnerScope && (
+        <fieldset className="space-y-2 rounded-md border p-4" data-testid="automation-owner">
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="partner"
+              {...register('ownerScope')}
+              data-testid="automation-owner-partner"
+            />
+            All organizations <span className="text-muted-foreground">(partner-wide automation)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="organization"
+              {...register('ownerScope')}
+              data-testid="automation-owner-org"
+            />
+            This organization only
+          </label>
+        </fieldset>
+      )}
+
       {/* Basic Information */}
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">

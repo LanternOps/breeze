@@ -36,22 +36,85 @@ const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
  * owned by the org's partner. A plain eq(orgId, ...) silently drops
  * partner-wide channels (the #1724 trap; automation runs execute under
  * system context, so RLS is not the filter here).
+ *
+ * Automations are dual-owned too (#2133), so the owner is `{orgId, partnerId}`
+ * (exactly one set). An org-owned automation reaches its org's channels plus
+ * the org's partner's partner-wide channels; a partner-wide automation reaches
+ * the partner's partner-wide channels plus any member org's channels — all of
+ * which stay inside the owning partner's tenancy.
  */
-async function notificationChannelOwnershipCondition(orgId: string): Promise<SQL> {
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
+async function notificationChannelOwnershipCondition(
+  owner: { orgId: string | null; partnerId: string | null },
+): Promise<SQL> {
+  if (owner.orgId) {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, owner.orgId))
+      .limit(1);
 
-  if (!org?.partnerId) {
-    return eq(notificationChannels.orgId, orgId);
+    if (!org?.partnerId) {
+      return eq(notificationChannels.orgId, owner.orgId);
+    }
+
+    return or(
+      eq(notificationChannels.orgId, owner.orgId),
+      and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, org.partnerId))
+    ) as SQL;
+  }
+
+  // Partner-wide automation: the one-owner CHECK guarantees partnerId is set;
+  // guard against bad legacy data with an always-false condition. Log loudly —
+  // if this ever fires, the symptom downstream is "notifications silently
+  // stopped", which is undebuggable without this line.
+  if (!owner.partnerId) {
+    console.error(
+      '[AutomationRuntime] notificationChannelOwnershipCondition called with neither orgId nor partnerId — matching no channels',
+    );
+    return sql`false`;
   }
 
   return or(
-    eq(notificationChannels.orgId, orgId),
-    and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, org.partnerId))
+    and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, owner.partnerId)),
+    inArray(
+      notificationChannels.orgId,
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.partnerId, owner.partnerId)),
+    )
   ) as SQL;
+}
+
+/**
+ * Ownership → org fan-out (#2133). An org-owned automation targets devices in
+ * its own org; a partner-wide automation (orgId NULL) fans out to every org
+ * under the owning partner. Returns [] when the owner resolves to no orgs —
+ * i.e. zero target devices.
+ */
+async function automationOwnerOrgIds(
+  automation: Pick<AutomationRow, 'orgId' | 'partnerId'>,
+): Promise<string[]> {
+  if (automation.orgId) {
+    return [automation.orgId];
+  }
+
+  if (!automation.partnerId) {
+    // The one-owner CHECK makes this unreachable; guard against bad legacy
+    // data. Log loudly — the downstream symptom is "automation targets zero
+    // devices and the run completes", a silent no-op.
+    console.error(
+      '[AutomationRuntime] automation has neither orgId nor partnerId — resolving zero target devices',
+    );
+    return [];
+  }
+
+  const orgRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, automation.partnerId));
+
+  return orgRows.map((row) => row.id);
 }
 
 export type AlertSeverity = typeof ALERT_SEVERITIES[number];
@@ -423,13 +486,14 @@ function coerceToFilterValue(condition: Record<string, unknown>): string {
   return asString(condition.value) ?? '';
 }
 
-async function resolveLegacyConditionTargets(orgId: string, conditionsInput: unknown): Promise<string[]> {
+async function resolveLegacyConditionTargets(orgIds: string[], conditionsInput: unknown): Promise<string[]> {
+  if (orgIds.length === 0) return [];
   const conditions = normalizeLegacyConditions(conditionsInput);
   if (conditions.length === 0) {
     const orgDevices = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(eq(devices.orgId, orgId));
+      .where(inArray(devices.orgId, orgIds));
     return orgDevices.map((device) => device.id);
   }
 
@@ -441,7 +505,7 @@ async function resolveLegacyConditionTargets(orgId: string, conditionsInput: unk
       tags: devices.tags,
     })
     .from(devices)
-    .where(eq(devices.orgId, orgId));
+    .where(inArray(devices.orgId, orgIds));
 
   const deviceIds = orgDevices.map((device) => device.id);
   const groupMembers = deviceIds.length > 0
@@ -517,15 +581,27 @@ async function resolveLegacyConditionTargets(orgId: string, conditionsInput: unk
 }
 
 export async function resolveAutomationTargetDeviceIds(automation: AutomationRow): Promise<string[]> {
+  // Dual-ownership fan-out (#2133): a partner-wide automation (orgId NULL)
+  // resolves targets across EVERY org under the owning partner.
+  const ownerOrgIds = await automationOwnerOrgIds(automation);
+  if (ownerOrgIds.length === 0) return [];
+
   if (isDeploymentTargetConfig(automation.conditions)) {
-    return resolveDeploymentTargets({
-      orgId: automation.orgId,
-      targetConfig: automation.conditions,
-    });
+    // resolveDeploymentTargets keeps its shared non-null-orgId contract —
+    // loop per owner org and merge instead of widening its signature.
+    const merged = new Set<string>();
+    for (const orgId of ownerOrgIds) {
+      const ids = await resolveDeploymentTargets({
+        orgId,
+        targetConfig: automation.conditions,
+      });
+      for (const id of ids) merged.add(id);
+    }
+    return [...merged];
   }
 
   if (Array.isArray(automation.conditions)) {
-    return resolveLegacyConditionTargets(automation.orgId, automation.conditions);
+    return resolveLegacyConditionTargets(ownerOrgIds, automation.conditions);
   }
 
   const trigger = isPlainRecord(automation.trigger) ? automation.trigger : null;
@@ -535,14 +611,14 @@ export async function resolveAutomationTargetDeviceIds(automation: AutomationRow
     const scopedDevices = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(and(eq(devices.orgId, automation.orgId), inArray(devices.id, triggerDeviceIds)));
+      .where(and(inArray(devices.orgId, ownerOrgIds), inArray(devices.id, triggerDeviceIds)));
     return scopedDevices.map((device) => device.id);
   }
 
   const orgDevices = await db
     .select({ id: devices.id })
     .from(devices)
-    .where(eq(devices.orgId, automation.orgId));
+    .where(inArray(devices.orgId, ownerOrgIds));
 
   return orgDevices.map((device) => device.id);
 }
@@ -613,10 +689,13 @@ export async function checkAutomationTargetsWithinSiteScope(
     return { ok: true, outOfScopeDeviceIds: [], unbounded: false };
   }
 
-  const targetDevices = await db
-    .select({ id: devices.id, siteId: devices.siteId })
-    .from(devices)
-    .where(and(eq(devices.orgId, automation.orgId), inArray(devices.id, targetDeviceIds)));
+  const ownerOrgIds = await automationOwnerOrgIds(automation);
+  const targetDevices = ownerOrgIds.length > 0
+    ? await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(and(inArray(devices.orgId, ownerOrgIds), inArray(devices.id, targetDeviceIds)))
+    : [];
 
   const outOfScopeDeviceIds = targetDevices
     .filter((device) => !(typeof device.siteId === 'string' && canAccessSite(perms as UserPermissions, device.siteId)))
@@ -734,6 +813,9 @@ type ActionExecutionContext = {
   runId: string;
   device: {
     id: string;
+    // Worker-created child rows (alerts, notifications) always take the
+    // DEVICE's org — a partner-wide automation has no org of its own (#2133).
+    orgId: string;
     hostname: string;
     displayName: string | null;
     osType: 'windows' | 'macos' | 'linux';
@@ -1006,7 +1088,8 @@ async function executeSendNotificationAction(
     title,
     message,
     severity,
-    orgId: context.automation.orgId,
+    // The DEVICE's org — a partner-wide automation's orgId is NULL (#2133).
+    orgId: context.device.orgId,
     alertId: syntheticAlertId,
     deviceId: context.device.id,
     deviceName: context.device.displayName ?? context.device.hostname,
@@ -1041,7 +1124,10 @@ async function executeCreateAlertAction(
   actionIndex: number,
   context: ActionExecutionContext,
 ): Promise<ActionExecutionResult> {
-  const ruleId = await ensureAutomationAlertRule(context.automation.orgId);
+  // Alert rows (and their backing rule/template) take the DEVICE's org —
+  // playbook rule 5: a partner-wide automation (orgId NULL) never owns child
+  // rows; each alert lands in the org whose device raised it (#2133).
+  const ruleId = await ensureAutomationAlertRule(context.device.orgId);
 
   const title = action.alertTitle ?? `${context.automation.name} automation alert`;
   const message = action.alertMessage;
@@ -1051,7 +1137,7 @@ async function executeCreateAlertAction(
     .values({
       ruleId,
       deviceId: context.device.id,
-      orgId: context.automation.orgId,
+      orgId: context.device.orgId,
       status: 'active',
       severity: action.alertSeverity,
       title,
@@ -1078,7 +1164,7 @@ async function executeCreateAlertAction(
 
   await publishEvent(
     'alert.triggered',
-    context.automation.orgId,
+    context.device.orgId,
     {
       alertId: createdAlert.id,
       ruleId,
@@ -1140,6 +1226,8 @@ async function sendOnFailureNotifications(
   details: {
     runId: string;
     deviceId: string;
+    /** The failing DEVICE's org — automation.orgId is NULL for partner-wide (#2133). */
+    deviceOrgId: string;
     message: string;
   },
 ): Promise<AutomationLogEntry[]> {
@@ -1160,7 +1248,7 @@ async function sendOnFailureNotifications(
       title: `${automation.name} action failed`,
       message: details.message,
       severity: 'high',
-      orgId: automation.orgId,
+      orgId: details.deviceOrgId,
       alertId: `${details.runId}:${details.deviceId}:failure`,
       deviceId: details.deviceId,
       deviceName: details.deviceId,
@@ -1211,8 +1299,11 @@ async function runWithConcurrency<T>(
  */
 export async function executeDeploySoftwareActions(args: {
   actions: AutomationAction[];
-  devices: Array<{ id: string; osType: 'windows' | 'macos' | 'linux' }>;
-  orgId: string;
+  // Devices carry their own orgId: deployments are org-owned child rows, so a
+  // partner-wide automation (#2133) creates ONE deployment per device org.
+  // For an org-owned automation every device shares its org — one deployment,
+  // exactly the previous behavior.
+  devices: Array<{ id: string; osType: 'windows' | 'macos' | 'linux'; orgId: string }>;
   createdBy: string | null;
   runId: string;
 }): Promise<{ logs: AutomationLogEntry[]; deployedDeviceIds: Set<string>; failed: boolean }> {
@@ -1247,7 +1338,9 @@ export async function executeDeploySoftwareActions(args: {
     const supportedOs: string[] = Array.isArray(info.version.supportedOs)
       ? (info.version.supportedOs as string[])
       : [];
-    const eligible: string[] = [];
+    // Deployments are org-owned: group eligible devices by their org so a
+    // partner-wide automation creates one deployment per member org (#2133).
+    const eligibleByOrg = new Map<string, string[]>();
     for (const device of args.devices) {
       if (supportedOs.length > 0 && !supportedOs.includes(device.osType)) {
         logs.push(logEntry(`Skipped ${info.catalogName}: unsupported OS`, 'info', {
@@ -1267,38 +1360,42 @@ export async function executeDeploySoftwareActions(args: {
         }));
         continue;
       }
-      eligible.push(device.id);
+      const bucket = eligibleByOrg.get(device.orgId) ?? [];
+      bucket.push(device.id);
+      eligibleByOrg.set(device.orgId, bucket);
     }
-    if (eligible.length === 0) continue;
+    if (eligibleByOrg.size === 0) continue;
 
-    const result = await createSoftwareDeployment({
-      orgId: args.orgId,
-      softwareVersionId: info.version.id,
-      deploymentType: 'install',
-      deviceIds: eligible,
-      scheduleType: 'immediate',
-      createdBy: args.createdBy,
-      name: `Automation: deploy ${info.catalogName}`,
-    });
-    if (result.status === 'failed') {
-      failed = true;
-      logs.push(logEntry(`deploy_software failed: ${result.message ?? 'unknown error'}`, 'error', {
-        actionType: action.type,
-        actionIndex,
-        details: { catalogId: action.catalogId, deploymentId: result.deploymentId },
-      }));
-      continue;
+    for (const [orgId, eligible] of eligibleByOrg) {
+      const result = await createSoftwareDeployment({
+        orgId,
+        softwareVersionId: info.version.id,
+        deploymentType: 'install',
+        deviceIds: eligible,
+        scheduleType: 'immediate',
+        createdBy: args.createdBy,
+        name: `Automation: deploy ${info.catalogName}`,
+      });
+      if (result.status === 'failed') {
+        failed = true;
+        logs.push(logEntry(`deploy_software failed: ${result.message ?? 'unknown error'}`, 'error', {
+          actionType: action.type,
+          actionIndex,
+          details: { catalogId: action.catalogId, deploymentId: result.deploymentId, orgId },
+        }));
+        continue;
+      }
+      for (const id of result.dispatchedDeviceIds) deployedDeviceIds.add(id);
+      logs.push(logEntry(
+        `Deploying ${info.catalogName} ${info.version.version} to ${eligible.length} device(s)`,
+        'info',
+        {
+          actionType: action.type,
+          actionIndex,
+          details: { deploymentId: result.deploymentId, deviceIds: eligible },
+        },
+      ));
     }
-    for (const id of result.dispatchedDeviceIds) deployedDeviceIds.add(id);
-    logs.push(logEntry(
-      `Deploying ${info.catalogName} ${info.version.version} to ${eligible.length} device(s)`,
-      'info',
-      {
-        actionType: action.type,
-        actionIndex,
-        details: { deploymentId: result.deploymentId, deviceIds: eligible },
-      },
-    ));
   }
   return { logs, deployedDeviceIds, failed };
 }
@@ -1343,19 +1440,45 @@ export async function createAutomationRunRecord(options: {
     })
     .where(eq(automations.id, options.automation.id));
 
-  await publishEvent(
-    'automation.started',
-    options.automation.orgId,
-    {
-      automationId: options.automation.id,
-      runId: run.id,
-      triggeredBy: options.triggeredBy,
-      devicesTargeted: targetDeviceIds.length,
-    },
-    'automation-runtime',
-  );
+  // Lifecycle events carry an org. An org-owned automation publishes to its
+  // own org (unchanged); a partner-wide automation (orgId NULL, #2133) has no
+  // org of its own, so publish once per distinct TARGET-device org — keeping
+  // org-scoped consumers (event-triggered automations, alert bridges) working
+  // in every member org the run touches.
+  const eventOrgIds = options.automation.orgId
+    ? [options.automation.orgId]
+    : await distinctDeviceOrgIds(targetDeviceIds);
+  if (eventOrgIds.length === 0) {
+    // Partner-wide run with zero resolved targets: there is no org to publish
+    // to, so lifecycle consumers see nothing. Leave a trace for operators.
+    console.warn(
+      `[AutomationRuntime] partner-wide automation ${options.automation.id} run ${run.id} resolved zero target devices — no automation.started event published`,
+    );
+  }
+  for (const eventOrgId of eventOrgIds) {
+    await publishEvent(
+      'automation.started',
+      eventOrgId,
+      {
+        automationId: options.automation.id,
+        runId: run.id,
+        triggeredBy: options.triggeredBy,
+        devicesTargeted: targetDeviceIds.length,
+      },
+      'automation-runtime',
+    );
+  }
 
   return { run, targetDeviceIds };
+}
+
+async function distinctDeviceOrgIds(deviceIds: string[]): Promise<string[]> {
+  if (deviceIds.length === 0) return [];
+  const rows = await db
+    .selectDistinct({ orgId: devices.orgId })
+    .from(devices)
+    .where(inArray(devices.id, deviceIds));
+  return rows.map((row) => row.orgId);
 }
 
 export async function executeAutomationRun(
@@ -1413,6 +1536,7 @@ export async function executeAutomationRun(
     ? await db
       .select({
         id: devices.id,
+        orgId: devices.orgId,
         hostname: devices.hostname,
         displayName: devices.displayName,
         osType: devices.osType,
@@ -1447,15 +1571,19 @@ export async function executeAutomationRun(
     notificationChannelIds.add(channelId);
   }
 
-  // Dual-axis (#2130): an automation's notify targets may reference the
-  // org's own channels OR partner-wide channels owned by the org's partner.
+  // Dual-axis (#2130/#2133): an automation's notify targets may reference the
+  // owner org's channels, partner-wide channels of its partner, or — for a
+  // partner-wide automation — any member org's channels.
   const channelRows = notificationChannelIds.size > 0
     ? await db
       .select()
       .from(notificationChannels)
       .where(
         and(
-          await notificationChannelOwnershipCondition(automation.orgId),
+          await notificationChannelOwnershipCondition({
+            orgId: automation.orgId,
+            partnerId: automation.partnerId,
+          }),
           inArray(notificationChannels.id, [...notificationChannelIds]),
         ),
       )
@@ -1495,6 +1623,7 @@ export async function executeAutomationRun(
             {
               runId: run.id,
               deviceId: device.id,
+              deviceOrgId: device.orgId,
               message: result.log.message,
             },
           );
@@ -1517,8 +1646,7 @@ export async function executeAutomationRun(
   // Batched deploy_software pass — runs once per automation run, after the per-device loop
   const deployOutcome = await executeDeploySoftwareActions({
     actions: normalized.actions,
-    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType })),
-    orgId: automation.orgId,
+    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType, orgId: d.orgId })),
     createdBy: automation.createdBy ?? null,
     runId: run.id,
   });
@@ -1554,20 +1682,32 @@ export async function executeAutomationRun(
     })
     .where(eq(automationRuns.id, run.id));
 
-  await publishEvent(
-    status === 'completed' ? 'automation.completed' : 'automation.failed',
-    automation.orgId,
-    {
-      automationId: automation.id,
-      runId: run.id,
-      triggeredBy: run.triggeredBy,
-      status,
-      devicesTargeted: targetDeviceIds.length,
-      devicesSucceeded,
-      devicesFailed,
-    },
-    'automation-runtime',
-  );
+  // Same shape as automation.started: an org-owned automation publishes to
+  // its own org; a partner-wide one publishes per distinct target-device org.
+  const completionOrgIds = automation.orgId
+    ? [automation.orgId]
+    : [...new Set(deviceRows.map((device) => device.orgId))];
+  if (completionOrgIds.length === 0) {
+    console.warn(
+      `[AutomationRuntime] partner-wide automation ${automation.id} run ${run.id} finished (${status}) with zero target devices — no completion event published`,
+    );
+  }
+  for (const eventOrgId of completionOrgIds) {
+    await publishEvent(
+      status === 'completed' ? 'automation.completed' : 'automation.failed',
+      eventOrgId,
+      {
+        automationId: automation.id,
+        runId: run.id,
+        triggeredBy: run.triggeredBy,
+        status,
+        devicesTargeted: targetDeviceIds.length,
+        devicesSucceeded,
+        devicesFailed,
+      },
+      'automation-runtime',
+    );
+  }
 
   return {
     status,
@@ -1887,6 +2027,7 @@ export async function executeConfigPolicyAutomationRun(
     ? await db
       .select({
         id: devices.id,
+        orgId: devices.orgId,
         hostname: devices.hostname,
         displayName: devices.displayName,
         osType: devices.osType,
@@ -1923,7 +2064,7 @@ export async function executeConfigPolicyAutomationRun(
       .from(notificationChannels)
       .where(
         and(
-          await notificationChannelOwnershipCondition(orgId),
+          await notificationChannelOwnershipCondition({ orgId, partnerId: null }),
           inArray(notificationChannels.id, [...notificationChannelIds]),
         ),
       )
@@ -1973,6 +2114,7 @@ export async function executeConfigPolicyAutomationRun(
             {
               runId: run.id,
               deviceId: device.id,
+              deviceOrgId: device.orgId,
               message: result.log.message,
             },
           );
@@ -1995,8 +2137,7 @@ export async function executeConfigPolicyAutomationRun(
   // Batched deploy_software pass — runs once per config-policy automation run, after the per-device loop
   const deployOutcome = await executeDeploySoftwareActions({
     actions,
-    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType })),
-    orgId,
+    devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType, orgId: d.orgId })),
     createdBy: null,
     runId: run.id,
   });

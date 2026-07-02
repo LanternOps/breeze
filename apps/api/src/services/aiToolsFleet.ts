@@ -130,6 +130,18 @@ function automationPolicyWhere(auth: AuthContext): SQL | undefined {
   return oc;
 }
 
+// Dual-axis access for automations (#2133): same shape as alertRuleWhere —
+// org-owned automations the caller can reach OR partner-wide ones (org_id
+// NULL) owned by the caller's own partner.
+function automationWhere(auth: AuthContext): SQL | undefined {
+  const oc = orgWhere(auth, automations.orgId);
+  if (!oc) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${oc} OR (${automations.orgId} IS NULL AND ${automations.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
+}
+
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth) => {
@@ -1185,7 +1197,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, automations.orgId);
+        const oc = automationWhere(auth);
         if (oc) conditions.push(oc);
         if (typeof input.triggerType === 'string') {
           conditions.push(sql`${automations.trigger}->>'type' = ${input.triggerType}`);
@@ -1213,7 +1225,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get') {
         if (!input.automationId) return JSON.stringify({ error: 'automationId is required' });
         const conditions: SQL[] = [eq(automations.id, input.automationId as string)];
-        const oc = orgWhere(auth, automations.orgId);
+        const oc = automationWhere(auth);
         if (oc) conditions.push(oc);
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
@@ -1225,7 +1237,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'history') {
         if (!input.automationId) return JSON.stringify({ error: 'automationId is required' });
         const conditions: SQL[] = [eq(automations.id, input.automationId as string)];
-        const oc = orgWhere(auth, automations.orgId);
+        const oc = automationWhere(auth);
         if (oc) conditions.push(oc);
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
@@ -1261,11 +1273,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         if (!input.automationId) return JSON.stringify({ error: 'automationId is required' });
         const conditions: SQL[] = [eq(automations.id, input.automationId as string)];
-        const oc = orgWhere(auth, automations.orgId);
+        const oc = automationWhere(auth);
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+
+        // Defense-in-depth (#2133): this action is disabled by the early
+        // return above, but if it is ever re-enabled, mutating a partner-wide
+        // automation must require the partner-wide capability.
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide automation requires full partner org access' });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
@@ -1283,11 +1302,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'delete') {
         if (!input.automationId) return JSON.stringify({ error: 'automationId is required' });
         const conditions: SQL[] = [eq(automations.id, input.automationId as string)];
-        const oc = orgWhere(auth, automations.orgId);
+        const oc = automationWhere(auth);
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+
+        // Defense-in-depth (#2133): see the update-action gate above.
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Deleting a partner-wide automation requires full partner org access' });
+        }
 
         await db.transaction(async (tx) => {
           await tx.delete(automationRuns).where(eq(automationRuns.automationId, existing.id));
@@ -1299,11 +1323,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'enable' || action === 'disable') {
         if (!input.automationId) return JSON.stringify({ error: 'automationId is required' });
         const conditions: SQL[] = [eq(automations.id, input.automationId as string)];
-        const oc = orgWhere(auth, automations.orgId);
+        const oc = automationWhere(auth);
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+
+        // Toggling a partner-wide automation mutates behavior across every
+        // org under the partner (#2133) — requires the partner-wide capability.
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide automation requires full partner org access' });
+        }
 
         const enabled = action === 'enable';
         await db.update(automations)
@@ -1316,11 +1346,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'run') {
         if (!input.automationId) return JSON.stringify({ error: 'automationId is required' });
         const conditions: SQL[] = [eq(automations.id, input.automationId as string)];
-        const oc = orgWhere(auth, automations.orgId);
+        const oc = automationWhere(auth);
         if (oc) conditions.push(oc);
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
+
+        // Running a partner-wide automation fans actions out across every org
+        // under the partner (#2133) — requires the partner-wide capability.
+        if (auto.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Running a partner-wide automation requires full partner org access' });
+        }
 
         const [run] = await db.insert(automationRuns).values({
           automationId: auto.id,

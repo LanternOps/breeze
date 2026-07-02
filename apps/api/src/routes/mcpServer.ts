@@ -26,7 +26,7 @@ import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTool
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from '../services/aiGuardrails';
 import { db } from '../db';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
-import { eq, and, asc, desc, inArray, isNull, getTableColumns, type SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
@@ -1377,6 +1377,28 @@ async function readOrgScopedResource(
   });
 }
 
+/**
+ * Dual-axis read condition for a dual-ownership table (org XOR partner —
+ * scripts, automations #2133). Partner-scope callers also see partner-wide
+ * rows (org_id NULL) owned by their OWN partner; org tokens carry a partnerId
+ * but never pass breeze_has_partner_access, so they get the org branch only
+ * (the app layer must never be looser than RLS).
+ */
+function dualAxisResourceCondition(
+  auth: AuthContext,
+  orgCondition: SQL | undefined,
+  table: { orgId: PgColumn; partnerId: PgColumn },
+): SQL | undefined {
+  if (!orgCondition) return undefined; // system scope — no tenant filter
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return or(
+      orgCondition,
+      and(isNull(table.orgId), eq(table.partnerId, auth.partnerId)),
+    ) as SQL;
+  }
+  return orgCondition;
+}
+
 async function handleResourcesRead(
   id: string | number,
   params: Record<string, unknown>,
@@ -1452,23 +1474,28 @@ async function handleResourcesRead(
     }
 
     if (uri === 'breeze://scripts') {
+      // Scripts are dual-owned — include the caller's partner-wide scripts.
       return await readOrgScopedResource(id, uri, scripts, {
         id: scripts.id,
         name: scripts.name,
         description: scripts.description,
         language: scripts.language,
         category: scripts.category
-      }, orgCond(scripts.orgId), { extraConditions: [isNull(scripts.deletedAt)], limit: 200 });
+      }, dualAxisResourceCondition(auth, orgCond(scripts.orgId), scripts), {
+        extraConditions: [isNull(scripts.deletedAt)],
+        limit: 200
+      });
     }
 
     if (uri === 'breeze://automations') {
+      // Automations are dual-owned (#2133) — include partner-wide rows.
       return await readOrgScopedResource(id, uri, automations, {
         id: automations.id,
         name: automations.name,
         description: automations.description,
         enabled: automations.enabled,
         trigger: automations.trigger
-      }, orgCond(automations.orgId), { limit: 200 });
+      }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations), { limit: 200 });
     }
 
     // Handle dynamic resource URIs: breeze://devices/{id}

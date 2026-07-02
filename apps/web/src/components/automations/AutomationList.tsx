@@ -14,6 +14,7 @@ import {
   CheckCircle,
   XCircle,
   AlertTriangle,
+  Globe,
   MoreHorizontal
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -34,6 +35,9 @@ export type AutomationRun = {
 export type Automation = {
   id: string;
   name: string;
+  // null = partner-wide ("all orgs") automation (#2133); undefined when the
+  // caller did not supply ownership info.
+  orgId?: string | null;
   description?: string;
   triggerType: TriggerType;
   triggerConfig?: {
@@ -231,7 +235,19 @@ export default function AutomationList({
                   <tr key={automation.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3">
                       <div>
-                        <p className="text-sm font-medium">{automation.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium">{automation.name}</p>
+                          {automation.orgId === null && (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                              title="Partner-wide automation — applies to every organization"
+                              data-testid="automation-partner-wide-badge"
+                            >
+                              <Globe className="h-3 w-3" />
+                              All orgs
+                            </span>
+                          )}
+                        </div>
                         {automation.description && (
                           <p className="text-xs text-muted-foreground truncate max-w-xs">
                             {automation.description}

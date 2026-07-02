@@ -32,6 +32,8 @@ function toListAutomation(raw: unknown): Automation {
   return {
     id: asString(item.id) ?? '',
     name: asString(item.name) ?? 'Untitled Automation',
+    // orgId === null marks a partner-wide ("All orgs") automation (#2133).
+    orgId: item.orgId === null ? null : asString(item.orgId),
     description: asString(item.description),
     triggerType,
     triggerConfig: {

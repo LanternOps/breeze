@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
@@ -112,6 +114,16 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   const [scripts, setScripts] = useState<Script[]>([]);
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
   const [softwareCatalog, setSoftwareCatalog] = useState<SoftwareCatalogItem[]>([]);
+
+  // Ownership axis (#2133, mirrors software/ComplianceDashboard #2126):
+  // partner-scope creators may own an automation partner-wide ("all orgs").
+  // Gate on the JWT scope; default to partner-wide when viewing All orgs.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const defaultOwnerScope: AutomationFormValues['ownerScope'] =
+    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization';
 
   const fetchAutomation = useCallback(async () => {
     if (!automationId || isNew) return;
@@ -289,7 +301,12 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       };
 
       if (isNew) {
-        Object.assign(payload, { enabled: true });
+        // ownerScope is create-only (#2133): ownership never changes after
+        // creation, and the server rejects it on non-partner callers.
+        Object.assign(payload, {
+          enabled: true,
+          ...(isPartnerScope && values.ownerScope ? { ownerScope: values.ownerScope } : {})
+        });
       }
 
       const url = isNew ? '/automations' : `/automations/${automationId}`;
@@ -377,8 +394,9 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       <AutomationForm
         onSubmit={handleSubmit}
         onCancel={handleCancel}
-        defaultValues={defaultValues}
+        defaultValues={isNew ? { ownerScope: defaultOwnerScope, ...defaultValues } : defaultValues}
         webhookUrl={webhookUrl}
+        showOwnerScope={isNew && isPartnerScope}
         submitLabel={isNew ? 'Create Automation' : 'Save Changes'}
         loading={saving}
         sites={sites}
