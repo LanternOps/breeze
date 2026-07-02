@@ -340,6 +340,14 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     .limit(1);
 
   if (!channel) {
+    // A resolved {success:false} completes the BullMQ job (no 'failed' event)
+    // and no alert_notifications row exists yet on this path — without a log
+    // this send (possibly a DELAYED escalation step whose channel/partner
+    // state drifted since scheduling) vanishes without a trace (#2130 review).
+    console.warn(
+      `[NotificationDispatcher] Channel ${data.channelId} not found (or disabled) for alert ${data.alertId}`
+      + `${data.escalationStep ? ` escalation step ${data.escalationStep}` : ''} — send dropped`
+    );
     return {
       success: false,
       channelType: 'unknown',
@@ -917,6 +925,13 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
     .limit(1);
 
   if (!policy) {
+    // The rule still references this policy but the dual-axis lookup missed —
+    // deleted policy, or the org's partner changed since the rule was bound.
+    // Silently dropping would erase the whole escalation chain (#2130 review).
+    console.warn(
+      `[NotificationDispatcher] Escalation policy ${policyId} not found for alert ${alertId} `
+      + `(org ${orgId}, partner ${orgPartnerId ?? 'none'}) — escalation skipped`
+    );
     return;
   }
 
@@ -926,6 +941,9 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   }>;
 
   if (!Array.isArray(steps) || steps.length === 0) {
+    console.warn(
+      `[NotificationDispatcher] Escalation policy ${policyId} has no steps for alert ${alertId} — escalation skipped`
+    );
     return;
   }
 

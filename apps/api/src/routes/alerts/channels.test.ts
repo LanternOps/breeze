@@ -226,6 +226,19 @@ describe('notification channels — partner-wide gating (#2130)', () => {
     });
   });
 
+  describe('POST /alerts/channels/:id/test', () => {
+    it('403s a partner-wide channel without the partner-wide capability — test-send fires REAL external notifications', async () => {
+      setPartnerAuth('selected');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL };
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/test`, { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+    });
+  });
+
   describe('POST /alerts/channels (ownerScope: partner)', () => {
     const partnerWideBody = {
       ownerScope: 'partner',

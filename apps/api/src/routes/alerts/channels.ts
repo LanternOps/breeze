@@ -366,6 +366,15 @@ channelsRoutes.post(
     if (!channel) {
       return c.json({ error: 'Notification channel not found' }, 404);
     }
+
+    // Test-send is a mutator in effect: it fires a REAL external notification
+    // (Slack/PagerDuty/SMS/...) on the shared destination and overwrites the
+    // channel's lastTestedAt/lastTestStatus for every org under the partner —
+    // gate partner-wide channels like the sibling PUT/DELETE (#2130 review).
+    if (channel.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const channelConfig = decryptNotificationChannelConfig(channel.type, channel.config);
     const redactedChannelConfig = redactNotificationChannelConfig(channel.type, channel.config);
 

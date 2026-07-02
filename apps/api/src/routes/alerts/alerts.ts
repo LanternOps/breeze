@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, or, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   alertCorrelationGroups,
   alertCorrelationMembers,
@@ -842,22 +842,29 @@ alertsRoutes.get(
       .where(eq(alertRules.id, alert.ruleId))
       .limit(1) : [undefined];
 
-    // Get notification history
-    const notifications = await db
-      .select({
-        id: alertNotifications.id,
-        channelId: alertNotifications.channelId,
-        status: alertNotifications.status,
-        sentAt: alertNotifications.sentAt,
-        errorMessage: alertNotifications.errorMessage,
-        createdAt: alertNotifications.createdAt,
-        channelName: notificationChannels.name,
-        channelType: notificationChannels.type
-      })
-      .from(alertNotifications)
-      .leftJoin(notificationChannels, eq(alertNotifications.channelId, notificationChannels.id))
-      .where(eq(alertNotifications.alertId, alertId))
-      .orderBy(desc(alertNotifications.createdAt));
+    // Get notification history. Runs in a short system-context block: a
+    // delivery may have gone through a PARTNER-WIDE channel (org_id NULL,
+    // #2130), which is RLS-invisible to org-scoped callers — the left join
+    // would silently null out channelName/channelType. The alert itself was
+    // already access-checked above (getAlertWithOrgCheck), and only display
+    // fields of the joined channel are exposed; no tenant pivot.
+    const notifications = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db
+        .select({
+          id: alertNotifications.id,
+          channelId: alertNotifications.channelId,
+          status: alertNotifications.status,
+          sentAt: alertNotifications.sentAt,
+          errorMessage: alertNotifications.errorMessage,
+          createdAt: alertNotifications.createdAt,
+          channelName: notificationChannels.name,
+          channelType: notificationChannels.type
+        })
+        .from(alertNotifications)
+        .leftJoin(notificationChannels, eq(alertNotifications.channelId, notificationChannels.id))
+        .where(eq(alertNotifications.alertId, alertId))
+        .orderBy(desc(alertNotifications.createdAt))
+    ));
 
     return c.json(withMlAlertContext({
       ...alert,
