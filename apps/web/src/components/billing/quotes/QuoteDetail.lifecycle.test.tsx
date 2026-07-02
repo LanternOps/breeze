@@ -70,6 +70,10 @@ describe('QuoteDetail — lifecycle strip', () => {
     expect(strip).toHaveTextContent(formatDate('2026-06-04T00:00:00Z'));
     // A quote that was accepted was never declined — no danger stage.
     expect(strip).not.toHaveTextContent('Declined');
+    // The `·` separator renders BETWEEN stages only — never before the first one
+    // (a stray leading `· Sent …` shipped once; keep this pinned).
+    expect(strip.textContent?.trim().startsWith('·')).toBe(false);
+    expect(strip.textContent?.trim()).toMatch(/^Sent/);
   });
 
   it('renders only the non-null stages (sent, no view/accept yet)', async () => {

@@ -167,7 +167,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                 Declined is the one destructive outcome and gets the danger token. */}
             {(quote.sentAt || quote.viewedAt || quote.acceptedAt || quote.declinedAt) && (
               <dl className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t pt-3 text-xs" data-testid="quote-detail-lifecycle">
-                {quote.sentAt && <LifecycleStage label="Sent" date={quote.sentAt} />}
+                {quote.sentAt && <LifecycleStage label="Sent" date={quote.sentAt} first />}
                 {quote.viewedAt && <LifecycleStage label="Viewed" date={quote.viewedAt} first={!quote.sentAt} />}
                 {quote.acceptedAt && <LifecycleStage label="Accepted" date={quote.acceptedAt} first={!quote.sentAt && !quote.viewedAt} />}
                 {quote.declinedAt && <LifecycleStage label="Declined" date={quote.declinedAt} first={!quote.sentAt && !quote.viewedAt && !quote.acceptedAt} danger testId="quote-detail-lifecycle-declined" />}
