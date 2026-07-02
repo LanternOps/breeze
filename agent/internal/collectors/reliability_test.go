@@ -500,6 +500,52 @@ func TestClassifyEventLogEntry(t *testing.T) {
 			wantHardware: 1,
 			wantHWType:   "unknown",
 		},
+
+		// ── Bare-ID matches require a hardware source ────────────────────────
+		// VSS (Volume Shadow Copy — software) reuses event ID 13; before the
+		// source gate this classified as a "memory" hardware error and tanked
+		// the hardware factor on healthy devices.
+		{
+			name: "VSS event 13 (software provider) → not a hardware error",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "system",
+				Source:    "VSS",
+				EventID:   "13:135",
+				Message:   "Volume Shadow Copy Service information: The COM Server with CLSID {4e14fba2-2e22-11d1-9964-00c04fbbb345} and name CEventSystem cannot be started.",
+				Details:   map[string]any{"eventId": 13},
+			},
+			wantHardware: 0,
+		},
+		{
+			name: "disk source event 11 with generic message → hardware error type disk",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "error",
+				Category:  "system",
+				Source:    "disk",
+				EventID:   "11:61",
+				Message:   "The driver detected a controller error on \\Device\\Harddisk0\\DR0.",
+				Details:   map[string]any{"eventId": 11},
+			},
+			wantHardware: 1,
+			wantHWType:   "disk",
+		},
+		{
+			name: "ntfs source event 50 with generic message → hardware error",
+			entry: EventLogEntry{
+				Timestamp: ts,
+				Level:     "warning",
+				Category:  "system",
+				Source:    "Microsoft-Windows-Ntfs",
+				EventID:   "50:62",
+				Message:   "{Delayed Write Failed} Windows was unable to save all the data for the file.",
+				Details:   map[string]any{"eventId": 50},
+			},
+			wantHardware: 1,
+			wantHWType:   "memory",
+		},
 	}
 
 	for _, tc := range tests {

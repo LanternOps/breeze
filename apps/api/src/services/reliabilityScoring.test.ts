@@ -20,6 +20,7 @@ function makeBucket(overrides: Record<string, unknown>) {
     unresolvedHangCount: 0,
     serviceFailureCount: 0,
     recoveredServiceCount: 0,
+    selfServiceFailureCount: 0,
     hardwareErrorCount: 0,
     hardwareCriticalCount: 0,
     hardwareErrorSeverityCount: 0,
@@ -373,6 +374,72 @@ describe('mergeRowsIntoDailyBuckets event dedup (#1904)', () => {
     // Genuine: a known hardware source, or a real fault subtype (incl. thermal).
     expect(isGenuineHardwareError({ source: 'nvme', type: 'unknown' } as any)).toBe(true);
     expect(isGenuineHardwareError({ source: 'com.apple.kernel', type: 'thermal' } as any)).toBe(true);
+  });
+
+  it('isGenuineHardwareError: bare-ID memory/disk stamps need a hardware source', () => {
+    const { isGenuineHardwareError } = reliabilityScoringInternals;
+    // Agents ≤0.85.x classified ANY event with ID 13/50/51 as "memory" (7/11/15
+    // as "disk"). VSS — software — logs event 13; its stamp must not count.
+    expect(isGenuineHardwareError({ source: 'VSS', type: 'memory', eventId: '13:135' } as any)).toBe(false);
+    expect(isGenuineHardwareError({ source: 'SomeAppProvider', type: 'disk', eventId: '7:2' } as any)).toBe(false);
+    // The same bare IDs from a genuine hardware provider still count.
+    expect(isGenuineHardwareError({ source: 'disk', type: 'disk', eventId: '11:5' } as any)).toBe(true);
+    expect(isGenuineHardwareError({ source: 'Microsoft-Windows-Ntfs', type: 'memory', eventId: '50:9' } as any)).toBe(true);
+    // Message-derived stamps carry non-bare IDs and pass on the type alone.
+    expect(isGenuineHardwareError({ source: 'SomeAppProvider', type: 'memory', eventId: '9001:3' } as any)).toBe(true);
+    expect(isGenuineHardwareError({ source: 'kernel', type: 'disk', eventId: undefined } as any)).toBe(true);
+    // mce/thermal stamps are never ID-derived — trusted regardless of source.
+    expect(isGenuineHardwareError({ source: 'anything', type: 'mce', eventId: '13:1' } as any)).toBe(true);
+  });
+
+  it('drops VSS event-13 memory stamps at the bucket chokepoint', () => {
+    const rows = [
+      makeHistoryRow({
+        hardwareErrors: [
+          { type: 'memory', severity: 'error', source: 'VSS', eventId: '13:135', timestamp: '2026-02-20T10:00:00.000Z' },
+          { type: 'memory', severity: 'error', source: 'VSS', eventId: '13:132', timestamp: '2026-02-20T10:01:00.000Z' },
+          { type: 'memory', severity: 'error', source: 'Microsoft-Windows-WHEA-Logger', eventId: '47:1', timestamp: '2026-02-20T10:02:00.000Z' },
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    // Only the WHEA memory fault survives the gate.
+    expect(totalCount(map, (b) => b.hardwareErrorCount)).toBe(1);
+  });
+
+  it('tracks Breeze self service failures as a subset of serviceFailureCount', () => {
+    const rows = [
+      makeHistoryRow({
+        serviceFailures: [
+          { serviceName: 'Breeze Agent', timestamp: '2026-02-20T10:00:00.000Z', errorCode: '7031:1', recovered: false },
+          { serviceName: 'breeze-watchdog', timestamp: '2026-02-20T10:01:00.000Z', errorCode: '7034:2', recovered: false },
+          { serviceName: 'Print Spooler', timestamp: '2026-02-20T10:02:00.000Z', errorCode: '7000:3', recovered: false },
+        ],
+      }),
+    ] as any[];
+
+    const map = new Map<string, any>();
+    mergeRowsIntoDailyBuckets(map, rows as any);
+
+    // The headline tile still counts everything; the score-side subset marks ours.
+    expect(totalCount(map, (b) => b.serviceFailureCount)).toBe(3);
+    expect(totalCount(map, (b) => b.selfServiceFailureCount)).toBe(2);
+  });
+
+  it('isBreezeSelfServiceFailure matches our services across platforms, not customer services', () => {
+    const { isBreezeSelfServiceFailure } = reliabilityScoringInternals;
+    expect(isBreezeSelfServiceFailure('Breeze Agent')).toBe(true);
+    expect(isBreezeSelfServiceFailure('breeze-agent')).toBe(true);
+    expect(isBreezeSelfServiceFailure('Breeze Watchdog')).toBe(true);
+    expect(isBreezeSelfServiceFailure('breeze-helper')).toBe(true);
+    expect(isBreezeSelfServiceFailure('Print Spooler')).toBe(false);
+    // "breeze" alone isn't enough — a customer service could share the word.
+    expect(isBreezeSelfServiceFailure('BreezeWorks Sync')).toBe(false);
+    expect(isBreezeSelfServiceFailure(undefined)).toBe(false);
+    expect(isBreezeSelfServiceFailure('')).toBe(false);
   });
 
   it('tracks app_crash as a downweighted subset of crashCount', () => {
@@ -751,6 +818,16 @@ describe('scoreServiceFailures', () => {
   it('10 failures (0 recovered) → low score (~14), not floored to 0', () => {
     expect(scoreServiceFailures(10, 0)).toBe(14);
   });
+  // Breeze's own service failures (agent auto-update restarts) are a subset of
+  // the 30d count and are excluded from the score entirely.
+  it('self service failures are excluded from the weighted count', () => {
+    // All 5 failures are ours → clean score.
+    expect(scoreServiceFailures(5, 0, 30, 5)).toBe(100);
+    // 6 total with 1 ours scores the same as 5 genuine failures.
+    expect(scoreServiceFailures(6, 0, 30, 1)).toBe(scoreServiceFailures(5, 0, 30));
+    // Omitting the argument keeps legacy behavior (nothing excluded).
+    expect(scoreServiceFailures(5, 0, 30)).toBe(37);
+  });
 });
 
 // Issue #1908: scoreHardwareErrors uses saturatingScore with K_HARDWARE=3.
@@ -891,6 +968,10 @@ describe('scoreDailyBucket', () => {
 
   it('a bucket with 1 service failure scores lower than a clean bucket', () => {
     expect(scoreDailyBucket(emptyBucket({ serviceFailureCount: 1 }))).toBeLessThan(100);
+  });
+
+  it('a bucket whose service failures are all Breeze self-failures scores clean', () => {
+    expect(scoreDailyBucket(emptyBucket({ serviceFailureCount: 2, selfServiceFailureCount: 2 }))).toBe(100);
   });
 
   it('a bucket with more service failures scores strictly lower (no plateau)', () => {

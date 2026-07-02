@@ -106,6 +106,7 @@ type DailyAggregateBucket = {
   unresolvedHangCount: number;
   serviceFailureCount: number;
   recoveredServiceCount: number;
+  selfServiceFailureCount: number;
   hardwareErrorCount: number;
   hardwareCriticalCount: number;
   hardwareErrorSeverityCount: number;
@@ -484,12 +485,18 @@ function scoreHangs(
 function scoreServiceFailures(
   serviceFailureCount30d: number,
   recoveredCount30d: number,
-  observedUpDays30: number = RELIABILITY_RATE_REFERENCE_DAYS
+  observedUpDays30: number = RELIABILITY_RATE_REFERENCE_DAYS,
+  selfServiceFailureCount30d = 0
 ): number {
   // Issue #1908: recovered failures get half-weight credit. Math.max(0, ...)
   // floors the case where recoveries exceed failures (weightedCount 0 → rate 0 →
   // score 100) before the divide. Rate-normalized; k_rate = K_SERVICES / REFERENCE.
-  const weightedCount = Math.max(0, serviceFailureCount30d - recoveredCount30d * 0.5);
+  // Breeze's own service failures (a subset of the 30d count) are excluded from
+  // the score entirely — restarts we caused must not read as device instability.
+  const weightedCount = Math.max(
+    0,
+    serviceFailureCount30d - selfServiceFailureCount30d - recoveredCount30d * 0.5
+  );
   return saturatingRateScore(weightedCount, K_SERVICES, observedUpDays30);
 }
 
@@ -584,6 +591,7 @@ function createEmptyBucket(date: string): DailyAggregateBucket {
     unresolvedHangCount: 0,
     serviceFailureCount: 0,
     recoveredServiceCount: 0,
+    selfServiceFailureCount: 0,
     hardwareErrorCount: 0,
     hardwareCriticalCount: 0,
     hardwareErrorSeverityCount: 0,
@@ -617,6 +625,7 @@ function normalizeBucketRecord(raw: unknown, dateOverride?: string): DailyAggreg
     unresolvedHangCount: coerceCount(obj.unresolvedHangCount),
     serviceFailureCount: coerceCount(obj.serviceFailureCount),
     recoveredServiceCount: coerceCount(obj.recoveredServiceCount),
+    selfServiceFailureCount: coerceCount(obj.selfServiceFailureCount),
     hardwareErrorCount: coerceCount(obj.hardwareErrorCount),
     hardwareCriticalCount: coerceCount(obj.hardwareCriticalCount),
     hardwareErrorSeverityCount: coerceCount(obj.hardwareErrorSeverityCount),
@@ -675,6 +684,7 @@ function serializeDailyBuckets(dailyBuckets: DailyAggregateBucket[]): DailyAggre
     unresolvedHangCount: bucket.unresolvedHangCount,
     serviceFailureCount: bucket.serviceFailureCount,
     recoveredServiceCount: bucket.recoveredServiceCount,
+    selfServiceFailureCount: bucket.selfServiceFailureCount,
     hardwareErrorCount: bucket.hardwareErrorCount,
     hardwareCriticalCount: bucket.hardwareCriticalCount,
     hardwareErrorSeverityCount: bucket.hardwareErrorSeverityCount,
@@ -756,10 +766,50 @@ const HARDWARE_SOURCE_KEYWORDS = [
   'iastor', 'msahci', 'nvlddmkm', 'amdkmdag', 'igfx', 'thermal', 'edac',
 ];
 
+// Windows event IDs the agent's classifyHardwareType maps to memory (13/50/51)
+// and disk (7/11/15) purely by number. Agents ≤ v0.85.x applied those ID matches
+// to ANY provider, so software events sharing an ID arrived stamped type="memory"/
+// "disk" — VSS logs event 13 and was scored as a memory fault. The agent now
+// requires a hardware source for ID-only matches; this mirrors that rule so rows
+// already written (and stragglers on old binaries) self-heal on recompute.
+const BARE_ID_STAMPED_EVENT_IDS = new Set([7, 11, 13, 15, 50, 51]);
+
+function numericEventIdPrefix(eventId: string | undefined): number | null {
+  if (!eventId) return null;
+  const parsed = Number.parseInt(eventId.split(':')[0]!.trim(), 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
 function isGenuineHardwareError(event: HistoryRow['hardwareErrors'][number]): boolean {
-  if (HARDWARE_FAULT_TYPES.has((event.type ?? '').toLowerCase())) return true;
+  const type = (event.type ?? '').toLowerCase();
   const source = (event.source ?? '').toLowerCase();
-  return HARDWARE_SOURCE_KEYWORDS.some((keyword) => source.includes(keyword));
+  const hasHardwareSource = HARDWARE_SOURCE_KEYWORDS.some((keyword) => source.includes(keyword));
+  if (HARDWARE_FAULT_TYPES.has(type)) {
+    // memory/disk stamps that look ID-derived need a hardware provider behind
+    // them; mce/thermal (and message-derived memory/disk, whose event IDs fall
+    // outside the bare-ID set) pass on the type stamp alone.
+    if (type === 'memory' || type === 'disk') {
+      const numericId = numericEventIdPrefix(event.eventId);
+      if (numericId !== null && BARE_ID_STAMPED_EVENT_IDS.has(numericId) && !hasHardwareSource) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return hasHardwareSource;
+}
+
+// Breeze's own services, as they appear in service-failure events: SCM parses
+// "Breeze Agent" / "Breeze Watchdog" on Windows; systemd units are
+// breeze-agent / breeze-watchdog on Linux; launchd labels contain breeze + agent
+// on macOS. Their failures are usually self-inflicted (an auto-update stops the
+// service, which SCM records as 7031 "terminated unexpectedly") and must not
+// count against the customer device's reliability score. Matched loosely on
+// name so the Windows display name and the unix unit names all hit.
+function isBreezeSelfServiceFailure(serviceName: string | undefined): boolean {
+  const name = (serviceName ?? '').toLowerCase();
+  if (!name.includes('breeze')) return false;
+  return name.includes('agent') || name.includes('watchdog') || name.includes('helper');
 }
 
 // The day bucket an event belongs to is the day of the EVENT's own timestamp,
@@ -826,6 +876,11 @@ function mergeRowsIntoDailyBuckets(
       const bucket = upsertBucket(map, eventDayKey(event.timestamp, row.collectedAt));
       bucket.serviceFailureCount += 1;
       if (event.recovered) bucket.recoveredServiceCount += 1;
+      // Breeze's own services are a subset of serviceFailureCount, tracked
+      // separately so the score can exclude self-inflicted failures (an agent
+      // auto-update lands as SCM 7031 "terminated unexpectedly") while the
+      // headline tile still shows every failure.
+      if (isBreezeSelfServiceFailure(event.serviceName)) bucket.selfServiceFailureCount += 1;
       bucket.lastServiceFailureAt = maxTimestamp([bucket.lastServiceFailureAt, event.timestamp ?? fallbackTimestamp]);
     }
 
@@ -902,7 +957,7 @@ function scoreDailyBucket(bucket: DailyAggregateBucket): number {
     lost(saturatingScore(effectiveCrashLoad(bucket.crashCount, bucket.appCrashCount), K_CRASHES))
     + lost(saturatingScore(bucket.hangCount + bucket.unresolvedHangCount, K_HANGS))
     + lost(saturatingScore(
-      Math.max(0, bucket.serviceFailureCount - bucket.recoveredServiceCount * 0.5),
+      Math.max(0, bucket.serviceFailureCount - bucket.selfServiceFailureCount - bucket.recoveredServiceCount * 0.5),
       K_SERVICES,
     ))
     + lost(saturatingScore(
@@ -1259,6 +1314,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   const serviceFailureCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.serviceFailureCount);
   const serviceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.serviceFailureCount);
   const recoveredServiceCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.recoveredServiceCount);
+  const selfServiceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.selfServiceFailureCount);
 
   const hardwareErrorCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.hardwareErrorCount);
   const hardwareErrorCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hardwareErrorCount);
@@ -1276,7 +1332,8 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   const serviceFailureScore = scoreServiceFailures(
     serviceFailureCount30d,
     recoveredServiceCount30d,
-    observedUpDays30
+    observedUpDays30,
+    selfServiceFailureCount30d
   );
   const hardwareErrorScore = scoreHardwareErrors(
     criticalHardwareCount30d,
@@ -1334,6 +1391,9 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
         serviceFailureCount7d,
         serviceFailureCount30d,
         recoveredServiceCount30d,
+        // Subset of serviceFailureCount30d excluded from the score (Breeze's own
+        // services); recorded so drill-downs can explain count vs. score.
+        selfServiceFailureCount30d,
       },
       hardwareErrors: {
         score: hardwareErrorScore,
@@ -2021,6 +2081,7 @@ export const reliabilityScoringInternals = {
   RELIABILITY_RATE_REFERENCE_DAYS,
   RELIABILITY_RATE_MIN_DAYS,
   isGenuineHardwareError,
+  isBreezeSelfServiceFailure,
   effectiveCrashLoad,
   RELIABILITY_APP_CRASH_WEIGHT,
 };

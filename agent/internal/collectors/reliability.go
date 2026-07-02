@@ -114,9 +114,16 @@ func severityFromLevel(level string) string {
 // classifyHardwareType returns a hardware error category string.
 // numericID is the parsed integer event ID (pass numericEventID(entry) before calling).
 // Returns "unknown" when the event does not match a known hardware signal.
+//
+// Bare numeric event IDs are only meaningful per-provider: 13/50/51 (memory) and
+// 7/11/15 (disk) are hardware signals when emitted by disk/ntfs/volmgr-class
+// sources, but software providers reuse the same IDs — VSS logs event 13, which
+// an unconditional ID match turned into a "memory" hardware error. ID-only
+// matches therefore require a known hardware source; message signals stand alone.
 func classifyHardwareType(message, source string, numericID int) string {
 	msg := strings.ToLower(message)
 	src := strings.ToLower(source)
+	hwSrc := isHardwareSource(src)
 	switch {
 	case strings.Contains(src, "whea"), strings.Contains(msg, "machine check"), strings.Contains(msg, "mce"):
 		return "mce"
@@ -126,10 +133,10 @@ func classifyHardwareType(message, source string, numericID int) string {
 		// substring "thermal" appears in the source.
 		return "thermal"
 	case strings.Contains(msg, "memory"), strings.Contains(msg, "edac"),
-		numericID == 13 || numericID == 50 || numericID == 51:
+		hwSrc && (numericID == 13 || numericID == 50 || numericID == 51):
 		return "memory"
 	case strings.Contains(msg, "disk"), strings.Contains(msg, "i/o"), strings.Contains(msg, "blk_update_request"),
-		numericID == 7 || numericID == 11 || numericID == 15:
+		hwSrc && (numericID == 7 || numericID == 11 || numericID == 15):
 		return "disk"
 	default:
 		return "unknown"
