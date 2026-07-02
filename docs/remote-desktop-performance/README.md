@@ -682,14 +682,14 @@ No video regression on either box (skip/drop 0, encodeMs unchanged); `dropped=0`
 under a 60Hz input flood. Outstanding: the human interactive-correctness pass
 (right char typed, drag tracks), folded into the end-of-phase ship gate.
 
-### Change #10 (optional) — pool encoder output buffers (T2)
-All three backends allocate per output frame (`encoder_amf_windows.go:582`,
-`mft_encode_windows.go:515`, `encoder_openh264.go:281`); `encodedFramePool`
-already exists in `session_capture.go:40-61` but isn't wired in. Win is GC
-pressure only (likely below noise). Hard part is ownership — outputs flow to
-`WriteSample` + `cacheEncodedFrame`, so pooling needs a provable release point
-(same risk shape that got finding #2 skipped). Attempt only with a clean
-ownership story; otherwise skip with a register note.
+### Change #10 (optional) — pool encoder output buffers (T2) ❌ SKIPPED
+Pre-checked and skipped — see the T2 detail in [findings.md](./findings.md). A
+provable release point does exist (after `cacheEncodedFrame` returns; pion's
+`WriteSample` copies synchronously), but the win is GC-only and below noise, and
+pion's H264 payloader retains SPS/PPS sub-slices of `sample.Data` for STAP-A
+aggregation — making pooling a silent-decoder-corruption risk unless STAP-A is
+also disabled (a wire-format change for a below-noise win). Poor trade; same
+disposition as finding #2. Revisit only if a profiler flags it.
 
 ### Rig expansion — enroll VM .55 (GDI/software leg)
 Unblocks two things: **T3** (CRC32→Castagnoli, software/GDI path only) as a
@@ -723,9 +723,11 @@ keys/clicks/scroll, single worker preserves order). Unit-tested (incl. concurren
 `dropped=0` under a 60Hz input flood, which also observably moved the target
 (proof injection works end-to-end). **Both boxes are now on the Change #9 binary**
 (`dev-1782967071`). #8's AMD-tearing gate was already cleared (visual pass
-2026-07-02). Next per the plan: Change #10 (optional — pool encoder output
-buffers, attempt only with a clean ownership story), rig expansion (VM .55
-GDI/software leg unblocks T3), rig follow-up (>=60fps-presenting motion source).
+2026-07-02). Change #10 (pool encoder output buffers) was **pre-checked and
+skipped** — negligible GC-only win + a pion STAP-A retention landmine (T2 in
+findings.md); same disposition as finding #2. Next per the plan: rig expansion
+(VM .55 GDI/software leg unblocks T3), rig follow-up (>=60fps-presenting motion
+source).
 Outstanding gates: **human interactive-correctness pass for #9** (right char
 typed, drag tracks, Ctrl+Alt+Del — analogue of #8's visual pass); end-of-phase
 visual pass on the final squashed binary; live bursty-loss validation of Change

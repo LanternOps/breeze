@@ -14,7 +14,7 @@ with final disposition. Ordered by original ranking.
 | 3 | Adaptive bitrate ramps up far too slowly (~60s recovery) | 1 | ✅ Fixed | #6 |
 | 4 | Dead per-frame dirty-rect allocation | 1 | ✅ Fixed | #5 |
 | T1 | AMF blocks ~16–20ms/frame in sleep-poll under encoder mutex | 2 | ✅ Fixed | #1 |
-| T2 | Per-frame encoder output allocation | 2 | ⬜ Open | planned #10 (optional) |
+| T2 | Per-frame encoder output allocation | 2 | ❌ Skipped (deliberate) | #10 pre-check — negligible win, pion STAP-A retention landmine |
 | T3 | CRC32 IEEE→Castagnoli on GDI/software path | 2 | ⬜ Open | planned (after VM leg enrolled) |
 | T4 | Input handled inline on the SCTP goroutine | 2 | ✅ Fixed | #9 |
 | T5 | Redundant per-frame `Flush` in `CaptureTexture` | 2 | ✅ Fixed | #8 |
@@ -137,6 +137,39 @@ doubles as proof the injection reached the target. Interactive *correctness*
 (right char, drag tracks) still needs a human in the viewer.
 
 ## Detail — deliberately skipped
+
+### Encoder output buffer pooling (finding T2 / Change #10) — pre-check said skip
+
+The plan gated #10 on a clean ownership story. The pre-check traced the full
+lifecycle and found the win is not worth the risk:
+
+- **Win is negligible.** All three backends `make([]byte, ...)` one output slice
+  per frame (`encoder_amf_windows.go` `readBitstream`, `mft_encode_windows.go`
+  `extractSampleData`, `encoder_openh264.go`). At ~48fps × ~4–40KB that's
+  ~1–2 MB/s of short-lived garbage — trivial for Go's GC, and (unlike the
+  structural findings) it was never on any latency path. `encodedFramePool`
+  (`session_capture.go`) already exists but is wired only to the secure-desktop
+  resend cache.
+- **A provable release point exists** — after `cacheEncodedFrame(h264Data)`
+  returns (`session_capture.go`, both CPU/GPU tails): pion's `WriteSample` is
+  synchronous and its H264 payloader **copies** each NALU into fresh RTP payload
+  buffers (`codecs/h264_packet.go` `Payload`), and `cacheEncodedFrame` copies into
+  its own pooled buffer. So far, poolable.
+- **…but the ownership story is NOT clean.** pion's `H264Payloader` caches
+  `spsNalu`/`ppsNalu` as **sub-slices of `sample.Data`** across `Payload` calls
+  (STAP-A parameter-set aggregation), clearing them only when a subsequent VCL
+  NALU fires the STAP-A branch. It's safe *today* only because every backend
+  co-emits `SPS PPS IDR` in one output buffer. If any backend/driver ever split
+  SPS/PPS from the following slice across two buffers, a recycled buffer would
+  corrupt the parameter sets copied into the next keyframe → **silent decoder
+  corruption**, invisible to the node-peer (no decoder) — the #8 tearing risk
+  shape, but worse.
+
+Making it robustly safe would require `WithPayloader(&codecs.H264Payloader{
+DisableStapA: true})` — a wire-format change to every session — purely to unlock
+a below-noise GC win. Poor trade. **Skipped**, same disposition and reasoning as
+finding #2. Revisit only if a profiler ever shows encoder-output allocation
+mattering; if so, disable STAP-A first, then pool.
 
 ### cacheEncodedFrame gating (finding 2)
 
