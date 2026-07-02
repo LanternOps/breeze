@@ -733,6 +733,22 @@ typed, drag tracks, Ctrl+Alt+Del — analogue of #8's visual pass); end-of-phase
 visual pass on the final squashed binary; live bursty-loss validation of Change
 #6 when a network shaper is available.
 
+**2026-07-02 (later): "more artifacting/ghosting" report — root-caused, NOT the
+perf changes.** Todd's interactive test connected while Kit sat at the lock
+screen; the console login killed the first WebRTC connection and the viewer
+auto-reconnected. Three `DesktopViewer.tsx` effects stayed bound to the dead
+connection (deps `[transport]` don't change on reconnect), so `viewer_stats`
+stopped and the adaptive controller — whose only input they are — froze the
+new AMF session at its 2.5 Mbps initial bitrate for 6m43s at 1440p60
+(~0.011 bits/pixel → the artifacting/ghosting). Registered as **V1** in
+findings.md; fixed viewer-side in **PR #2158** (statsReporter reads the current
+connection each tick + `webrtcEpoch` re-binds the control-channel listener
+effects — monitor switching after reconnect was also silently dead). Agent-side
+defense (RTCP fallback / stats-starvation WARN) registered under "still open".
+Re-test after #2158 merges: repeat lock-screen → login → reconnect and confirm
+"Adaptive bitrate adjustment" lines resume in `user-helper.log` and quality
+ramps; only if ghosting persists at ramped bitrate does #8 get a second look.
+
 **To bring the rig back up next session:**
 1. **Stack:** `pnpm wt-stack up` in the worktree. Ports are ephemeral — read
    `.breeze-stack.json`. Admin `admin@breeze.local` / `BreezeAdmin123!`. Org

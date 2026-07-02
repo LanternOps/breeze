@@ -19,6 +19,7 @@ with final disposition. Ordered by original ranking.
 | T4 | Input handled inline on the SCTP goroutine | 2 | ✅ Fixed | #9 |
 | T5 | Redundant per-frame `Flush` in `CaptureTexture` | 2 | ✅ Fixed | #8 |
 | F1 | Delivered fps caps at ~48–50, not 60 (capture/display pacing, exposed by #1) | Follow-up | ✅ Resolved (root cause revised) | #7 — cap is the motion-source present rate, not the loop; #7 fixes the loop's real defects (exact-target pacing, coalescing recovery) |
+| V1 | Viewer: stats/control effects stay bound to the DEAD connection after auto-reconnect → `viewer_stats` stop → adaptive bitrate frozen at 2.5 Mbps initial (severe artifacting/ghosting at 1440p60); monitor switching + desktop-state also silently dead | Structural (viewer, pre-existing) | ✅ Fixed | PR #2158 (found during phase visual testing 2026-07-02) |
 
 ## Detail — fixed findings
 
@@ -136,6 +137,37 @@ added to prove (a) no video regression and (b) input is injected. The flood
 doubles as proof the injection reached the target. Interactive *correctness*
 (right char, drag tracks) still needs a human in the viewer.
 
+### Viewer reconnect kills adaptive bitrate (V1, PR #2158) — the "more artifacting/ghosting" report
+
+Reported by Todd 2026-07-02 after interactive testing: "performance seems good
+but there's more artifacting and ghosting." Diagnosed from Kit's
+`user-helper.log`, session `3b7c59bb` (10:42):
+
+1. Connect while Kit sat at the **lock screen** → session starts on Winlogon
+   with GDI + OpenH264 (software cap 4 Mbps) — expected behavior.
+2. Console login → desktop transition kills the first WebRTC connection →
+   viewer **auto-reconnects** (same session id, brand-new `RTCPeerConnection`)
+   → fresh `StartSession` picks AMF @ 2560×1440, 60fps, initial 2,500,000 bps.
+3. **Zero `Viewer WebRTC stats` lines for the rest of the session** (6m43s).
+   `viewer_stats` are the adaptive controller's ONLY input
+   (`session_control.go` → the single `adaptive.Update` call site), so the
+   stream never ramped toward the 30 Mbps 1440p ceiling: steady ~250 KB/s ≈
+   2 Mbps ≈ 42 kbit/frame ≈ **0.011 bits/pixel** → exactly the smearing
+   ("ghosting") + blocking ("artifacting") reported. fps was fine (~48 —
+   motion-source-limited), which is why it *felt* fast but *looked* bad.
+
+Viewer root cause: three `DesktopViewer.tsx` effects captured `pc` /
+`controlChannel` at effect-run time with deps `[transport]`, which never
+changes across an auto-reconnect — stats polling (silent `catch` on the closed
+pc), the control-message handler (monitors/sessions/desktop_state), and the
+cursor-stream sync. Pre-existing since the #1641 era; **not** caused by
+changes #7–#9 (the phase testing just hit lock-screen → login → reconnect for
+the first time). Fix: `statsReporter.ts` re-reads the current connection every
+tick + a `webrtcEpoch` dep re-binds the listener effects (PR #2158).
+
+Exonerates Change #8 for this report — at 0.011 bits/pixel the encoder input
+is irrelevant — but the end-of-phase AMD tearing watch stands.
+
 ## Detail — deliberately skipped
 
 ### Encoder output buffer pooling (finding T2 / Change #10) — pre-check said skip
@@ -192,6 +224,13 @@ Re-evaluate only if a profiler ever shows it.
   shaper); tearing can only be judged by a human in the real viewer (checked
   clean on 2026-07-01, and again on the #8 binary / Kit-AMD 2026-07-02 — the
   path most exposed to the flush removal).
+- **Adaptive controller single point of failure (V1 follow-up):** the agent's
+  adaptive bitrate has exactly one input — `viewer_stats` over the control
+  DataChannel. The comment in `session_control.go` claims it's "a fallback when
+  pion's RTCP RemoteInboundRTPStreamStats are unavailable," but no RTCP-driven
+  `adaptive.Update` path exists. Any client that doesn't send stats (or stops)
+  freezes the bitrate at whatever it last was. Candidates: agent-side RTCP
+  reader feeding `Update`, and/or a WARN when streaming >30s with no stats.
 - **From PR #2145 review (deferred):** session metrics don't distinguish
   "encoder buffering" from "frame dropped for backpressure" — the nil-output
   path hits neither `RecordSkip` nor `RecordDrop`, so async-pipeline absorption
