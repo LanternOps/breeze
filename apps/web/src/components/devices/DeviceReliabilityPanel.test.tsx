@@ -140,13 +140,40 @@ describe('DeviceReliabilityPanel', () => {
     });
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
       type: 'success',
-      message: 'False alarm label saved',
+      message: 'Marked as false alarm — this helps tune future scores',
     }));
 
     // Menu closes after selecting an outcome (close-on-select).
     await waitFor(() => {
       expect(screen.queryByTestId('reliability-outcome-menu')).toBeNull();
     });
+  });
+
+  it('explains each outcome action in the menu', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ snapshot: baseSnapshot(), history: [] }),
+    );
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    await openOutcomeMenu();
+
+    expect(screen.getByText('This device is flagged at risk. What actually happened?')).toBeInTheDocument();
+    expect(screen.getByText('It broke down or needed major repair — the risk was real.')).toBeInTheDocument();
+    expect(screen.getByText('You retired or swapped it because of reliability problems.')).toBeInTheDocument();
+    expect(screen.getByText('The device is fine — this score overstated the risk.')).toBeInTheDocument();
+  });
+
+  it('hides the outcome-feedback affordance on devices that are not at risk', async () => {
+    // Feedback resolves the At-risk prediction; a healthy device has no
+    // prediction to resolve, so there is nothing to "mark".
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ snapshot: baseSnapshot({ reliabilityScore: 92 }), history: [] }),
+    );
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+
+    await screen.findByText('Reliability');
+    expect(screen.queryByTestId('reliability-outcome-trigger')).toBeNull();
   });
 
   it('toasts an error when feedback submission fails (non-2xx)', async () => {
@@ -437,7 +464,7 @@ describe('DeviceReliabilityPanel', () => {
     expect(screen.queryByText(/1,228/)).toBeNull();
   });
 
-  it('relabels fixed windows to observed age on a young device (issue #1907)', async () => {
+  it('keeps the fixed window label on a young device (age context lives in the tooltip)', async () => {
     const enrolledAt = new Date(Date.now() - 13 * 24 * 60 * 60 * 1000).toISOString();
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({ snapshot: baseSnapshot({ enrolledAt }), history: [] }),
@@ -446,7 +473,8 @@ describe('DeviceReliabilityPanel', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
     const windowLabel = await screen.findByTestId('reliability-uptime-window');
-    expect(windowLabel.textContent).toContain('since enroll · 13d');
+    expect(windowLabel.textContent).toBe('30d uptime');
+    expect(screen.queryByText(/since enroll/)).toBeNull();
   });
 
   it('keeps the full window label when the device is older than the window', async () => {
@@ -526,7 +554,7 @@ describe('DeviceReliabilityPanel', () => {
     expect(screen.queryByTestId('reliability-top-drag')).toBeNull();
   });
 
-  it('phrases the biggest-drag count window as since-enroll on a young device', async () => {
+  it('keeps the fixed 30d window phrasing on a young device (no since-enroll labels)', async () => {
     const enrolledAt = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({
@@ -546,7 +574,8 @@ describe('DeviceReliabilityPanel', () => {
 
     await screen.findByTestId('reliability-top-drag');
     // Appears in the headline stat and again in the factor row's evidence.
-    expect(screen.getAllByText(/24 since enroll/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/24 in 30d/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/since enroll/)).toBeNull();
   });
 
   // The 63-score case from prod: services 0/21 + hardware 26/22 + crashes

@@ -76,18 +76,13 @@ function formatCount(value: number): string {
 }
 
 // Observed device age in whole days, or null when enrollment time is unknown.
+// Used only to add a "windows span less than 30d" tooltip on young devices —
+// labels always use the fixed window.
 function deviceAgeDays(enrolledAt?: string | null): number | null {
   if (!enrolledAt) return null;
   const ms = Date.parse(enrolledAt);
   if (Number.isNaN(ms)) return null;
   return Math.max(0, Math.floor((Date.now() - ms) / DAY_MS));
-}
-
-// Relabel a fixed window ("30d") to the actually-observed age on a device younger
-// than the window ("since enroll · 13d"), so counts aren't read as a full month.
-function windowLabel(windowDays: number, ageDays: number | null): string {
-  if (ageDays !== null && ageDays < windowDays) return `since enroll · ${ageDays}d`;
-  return `${windowDays}d`;
 }
 
 type DeviceReliabilityPanelProps = {
@@ -105,12 +100,31 @@ const issueLabels: Record<ReliabilityTopIssue['type'], string> = {
 const OUTCOME_ITEMS: Array<{
   outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
   label: string;
+  description: string;
   Icon: typeof AlertTriangle;
   iconClass: string;
 }> = [
-  { outcome: 'failure_confirmed', label: 'Device failed', Icon: AlertTriangle, iconClass: 'text-destructive' },
-  { outcome: 'replaced', label: 'Device replaced', Icon: Wrench, iconClass: 'text-muted-foreground' },
-  { outcome: 'false_alarm', label: 'False alarm', Icon: XCircle, iconClass: 'text-muted-foreground' },
+  {
+    outcome: 'failure_confirmed',
+    label: 'Device failed',
+    description: 'It broke down or needed major repair — the risk was real.',
+    Icon: AlertTriangle,
+    iconClass: 'text-destructive',
+  },
+  {
+    outcome: 'replaced',
+    label: 'Device replaced',
+    description: 'You retired or swapped it because of reliability problems.',
+    Icon: Wrench,
+    iconClass: 'text-muted-foreground',
+  },
+  {
+    outcome: 'false_alarm',
+    label: 'False alarm',
+    description: 'The device is fine — this score overstated the risk.',
+    Icon: XCircle,
+    iconClass: 'text-muted-foreground',
+  },
 ];
 
 function scoreClass(score: number): string {
@@ -447,10 +461,10 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         }),
         errorFallback: 'Could not save reliability feedback',
         successMessage: outcome === 'false_alarm'
-          ? 'False alarm label saved'
+          ? 'Marked as false alarm — this helps tune future scores'
           : outcome === 'replaced'
-            ? 'Replacement label saved'
-            : 'Failure label saved',
+            ? 'Marked as replaced — this helps tune future scores'
+            : 'Marked as failed — this helps tune future scores',
       });
     } catch (err) {
       handleActionError(err, 'Could not save reliability feedback');
@@ -516,7 +530,6 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   }
 
   const ageDays = deviceAgeDays(snapshot.enrolledAt);
-  const uptimeWindow = windowLabel(OFFENDER_WINDOW_DAYS, ageDays);
   // Workstation-profile devices score uptime at 0% weight (they sleep/reboot by
   // design), so a perfect uptime% next to a low score reads as a contradiction —
   // "why is the score low when uptime is 100%?". When uptime carries no weight
@@ -526,15 +539,12 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const topDrag = (snapshot.drivers ?? [])[0];
   const topDragCount = topDrag ? factorCount30d(snapshot, topDrag.factor) : null;
   const showTopDragStat = uptimeDriver?.weight === 0 && topDrag !== undefined && topDrag.lostPoints > 0;
-  // Phrase the drill-down window the same way as the factor rows: observed age
-  // on a young device, otherwise the fixed window.
-  const offenderWindowText =
-    ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS
-      ? `since enroll (${ageDays}d)`
-      : `last ${OFFENDER_WINDOW_DAYS} days`;
-  // Short form for inline evidence: "24 since enroll" / "24 in 30d".
-  const windowPhrase =
-    ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS ? 'since enroll' : `in ${OFFENDER_WINDOW_DAYS}d`;
+  const offenderWindowText = `last ${OFFENDER_WINDOW_DAYS} days`;
+  // Short form for inline evidence: "24 in 30d".
+  const windowPhrase = `in ${OFFENDER_WINDOW_DAYS}d`;
+  // Young devices haven't lived a full window yet; a tooltip carries that
+  // context instead of relabeling every window (the old "since enroll · Nd").
+  const youngDevice = ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS;
   const offenderEventTotal =
     snapshot.serviceFailureCount30d + snapshot.hardwareErrorCount30d + snapshot.hangCount30d;
 
@@ -595,8 +605,8 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             ) : (
               <div>
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <span data-testid="reliability-uptime-window">{uptimeWindow} uptime</span>
-                  {ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS && (
+                  <span data-testid="reliability-uptime-window">{OFFENDER_WINDOW_DAYS}d uptime</span>
+                  {youngDevice && (
                     <HelpTooltip
                       text={`This device enrolled ${ageDays} day${ageDays === 1 ? '' : 's'} ago, so the ${OFFENDER_WINDOW_DAYS}-day windows only span its lifetime so far.`}
                     />
@@ -657,6 +667,11 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             <Sparkles className="h-4 w-4" />
             Ask AI about reliability
           </button>
+          {/* Feedback resolves the At-risk PREDICTION, not the ongoing score —
+              a healthy device has no prediction to resolve, so the affordance
+              only exists while the card shows the At-risk chip. Labels feed the
+              model's precision evaluation (was the at-risk call real?). */}
+          {snapshot.reliabilityScore <= 70 && (
           <div ref={outcomeMenuRef} className="relative">
             <button
               type="button"
@@ -667,7 +682,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               onClick={() => setOutcomeMenuOpen((o) => !o)}
               className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Mark outcome
+              Was this right?
               <ChevronDown className="h-3.5 w-3.5" />
             </button>
 
@@ -675,31 +690,35 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               <div
                 role="menu"
                 data-testid="reliability-outcome-menu"
-                className="absolute right-0 top-9 z-30 w-64 rounded-md border bg-popover p-1 shadow-lg"
+                className="absolute right-0 top-9 z-30 w-72 rounded-md border bg-popover p-1 shadow-lg"
               >
-                <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Was this accurate?
+                <p className="px-2 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+                  This device is flagged at risk. What actually happened?
                 </p>
-                {OUTCOME_ITEMS.map(({ outcome, label, Icon, iconClass }) => (
+                {OUTCOME_ITEMS.map(({ outcome, label, description, Icon, iconClass }) => (
                   <button
                     key={outcome}
                     type="button"
                     data-testid={`reliability-outcome-${outcome}`}
                     disabled={labeling !== null}
                     onClick={() => handleOutcome(outcome)}
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    <Icon className={`h-4 w-4 shrink-0 ${iconClass}`} />
-                    {label}
+                    <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${iconClass}`} />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium">{label}</span>
+                      <span className="block text-xs text-muted-foreground">{description}</span>
+                    </span>
                   </button>
                 ))}
                 <hr className="my-1" />
                 <p className="px-2 pb-1.5 pt-0.5 text-xs text-muted-foreground">
-                  These train the reliability model — they don't change the device.
+                  Your answer trains the scoring model. It doesn't change this device or its score.
                 </p>
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 
