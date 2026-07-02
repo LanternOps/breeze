@@ -103,4 +103,46 @@ describe('AdminSessionManager idle timeout source', () => {
     expect(apiLogoutMock).toHaveBeenCalledTimes(1);
     expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
   });
+
+  it('keeps the 60-minute default when effective settings omit sessionTimeout', async () => {
+    // Neither partner nor org set security.sessionTimeout — the guard must
+    // reject the absent/zero value rather than produce a 1-minute timeout.
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ effective: { security: {} }, locked: [] })
+    );
+
+    render(<AdminSessionManager />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Well past any short timeout but under the 60-minute default — no logout.
+    await act(async () => {
+      vi.advanceTimersByTime(5 * 60_000);
+      await Promise.resolve();
+    });
+
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the default timeout when the effective-settings request fails', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 500));
+
+    render(<AdminSessionManager />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // A 500 must not crash or zero the timer — the default 60 min still applies.
+    await act(async () => {
+      vi.advanceTimersByTime(5 * 60_000);
+      await Promise.resolve();
+    });
+
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
 });

@@ -81,6 +81,13 @@ export default function AdminSessionManager() {
           `/orgs/organizations/${currentOrgId}/effective-settings`
         );
         if (!response.ok) {
+          // Surface the failure: this is the path that enforces a possibly
+          // partner-locked idle timeout, so a silent fall-back to the frontend
+          // default must at least be diagnosable (matches OrgSettingsPage).
+          console.warn(
+            '[AdminSessionManager] Failed to load effective session timeout:',
+            response.status
+          );
           return;
         }
         const data = await response.json();
@@ -88,8 +95,9 @@ export default function AdminSessionManager() {
         if (!cancelled && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
           setIdleTimeoutMs(Math.max(1, configuredMinutes) * 60 * 1000);
         }
-      } catch {
+      } catch (err) {
         // Keep current timeout fallback when effective settings cannot be loaded.
+        console.warn('[AdminSessionManager] Error loading effective session timeout:', err);
       }
     };
 
