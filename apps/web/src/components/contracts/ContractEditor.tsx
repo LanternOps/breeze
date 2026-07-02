@@ -654,7 +654,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   Billing timing
                   <select
                     value={billingTiming}
-                    disabled={!canWrite || !scheduleEditable}
+                    disabled={!canWrite || !scheduleEditable || isPending('timing')}
                     onChange={(e) => {
                       const v = e.target.value as ContractBillingTiming;
                       const prev = billingTiming;
@@ -673,7 +673,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   Billing cadence
                   <select
                     value={intervalCustom ? 'custom' : String(intervalMonths)}
-                    disabled={!canWrite || !scheduleEditable}
+                    disabled={!canWrite || !scheduleEditable || isPending('interval')}
                     onChange={(e) => {
                       if (e.target.value === 'custom') { setIntervalCustom(true); setCustomMonths(String(intervalMonths)); return; }
                       const prevMonths = intervalMonths;
@@ -698,7 +698,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       type="number" min="1" max="60" value={customMonths}
                       onChange={(e) => setCustomMonths(e.target.value)}
                       onBlur={commitInterval}
-                      disabled={!canWrite || !scheduleEditable}
+                      disabled={!canWrite || !scheduleEditable || isPending('interval')}
                       data-testid="contract-form-interval-custom"
                       className={`${baseInput} ${fieldRing(intervalDirty, isSaved('interval'))}`}
                     />
@@ -736,7 +736,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 </label>
                 <label className="flex items-center gap-2 text-sm sm:col-span-2">
                   <input
-                    type="checkbox" checked={autoIssue} disabled={!canWrite}
+                    type="checkbox" checked={autoIssue} disabled={!canWrite || isPending('autoIssue')}
                     onChange={(e) => {
                       const next = e.target.checked;
                       setAutoIssue(next);
@@ -750,7 +750,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <div className="sm:col-span-2">
                   <label className="flex items-center gap-2 text-sm" data-testid="contract-auto-renew-toggle">
                     <input
-                      type="checkbox" checked={autoRenew} disabled={!canWrite || !endDate}
+                      type="checkbox" checked={autoRenew} disabled={!canWrite || !endDate || isPending('autoRenew')}
                       onChange={(e) => {
                         const checked = e.target.checked;
                         setAutoRenew(checked);

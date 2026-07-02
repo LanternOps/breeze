@@ -305,6 +305,62 @@ describe('ContractEditor — failed PATCH rolls optimistic controls back', () =>
   });
 });
 
+describe('ContractEditor — immediate-commit controls lock while their PATCH is in flight', () => {
+  // Without the lock, a rapid second toggle would capture the OPTIMISTIC value
+  // as `prev`, get guard-blocked by runScoped's inFlight set (which resolves
+  // false, same as a failure), and revert to the unconfirmed value — silently
+  // dropping the second action. Disabling during the window makes that
+  // physically impossible.
+  it('disables the auto-issue checkbox until the PATCH settles', async () => {
+    let resolvePatch!: (v: Response) => void;
+    (api.updateContract as any).mockReturnValue(new Promise<Response>((r) => { resolvePatch = r; }));
+
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    const box = await screen.findByTestId('contract-form-auto-issue');
+    fireEvent.click(box);
+
+    await waitFor(() => expect(box).toBeDisabled());
+    resolvePatch(resp({ data: {} }));
+    await waitFor(() => expect(box).not.toBeDisabled());
+    expect(box).toBeChecked(); // success — the optimistic value stands
+  });
+
+  it('disables the billing-timing select until the PATCH settles', async () => {
+    let resolvePatch!: (v: Response) => void;
+    (api.updateContract as any).mockReturnValue(new Promise<Response>((r) => { resolvePatch = r; }));
+
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    const sel = await screen.findByTestId('contract-form-timing');
+    fireEvent.change(sel, { target: { value: 'arrears' } });
+
+    await waitFor(() => expect(sel).toBeDisabled());
+    resolvePatch(resp({ data: {} }));
+    await waitFor(() => expect(sel).not.toBeDisabled());
+    expect(sel).toHaveValue('arrears');
+  });
+
+  it("shared 'interval' key: a custom-interval blur locks the preset select too", async () => {
+    let resolvePatch!: (v: Response) => void;
+    (api.updateContract as any).mockReturnValue(new Promise<Response>((r) => { resolvePatch = r; }));
+
+    // intervalMonths 5 → custom mode on mount.
+    const custom5: ContractDetail = { ...draftDetail, contract: { ...draftDetail.contract, intervalMonths: 5 } };
+    render(<ContractEditor detail={custom5} onChanged={vi.fn()} />);
+    const customInput = await screen.findByTestId('contract-form-interval-custom');
+    const presetSel = screen.getByTestId('contract-form-interval');
+    fireEvent.change(customInput, { target: { value: '6' } });
+    fireEvent.blur(customInput);
+
+    // Both controls share the 'interval' pending key: a preset click right
+    // after a custom blur must not race the in-flight custom commit.
+    await waitFor(() => expect(customInput).toBeDisabled());
+    expect(presetSel).toBeDisabled();
+    resolvePatch(resp({ data: {} }));
+    await waitFor(() => expect(customInput).not.toBeDisabled());
+    expect(presetSel).not.toBeDisabled();
+  });
+});
+
 describe('ContractEditor — remove line confirm', () => {
   it('opens a confirm naming the line; Cancel keeps the line', async () => {
     render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
