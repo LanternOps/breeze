@@ -224,6 +224,16 @@ Re-evaluate only if a profiler ever shows it.
   shaper); tearing can only be judged by a human in the real viewer (checked
   clean on 2026-07-01, and again on the #8 binary / Kit-AMD 2026-07-02 — the
   path most exposed to the flush removal).
+- **RDP sessions stream black (#2160):** live test 2026-07-02 answered the
+  "RDP/GDI→hardware-MFT" question — it doesn't reach GDI-encode at all. The
+  broker binds the stream to the user's RDP session (capturer came up at the
+  RDP client's 1512×949 virtual display); once that session is RDP-disconnected
+  there is no display surface, DXGI is unavailable and GDI `BitBlt` fails every
+  frame → zero frames → silent black viewer. Pre-existing (session targeting
+  untouched by this phase). Fix layers in the issue: loud "session
+  disconnected" state message → `tscon`-style console reclaim → active-RDP
+  GDI capture. T3's Castagnoli measurement still wants the VM .55 software leg
+  (plain GDI on a console session), which this does not replace.
 - **Adaptive controller single point of failure (V1 follow-up):** the agent's
   adaptive bitrate has exactly one input — `viewer_stats` over the control
   DataChannel. The comment in `session_control.go` claims it's "a fallback when
