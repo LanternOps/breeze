@@ -5,10 +5,10 @@ import ContractDetail from './ContractDetail';
 import { usePermissions } from '../../lib/permissions';
 import {
   getContract,
-  CONTRACT_STATUS_COLORS,
-  CONTRACT_STATUS_LABELS,
+  CONTRACT_STATUS_ROLES,
   type ContractDetail as ContractDetailData,
 } from '../../lib/api/contracts';
+import { StatusPill } from '../billing/shared/StatusPill';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -99,13 +99,15 @@ export default function ContractWorkspace({ contractId }: Props) {
   return (
     <div className="space-y-4" data-testid="contract-workspace">
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <a href="/contracts" className="text-xs text-muted-foreground hover:underline">← Contracts</a>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold" data-testid="contract-workspace-title">{contract.name}</h1>
-            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[contract.status]}`}>
-              {CONTRACT_STATUS_LABELS[contract.status]}
-            </span>
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="truncate text-xl font-semibold" data-testid="contract-workspace-title">{contract.name}</h1>
+            <StatusPill
+              role={CONTRACT_STATUS_ROLES[contract.status].role}
+              label={CONTRACT_STATUS_ROLES[contract.status].label}
+              className={CONTRACT_STATUS_ROLES[contract.status].className}
+            />
           </div>
         </div>
         {contract.status === 'active' && canWrite && (

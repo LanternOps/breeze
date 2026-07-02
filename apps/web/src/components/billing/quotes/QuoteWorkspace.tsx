@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { DocumentWorkspace, type DocumentTab } from '../shared/DocumentWorkspace';
 import QuoteEditor from './QuoteEditor';
 import QuoteDetail from './QuoteDetail';
 import QuoteDocumentPreview from './QuoteDocument';
@@ -11,7 +12,7 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 type Tab = 'editor' | 'preview' | 'detail';
 
-const TABS: { value: Tab; label: string }[] = [
+const TAB_LABELS: { value: Tab; label: string }[] = [
   { value: 'editor', label: 'Editor' },
   { value: 'preview', label: 'Preview' },
   { value: 'detail', label: 'Detail' },
@@ -24,7 +25,7 @@ interface Props {
 function readTab(isDraft: boolean): Tab {
   if (typeof window === 'undefined') return isDraft ? 'editor' : 'detail';
   const raw = window.location.hash.replace(/^#/, '');
-  if (TABS.some((t) => t.value === raw)) return raw as Tab;
+  if (TAB_LABELS.some((t) => t.value === raw)) return raw as Tab;
   return isDraft ? 'editor' : 'detail';
 }
 
@@ -77,28 +78,10 @@ export default function QuoteWorkspace({ id }: Props) {
     return () => window.removeEventListener('hashchange', onHash);
   }, [detail]);
 
-  const selectTab = useCallback((next: Tab) => {
-    setTab(next);
+  const selectTab = useCallback((next: string) => {
+    setTab(next as Tab);
     if (typeof window !== 'undefined') window.location.hash = `#${next}`;
   }, []);
-
-  // Roving keyboard navigation across the tablist (WAI-ARIA tabs pattern):
-  // Left/Right move between tabs, Home/End jump to the ends, and the moved-to
-  // tab is both activated and focused.
-  const onTabKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>, tabs: { value: Tab }[], current: Tab) => {
-    const idx = tabs.findIndex((t) => t.value === current);
-    if (idx < 0) return;
-    let nextIdx: number | null = null;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextIdx = (idx + 1) % tabs.length;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') nextIdx = (idx - 1 + tabs.length) % tabs.length;
-    else if (e.key === 'Home') nextIdx = 0;
-    else if (e.key === 'End') nextIdx = tabs.length - 1;
-    if (nextIdx === null) return;
-    e.preventDefault();
-    const next = tabs[nextIdx].value;
-    selectTab(next);
-    if (typeof document !== 'undefined') document.getElementById(`quote-tab-${next}`)?.focus();
-  }, [selectTab]);
 
   if (loading) {
     return (
@@ -124,69 +107,35 @@ export default function QuoteWorkspace({ id }: Props) {
   // The Editor only applies to drafts, so it's hidden once a quote is issued —
   // no dead-end tab that just shows a "can't edit" message. A stale #editor hash
   // on a non-draft falls back to Detail.
-  const visibleTabs = isDraft ? TABS : TABS.filter((t) => t.value !== 'editor');
-  const activeTab: Tab = visibleTabs.some((t) => t.value === tab) ? tab : 'detail';
+  const tabs: DocumentTab[] = TAB_LABELS.map((t) => ({
+    id: t.value,
+    label: t.label,
+    hidden: t.value === 'editor' && !isDraft,
+  }));
+  const activeTab: Tab = tabs.some((t) => t.id === tab && !t.hidden) ? tab : 'detail';
 
   return (
-    <div className="space-y-4" data-testid="quote-workspace">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <a href="/billing/quotes" aria-label="Back to quotes" className="text-xs text-muted-foreground hover:underline"><span aria-hidden="true">←</span> Quotes</a>
-          <h1 className="text-xl font-semibold" data-testid="quote-workspace-title">
-            {detail.quote.quoteNumber ?? 'Draft quote'}
-          </h1>
-        </div>
-        {/* Primary actions live here so Send (the money-moment) and Download are
-            reachable from any tab, not buried inside the Detail tab. */}
-        <QuoteActions detail={detail} onChanged={reload} variant="header" />
-      </div>
-
-      {/* Tabs */}
-      <div
-        className="flex gap-1 border-b"
-        role="tablist"
-        data-testid="quote-workspace-tabs"
-        onKeyDown={(e) => onTabKeyDown(e, visibleTabs, activeTab)}
-      >
-        {visibleTabs.map((t) => (
-          <button
-            key={t.value}
-            type="button"
-            role="tab"
-            id={`quote-tab-${t.value}`}
-            aria-selected={activeTab === t.value}
-            aria-controls={`quote-tabpanel-${t.value}`}
-            tabIndex={activeTab === t.value ? 0 : -1}
-            onClick={() => selectTab(t.value)}
-            data-testid={`quote-tab-${t.value}`}
-            className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition ${
-              activeTab === t.value
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
+    <DocumentWorkspace
+      idPrefix="quote"
+      backHref="/billing/quotes"
+      backLabel="Quotes"
+      title={detail.quote.quoteNumber ?? 'Draft quote'}
+      // Primary actions live in the header so Send (the money-moment) and Download
+      // are reachable from any tab, not buried inside the Detail tab.
+      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" />}
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={selectTab}
+    >
       {activeTab === 'editor' && isDraft && (
-        <div role="tabpanel" id="quote-tabpanel-editor" aria-labelledby="quote-tab-editor" tabIndex={0}>
-          <QuoteEditor detail={detail} onChanged={() => void reload()} />
-        </div>
+        <QuoteEditor detail={detail} onChanged={() => void reload()} />
       )}
-
       {activeTab === 'preview' && (
-        <div role="tabpanel" id="quote-tabpanel-preview" aria-labelledby="quote-tab-preview" tabIndex={0}>
-          <QuoteDocumentPreview detail={detail} />
-        </div>
+        <QuoteDocumentPreview detail={detail} />
       )}
-
       {activeTab === 'detail' && (
-        <div role="tabpanel" id="quote-tabpanel-detail" aria-labelledby="quote-tab-detail" tabIndex={0}>
-          <QuoteDetail detail={detail} onChanged={() => void reload()} actionsInHeader />
-        </div>
+        <QuoteDetail detail={detail} onChanged={() => void reload()} actionsInHeader />
       )}
-    </div>
+    </DocumentWorkspace>
   );
 }

@@ -3,8 +3,6 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
-import { showToast } from '../shared/Toast';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { UnsavedBadge, MarginPanel } from './billingUi';
 import {
   type InvoiceDetail,
@@ -26,6 +24,39 @@ interface Props {
 
 type AddMode = 'catalog' | 'manual';
 
+// ── Save-grammar helpers (byte-similar local copies of QuoteEditor's — kept
+//    inline per CLAUDE.md; a later pass may extract them to shared/). ─────────
+
+// A transient "Saved" cue for a blur-to-save field. Returns the on-flag (drives
+// the SR live region + green ring) and a trigger; clears its timer on unmount so
+// a late fire can't setState a gone node.
+function useSavedFlash(): [boolean, () => void] {
+  const [on, setOn] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const flash = useCallback(() => {
+    setOn(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOn(false), 1500);
+  }, []);
+  return [on, flash];
+}
+
+// Visually-hidden polite live region — announces a transient "Saved" to screen
+// readers, pairing with the dirty-ring clearing that sighted users see. The
+// single per-field announcer (no toast) so SR users hear "Saved" once.
+function SrSaved({ show, label = 'Saved', testId }: { show: boolean; label?: string; testId?: string }) {
+  // role="status" already implies aria-live="polite" — don't double it.
+  return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
+}
+
+// A field's save-state outline: amber while unsaved, a brief green pulse when it
+// lands, nothing at rest. It's a box-shadow (ring), so it never reflows
+// neighbours. Pair with a constant `transition-shadow` on the field.
+function fieldRing(dirty: boolean, saved: boolean): string {
+  return dirty ? 'ring-1 ring-warning' : saved ? 'ring-1 ring-success' : '';
+}
+
 export default function InvoiceEditor({ detail, onChanged }: Props) {
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
@@ -36,18 +67,43 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const currency = invoice.currencyCode;
   const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
 
-  const [busy, setBusy] = useState(false);
-  // Distinct from `busy` (which any line edit sets) so the Issue buttons can show
-  // an unambiguous in-flight label. Without it the disabled-but-still-"Issue"
-  // button + still-"Draft" header during the POST reads as "done but stuck" (#1418).
-  const [issuing, setIssuing] = useState(false);
-  // Issue-and-send emails the customer and can't be undone, so it goes through a
-  // confirm step (plain Issue stays direct — it's reversible via Void).
-  const [issueSendOpen, setIssueSendOpen] = useState(false);
+  // Per-item "saving" state, keyed so one in-flight mutation never freezes the
+  // rest of the editor. Keys: 'notes', 'terms', 'addLine', `qty-<lineId>`,
+  // `price-<lineId>`, `name-<lineId>`, `desc-<lineId>`, `taxable-<lineId>`,
+  // `visible-<lineId>`, `remove-<lineId>`. `pending` drives disabled styling;
+  // `inFlight` is the synchronous double-submit guard (state updates are async).
+  const inFlight = useRef<Set<string>>(new Set());
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  const isPending = useCallback((key: string) => pending.has(key), [pending]);
+
+  // Run a scoped mutation: mark the key pending, run, surface failures via the
+  // standard handleActionError path, and always clear the key. Returns whether
+  // the mutation succeeded so callers can flash a quiet "Saved" cue.
+  const runScoped = useCallback(
+    async (key: string, fn: () => Promise<void>, errMsg: string): Promise<boolean> => {
+      if (inFlight.current.has(key)) return false;
+      inFlight.current.add(key);
+      setPending((s) => { const n = new Set(s); n.add(key); return n; });
+      try {
+        await fn();
+        return true;
+      } catch (err) {
+        handleActionError(err, errMsg);
+        return false;
+      } finally {
+        inFlight.current.delete(key);
+        setPending((s) => { const n = new Set(s); n.delete(key); return n; });
+      }
+    },
+    [],
+  );
+
   const [notes, setNotes] = useState(invoice.notes ?? '');
   const [notesDirty, setNotesDirty] = useState(false);
+  const [notesSaved, flashNotesSaved] = useSavedFlash();
   const [terms, setTerms] = useState(invoice.termsAndConditions ?? '');
   const [termsDirty, setTermsDirty] = useState(false);
+  const [termsSaved, flashTermsSaved] = useSavedFlash();
 
   // Add-line form
   const [addMode, setAddMode] = useState<AddMode>('catalog');
@@ -88,21 +144,31 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
 
   const refresh = useCallback(() => onChanged(), [onChanged]);
 
-  const addLine = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  const addLine = useCallback(() =>
+    runScoped('addLine', async () => {
       if (addMode === 'manual') {
         // A line needs at least a title (name) or a description (mirrors the API refine).
         if (!manualName.trim() && !manualDesc.trim()) return;
+        // Guard qty/price with the same rules as the inline commit path so a bad
+        // manual entry is explained, not silently coerced (Number('abc') → NaN).
+        const q = Number(manualQty);
+        const p = Number(manualPrice);
+        if (!Number.isFinite(q) || q <= 0) {
+          handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+          return;
+        }
+        if (!Number.isFinite(p) || p < 0) {
+          handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+          return;
+        }
         await runAction({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/lines`, {
             method: 'POST',
             body: JSON.stringify({
               name: manualName.trim() || null,
               description: manualDesc.trim() || null,
-              quantity: Number(manualQty),
-              unitPrice: Number(manualPrice),
+              quantity: q,
+              unitPrice: p,
               taxable: manualTaxable,
             }),
           }),
@@ -113,12 +179,17 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         setManualName(''); setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
       } else {
         if (!picked) return;
+        const pq = Number(pickQty);
+        if (!Number.isFinite(pq) || pq <= 0) {
+          handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+          return;
+        }
         const path = picked.isBundle
           ? `/invoices/${invoice.id}/lines/bundle`
           : `/invoices/${invoice.id}/lines/catalog`;
         const body = picked.isBundle
-          ? { bundleId: picked.id, quantity: Number(pickQty) }
-          : { catalogItemId: picked.id, quantity: Number(pickQty) };
+          ? { bundleId: picked.id, quantity: pq }
+          : { catalogItemId: picked.id, quantity: pq };
         await runAction({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
           errorFallback: 'Could not add line.',
@@ -128,17 +199,14 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         setPicked(null); setPickQty('1');
       }
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not add line.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh]);
+    }, 'Could not add line.'),
+  [runScoped, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh]);
 
-  const patchLine = useCallback(async (lineId: string, patch: Record<string, unknown>) => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  // Inline edit of an existing line. `scopeKey` is per-field so one in-flight
+  // save (e.g. qty) never disables the sibling controls. Returns whether it
+  // succeeded so the row can flash a quiet "Saved" cue.
+  const patchLine = useCallback((lineId: string, patch: Record<string, unknown>, scopeKey: string) =>
+    runScoped(scopeKey, async () => {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/lines/${lineId}`, {
           method: 'PATCH', body: JSON.stringify(patch),
@@ -147,17 +215,11 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not update line.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id, refresh]);
+    }, 'Could not update line.'),
+  [runScoped, invoice.id, refresh]);
 
-  const removeLine = useCallback(async (lineId: string) => {
-    if (busy) return;
-    setBusy(true);
-    try {
+  const removeLine = useCallback((lineId: string) =>
+    runScoped(`remove-${lineId}`, async () => {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/lines/${lineId}`, { method: 'DELETE' }),
         errorFallback: 'Could not remove line.',
@@ -165,17 +227,12 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not remove line.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id, refresh]);
+    }, 'Could not remove line.'),
+  [runScoped, invoice.id, refresh]);
 
   const saveNotes = useCallback(async () => {
-    if (busy || !notesDirty) return;
-    setBusy(true);
-    try {
+    if (!notesDirty) return;
+    const ok = await runScoped('notes', async () => {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}`, {
           method: 'PATCH', body: JSON.stringify({ notes }),
@@ -186,17 +243,13 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       });
       setNotesDirty(false);
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not save notes.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, notesDirty, notes, invoice.id, refresh]);
+    }, 'Could not save notes.');
+    if (ok) flashNotesSaved();
+  }, [notesDirty, notes, invoice.id, refresh, runScoped, flashNotesSaved]);
 
   const saveTerms = useCallback(async () => {
-    if (busy || !termsDirty) return;
-    setBusy(true);
-    try {
+    if (!termsDirty) return;
+    const ok = await runScoped('terms', async () => {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}`, {
           method: 'PATCH', body: JSON.stringify({ termsAndConditions: terms }),
@@ -207,54 +260,10 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       });
       setTermsDirty(false);
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not save terms.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, termsDirty, terms, invoice.id, refresh]);
+    }, 'Could not save terms.');
+    if (ok) flashTermsSaved();
+  }, [termsDirty, terms, invoice.id, refresh, runScoped, flashTermsSaved]);
 
-  const issue = useCallback(async (alsoSend: boolean) => {
-    if (busy) return;
-    setBusy(true);
-    setIssuing(true);
-    try {
-      // Issue first; on success optionally send.
-      await runAction({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
-        errorFallback: 'Could not issue invoice.',
-        successMessage: alsoSend ? undefined : 'Invoice issued',
-        onUnauthorized: UNAUTHORIZED,
-      });
-      if (alsoSend) {
-        // /send is honest about whether an email actually went out. The invoice
-        // is issued either way; only claim "sent" when an email was dispatched,
-        // otherwise warn so the operator knows nothing was emailed. We suppress
-        // runAction's own success toast and post-process the result ourselves.
-        const result = await runAction<{ data: { emailed: boolean } }>({
-          request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
-          errorFallback: 'Invoice issued, but sending failed.',
-          onUnauthorized: UNAUTHORIZED,
-        });
-        if (result?.data?.emailed) {
-          showToast({ type: 'success', message: 'Invoice issued and sent' });
-        } else {
-          showToast({ type: 'warning', message: 'Invoice issued — but no email was sent (no billing contact / email not configured)' });
-        }
-      }
-    } catch (err) {
-      handleActionError(err, 'Could not issue invoice.');
-    } finally {
-      // Always refresh: if issue succeeded but send threw, we still need to leave
-      // the draft editor so a second click doesn't re-issue and hit 409 NOT_A_DRAFT.
-      refresh();
-      setIssuing(false);
-      setBusy(false);
-      setIssueSendOpen(false);
-    }
-  }, [busy, invoice.id, refresh]);
-
-  const hasVisibleLines = lines.some((l) => l.customerVisible);
   // Tax rate is inherited from partner Billing settings, not set per invoice. When
   // a line is marked taxable but no rate is configured, the Tax row reads $0.00
   // with no obvious cause — point the operator at where the rate actually lives.
@@ -302,7 +311,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                       line={l}
                       children={childrenOf(l.id)}
                       currency={currency}
-                      disabled={busy}
+                      isPending={isPending}
                       onPatch={patchLine}
                       onRemove={removeLine}
                     />
@@ -375,7 +384,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   Taxable
                 </label>
                 <button
-                  type="button" onClick={() => void addLine()} disabled={busy || (!manualName.trim() && !manualDesc.trim())}
+                  type="button" onClick={() => void addLine()} disabled={isPending('addLine') || (!manualName.trim() && !manualDesc.trim())}
                   data-testid="invoice-add-line-submit"
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
@@ -399,7 +408,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <button
-                  type="button" onClick={() => void addLine()} disabled={busy}
+                  type="button" onClick={() => void addLine()} disabled={isPending('addLine')}
                   data-testid="invoice-catalog-add"
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
@@ -471,7 +480,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="invoice-notes"
               rows={3}
-              className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${notesDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(notesDirty, notesSaved)}`}
               placeholder="Internal or customer notes…"
             />
           </div>
@@ -488,79 +497,54 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite}
               data-testid="invoice-terms"
               rows={3}
-              className={`w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${termsDirty ? 'ring-1 ring-warning' : ''}`}
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
               placeholder="Payment terms, warranty clauses, etc."
             />
           </div>
 
-          <div className="space-y-2">
-            {can('invoices', 'send') && (
-              <button
-                type="button"
-                onClick={() => void issue(false)}
-                disabled={busy || !hasVisibleLines}
-                data-testid="invoice-issue"
-                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                {issuing ? 'Issuing…' : 'Issue'}
-              </button>
-            )}
-            {can('invoices', 'send') && (
-              <button
-                type="button"
-                onClick={() => setIssueSendOpen(true)}
-                disabled={busy || !hasVisibleLines}
-                data-testid="invoice-issue-send"
-                className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {issuing ? 'Issuing…' : 'Issue & Send'}
-              </button>
-            )}
-            {!hasVisibleLines && (
-              <p className="text-center text-xs text-muted-foreground" data-testid="invoice-no-visible-hint">
-                Add at least one customer-visible line to issue.
-              </p>
-            )}
-          </div>
+          {/* Issue / Issue & Send / Download PDF / Delete draft live in the
+              workspace header (InvoiceActions) so they're reachable from any tab
+              — mirrors the quote editor, which carries no Send button of its own. */}
         </div>
       </div>
-
-      <ConfirmDialog
-        open={issueSendOpen}
-        onClose={() => setIssueSendOpen(false)}
-        onConfirm={() => void issue(true)}
-        isLoading={issuing}
-        variant="warning"
-        title="Issue and send this invoice?"
-        message={`This issues the invoice and emails it to ${invoice.billToName ?? 'the customer'} for ${formatMoney(invoice.total, currency)}. This can't be undone.`}
-        confirmLabel="Issue & Send"
-        confirmTestId="invoice-issue-send-confirm"
-      />
     </div>
   );
 }
 
 function LineRow({
-  line, children, currency, disabled, onPatch, onRemove,
+  line, children, currency, isPending, onPatch, onRemove,
 }: {
   line: InvoiceLine;
   children: InvoiceLine[];
   currency: string;
-  disabled: boolean;
-  onPatch: (lineId: string, patch: Record<string, unknown>) => void;
+  isPending: (key: string) => boolean;
+  onPatch: (lineId: string, patch: Record<string, unknown>, scopeKey: string) => Promise<boolean>;
   onRemove: (lineId: string) => void;
 }) {
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
-  const editDisabled = disabled || !canWrite;
+  // Per-field pending: only the in-flight control disables, so a slow qty save
+  // never freezes price/name/desc or a sibling line (scoped-pending backport).
+  const nameKey = `name-${line.id}`;
+  const descKey = `desc-${line.id}`;
+  const qtyKey = `qty-${line.id}`;
+  const priceKey = `price-${line.id}`;
+  const taxableKey = `taxable-${line.id}`;
+  const visibleKey = `visible-${line.id}`;
+  const removeKey = `remove-${line.id}`;
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
   const [qty, setQty] = useState(line.quantity);
   const [price, setPrice] = useState(line.unitPrice);
-  // Guard an in-progress name/description edit from being clobbered by a server
-  // resync mid-type (mirrors the quote editor's EditableLineRow pattern).
+  // Guard an in-progress edit from being clobbered by a server resync mid-type:
+  // the flag is set on keystroke and cleared when a commit is initiated (on
+  // blur), so a background refresh landing mid-edit keeps the user's keystrokes
+  // while a settled field re-adopts the server's canonical value (mirrors the
+  // quote editor's EditableLineRow pattern).
   const nameEdited = useRef(false);
   const descEdited = useRef(false);
+  const qtyEdited = useRef(false);
+  const priceEdited = useRef(false);
   // Auto-grow the (full-width) description textarea to fit its content, while
   // still letting the user drag the resize handle for a bigger/smaller box.
   const descRef = useRef<HTMLTextAreaElement>(null);
@@ -573,7 +557,31 @@ function LineRow({
   useEffect(() => { if (!nameEdited.current) setName(line.name ?? ''); }, [line.name]);
   useEffect(() => { if (!descEdited.current) setDesc(line.description ?? ''); }, [line.description]);
   useEffect(() => { autoGrowDesc(); }, [desc]);
-  useEffect(() => { setQty(line.quantity); setPrice(line.unitPrice); }, [line.quantity, line.unitPrice]);
+  useEffect(() => { if (!qtyEdited.current) setQty(line.quantity); }, [line.quantity]);
+  useEffect(() => { if (!priceEdited.current) setPrice(line.unitPrice); }, [line.unitPrice]);
+
+  // Quiet row-level "Saved" flash in place of a per-field success toast:
+  // committing any one field briefly pulses the green ring across the row.
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
+  const flashSaved = useCallback(() => {
+    setSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1500);
+  }, []);
+  const edit = useCallback(async (patch: Record<string, unknown>, key: string): Promise<boolean> => {
+    const ok = await onPatch(line.id, patch, key);
+    if (ok) flashSaved();
+    return ok;
+  }, [onPatch, line.id, flashSaved]);
+
+  // Per-field dirty cue (numeric compare for qty/price so re-typing "3.00" over
+  // "3" reads as clean, not dirty).
+  const nameDirty = name.trim() !== (line.name ?? '');
+  const descDirty = desc.trim() !== (line.description ?? '');
+  const qtyDirty = Number(qty) !== Number(line.quantity);
+  const priceDirty = Number(price) !== Number(line.unitPrice);
 
   const commitName = () => {
     if (!canWrite) return;
@@ -586,7 +594,7 @@ function LineRow({
       setName(line.name ?? '');
       return;
     }
-    onPatch(line.id, { name: next || null });
+    void edit({ name: next || null }, nameKey);
   };
   const commitDesc = () => {
     if (!canWrite) return;
@@ -598,7 +606,32 @@ function LineRow({
       setDesc(line.description ?? '');
       return;
     }
-    onPatch(line.id, { description: next || null });
+    void edit({ description: next || null }, descKey);
+  };
+  const commitQty = () => {
+    if (!canWrite) return;
+    const n = Number(qty);
+    qtyEdited.current = false;
+    if (n === Number(line.quantity)) { setQty(line.quantity); return; } // unchanged — silent (numeric compare)
+    // A rejected entry no longer snaps back silently: tell the user why before reverting.
+    if (!Number.isFinite(n) || n <= 0) {
+      handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+      setQty(line.quantity);
+      return;
+    }
+    void edit({ quantity: n }, qtyKey);
+  };
+  const commitPrice = () => {
+    if (!canWrite) return;
+    const n = Number(price);
+    priceEdited.current = false;
+    if (n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; } // unchanged — silent (numeric compare)
+    if (!Number.isFinite(n) || n < 0) {
+      handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+      setPrice(line.unitPrice);
+      return;
+    }
+    void edit({ unitPrice: n }, priceKey);
   };
 
   return (
@@ -606,51 +639,56 @@ function LineRow({
       <tr className="border-t" data-testid={`invoice-line-${line.id}`}>
         <td className="px-3 py-2">
           <input
-            type="text" value={name} disabled={editDisabled}
+            type="text" value={name} disabled={!canWrite || isPending(nameKey)}
             aria-label="Line name" placeholder="Name"
             onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
             onBlur={commitName}
             data-testid={`invoice-line-name-${line.id}`}
-            className="h-8 w-full rounded-md border bg-background px-2 text-sm font-medium focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            className={`h-8 w-full rounded-md border bg-background px-2 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
           />
         </td>
         <td className="px-3 py-2 text-right">
           <input
-            type="number" min="0" step="0.01" value={qty} disabled={editDisabled}
-            onChange={(e) => setQty(e.target.value)}
-            onBlur={() => { if (canWrite && qty !== line.quantity) onPatch(line.id, { quantity: Number(qty) }); }}
+            type="number" min="0" step="0.01" value={qty} disabled={!canWrite || isPending(qtyKey)}
+            aria-label="Quantity"
+            onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
+            onBlur={commitQty}
             data-testid={`invoice-line-qty-${line.id}`}
-            className="h-8 w-20 rounded-md border bg-background px-2 text-right text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(qtyDirty, saved)}`}
           />
         </td>
         <td className="px-3 py-2 text-right">
           <input
-            type="number" min="0" step="0.01" value={price} disabled={editDisabled}
-            onChange={(e) => setPrice(e.target.value)}
-            onBlur={() => { if (canWrite && price !== line.unitPrice) onPatch(line.id, { unitPrice: Number(price) }); }}
+            type="number" min="0" step="0.01" value={price} disabled={!canWrite || isPending(priceKey)}
+            aria-label="Unit price"
+            onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
+            onBlur={commitPrice}
             data-testid={`invoice-line-price-${line.id}`}
-            className="h-8 w-24 rounded-md border bg-background px-2 text-right text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            className={`h-8 w-24 rounded-md border bg-background px-2 text-right text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(priceDirty, saved)}`}
           />
         </td>
         <td className="px-3 py-2 text-center">
           <input
-            type="checkbox" checked={line.taxable} disabled={editDisabled}
-            onChange={(e) => onPatch(line.id, { taxable: e.target.checked })}
+            type="checkbox" checked={line.taxable} disabled={!canWrite || isPending(taxableKey)}
+            onChange={(e) => void edit({ taxable: e.target.checked }, taxableKey)}
             data-testid={`invoice-line-taxable-${line.id}`}
           />
         </td>
         <td className="px-3 py-2 text-center">
           <input
-            type="checkbox" checked={line.customerVisible} disabled={editDisabled}
-            onChange={(e) => onPatch(line.id, { customerVisible: e.target.checked })}
+            type="checkbox" checked={line.customerVisible} disabled={!canWrite || isPending(visibleKey)}
+            onChange={(e) => void edit({ customerVisible: e.target.checked }, visibleKey)}
             data-testid={`invoice-line-visible-${line.id}`}
           />
         </td>
-        <td className="px-3 py-2 text-right">{formatMoney(line.lineTotal, currency)}</td>
+        <td className="px-3 py-2 text-right">
+          {formatMoney(line.lineTotal, currency)}
+          <SrSaved show={saved} testId={`invoice-line-saved-${line.id}`} />
+        </td>
         <td className="px-3 py-2 text-right">
           {canWrite && (
             <button
-              type="button" onClick={() => onRemove(line.id)} disabled={disabled}
+              type="button" onClick={() => onRemove(line.id)} disabled={isPending(removeKey)}
               data-testid={`invoice-line-remove-${line.id}`}
               className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
             >
@@ -666,14 +704,14 @@ function LineRow({
           <textarea
             ref={descRef}
             value={desc}
-            disabled={editDisabled}
+            disabled={!canWrite || isPending(descKey)}
             aria-label="Line description"
             placeholder="Description (optional)"
             onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
             onBlur={commitDesc}
             rows={2}
             data-testid={`invoice-line-desc-${line.id}`}
-            className="min-h-8 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            className={`min-h-8 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
           />
         </td>
       </tr>

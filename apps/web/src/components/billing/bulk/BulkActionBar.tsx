@@ -16,8 +16,13 @@ export interface BulkActionBarProps {
 export function BulkActionBar({ count, actions, onClear, testIdPrefix }: BulkActionBarProps) {
   if (count === 0) return null;
   return (
+    // In-flow `sticky` bar: a sticky element occupies its own layout box, so the
+    // last table row can never be occluded no matter how tall the bar grows (e.g.
+    // when its actions wrap to two lines on a narrow viewport). It still floats
+    // above the viewport bottom while the table scrolls. No spacer / `pb-*` hack
+    // needed — the height guarantee is structural, not a magic number.
     <div
-      className="absolute inset-x-0 bottom-0 z-10 border-t bg-background px-3 py-2 shadow-[0_-4px_12px_-6px_rgba(0,0,0,0.15)] animate-[fade-up_0.18s_ease-out_both]"
+      className="sticky bottom-0 z-10 border-t bg-background px-3 py-2 shadow-[0_-4px_12px_-6px_rgba(0,0,0,0.15)] animate-[fade-up_0.18s_ease-out_both]"
       data-testid={`${testIdPrefix}-bulk-bar`}
     >
       <div className="flex flex-wrap items-center gap-2">

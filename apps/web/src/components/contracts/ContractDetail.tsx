@@ -15,7 +15,7 @@ import {
   type ContractStatus,
   type ContractTransition,
 } from '../../lib/api/contracts';
-import { formatMoney } from '../billing/invoiceTypes';
+import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -48,13 +48,6 @@ const TRANSITION_LABELS: Record<ContractTransition, string> = {
   resume: 'Resume',
   cancel: 'Cancel',
 };
-
-function formatDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
-}
 
 export default function ContractDetail({ detail, onChanged }: Props) {
   const { can } = usePermissions();

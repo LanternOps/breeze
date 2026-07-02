@@ -6,7 +6,7 @@ import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
   type QuoteLine,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   stripHtml,
   formatDate,
@@ -17,6 +17,7 @@ import {
   pctFromFraction,
   sellerLines,
 } from './quoteTypes';
+import { StatusPill } from '../shared/StatusPill';
 
 const RECURRENCE_LABEL: Record<QuoteLine['recurrence'], string> = {
   one_time: '',
@@ -200,12 +201,11 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
               {quote.quoteNumber ?? 'Draft'}
             </p>
             <p className="text-sm font-medium text-muted-foreground">Proposal</p>
-            <span
-              className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[quote.status]}`}
-              aria-label={`Status: ${statusLabel(quote)}`}
-            >
-              {statusLabel(quote)}
-            </span>
+            <StatusPill
+              role={STATUS_ROLES[quote.status].role}
+              label={statusLabel(quote)}
+              className={STATUS_ROLES[quote.status].className}
+            />
             <dl className="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
               <div className="flex gap-2"><dt>Issued</dt><dd className="font-medium text-foreground/80">{formatDate(quote.issueDate)}</dd></div>
               {quote.expiryDate && (
@@ -325,7 +325,9 @@ export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailDa
     const billTo = quote.billToName?.trim();
     if (billTo) return billTo;
     const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
-    return resolved || quote.orgId.slice(0, 8);
+    // Never leak a raw org UUID fragment onto a customer-facing document — if the
+    // org store hasn't resolved a name yet, show a neutral em-dash instead.
+    return resolved || '—';
   }, [quote.billToName, quote.orgId, organizations]);
 
   return (

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
@@ -10,14 +9,19 @@ import { listQuotes, createQuote } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { useBulkSelection } from '../bulk/useBulkSelection';
 import { BulkActionBar } from '../bulk/BulkActionBar';
+import { SortableTh } from '../shared/SortableTh';
 import {
   type Quote,
   type QuoteStatus,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   formatDate,
   formatMoney,
+  sumByCurrency,
 } from './quoteTypes';
+import { StatusPill } from '../shared/StatusPill';
+import { StatCard } from '../shared/StatCard';
+import AccessDenied from '../../shared/AccessDenied';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
@@ -66,7 +70,13 @@ function writeFilters(f: Filters): void {
   if (f.orgId) params.set('orgId', f.orgId);
   if (f.status) params.set('status', f.status);
   const next = params.toString();
-  window.location.hash = next ? `#${next}` : '';
+  if (next) {
+    window.location.hash = `#${next}`;
+  } else if (window.location.hash) {
+    // Clearing: plain `location.hash = ''` can leave a bare '#' dangling in the
+    // URL. replaceState strips the fragment cleanly without a history entry.
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
 }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -81,6 +91,9 @@ export function QuotesPage() {
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // A 403 from the quotes route is a permission denial, not a load failure, so it
+  // renders the access-denied state rather than the retryable error.
+  const [forbidden, setForbidden] = useState(false);
   const [filters, setFilters] = useState<Filters>(() => readFilters());
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
@@ -113,8 +126,10 @@ export function QuotesPage() {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const res = await listQuotes({ orgId: f.orgId || undefined, status: f.status || undefined });
       if (res.status === 401) return UNAUTHORIZED();
+      if (res.status === 403) { setForbidden(true); return; }
       if (!res.ok) throw new Error('Failed to load quotes');
       const body = (await res.json()) as { data: Quote[] };
       setQuotes(body.data ?? []);
@@ -148,6 +163,16 @@ export function QuotesPage() {
       return next;
     });
   }, []);
+
+  const clearFilters = useCallback(() => {
+    setFilters(EMPTY_FILTERS);
+    writeFilters(EMPTY_FILTERS);
+    setSearch('');
+  }, []);
+
+  // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
+  // first-run empty state (offer "create your first quote").
+  const hasActiveFilters = !!(filters.orgId || filters.status || search.trim());
 
   // Load sites for the org picker in the dialog.
   const loadNewSites = useCallback(async (orgId: string) => {
@@ -199,9 +224,21 @@ export function QuotesPage() {
   const summary = useMemo(() => {
     const awaiting = quotes.filter((qt) => qt.status === 'sent' || qt.status === 'viewed');
     const outForSignature = awaiting.reduce((sum, qt) => sum + num(qt.total), 0);
+    const draftCount = quotes.filter((qt) => qt.status === 'draft').length;
+    // Per-currency so a mixed-currency pipeline isn't summed under one wrong code.
+    const byCurrency = sumByCurrency(awaiting.map((qt) => ({ amount: num(qt.total), currencyCode: qt.currencyCode })));
     const ccy = quotes[0]?.currencyCode || 'USD';
-    return { outForSignature, awaitingCount: awaiting.length, ccy };
+    return { outForSignature, awaitingCount: awaiting.length, draftCount, byCurrency, ccy };
   }, [quotes]);
+
+  // '$12,300 + €4,100' across currencies. With one currency, label with the
+  // SUMMED SUBSET's code (byCurrency[0]) — not quotes[0]'s (`summary.ccy`),
+  // which may come from a draft/expired quote in a different currency. The
+  // quotes[0] fallback only applies when nothing is awaiting ($0.00; the card
+  // is hidden then anyway).
+  const outForSignatureDisplay = summary.byCurrency.length === 0
+    ? formatMoney(summary.outForSignature, summary.ccy)
+    : summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ');
 
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
@@ -257,34 +294,13 @@ export function QuotesPage() {
     [bulk, loadQuotes, filters],
   );
 
-  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => {
-    const active = sort?.key === sortKey;
-    const ariaLabel = active
-      ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
-      : `Sort by ${label}`;
+  if (forbidden) {
     return (
-      <th className="px-3 py-3 text-right font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-        <button
-          type="button"
-          onClick={() => toggleSort(sortKey)}
-          className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
-          data-testid={`quotes-sort-${sortKey}`}
-          aria-label={ariaLabel}
-        >
-          {label}
-          {active ? (
-            sort!.dir === 'asc' ? (
-              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-            ) : (
-              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-            )
-          ) : (
-            <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-        </button>
-      </th>
+      <div className="space-y-5" data-testid="quotes-page">
+        <AccessDenied message="You don't have permission to view quotes." />
+      </div>
     );
-  };
+  }
 
   return (
     <div className="space-y-5" data-testid="quotes-page">
@@ -307,14 +323,26 @@ export function QuotesPage() {
         )}
       </div>
 
-      {/* Out-for-signature summary */}
-      {!loading && !error && summary.awaitingCount > 0 && (
+      {/* Out-for-signature + drafts summary */}
+      {!loading && !error && (summary.awaitingCount > 0 || summary.draftCount > 0) && (
         <div className="flex flex-wrap gap-3" data-testid="quotes-outstanding-strip">
-          <div className="rounded-lg border bg-card px-4 py-3">
-            <div className="text-xs text-muted-foreground">Out for signature</div>
-            <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(summary.outForSignature, summary.ccy)}</div>
-            <div className="text-xs text-muted-foreground">{summary.awaitingCount} awaiting</div>
-          </div>
+          {summary.awaitingCount > 0 && (
+            <StatCard
+              label="Out for signature"
+              value={outForSignatureDisplay}
+              hint={`${summary.awaitingCount} awaiting`}
+            />
+          )}
+          {summary.draftCount > 0 && (
+            <StatCard
+              label="Drafts"
+              value={summary.draftCount}
+              hint="not yet sent"
+              onClick={() => applyFilter({ status: 'draft' })}
+              active={filters.status === 'draft'}
+              testId="quotes-drafts-card"
+            />
+          )}
         </div>
       )}
 
@@ -379,27 +407,37 @@ export function QuotesPage() {
               </button>
             </div>
           </div>
-        ) : quotes.length === 0 ? (
-          <div className="px-4 py-14 text-center" data-testid="quotes-empty">
-            <h3 className="text-sm font-semibold">No quotes yet</h3>
-            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-              Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.
-            </p>
-            {canWrite && (
+        ) : rows.length === 0 ? (
+          hasActiveFilters ? (
+            <div className="px-4 py-12 text-center" data-testid="quotes-filtered-empty">
+              <p className="text-sm text-muted-foreground">No quotes match these filters.</p>
               <button
                 type="button"
-                onClick={openCreate}
-                className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                data-testid="quotes-empty-new"
+                onClick={clearFilters}
+                data-testid="quotes-clear-filters"
+                className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
-                New quote
+                Clear filters
               </button>
-            )}
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="quotes-no-match">
-            No quotes match these filters.
-          </div>
+            </div>
+          ) : (
+            <div className="px-4 py-14 text-center" data-testid="quotes-empty">
+              <h3 className="text-sm font-semibold">No quotes yet</h3>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.
+              </p>
+              {canWrite && (
+                <button
+                  type="button"
+                  onClick={openCreate}
+                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  data-testid="quotes-empty-new"
+                >
+                  New quote
+                </button>
+              )}
+            </div>
+          )
         ) : (
           <div className="relative">
             <div className="overflow-x-auto">
@@ -418,8 +456,8 @@ export function QuotesPage() {
                     <th className="px-3 py-3 font-medium">Number</th>
                     <th className="px-3 py-3 font-medium">Organization</th>
                     <th className="px-3 py-3 font-medium">Status</th>
-                    <SortHeader label="Total" sortKey="total" />
-                    <SortHeaderLeft label="Created" sortKey="created" sort={sort} onSort={toggleSort} />
+                    <SortableTh label="Total" sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="quotes-sort-total" />
+                    <SortableTh label="Created" sortKey="created" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="quotes-sort-created" />
                   </tr>
                 </thead>
                 <tbody>
@@ -440,22 +478,28 @@ export function QuotesPage() {
                         />
                       </td>
                       <td className="px-3 py-3 font-medium">
-                        {qt.quoteNumber ?? (
-                          <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Draft
-                          </span>
-                        )}
+                        <a
+                          href={`/billing/quotes/${qt.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid={`quotes-row-link-${qt.id}`}
+                          // Unnumbered drafts show an em-dash (the Status column
+                          // already carries the "Draft" pill, so a DRAFT chip here
+                          // was redundant). The dash is decorative — give the link
+                          // an accessible name so it doesn't read as just "—".
+                          aria-label={qt.quoteNumber ? undefined : 'Draft quote'}
+                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                          {qt.quoteNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
+                        </a>
                       </td>
                       <td className="px-3 py-3">{orgName(qt.orgId)}</td>
                       <td className="px-3 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[qt.status]}`}
-                          data-testid={`quotes-status-${qt.id}`}
-                        >
-                          {/* Real visually-hidden text, not aria-label on a non-interactive
-                              span (unreliable for screen readers) — mirrors QuoteDetail. */}
-                          <span className="sr-only">Status: </span>{statusLabel(qt)}
-                        </span>
+                        <StatusPill
+                          role={STATUS_ROLES[qt.status].role}
+                          label={statusLabel(qt)}
+                          className={STATUS_ROLES[qt.status].className}
+                          testId={`quotes-status-${qt.id}`}
+                        />
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums">{formatMoney(qt.total, qt.currencyCode)}</td>
                       <td className="px-3 py-3 text-muted-foreground">{formatDate(qt.createdAt)}</td>
@@ -565,39 +609,6 @@ export function QuotesPage() {
         </div>
       </Dialog>
     </div>
-  );
-}
-
-// Left-aligned sortable header (Created). Right-aligned headers use the inline
-// SortHeader defined in the component.
-function SortHeaderLeft({
-  label, sortKey, sort, onSort,
-}: { label: string; sortKey: SortKey; sort: Sort | null; onSort: (k: SortKey) => void }) {
-  const active = sort?.key === sortKey;
-  const ariaLabel = active
-    ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
-    : `Sort by ${label}`;
-  return (
-    <th className="px-3 py-3 font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-      <button
-        type="button"
-        onClick={() => onSort(sortKey)}
-        className="inline-flex items-center gap-1 hover:text-foreground"
-        data-testid={`quotes-sort-${sortKey}`}
-        aria-label={ariaLabel}
-      >
-        {label}
-        {active ? (
-          sort!.dir === 'asc' ? (
-            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-          )
-        ) : (
-          <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
-        )}
-      </button>
-    </th>
   );
 }
 

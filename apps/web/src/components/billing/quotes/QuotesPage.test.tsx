@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuotesPage from './QuotesPage';
@@ -51,6 +51,58 @@ describe('QuotesPage', () => {
     expect(screen.getByText('No quotes yet')).toBeInTheDocument();
   });
 
+  it('shows the filtered-empty state (not the teaching empty) when an active filter returns nothing', async () => {
+    // The page seeds its filter from the URL hash on mount.
+    window.location.hash = '#status=declined';
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+
+    await screen.findByTestId('quotes-filtered-empty');
+    expect(screen.getByTestId('quotes-clear-filters')).toBeInTheDocument();
+    // The first-run teaching empty must NOT be shown — that reads as data loss.
+    expect(screen.queryByTestId('quotes-empty')).not.toBeInTheDocument();
+  });
+
+  it('Clear filters resets the hash with no bare-# residue', async () => {
+    window.location.hash = '#status=declined';
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+
+    fireEvent.click(await screen.findByTestId('quotes-clear-filters'));
+    expect(window.location.hash).toBe('');
+    // With no active filter left, the teaching empty returns.
+    await waitFor(() => expect(screen.getByTestId('quotes-empty')).toBeInTheDocument());
+  });
+
+  it('labels a single-currency Out-for-signature total from the AWAITING subset, not quotes[0]', async () => {
+    // quotes[0] is a draft EUR quote (excluded from the sent/viewed subset); the
+    // only awaiting quote is USD. The strip must read $…, never €… — labeling
+    // the USD sum with quotes[0]'s currency was the original mislabeling bug.
+    const mixed = [
+      { ...QUOTES[0], id: 'q-eur-draft', quoteNumber: 'Q-EUR', status: 'draft', currencyCode: 'EUR', total: '999.00' },
+      { ...QUOTES[0], id: 'q-usd-sent', quoteNumber: 'Q-USD', status: 'sent', currencyCode: 'USD', total: '150.00' },
+    ];
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: mixed });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-outstanding-strip')).toBeInTheDocument());
+
+    const strip = screen.getByTestId('quotes-outstanding-strip');
+    expect(strip).toHaveTextContent('$150.00');
+    expect(strip.textContent).not.toContain('€');
+  });
+
   it('renders quote rows with status badge and currency total', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
@@ -65,5 +117,71 @@ describe('QuotesPage', () => {
     expect(within(row).getByText('Acme Corp')).toBeInTheDocument();
     expect(within(row).getByText('$150.00')).toBeInTheDocument();
     expect(screen.getByTestId('quotes-status-q-1')).toHaveTextContent('Draft');
+  });
+
+  it('exposes a focusable link to the quote detail so keyboard users can open it', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: QUOTES });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+
+    const link = screen.getByTestId('quotes-row-link-q-1');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/billing/quotes/q-1');
+    expect(link).toHaveTextContent('Q-0001');
+    // A native anchor is focusable; it must never be removed from the tab order.
+    expect(link.getAttribute('tabindex')).not.toBe('-1');
+
+    // Clicking the link must not double-navigate via the row's onClick handler.
+    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    // Cancel the anchor's default action up front so jsdom doesn't attempt a real
+    // document navigation (unimplemented → console noise). Propagation behavior
+    // — the thing under test — is unaffected.
+    clickEvent.preventDefault();
+    const stop = vi.spyOn(clickEvent, 'stopPropagation');
+    link.dispatchEvent(clickEvent);
+    expect(stop).toHaveBeenCalled();
+    // The row's onClick (SPA navigateTo) must not fire — the anchor navigates natively.
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('unnumbered draft rows show an em-dash link (no redundant DRAFT chip) with an accessible name', async () => {
+    const draft = { ...QUOTES[0], id: 'q-draft', quoteNumber: null };
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [draft] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+
+    const link = screen.getByTestId('quotes-row-link-q-draft');
+    // The Status column already carries the Draft pill, so the Number column shows
+    // a plain em-dash rather than a second "DRAFT" chip…
+    expect(link).toHaveTextContent('—');
+    expect(within(link).queryByText('Draft')).not.toBeInTheDocument();
+    // …but the link keeps an accessible name so it doesn't read as just a dash.
+    expect(link).toHaveAttribute('aria-label', 'Draft quote');
+    // The Status column still communicates draft state.
+    expect(screen.getByTestId('quotes-status-q-draft')).toHaveTextContent('Draft');
+  });
+
+  it('renders the access-denied state (not the retryable error) on a 403', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ error: 'forbidden' }, false, 403);
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+
+    await waitFor(() => expect(screen.getByTestId('access-denied')).toBeInTheDocument());
+    expect(screen.getByText('Access denied')).toBeInTheDocument();
+    expect(screen.getByText("You don't have permission to view quotes.")).toBeInTheDocument();
+    // The generic data-load-failure UI must NOT appear for a 403.
+    expect(screen.queryByTestId('quotes-error')).not.toBeInTheDocument();
+    expect(screen.queryByText('Try again')).not.toBeInTheDocument();
   });
 });

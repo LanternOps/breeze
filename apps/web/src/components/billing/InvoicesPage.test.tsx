@@ -72,6 +72,50 @@ describe('InvoicesPage', () => {
     expect(row.querySelector('.bg-destructive')).not.toBeNull();
   });
 
+  it('exposes a focusable link to the invoice detail (desktop table + mobile card)', async () => {
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+
+    const link = screen.getByTestId('invoices-row-link-inv-1');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/billing/invoices/inv-1');
+    expect(link).toHaveTextContent('INV-0001');
+    expect(link.getAttribute('tabindex')).not.toBe('-1');
+
+    const cardLink = screen.getByTestId('invoices-card-link-inv-1');
+    expect(cardLink.tagName).toBe('A');
+    expect(cardLink).toHaveAttribute('href', '/billing/invoices/inv-1');
+
+    // Clicking the link must not double-navigate via the row's onClick handler.
+    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    // Cancel the anchor's default action up front so jsdom doesn't attempt a real
+    // document navigation (unimplemented → console noise). Propagation behavior
+    // — the thing under test — is unaffected.
+    clickEvent.preventDefault();
+    const stop = vi.spyOn(clickEvent, 'stopPropagation');
+    link.dispatchEvent(clickEvent);
+    expect(stop).toHaveBeenCalled();
+    // The row's onClick (SPA navigateTo) must not fire — the anchor navigates natively.
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('unnumbered draft rows show an em-dash link (no redundant DRAFT chip) with an accessible name', async () => {
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+
+    // inv-2 has invoiceNumber === null. The Status column already carries the Draft
+    // pill, so the Number column shows a plain em-dash rather than a second chip…
+    const link = screen.getByTestId('invoices-row-link-inv-2');
+    expect(link).toHaveTextContent('—');
+    expect(within(link).queryByText('Draft')).not.toBeInTheDocument();
+    // …but the link keeps an accessible name so it doesn't read as just a dash.
+    expect(link).toHaveAttribute('aria-label', 'Draft invoice');
+    // The Status column still communicates draft state.
+    expect(screen.getByTestId('invoices-status-inv-2')).toHaveTextContent('Draft');
+  });
+
   it('writes filter selections to the URL hash', async () => {
     wireDefault();
     render(<InvoicesPage />);
@@ -94,6 +138,30 @@ describe('InvoicesPage', () => {
     expect(window.location.hash).toContain('status=draft');
   });
 
+  it('labels a single-currency Outstanding total from the OPEN subset, not rows[0]', async () => {
+    // rows[0] is a void EUR invoice (excluded from the open subset); every open
+    // invoice is USD. The strip must read $…, never €… — labeling the USD sum
+    // with rows[0]'s currency was the original mislabeling bug.
+    const mixed = [
+      {
+        ...INVOICES[0], id: 'inv-void', invoiceNumber: 'INV-VOID', status: 'void',
+        currencyCode: 'EUR', balance: '999.00', createdAt: '2026-06-02T00:00:00Z',
+      },
+      { ...INVOICES[0], id: 'inv-open', invoiceNumber: 'INV-OPEN', status: 'sent', currencyCode: 'USD', balance: '100.00' },
+    ];
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) return json({ data: mixed });
+      return json({}, false, 404);
+    });
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-outstanding-strip')).toBeInTheDocument());
+
+    const strip = screen.getByTestId('invoices-outstanding-strip');
+    expect(strip).toHaveTextContent('$100.00');
+    expect(strip.textContent).not.toContain('€');
+  });
+
   it('hides the filter toolbar on a genuinely empty list', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
@@ -104,6 +172,22 @@ describe('InvoicesPage', () => {
     await waitFor(() => expect(screen.getByTestId('invoices-empty')).toBeInTheDocument());
     // Controls with nothing to act on are hidden in the true empty state.
     expect(screen.queryByTestId('invoices-filters')).not.toBeInTheDocument();
+  });
+
+  it('shows the filtered-empty state (not the teaching empty) when a filter returns nothing', async () => {
+    window.location.hash = '#status=void';
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<InvoicesPage />);
+
+    await screen.findByTestId('invoices-filtered-empty');
+    // The first-run teaching empty must NOT be shown — that reads as data loss.
+    expect(screen.queryByTestId('invoices-empty')).not.toBeInTheDocument();
+    // The toolbar (and its existing Clear control) stays available while filtered.
+    expect(screen.getByTestId('invoices-filters-clear')).toBeInTheDocument();
   });
 
   it('shows a Clear control once a filter is active and resets all filters', async () => {

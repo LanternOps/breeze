@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
@@ -91,6 +91,56 @@ describe('QuoteEditor', () => {
     await waitFor(() => expect(screen.getByTestId('quote-terms-saved')).toHaveTextContent('Saved'));
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Saved' }));
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Terms saved' }));
+  });
+
+  it('debounces the screen-reader totals announcement to settle-time while visible figures stay live', async () => {
+    vi.useFakeTimers();
+    try {
+      const detail = draftDetail();
+      detail.blocks = [
+        { id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
+      ];
+      detail.lines = [
+        {
+          id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual', catalogItemId: null,
+          parentLineId: null, name: 'Widget', description: null, quantity: '1', unitPrice: '100.00', unitCost: null,
+          sku: null, partNumber: null, taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time',
+          termMonths: null, billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+        },
+      ];
+      render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+      // Flush the mount-time catalog/distributor status fetches so their state
+      // updates don't dangle into the assertions below.
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+      const sr = screen.getByTestId('quote-totals-sr');
+      // Right after mount the announcement is still empty (debounced), so a screen
+      // reader isn't handed the sentence before the totals settle.
+      expect(sr.textContent).toBe('');
+
+      // After the settle window the initial sentence lands (server totals are $0).
+      act(() => { vi.advanceTimersByTime(800); });
+      expect(sr).toHaveTextContent('due on acceptance $0.00');
+      expect(sr).not.toHaveTextContent('tax');
+
+      // Editing the tax rate recomputes the VISIBLE figures immediately…
+      fireEvent.change(screen.getByTestId('quote-tax-rate'), { target: { value: '10' } });
+      expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$110.00');
+      // …but the SR announcement still shows the previous settled sentence.
+      expect(sr).toHaveTextContent('due on acceptance $0.00');
+      expect(sr).not.toHaveTextContent('tax');
+
+      // Before the settle window closes, still the old sentence.
+      act(() => { vi.advanceTimersByTime(700); });
+      expect(sr).toHaveTextContent('due on acceptance $0.00');
+
+      // Once the window closes, the announcement catches up to the settled totals.
+      act(() => { vi.advanceTimersByTime(100); });
+      expect(sr).toHaveTextContent('tax $10.00');
+      expect(sr).toHaveTextContent('due on acceptance $110.00');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders the T&C textarea pre-filled with existing termsAndConditions', async () => {

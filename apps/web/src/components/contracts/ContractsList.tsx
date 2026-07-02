@@ -7,17 +7,21 @@ import {
   listContracts,
   formatCadence,
   monthlyValue,
-  CONTRACT_STATUS_COLORS,
-  CONTRACT_STATUS_LABELS,
+  CONTRACT_STATUS_ROLES,
   type ContractStatus,
   type ContractSummary,
 } from '../../lib/api/contracts';
-import { formatMoney } from '../billing/invoiceTypes';
+import { formatMoney, formatDate, sumByCurrency } from '../billing/invoiceTypes';
+import { StatusPill } from '../billing/shared/StatusPill';
+import { StatCard } from '../billing/shared/StatCard';
+import { SortableTh } from '../billing/shared/SortableTh';
+import { TableSkeleton } from '../billing/shared/TableSkeleton';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { useBulkSelection } from '../billing/bulk/useBulkSelection';
 import { BulkActionBar } from '../billing/bulk/BulkActionBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import AccessDenied from '../shared/AccessDenied';
 
 interface Organization {
   id: string;
@@ -59,13 +63,12 @@ function writeFilters(f: Filters): void {
   window.location.hash = next ? `#${next}` : '';
 }
 
-/** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */
-function formatDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
-}
+// ---- client-side sort ----------------------------------------------------
+type SortKey = 'name' | 'org' | 'status' | 'estimate' | 'start';
+interface Sort { key: SortKey; dir: 'asc' | 'desc' }
+
+const num = (s: string | null | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
+const ts = (d: string | null | undefined) => (d ? new Date(d.length === 10 ? `${d}T00:00:00` : d).getTime() : null);
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -83,9 +86,14 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // A 403 from the contracts route is a permission denial, not a load failure, so
+  // it renders the access-denied state rather than the retryable error.
+  const [forbidden, setForbidden] = useState(false);
   const [filters, setFilters] = useState<Filters>(() =>
     lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : readFilters(),
   );
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<Sort | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -108,8 +116,10 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const res = await listContracts({ orgId: f.orgId || undefined, status: f.status || undefined });
       if (res.status === 401) return UNAUTHORIZED();
+      if (res.status === 403) { setForbidden(true); return; }
       if (!res.ok) throw new Error('Failed to load contracts');
       const body = (await res.json().catch(() => null)) as { data: ContractSummary[] } | null;
       if (!body) throw new Error('Failed to load contracts');
@@ -133,11 +143,11 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     return () => window.removeEventListener('hashchange', onHash);
   }, [lockedOrgId]);
 
-  // Clear bulk selection whenever the server-side filters change so stale
-  // invisible rows are never acted on. No client-side search in this component.
+  // Clear bulk selection whenever the server-side filters or client-side search
+  // change so stale, now-invisible rows are never acted on.
   useEffect(() => {
     bulk.clear();
-  }, [filters.orgId, filters.status, bulk.clear]);
+  }, [filters.orgId, filters.status, search, bulk.clear]);
 
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
@@ -149,7 +159,43 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   const newContractHref = lockedOrgId ? `/contracts/new#orgId=${lockedOrgId}` : '/contracts/new';
 
-  const rows = useMemo(() => contracts, [contracts]);
+  const toggleSort = (key: SortKey) =>
+    setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+
+  // ---- derived rows: client-side search (name/org) then optional sort ------
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let out = contracts.filter((c) => {
+      if (!q) return true;
+      return c.name.toLowerCase().includes(q) || orgName(c.orgId).toLowerCase().includes(q);
+    });
+    if (sort) {
+      const dir = sort.dir === 'asc' ? 1 : -1;
+      out = [...out].sort((a, b) => {
+        switch (sort.key) {
+          case 'name':
+            return a.name.localeCompare(b.name) * dir;
+          case 'org':
+            return orgName(a.orgId).localeCompare(orgName(b.orgId)) * dir;
+          case 'status':
+            return a.status.localeCompare(b.status) * dir;
+          case 'estimate':
+            return (num(a.estimatedPeriodValue) - num(b.estimatedPeriodValue)) * dir;
+          case 'start': {
+            const av = ts(a.startDate);
+            const bv = ts(b.startDate);
+            if (av == null && bv == null) return 0;
+            if (av == null) return 1;
+            if (bv == null) return -1;
+            return (av - bv) * dir;
+          }
+          default:
+            return 0;
+        }
+      });
+    }
+    return out;
+  }, [contracts, search, sort, orgName]);
 
   // Only DRAFT contracts can be bulk-deleted, so the action is offered only when
   // the selection actually contains one — otherwise it's a confusing no-op.
@@ -160,14 +206,27 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
   // first-run empty state (offer "create your first contract").
-  const hasActiveFilters = Boolean(filters.status) || (!lockedOrgId && Boolean(filters.orgId));
+  const hasActiveFilters =
+    Boolean(search.trim()) || Boolean(filters.status) || (!lockedOrgId && Boolean(filters.orgId));
 
   // Estimated monthly recurring across active contracts (normalized by cadence).
   const mrr = useMemo(() => {
     const active = contracts.filter((c) => c.status === 'active');
     const total = active.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
-    return { total, count: active.length, ccy: contracts[0]?.currencyCode || 'USD' };
+    // Per-currency so a mixed-currency book isn't summed under one wrong code.
+    const byCurrency = sumByCurrency(
+      active.map((c) => ({ amount: monthlyValue(c.estimatedPeriodValue, c.intervalMonths), currencyCode: c.currencyCode })),
+    );
+    return { total, count: active.length, byCurrency, ccy: contracts[0]?.currencyCode || 'USD' };
   }, [contracts]);
+
+  // '$12,300 + €4,100' across currencies. With one currency, label with the
+  // SUMMED SUBSET's code (byCurrency[0]) — not contracts[0]'s (`mrr.ccy`), which
+  // may come from a draft/cancelled contract in a different currency. The
+  // contracts[0] fallback only applies when nothing is active ($0.00).
+  const mrrDisplay = mrr.byCurrency.length === 0
+    ? formatMoney(mrr.total, mrr.ccy)
+    : mrr.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ');
 
   const runBulkContracts = useCallback(
     async (path: string, verb: string) => {
@@ -201,6 +260,14 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     [bulk, loadContracts, filters],
   );
 
+  if (forbidden) {
+    return (
+      <div className="space-y-6" data-testid="contracts-page">
+        <AccessDenied message="You don't have permission to view contracts." />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6" data-testid="contracts-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -227,6 +294,14 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3" data-testid="contracts-filters">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name or org"
+          aria-label="Search contracts"
+          data-testid="contracts-search"
+          className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+        />
         {!lockedOrgId && (
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Organization
@@ -260,19 +335,19 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
       {/* Estimated monthly recurring */}
       {!loading && !error && rows.length > 0 && (
-        <div className="inline-flex flex-col rounded-lg border bg-card px-4 py-3" data-testid="contracts-mrr-strip">
-          <span className="text-xs text-muted-foreground">Est. monthly recurring</span>
-          <span className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(mrr.total, mrr.ccy)}</span>
-          <span className="text-xs text-muted-foreground">{mrr.count} active contract{mrr.count === 1 ? '' : 's'}</span>
-        </div>
+        <StatCard
+          label="Est. monthly recurring"
+          value={mrrDisplay}
+          hint={`${mrr.count} active contract${mrr.count === 1 ? '' : 's'}`}
+          className="inline-flex flex-col"
+          testId="contracts-mrr-strip"
+        />
       )}
 
       {/* Table */}
       <div className="rounded-lg border bg-card shadow-xs">
         {loading ? (
-          <div className="flex items-center justify-center py-12" data-testid="contracts-loading">
-            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          </div>
+          <TableSkeleton cols={lockedOrgId ? 6 : 7} />
         ) : error ? (
           <div className="p-6 text-center text-sm text-destructive" data-testid="contracts-error">
             {error}
@@ -292,7 +367,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
               <p className="text-sm text-muted-foreground">No contracts match these filters.</p>
               <button
                 type="button"
-                onClick={() => applyFilter(lockedOrgId ? { status: '' } : { status: '', orgId: '' })}
+                onClick={() => { setSearch(''); applyFilter(lockedOrgId ? { status: '' } : { status: '', orgId: '' }); }}
                 data-testid="contracts-clear-filters"
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >
@@ -318,9 +393,10 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           )
         ) : (
           <div className="relative">
-            {/* Reserve space below the rows while selected so the absolute
-                bulk bar floats in blank space instead of covering the rows. */}
-            <div className={`overflow-x-auto ${bulk.size > 0 ? 'pb-14' : ''}`}>
+            {/* BulkActionBar is an in-flow `sticky bottom-0` element (last child),
+                so it reserves its own layout space and never occludes the last
+                row — no bottom-padding hack is needed here. */}
+            <div className="overflow-x-auto">
               <table className="w-full text-sm" data-testid="contracts-list">
                 <thead>
                   <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -333,12 +409,15 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                         onChange={(e) => (e.target.checked ? bulk.selectAll(rows.map((r) => r.id)) : bulk.clear())}
                       />
                     </th>
-                    <th className="px-3 py-3 font-medium">Name</th>
-                    {!lockedOrgId && <th className="px-3 py-3 font-medium">Organization</th>}
-                    <th className="px-3 py-3 font-medium">Status</th>
+                    <SortableTh label="Name" sortKey="name" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-name" />
+                    {!lockedOrgId && (
+                      <SortableTh label="Organization" sortKey="org" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-org" />
+                    )}
+                    <SortableTh label="Status" sortKey="status" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-status" />
+                    <SortableTh label="Start date" sortKey="start" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} testId="contracts-sort-start" />
                     <th className="px-3 py-3 font-medium">Cadence</th>
                     <th className="px-3 py-3 font-medium">Next bill</th>
-                    <th className="px-3 py-3 text-right font-medium">Est. / period</th>
+                    <SortableTh label="Est. / period" sortKey="estimate" activeSort={sort?.key} direction={sort?.dir ?? 'asc'} onSort={toggleSort} align="right" testId="contracts-sort-estimate" />
                   </tr>
                 </thead>
                 <tbody>
@@ -358,16 +437,26 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                           onChange={() => bulk.toggle(ctr.id)}
                         />
                       </td>
-                      <td className="px-3 py-3 font-medium">{ctr.name}</td>
+                      <td className="px-3 py-3 font-medium">
+                        <a
+                          href={`/contracts/${ctr.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid={`contract-row-link-${ctr.id}`}
+                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                          {ctr.name}
+                        </a>
+                      </td>
                       {!lockedOrgId && <td className="px-3 py-3">{orgName(ctr.orgId)}</td>}
                       <td className="px-3 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${CONTRACT_STATUS_COLORS[ctr.status]}`}
-                          data-testid={`contract-status-${ctr.id}`}
-                        >
-                          {CONTRACT_STATUS_LABELS[ctr.status]}
-                        </span>
+                        <StatusPill
+                          role={CONTRACT_STATUS_ROLES[ctr.status].role}
+                          label={CONTRACT_STATUS_ROLES[ctr.status].label}
+                          className={CONTRACT_STATUS_ROLES[ctr.status].className}
+                          testId={`contract-status-${ctr.id}`}
+                        />
                       </td>
+                      <td className="px-3 py-3">{formatDate(ctr.startDate)}</td>
                       <td className="px-3 py-3">{formatCadence(ctr.intervalMonths)}</td>
                       <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
                       <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>

@@ -61,7 +61,13 @@ export default function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2" data-testid="toast-container">
+    // Bottom-right, but lifted on lg+ so the toast clears the quote editor's
+    // sticky right-rail (Live totals + Terms panel) whose lower controls the
+    // stock bottom-6 anchor visually overlapped on shorter viewports. z-index was
+    // never the issue — the toast sat on top of the rail's interactive controls;
+    // raising the anchor keeps bottom-right while leaving the rail usable. The
+    // extra lift on wide screens is harmless on pages without a right rail.
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 lg:bottom-24" data-testid="toast-container">
       {toasts.map(toast => {
         const isError = toast.type === 'error';
         const isWarning = toast.type === 'warning';

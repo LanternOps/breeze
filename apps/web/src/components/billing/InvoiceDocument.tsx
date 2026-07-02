@@ -1,12 +1,10 @@
-import { useCallback, useMemo, useState, type CSSProperties } from 'react';
-import { fetchWithAuth } from '../../stores/auth';
-import { navigateTo } from '@/lib/navigation';
-import { handleActionError } from '../../lib/runAction';
+import { useMemo, type CSSProperties } from 'react';
 import { useOrgStore } from '../../stores/orgStore';
+import { usePdfDownload } from './shared/usePdfDownload';
 import {
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLine,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   formatDate,
   formatMoney,
@@ -16,8 +14,7 @@ import {
   pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
-
-const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
+import { StatusPill } from './shared/StatusPill';
 
 function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean }) {
   const child = !!line.parentLineId;
@@ -49,12 +46,16 @@ interface DocumentProps {
  *  using the seller snapshot and the app accent. The sibling of QuoteDocument;
  *  works for drafts without a portal round-trip. */
 export function InvoiceDocument({ detail, customerName }: DocumentProps) {
-  const { invoice, lines } = detail;
-  const currency = invoice.currencyCode;
-  const seller = invoice.sellerSnapshot;
-  // Invoices carry no per-partner branding payload (unlike quotes), so the
-  // document is anchored on the app's primary accent.
-  const accentStyle = { ['--doc-accent']: 'hsl(var(--primary))' } as CSSProperties;
+  const { invoice, lines, branding } = detail;
+  const currency = branding?.currencyCode ?? invoice.currencyCode;
+  const seller = branding?.seller ?? invoice.sellerSnapshot;
+  // Partner brand accent when resolved; otherwise the app's primary accent.
+  const accent = branding?.primaryColor || 'hsl(var(--primary))';
+  const accentStyle = { ['--doc-accent']: accent } as CSSProperties;
+  // Wordmark/logo identity: partner logo → partner name → seller name. The
+  // letterhead rule renders whenever any identity is shown. Same source and
+  // precedence as QuoteDocument so invoices and quotes brand identically.
+  const wordmark = branding?.partnerName || seller?.name || null;
 
   // Customers only ever see customer-visible lines — cost/margin and hidden
   // bundle components never reach the document.
@@ -78,17 +79,19 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
         {/* ── Header ─────────────────────────────────────────────── */}
         <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-3">
-            {/* Seller wordmark + letterhead rule only when the seller is named. An
-                unbranded invoice lets the right-hand "Invoice" meta carry identity
-                rather than repeating the word "Invoice" on both sides of the header. */}
-            {seller?.name && (
-              <>
-                <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
-                  {seller.name}
-                </p>
-                {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
-                <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
-              </>
+            {/* Partner logo (or wordmark) + letterhead rule, mirroring the quote
+                document. An unbranded invoice with no seller name lets the
+                right-hand "Invoice" meta carry identity instead. */}
+            {branding?.logoUrl ? (
+              <img src={branding.logoUrl} alt={branding.partnerName} className="h-11 w-auto max-w-[220px] object-contain" />
+            ) : wordmark ? (
+              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
+                {wordmark}
+              </p>
+            ) : null}
+            {(branding?.logoUrl || wordmark) && (
+              /* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */
+              <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
             )}
             {seller && (
               <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
@@ -107,12 +110,11 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
             {/* The "Invoice" type label is redundant on an unnumbered draft, where the
                 heading above already reads "Invoice" and the status pill reads "Draft". */}
             {invoice.invoiceNumber && <p className="text-sm font-medium text-muted-foreground">Invoice</p>}
-            <span
-              className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[invoice.status]}`}
-              aria-label={`Status: ${statusLabel(invoice)}`}
-            >
-              {statusLabel(invoice)}
-            </span>
+            <StatusPill
+              role={STATUS_ROLES[invoice.status].role}
+              label={statusLabel(invoice)}
+              className={STATUS_ROLES[invoice.status].className}
+            />
             <dl className="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
               {invoice.issueDate && (
                 <div className="flex gap-2"><dt>Issued</dt><dd className="font-medium text-foreground/80">{formatDate(invoice.issueDate)}</dd></div>
@@ -223,37 +225,21 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
 export default function InvoiceDocumentPreview({ detail }: { detail: InvoiceDetailData }) {
   const { invoice } = detail;
   const organizations = useOrgStore((s) => s.organizations);
-  const [busy, setBusy] = useState(false);
 
   const customerName = useMemo(() => {
     const billTo = invoice.billToName?.trim();
     if (billTo) return billTo;
     const resolved = organizations.find((o) => o.id === invoice.orgId)?.name?.trim();
-    return resolved || invoice.orgId.slice(0, 8);
+    // Never leak a raw org UUID fragment onto a customer-facing document — if the
+    // org store hasn't resolved a name yet, show a neutral em-dash instead.
+    return resolved || '—';
   }, [invoice.billToName, invoice.orgId, organizations]);
 
-  const downloadPdf = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await fetchWithAuth(`/invoices/${invoice.id}/pdf`);
-      if (res.status === 401) return UNAUTHORIZED();
-      if (!res.ok) { handleActionError(new Error('pdf'), 'Could not download the invoice PDF.'); return; }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      handleActionError(err, 'Could not download the invoice PDF.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id, invoice.invoiceNumber]);
+  const { download: downloadPdf, downloading: busy } = usePdfDownload({
+    path: `/invoices/${invoice.id}/pdf`,
+    filename: `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`,
+    errorMessage: 'Could not download the invoice PDF.',
+  });
 
   return (
     <div className="space-y-4" data-testid="invoice-preview">

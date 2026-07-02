@@ -9,9 +9,9 @@ type Perm = { resource: string; action: string };
 
 // Mutable grant set the mocked auth store reads from. Covers the NEGATIVE gating
 // branches the wildcard-positive sibling (InvoiceEditor.test.tsx) never touches:
-// the editor draws a hard line between invoices:write (edit lines/notes) and
-// invoices:send (issue / issue & send). A write-only operator must be able to
-// build the draft but NOT issue or send it.
+// invoices:write gates the editing controls (add-line, per-line remove, notes).
+// Issue / Issue & Send moved to the workspace header with the InvoiceActions
+// extraction — their invoices:send gating is covered in InvoiceActions.test.tsx.
 const state = vi.hoisted(() => ({ permissions: [] as Perm[] }));
 
 vi.mock('../../stores/auth', () => ({
@@ -57,24 +57,20 @@ beforeEach(() => {
 });
 
 describe('InvoiceEditor — permission gating', () => {
-  it('read-only (invoices:read) hides the add-line form, per-line remove, and issue/send', async () => {
+  it('read-only (invoices:read) hides the add-line form and per-line remove', async () => {
     state.permissions = [{ resource: 'invoices', action: 'read' }];
     render(<InvoiceEditor detail={draft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
 
     expect(screen.queryByTestId('invoice-add-line')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-line-remove-line-1')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-issue')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-issue-send')).not.toBeInTheDocument();
     // Notes entry is disabled (gated on write) rather than removed.
     expect(screen.getByTestId('invoice-notes')).toBeDisabled();
     // Cost/margin is a read affordance — invoices:read sees the margin panel.
     expect(screen.getByTestId('invoice-margin')).toBeInTheDocument();
   });
 
-  it('invoices:write reveals editing controls but still hides Issue / Issue & Send', async () => {
-    // The security-relevant line: write builds the draft; issuing/sending is a
-    // separate grant (invoices:send).
+  it('invoices:write reveals the editing controls', async () => {
     state.permissions = [{ resource: 'invoices', action: 'write' }];
     render(<InvoiceEditor detail={draft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
@@ -82,22 +78,18 @@ describe('InvoiceEditor — permission gating', () => {
     expect(screen.getByTestId('invoice-add-line')).toBeInTheDocument();
     expect(screen.getByTestId('invoice-line-remove-line-1')).toBeInTheDocument();
     expect(screen.getByTestId('invoice-notes')).not.toBeDisabled();
-    // send-gated:
-    expect(screen.queryByTestId('invoice-issue')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-issue-send')).not.toBeInTheDocument();
     // Margin gates on invoices:read specifically — write without read does not see it.
     expect(screen.queryByTestId('invoice-margin')).not.toBeInTheDocument();
   });
 
-  it('invoices:send reveals Issue / Issue & Send but NOT the editing controls', async () => {
-    // Mirror image: send is not a license to edit lines. add-line and per-line
-    // remove gate on invoices:write and must stay hidden.
+  it('invoices:send alone reveals NO editing controls', async () => {
+    // send is not a license to edit lines: add-line and per-line remove gate on
+    // invoices:write and must stay hidden. (send's positive branch — the Issue /
+    // Issue & Send buttons — lives in the workspace header, InvoiceActions.test.tsx.)
     state.permissions = [{ resource: 'invoices', action: 'send' }];
     render(<InvoiceEditor detail={draft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
 
-    expect(screen.getByTestId('invoice-issue')).toBeInTheDocument();
-    expect(screen.getByTestId('invoice-issue-send')).toBeInTheDocument();
     expect(screen.queryByTestId('invoice-add-line')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-line-remove-line-1')).not.toBeInTheDocument();
     expect(screen.getByTestId('invoice-notes')).toBeDisabled();

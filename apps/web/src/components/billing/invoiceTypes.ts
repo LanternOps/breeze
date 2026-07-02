@@ -90,9 +90,24 @@ export function lineBlurb(l: { name: string | null; description: string | null }
   return b || null;
 }
 
+/** Document branding resolved server-side (same partner/portal source the invoice
+ *  PDF uses) so the in-app Preview matches what the customer receives. Optional
+ *  because test fixtures and the list endpoint don't carry it. Mirrors
+ *  QuoteBranding — invoices and quotes share the one letterhead. */
+export interface InvoiceBranding {
+  partnerName: string;
+  logoUrl: string | null;
+  /** Partner brand accent (hex); null → fall back to the app's primary accent. */
+  primaryColor: string | null;
+  footer: string | null;
+  currencyCode: string;
+  seller: SellerSnapshot | null;
+}
+
 export interface InvoiceDetail {
   invoice: InvoiceSummary;
   lines: InvoiceLine[];
+  branding?: InvoiceBranding;
   /** Whether the partner has an active Stripe Connect account (gates "Send
    *  payment link"). Absent on older API responses → treated as not connected. */
   stripeConnected?: boolean;
@@ -145,14 +160,28 @@ export const STATUS_PILL = {
   danger: 'border-destructive/40 bg-destructive/10 text-[hsl(4_74%_42%)] dark:text-destructive',
 } as const;
 
-export const STATUS_COLORS: Record<InvoiceStatus, string> = {
-  draft: STATUS_PILL.neutral,
-  sent: STATUS_PILL.info,
-  partially_paid: STATUS_PILL.warning,
-  overdue: STATUS_PILL.danger,
-  paid: STATUS_PILL.success,
-  void: `${STATUS_PILL.neutral} line-through`,
+/** The five semantic pill roles (keys of STATUS_PILL). Consumed by the shared
+ *  `<StatusPill role>` and by the per-domain status→role maps below and in
+ *  quoteTypes / contracts. */
+export type StatusPillRole = keyof typeof STATUS_PILL;
+
+/** Source-of-truth status → { role, extra className } map. `STATUS_COLORS` (the
+ *  class-string form) is derived from it so the two can't drift, and the status
+ *  pills pass `role`/`className` straight to `<StatusPill>`. */
+export const STATUS_ROLES: Record<InvoiceStatus, { role: StatusPillRole; className?: string }> = {
+  draft: { role: 'neutral' },
+  sent: { role: 'info' },
+  partially_paid: { role: 'warning' },
+  overdue: { role: 'danger' },
+  paid: { role: 'success' },
+  void: { role: 'neutral', className: 'line-through' },
 };
+
+export const STATUS_COLORS = Object.fromEntries(
+  (Object.entries(STATUS_ROLES) as [InvoiceStatus, { role: StatusPillRole; className?: string }][]).map(
+    ([status, { role, className }]) => [status, className ? `${STATUS_PILL[role]} ${className}` : STATUS_PILL[role]],
+  ),
+) as Record<InvoiceStatus, string>;
 
 /** Display label for an invoice's status. The 'sent' lifecycle status means
  *  "issued"; it only reads as "Sent" once an email actually went out (sentAt).
@@ -170,18 +199,10 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   other: 'Other',
 };
 
-/** Currency-aware money formatter (invoices carry their own currencyCode,
- *  unlike the USD-only lib/timeFormat.formatMoney). */
-export function formatMoney(value: string | number | null | undefined, currencyCode = 'USD'): string {
-  const n = typeof value === 'number' ? value : Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    // Unknown/invalid currency code → fall back to plain 2-decimal + code suffix.
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
+// Money/date formatters live in ./shared/format (the canonical copies, shared
+// with quotes + contracts); re-exported here so existing './invoiceTypes'
+// import sites are unaffected.
+export { formatMoney, formatDate, sumByCurrency } from './shared/format';
 
 /** Convert a stored tax-rate FRACTION (e.g. '0.07') to a percent string for an
  *  input ('7'), rounding the percent to 3 decimals — equivalently the numeric(8,5)
@@ -249,12 +270,4 @@ export function computeInvoiceProfit(lines: InvoiceLine[]): QuoteProfit {
         recurrence: 'one_time' as const,
       })),
   );
-}
-
-/** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */
-export function formatDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
 }

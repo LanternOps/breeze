@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
@@ -9,17 +8,21 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useBulkSelection } from './bulk/useBulkSelection';
 import { BulkActionBar } from './bulk/BulkActionBar';
+import { SortableTh } from './shared/SortableTh';
 import { DataCard, CardField } from '../shared/ResponsiveTable';
 import AccessDenied from '../shared/AccessDenied';
 import {
   type InvoiceStatus,
   type InvoiceSummary,
-  STATUS_COLORS,
+  STATUS_ROLES,
   STATUS_LABELS,
   statusLabel,
   formatDate,
   formatMoney,
+  sumByCurrency,
 } from './invoiceTypes';
+import { StatusPill } from './shared/StatusPill';
+import { StatCard } from './shared/StatCard';
 import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
@@ -68,7 +71,13 @@ function writeFilters(f: Filters): void {
   if (f.from) params.set('from', f.from);
   if (f.to) params.set('to', f.to);
   const next = params.toString();
-  window.location.hash = next ? `#${next}` : '';
+  if (next) {
+    window.location.hash = `#${next}`;
+  } else if (window.location.hash) {
+    // Clearing: plain `location.hash = ''` can leave a bare '#' dangling in the
+    // URL. replaceState strips the fragment cleanly without a history entry.
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
 }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -298,44 +307,25 @@ export function InvoicesPage() {
     const outstanding = open.reduce((sum, i) => sum + num(i.balance), 0);
     const overdue = invoices.filter((i) => i.status === 'overdue').length;
     const draftCount = invoices.filter((i) => i.status === 'draft').length;
-    // Single-currency partners are the norm; label the strip with the first
-    // invoice's currency. Multi-currency outstanding totals are not split in v1.
+    // Per-currency outstanding so a mixed-currency book isn't summed under one
+    // (wrong) currency label. Single-currency partners (the norm) get one entry
+    // that renders exactly as a plain total did.
+    const byCurrency = sumByCurrency(open.map((i) => ({ amount: num(i.balance), currencyCode: i.currencyCode })));
     const ccy = (invoices[0]?.currencyCode) || 'USD';
-    return { outstanding, overdue, draftCount, openCount: open.length, ccy };
+    return { outstanding, overdue, draftCount, openCount: open.length, byCurrency, ccy };
   }, [invoices]);
+
+  // '$12,300 + €4,100' when the outstanding book spans currencies. With one
+  // currency, label with the SUMMED SUBSET's code (byCurrency[0]) — not rows[0]'s
+  // (`summary.ccy`), which may come from a void/settled invoice in a different
+  // currency. The rows[0] fallback only applies when nothing is open ($0.00).
+  const outstandingDisplay = summary.byCurrency.length === 0
+    ? formatMoney(summary.outstanding, summary.ccy)
+    : summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ');
 
   // Any server- or client-side filter narrowing the list. Drives both the Clear
   // affordance and whether the toolbar shows on an otherwise-empty list.
   const filtersActive = !!(filters.orgId || filters.status || filters.from || filters.to || search.trim());
-
-  const SortHeader = ({ label, sortKey }: { label: string; sortKey: SortKey }) => {
-    const active = sort?.key === sortKey;
-    const ariaLabel = active
-      ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
-      : `Sort by ${label}`;
-    return (
-      <th className="px-3 py-3 text-right font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-        <button
-          type="button"
-          onClick={() => toggleSort(sortKey)}
-          className="inline-flex flex-row-reverse items-center gap-1 hover:text-foreground"
-          data-testid={`invoices-sort-${sortKey}`}
-          aria-label={ariaLabel}
-        >
-          {label}
-          {active ? (
-            sort!.dir === 'asc' ? (
-              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-            ) : (
-              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-            )
-          ) : (
-            <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-        </button>
-      </th>
-    );
-  };
 
   if (forbidden) {
     return (
@@ -369,34 +359,27 @@ export function InvoicesPage() {
       {/* Outstanding summary */}
       {!loading && !error && invoices.length > 0 && (
         <div className="flex flex-wrap gap-3" data-testid="invoices-outstanding-strip">
-          <div className="rounded-lg border bg-card px-4 py-3">
-            <div className="text-xs text-muted-foreground">Outstanding</div>
-            <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(summary.outstanding, summary.ccy)}</div>
-            <div className="text-xs text-muted-foreground">{summary.openCount} open</div>
-          </div>
+          <StatCard label="Outstanding" value={outstandingDisplay} hint={`${summary.openCount} open`} />
           {summary.draftCount > 0 && (
-            <button
-              type="button"
+            <StatCard
+              label="Drafts"
+              value={summary.draftCount}
+              hint="not yet issued"
               onClick={() => applyFilter({ status: 'draft' })}
-              className="rounded-lg border bg-card px-4 py-3 text-left transition hover:bg-muted/40"
-              data-testid="invoices-drafts-card"
-            >
-              <div className="text-xs text-muted-foreground">Drafts</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums">{summary.draftCount}</div>
-              <div className="text-xs text-muted-foreground">not yet issued</div>
-            </button>
+              active={filters.status === 'draft'}
+              testId="invoices-drafts-card"
+            />
           )}
           {summary.overdue > 0 && (
-            <button
-              type="button"
+            <StatCard
+              label="Overdue"
+              value={summary.overdue}
+              hint="needs follow-up"
+              tone="destructive"
               onClick={() => applyFilter({ status: 'overdue' })}
-              className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-left transition hover:bg-destructive/10"
-              data-testid="invoices-overdue-card"
-            >
-              <div className="text-xs text-destructive">Overdue</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums text-destructive">{summary.overdue}</div>
-              <div className="text-xs text-muted-foreground">needs follow-up</div>
-            </button>
+              active={filters.status === 'overdue'}
+              testId="invoices-overdue-card"
+            />
           )}
         </div>
       )}
@@ -492,27 +475,32 @@ export function InvoicesPage() {
               </button>
             </div>
           </div>
-        ) : invoices.length === 0 ? (
-          <div className="px-4 py-14 text-center" data-testid="invoices-empty">
-            <h3 className="text-sm font-semibold">No invoices yet</h3>
-            <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-              Assemble unbilled time and parts into a draft, or start a blank invoice.
-            </p>
-            {can('invoices', 'write') && (
-              <button
-                type="button"
-                onClick={openAssemble}
-                className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                data-testid="invoices-empty-new"
-              >
-                New invoice
-              </button>
-            )}
-          </div>
         ) : rows.length === 0 ? (
-          <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="invoices-no-match">
-            No invoices match these filters.
-          </div>
+          filtersActive ? (
+            // Filtered to nothing. The toolbar above stays mounted (it renders
+            // whenever a filter is active) so its existing Clear control is the
+            // recovery affordance — no redundant button here.
+            <div className="px-4 py-12 text-center text-sm text-muted-foreground" data-testid="invoices-filtered-empty">
+              No invoices match these filters.
+            </div>
+          ) : (
+            <div className="px-4 py-14 text-center" data-testid="invoices-empty">
+              <h3 className="text-sm font-semibold">No invoices yet</h3>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Assemble unbilled time and parts into a draft, or start a blank invoice.
+              </p>
+              {can('invoices', 'write') && (
+                <button
+                  type="button"
+                  onClick={openAssemble}
+                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  data-testid="invoices-empty-new"
+                >
+                  New invoice
+                </button>
+              )}
+            </div>
+          )
         ) : (
           <div className="relative">
             {/* Desktop: scrollable table from `sm` up. Below `sm` a 8-column table
@@ -533,10 +521,10 @@ export function InvoicesPage() {
                     </th>
                     <th className="px-3 py-3 font-medium">Number</th>
                     <th className="px-3 py-3 font-medium">Organization</th>
-                    <SortHeaderLeft label="Issued" sortKey="issued" sort={sort} onSort={toggleSort} />
-                    <SortHeaderLeft label="Due" sortKey="due" sort={sort} onSort={toggleSort} />
-                    <SortHeader label="Total" sortKey="total" />
-                    <SortHeader label="Balance" sortKey="balance" />
+                    <SortableTh label="Issued" sortKey="issued" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="invoices-sort-issued" />
+                    <SortableTh label="Due" sortKey="due" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="invoices-sort-due" />
+                    <SortableTh label="Total" sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="invoices-sort-total" />
+                    <SortableTh label="Balance" sortKey="balance" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="invoices-sort-balance" />
                     <th className="px-3 py-3 font-medium">Status</th>
                   </tr>
                 </thead>
@@ -563,11 +551,19 @@ export function InvoicesPage() {
                         <td className="px-3 py-3 font-medium">
                           <span className="flex items-center gap-2">
                             <span className={`h-1.5 w-1.5 rounded-full ${overdue ? 'bg-destructive' : 'bg-transparent'}`} aria-hidden="true" />
-                            {inv.invoiceNumber ?? (
-                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Draft
-                              </span>
-                            )}
+                            <a
+                              href={`/billing/invoices/${inv.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              data-testid={`invoices-row-link-${inv.id}`}
+                              // Unnumbered drafts show an em-dash (the Status column
+                              // already carries the "Draft" pill, so a DRAFT chip here
+                              // was redundant). The dash is decorative — give the link
+                              // an accessible name so it doesn't read as just "—".
+                              aria-label={inv.invoiceNumber ? undefined : 'Draft invoice'}
+                              className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                            >
+                              {inv.invoiceNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
+                            </a>
                           </span>
                         </td>
                         <td className="px-3 py-3">{orgName(inv.orgId)}</td>
@@ -580,13 +576,12 @@ export function InvoicesPage() {
                           {formatMoney(inv.balance, inv.currencyCode)}
                         </td>
                         <td className="px-3 py-3">
-                          <span
-                            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
-                            data-testid={`invoices-status-${inv.id}`}
-                            aria-label={`Status: ${statusLabel(inv)}`}
-                          >
-                            {statusLabel(inv)}
-                          </span>
+                          <StatusPill
+                            role={STATUS_ROLES[inv.status].role}
+                            label={statusLabel(inv)}
+                            className={STATUS_ROLES[inv.status].className}
+                            testId={`invoices-status-${inv.id}`}
+                          />
                         </td>
                       </tr>
                     );
@@ -607,27 +602,32 @@ export function InvoicesPage() {
                     className={overdue ? 'border-destructive/30' : undefined}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <label className="flex items-center gap-2 font-medium" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          aria-label={`Select invoice ${inv.invoiceNumber ?? inv.id}`}
-                          data-testid={`invoices-card-select-${inv.id}`}
-                          checked={bulk.has(inv.id)}
-                          onChange={() => bulk.toggle(inv.id)}
-                        />
-                        {inv.invoiceNumber ?? (
-                          <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Draft
-                          </span>
-                        )}
-                      </label>
-                      <span
-                        className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[inv.status]}`}
-                        data-testid={`invoices-card-status-${inv.id}`}
-                        aria-label={`Status: ${statusLabel(inv)}`}
-                      >
-                        {statusLabel(inv)}
-                      </span>
+                      <div className="flex items-center gap-2 font-medium">
+                        <label onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select invoice ${inv.invoiceNumber ?? inv.id}`}
+                            data-testid={`invoices-card-select-${inv.id}`}
+                            checked={bulk.has(inv.id)}
+                            onChange={() => bulk.toggle(inv.id)}
+                          />
+                        </label>
+                        <a
+                          href={`/billing/invoices/${inv.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid={`invoices-card-link-${inv.id}`}
+                          aria-label={inv.invoiceNumber ? undefined : 'Draft invoice'}
+                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                          {inv.invoiceNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
+                        </a>
+                      </div>
+                      <StatusPill
+                        role={STATUS_ROLES[inv.status].role}
+                        label={statusLabel(inv)}
+                        className={['shrink-0', STATUS_ROLES[inv.status].className].filter(Boolean).join(' ')}
+                        testId={`invoices-card-status-${inv.id}`}
+                      />
                     </div>
                     <div className="mt-3 space-y-1.5">
                       <CardField label="Organization">{orgName(inv.orgId)}</CardField>
@@ -825,38 +825,6 @@ export function InvoicesPage() {
   );
 }
 
-// Left-aligned sortable header (Issued/Due). Right-aligned headers use the inline
-// SortHeader defined in the component.
-function SortHeaderLeft({
-  label, sortKey, sort, onSort,
-}: { label: string; sortKey: SortKey; sort: Sort | null; onSort: (k: SortKey) => void }) {
-  const active = sort?.key === sortKey;
-  const ariaLabel = active
-    ? `Sort by ${label}, ${sort!.dir === 'asc' ? 'ascending' : 'descending'}`
-    : `Sort by ${label}`;
-  return (
-    <th className="px-3 py-3 font-medium" aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-      <button
-        type="button"
-        onClick={() => onSort(sortKey)}
-        className="inline-flex items-center gap-1 hover:text-foreground"
-        data-testid={`invoices-sort-${sortKey}`}
-        aria-label={ariaLabel}
-      >
-        {label}
-        {active ? (
-          sort!.dir === 'asc' ? (
-            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-          )
-        ) : (
-          <ChevronsUpDown className="h-3.5 w-3.5" aria-hidden="true" />
-        )}
-      </button>
-    </th>
-  );
-}
 
 // re-exported for tests that need the error type
 export { ActionError };

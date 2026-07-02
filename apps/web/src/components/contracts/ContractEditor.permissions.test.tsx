@@ -76,12 +76,15 @@ beforeEach(() => {
 });
 
 describe('ContractEditor — permission gating', () => {
-  it('read-only (contracts:read) hides create/save, add-line and per-line remove', async () => {
+  it('read-only (contracts:read) disables header fields, hides add-line and per-line remove', async () => {
+    // Existing contracts blur-autosave, so there is no whole-form Save button; the
+    // read gate instead disables the header fields and hides the write affordances.
     state.permissions = [{ resource: 'contracts', action: 'read' }];
     render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('contract-editor')).toBeInTheDocument());
 
     expect(screen.queryByTestId('save-contract-btn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('contract-form-name')).toBeDisabled();
     expect(screen.queryByTestId('add-line-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('line-remove-0')).not.toBeInTheDocument();
     expect(screen.queryByTestId('activate-contract-btn')).not.toBeInTheDocument();
@@ -94,7 +97,8 @@ describe('ContractEditor — permission gating', () => {
     render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('contract-editor')).toBeInTheDocument());
 
-    expect(screen.getByTestId('save-contract-btn')).toBeInTheDocument();
+    // Existing contracts autosave per field — the header fields are editable.
+    expect(screen.getByTestId('contract-form-name')).not.toBeDisabled();
     expect(screen.getByTestId('add-line-btn')).toBeInTheDocument();
     expect(screen.getByTestId('line-remove-0')).toBeInTheDocument();
     // manage-gated:

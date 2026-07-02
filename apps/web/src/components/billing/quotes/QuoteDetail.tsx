@@ -10,7 +10,7 @@ import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
   type QuoteLine,
-  STATUS_COLORS,
+  STATUS_ROLES,
   statusLabel,
   stripHtml,
   formatDate,
@@ -22,6 +22,7 @@ import {
   pctFromFraction,
   sellerLines,
 } from './quoteTypes';
+import { StatusPill } from '../shared/StatusPill';
 
 interface Props {
   detail: QuoteDetailData;
@@ -143,14 +144,12 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4" data-testid="quote-detail-summary">
             <div className="mb-3 flex items-center justify-between">
-              <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[quote.status]}`}
-                data-testid="quote-detail-status"
-              >
-                {/* Real visually-hidden text rather than aria-label on a non-
-                    interactive span, which screen readers don't reliably announce. */}
-                <span className="sr-only">Status: </span>{statusLabel(quote)}
-              </span>
+              <StatusPill
+                role={STATUS_ROLES[quote.status].role}
+                label={statusLabel(quote)}
+                className={STATUS_ROLES[quote.status].className}
+                testId="quote-detail-status"
+              />
               {quote.expiryDate && (
                 <span className="text-xs text-muted-foreground">Expires {formatDate(quote.expiryDate)}</span>
               )}
@@ -162,6 +161,29 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                 <div className="flex justify-between"><dt className="text-muted-foreground">Created</dt><dd>{formatDate(quote.createdAt)}</dd></div>
               )}
             </dl>
+            {/* Lifecycle strip — the customer-journey milestones (Sent → Viewed →
+                Accepted, or Declined) that used to be visible only as a status pill.
+                Only stamped stages render; a plain draft has none, so nothing shows.
+                Declined is the one destructive outcome and gets the danger token. */}
+            {(quote.sentAt || quote.viewedAt || quote.acceptedAt || quote.declinedAt) && (
+              <dl className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t pt-3 text-xs" data-testid="quote-detail-lifecycle">
+                {quote.sentAt && <LifecycleStage label="Sent" date={quote.sentAt} first />}
+                {quote.viewedAt && <LifecycleStage label="Viewed" date={quote.viewedAt} first={!quote.sentAt} />}
+                {quote.acceptedAt && <LifecycleStage label="Accepted" date={quote.acceptedAt} first={!quote.sentAt && !quote.viewedAt} />}
+                {quote.declinedAt && <LifecycleStage label="Declined" date={quote.declinedAt} first={!quote.sentAt && !quote.viewedAt && !quote.acceptedAt} danger testId="quote-detail-lifecycle-declined" />}
+              </dl>
+            )}
+            {/* Once accepted → converted, the resulting invoice is the next stop; a
+                direct link beats hunting for it in the invoices list. */}
+            {quote.convertedInvoiceId && (
+              <a
+                href={`/billing/invoices/${quote.convertedInvoiceId}`}
+                data-testid="quote-view-invoice"
+                className="mt-3 inline-flex items-center gap-1 rounded-xs text-sm font-medium text-primary hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                View invoice <span aria-hidden>→</span>
+              </a>
+            )}
           </div>
 
           {/* Recurring + totals summary — the rail's anchor (shadow + large figure). */}
@@ -231,6 +253,20 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
           {!actionsInHeader && <QuoteActions detail={detail} onChanged={onChanged} variant="rail" />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// One `Label date` pair in the lifecycle strip, with a `·` separator before every
+// stage except the first-rendered one. Declined is the sole destructive outcome
+// and paints its label + date in the danger token.
+function LifecycleStage({ label, date, first, danger, testId }: { label: string; date: string; first?: boolean; danger?: boolean; testId?: string }) {
+  const tone = danger ? 'text-destructive' : '';
+  return (
+    <div className={`flex items-center gap-1 ${tone}`} data-testid={testId}>
+      {!first && <span aria-hidden className="text-muted-foreground">·</span>}
+      <dt className={danger ? undefined : 'text-muted-foreground'}>{label}</dt>
+      <dd className={danger ? undefined : 'text-foreground'}>{formatDate(date)}</dd>
     </div>
   );
 }

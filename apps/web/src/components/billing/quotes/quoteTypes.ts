@@ -5,7 +5,7 @@
 import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
-import { STATUS_PILL } from '../invoiceTypes';
+import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
@@ -133,22 +133,25 @@ export const STATUS_LABELS: Record<QuoteStatus, string> = {
   converted: 'Converted',
 };
 
-// Tailwind badge classes per status (mirrors the invoice/contract status-pill style).
-// Five semantic roles shared with the invoice pills (see STATUS_PILL): the
-// colour reads the lifecycle (neutral → info while it's with the customer →
-// success when won → warning when lapsing → danger when lost), and the label
-// carries the finer distinction. sent/viewed share info; accepted/converted
-// share success — collapsing the old blue/indigo/violet/emerald rainbow that
-// was hard to tell apart at pill scale.
-export const STATUS_COLORS: Record<QuoteStatus, string> = {
-  draft: STATUS_PILL.neutral,
-  sent: STATUS_PILL.info,
-  viewed: STATUS_PILL.info,
-  accepted: STATUS_PILL.success,
-  declined: STATUS_PILL.danger,
-  expired: STATUS_PILL.warning,
-  converted: STATUS_PILL.success,
+// Source-of-truth status → role map; STATUS_COLORS (class-string form) is
+// derived from it. sent/viewed share info; accepted/converted share success —
+// collapsing the old blue/indigo/violet/emerald rainbow that was hard to tell
+// apart at pill scale. The status pills pass `role` straight to <StatusPill>.
+export const STATUS_ROLES: Record<QuoteStatus, { role: StatusPillRole; className?: string }> = {
+  draft: { role: 'neutral' },
+  sent: { role: 'info' },
+  viewed: { role: 'info' },
+  accepted: { role: 'success' },
+  declined: { role: 'danger' },
+  expired: { role: 'warning' },
+  converted: { role: 'success' },
 };
+
+export const STATUS_COLORS = Object.fromEntries(
+  (Object.entries(STATUS_ROLES) as [QuoteStatus, { role: StatusPillRole; className?: string }][]).map(
+    ([status, { role, className }]) => [status, className ? `${STATUS_PILL[role]} ${className}` : STATUS_PILL[role]],
+  ),
+) as Record<QuoteStatus, string>;
 
 /** Display label for a quote's status. The 'sent' lifecycle status only reads as
  *  "Sent" once an email actually went out (sentAt); otherwise it's "Issued". */
@@ -157,18 +160,10 @@ export function statusLabel(quote: { status: QuoteStatus; sentAt: string | null 
   return STATUS_LABELS[quote.status];
 }
 
-/** Currency-aware money formatter (quotes carry their own currencyCode, unlike
- *  the USD-only lib/timeFormat.formatMoney). Identical to invoiceTypes.formatMoney. */
-export function formatMoney(value: string | number | null | undefined, currencyCode = 'USD'): string {
-  const n = typeof value === 'number' ? value : Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  try {
-    return safe.toLocaleString('en-US', { style: 'currency', currency: currencyCode || 'USD' });
-  } catch {
-    // Unknown/invalid currency code → fall back to plain 2-decimal + code suffix.
-    return `${safe.toFixed(2)} ${currencyCode || ''}`.trim();
-  }
-}
+// Money/date formatters live in ../shared/format (the canonical copies, shared
+// with invoices + contracts); re-exported here so existing './quoteTypes' import
+// sites are unaffected.
+export { formatMoney, formatDate, sumByCurrency } from '../shared/format';
 
 /** Convert a stored tax-rate FRACTION (e.g. '0.07') to a percent string for an
  *  input ('7'), rounding to 3 decimals to match the numeric(6,3)-on-fraction
@@ -193,14 +188,6 @@ export function lineTaxAmount(
   const cents = Math.round(Number(lineTotal) * 100);
   if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(cents)) return null;
   return Math.round(cents * rate) / 100;
-}
-
-/** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */
-export function formatDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
 }
 
 /**
