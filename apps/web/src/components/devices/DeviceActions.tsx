@@ -16,9 +16,43 @@ import {
   Zap,
   ChevronDown
 } from 'lucide-react';
-import type { Device } from './DeviceList';
+import type { Device, DeviceStatus } from './DeviceList';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+
+// Live sessions and agent commands (Connect Desktop, Run Script, Remote Tools,
+// Power, Reboot, Refresh, …) require an actively-connected agent — i.e.
+// status === 'online'. Every other status (offline, maintenance,
+// decommissioned, quarantined, updating, pending) means the agent can't service
+// the request, so the API rejects it with "Device is not online". Gate on
+// `!== 'online'` (matching DeviceList.tsx) rather than `=== 'offline'` so
+// intermediate states don't fire doomed requests (#2078). Wake (Wake-on-LAN) is
+// the deliberate exception — it targets offline devices and stays reachable.
+function isDeviceOnline(device: Device): boolean {
+  return device.status === 'online';
+}
+
+// Status-accurate tooltip for a disabled session/command button. The old copy
+// hard-coded "Device is offline", which was wrong for e.g. a quarantined or
+// updating device.
+function unavailableTitle(status: DeviceStatus): string {
+  switch (status) {
+    case 'offline':
+      return 'Device is offline';
+    case 'maintenance':
+      return 'Device is in maintenance mode';
+    case 'decommissioned':
+      return 'Device is decommissioned';
+    case 'quarantined':
+      return 'Device is quarantined';
+    case 'updating':
+      return 'Device is updating';
+    case 'pending':
+      return 'Device is pending enrollment';
+    default:
+      return 'Device is not online';
+  }
+}
 
 type DeviceActionsProps = {
   device: Device;
@@ -99,6 +133,11 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
   const [modalType, setModalType] = useState<ModalType>('none');
   const [loading, setLoading] = useState(false);
 
+  // Session/command buttons are unavailable unless the agent is online. Wake
+  // (Wake-on-LAN) is intentionally exempt and gated on `=== 'offline'`.
+  const online = isDeviceOnline(device);
+  const offlineTitle = online ? undefined : unavailableTitle(device.status);
+
   const closeMenus = () => {
     setMenuOpen(false);
     setPowerMenuOpen(false);
@@ -156,18 +195,18 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               <button
                 type="button"
                 onClick={() => handleAction('run-script')}
-                disabled={device.status === 'offline'}
+                disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
                 Run Script
               </button>
-              <ConnectDesktopButton deviceId={device.id} compact disabled={device.status === 'offline'} disabledTitle="Device is offline" isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+              <ConnectDesktopButton deviceId={device.id} compact disabled={!online} disabledTitle={offlineTitle} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
               <button
                 type="button"
                 onClick={() => handleAction('remote-tools')}
-                disabled={device.status === 'offline' || device.remoteAccessPolicy?.remoteTools === false}
-                title={device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined}
+                disabled={!online || device.remoteAccessPolicy?.remoteTools === false}
+                title={offlineTitle ?? (device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined)}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wrench className="h-4 w-4" />
@@ -176,7 +215,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               <button
                 type="button"
                 onClick={() => handleAction('refresh')}
-                disabled={device.status === 'offline'}
+                disabled={!online}
                 title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -186,7 +225,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               <button
                 type="button"
                 onClick={() => handleAction('reboot')}
-                disabled={device.status === 'offline'}
+                disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
@@ -206,7 +245,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <button
                   type="button"
                   onClick={() => handleAction('reboot_safe_mode')}
-                  disabled={device.status === 'offline'}
+                  disabled={!online}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
@@ -296,19 +335,19 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
         <button
           type="button"
           onClick={() => handleAction('run-script')}
-          disabled={device.status === 'offline' || loading}
-          title={device.status === 'offline' ? 'Device is offline' : undefined}
+          disabled={!online || loading}
+          title={offlineTitle}
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Play className="h-4 w-4" />
           Run Script
         </button>
-        <ConnectDesktopButton deviceId={device.id} disabled={device.status === 'offline'} disabledTitle="Device is offline" isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
+        <ConnectDesktopButton deviceId={device.id} disabled={!online} disabledTitle={offlineTitle} isHeadless={device.isHeadless} desktopAccess={device.desktopAccess} remoteAccessPolicy={device.remoteAccessPolicy} />
         <button
           type="button"
           onClick={() => handleAction('remote-tools')}
-          disabled={device.status === 'offline' || loading || device.remoteAccessPolicy?.remoteTools === false}
-          title={device.status === 'offline' ? 'Device is offline' : device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined}
+          disabled={!online || loading || device.remoteAccessPolicy?.remoteTools === false}
+          title={offlineTitle ?? (device.remoteAccessPolicy?.remoteTools === false ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ''}` : undefined)}
           className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Wrench className="h-4 w-4" />
@@ -318,8 +357,8 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
           <button
             type="button"
             onClick={() => { setPowerMenuOpen(!powerMenuOpen); setMenuOpen(false); }}
-            disabled={device.status === 'offline' || loading}
-            title={device.status === 'offline' ? 'Device is offline' : undefined}
+            disabled={!online || loading}
+            title={offlineTitle}
             aria-haspopup="true"
             aria-expanded={powerMenuOpen}
             className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
@@ -333,7 +372,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               <button
                 type="button"
                 onClick={() => handleAction('reboot')}
-                disabled={device.status === 'offline'}
+                disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
@@ -343,7 +382,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
                 <button
                   type="button"
                   onClick={() => handleAction('reboot_safe_mode')}
-                  disabled={device.status === 'offline'}
+                  disabled={!online}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
@@ -353,7 +392,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               <button
                 type="button"
                 onClick={() => handleAction('shutdown')}
-                disabled={device.status === 'offline'}
+                disabled={!online}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Power className="h-4 w-4" />
@@ -376,7 +415,7 @@ export default function DeviceActions({ device, onAction, compact = false }: Dev
               <button
                 type="button"
                 onClick={() => handleAction('refresh')}
-                disabled={device.status === 'offline' || loading}
+                disabled={!online || loading}
                 title="Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle"
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >

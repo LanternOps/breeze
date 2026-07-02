@@ -38,6 +38,9 @@ const baseDevice: Device = {
 
 const onlineDevice: Device = { ...baseDevice, status: 'online' };
 const offlineDevice: Device = { ...baseDevice, status: 'offline' };
+const maintenanceDevice: Device = { ...baseDevice, status: 'maintenance' };
+const updatingDevice: Device = { ...baseDevice, status: 'updating' };
+const quarantinedDevice: Device = { ...baseDevice, status: 'quarantined' };
 
 // Native disabled buttons aren't reported as disabled via getByRole's name in
 // every jsdom case, so query the DOM element directly and read its props.
@@ -99,6 +102,46 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       const wake = button(/^wake$/i);
       expect(wake).toBeInTheDocument();
       expect(wake).not.toBeDisabled();
+    });
+  });
+
+  // Intermediate statuses (maintenance/updating/quarantined/decommissioned/pending)
+  // are NOT online, so the agent can't service a live session or command. Before
+  // #2078 the action bar gated on `=== 'offline'`, leaving these buttons enabled
+  // and firing requests the API rejects with "Device is not online". They must
+  // now be disabled — with a status-accurate tooltip, not the wrong "offline" copy.
+  describe('intermediate (non-online, non-offline) statuses — issue #2078', () => {
+    it('disables session/command buttons for a device in maintenance mode', () => {
+      render(<DeviceActions device={maintenanceDevice} />);
+
+      expect(button(/run script/i)).toBeDisabled();
+      expect(button(/^connect desktop$/i)).toBeDisabled();
+      expect(button(/remote tools/i)).toBeDisabled();
+      expect(button(/^power$/i)).toBeDisabled();
+    });
+
+    it('uses a status-accurate tooltip (not "Device is offline") for maintenance', () => {
+      render(<DeviceActions device={maintenanceDevice} />);
+
+      const connect = button(/^connect desktop$/i);
+      expect(connect).toHaveAttribute('title', 'Device is in maintenance mode');
+      expect(button(/^power$/i)).toHaveAttribute('title', 'Device is in maintenance mode');
+    });
+
+    it('uses a status-accurate tooltip for an updating device', () => {
+      render(<DeviceActions device={updatingDevice} />);
+
+      expect(button(/run script/i)).toBeDisabled();
+      expect(button(/run script/i)).toHaveAttribute('title', 'Device is updating');
+    });
+
+    it('does not render the Wake button for a non-offline unavailable status', () => {
+      render(<DeviceActions device={quarantinedDevice} />);
+
+      // Wake is Wake-on-LAN — only meaningful for a genuinely offline device.
+      expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
+      expect(button(/run script/i)).toBeDisabled();
+      expect(button(/run script/i)).toHaveAttribute('title', 'Device is quarantined');
     });
   });
 
