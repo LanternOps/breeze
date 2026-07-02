@@ -850,7 +850,8 @@ describe('agent routes', () => {
           if (table === automationPoliciesTable) {
             return rowsChain(probePolicyRows);
           }
-          return defaultSelectChain().from(table);
+          // default chain's from() ignores its argument (vi.fn with no params)
+          return defaultSelectChain().from();
         })
       }) as any);
 
