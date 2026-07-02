@@ -20,6 +20,7 @@ import { showToast } from '../shared/Toast';
 import { useBulkSelection } from '../billing/bulk/useBulkSelection';
 import { BulkActionBar } from '../billing/bulk/BulkActionBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import AccessDenied from '../shared/AccessDenied';
 
 interface Organization {
   id: string;
@@ -84,6 +85,9 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // A 403 from the contracts route is a permission denial, not a load failure, so
+  // it renders the access-denied state rather than the retryable error.
+  const [forbidden, setForbidden] = useState(false);
   const [filters, setFilters] = useState<Filters>(() =>
     lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : readFilters(),
   );
@@ -111,8 +115,10 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const res = await listContracts({ orgId: f.orgId || undefined, status: f.status || undefined });
       if (res.status === 401) return UNAUTHORIZED();
+      if (res.status === 403) { setForbidden(true); return; }
       if (!res.ok) throw new Error('Failed to load contracts');
       const body = (await res.json().catch(() => null)) as { data: ContractSummary[] } | null;
       if (!body) throw new Error('Failed to load contracts');
@@ -240,6 +246,14 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     },
     [bulk, loadContracts, filters],
   );
+
+  if (forbidden) {
+    return (
+      <div className="space-y-6" data-testid="contracts-page">
+        <AccessDenied message="You don't have permission to view contracts." />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="contracts-page">

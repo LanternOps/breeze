@@ -126,4 +126,41 @@ describe('QuotesPage', () => {
     // The row's onClick (SPA navigateTo) must not fire — the anchor navigates natively.
     expect(navigateTo).not.toHaveBeenCalled();
   });
+
+  it('unnumbered draft rows show an em-dash link (no redundant DRAFT chip) with an accessible name', async () => {
+    const draft = { ...QUOTES[0], id: 'q-draft', quoteNumber: null };
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: [draft] });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+
+    const link = screen.getByTestId('quotes-row-link-q-draft');
+    // The Status column already carries the Draft pill, so the Number column shows
+    // a plain em-dash rather than a second "DRAFT" chip…
+    expect(link).toHaveTextContent('—');
+    expect(within(link).queryByText('Draft')).not.toBeInTheDocument();
+    // …but the link keeps an accessible name so it doesn't read as just a dash.
+    expect(link).toHaveAttribute('aria-label', 'Draft quote');
+    // The Status column still communicates draft state.
+    expect(screen.getByTestId('quotes-status-q-draft')).toHaveTextContent('Draft');
+  });
+
+  it('renders the access-denied state (not the retryable error) on a 403', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ error: 'forbidden' }, false, 403);
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+
+    await waitFor(() => expect(screen.getByTestId('access-denied')).toBeInTheDocument());
+    expect(screen.getByText('Access denied')).toBeInTheDocument();
+    expect(screen.getByText("You don't have permission to view quotes.")).toBeInTheDocument();
+    // The generic data-load-failure UI must NOT appear for a 403.
+    expect(screen.queryByTestId('quotes-error')).not.toBeInTheDocument();
+    expect(screen.queryByText('Try again')).not.toBeInTheDocument();
+  });
 });

@@ -224,7 +224,9 @@ export default function InvoiceDocumentPreview({ detail }: { detail: InvoiceDeta
     const billTo = invoice.billToName?.trim();
     if (billTo) return billTo;
     const resolved = organizations.find((o) => o.id === invoice.orgId)?.name?.trim();
-    return resolved || invoice.orgId.slice(0, 8);
+    // Never leak a raw org UUID fragment onto a customer-facing document — if the
+    // org store hasn't resolved a name yet, show a neutral em-dash instead.
+    return resolved || '—';
   }, [invoice.billToName, invoice.orgId, organizations]);
 
   const { download: downloadPdf, downloading: busy } = usePdfDownload({

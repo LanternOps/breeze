@@ -550,13 +550,14 @@ export function InvoicesPage() {
                               href={`/billing/invoices/${inv.id}`}
                               onClick={(e) => e.stopPropagation()}
                               data-testid={`invoices-row-link-${inv.id}`}
+                              // Unnumbered drafts show an em-dash (the Status column
+                              // already carries the "Draft" pill, so a DRAFT chip here
+                              // was redundant). The dash is decorative — give the link
+                              // an accessible name so it doesn't read as just "—".
+                              aria-label={inv.invoiceNumber ? undefined : 'Draft invoice'}
                               className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                             >
-                              {inv.invoiceNumber ?? (
-                                <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                  Draft
-                                </span>
-                              )}
+                              {inv.invoiceNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
                             </a>
                           </span>
                         </td>
@@ -610,13 +611,10 @@ export function InvoicesPage() {
                           href={`/billing/invoices/${inv.id}`}
                           onClick={(e) => e.stopPropagation()}
                           data-testid={`invoices-card-link-${inv.id}`}
+                          aria-label={inv.invoiceNumber ? undefined : 'Draft invoice'}
                           className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         >
-                          {inv.invoiceNumber ?? (
-                            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Draft
-                            </span>
-                          )}
+                          {inv.invoiceNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
                         </a>
                       </div>
                       <StatusPill

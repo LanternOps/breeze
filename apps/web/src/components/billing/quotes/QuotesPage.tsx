@@ -19,6 +19,7 @@ import {
   formatMoney,
 } from './quoteTypes';
 import { StatusPill } from '../shared/StatusPill';
+import AccessDenied from '../../shared/AccessDenied';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
@@ -88,6 +89,9 @@ export function QuotesPage() {
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // A 403 from the quotes route is a permission denial, not a load failure, so it
+  // renders the access-denied state rather than the retryable error.
+  const [forbidden, setForbidden] = useState(false);
   const [filters, setFilters] = useState<Filters>(() => readFilters());
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
@@ -120,8 +124,10 @@ export function QuotesPage() {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const res = await listQuotes({ orgId: f.orgId || undefined, status: f.status || undefined });
       if (res.status === 401) return UNAUTHORIZED();
+      if (res.status === 403) { setForbidden(true); return; }
       if (!res.ok) throw new Error('Failed to load quotes');
       const body = (await res.json()) as { data: Quote[] };
       setQuotes(body.data ?? []);
@@ -273,6 +279,14 @@ export function QuotesPage() {
     },
     [bulk, loadQuotes, filters],
   );
+
+  if (forbidden) {
+    return (
+      <div className="space-y-5" data-testid="quotes-page">
+        <AccessDenied message="You don't have permission to view quotes." />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5" data-testid="quotes-page">
@@ -442,13 +456,14 @@ export function QuotesPage() {
                           href={`/billing/quotes/${qt.id}`}
                           onClick={(e) => e.stopPropagation()}
                           data-testid={`quotes-row-link-${qt.id}`}
+                          // Unnumbered drafts show an em-dash (the Status column
+                          // already carries the "Draft" pill, so a DRAFT chip here
+                          // was redundant). The dash is decorative — give the link
+                          // an accessible name so it doesn't read as just "—".
+                          aria-label={qt.quoteNumber ? undefined : 'Draft quote'}
                           className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         >
-                          {qt.quoteNumber ?? (
-                            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Draft
-                            </span>
-                          )}
+                          {qt.quoteNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
                         </a>
                       </td>
                       <td className="px-3 py-3">{orgName(qt.orgId)}</td>

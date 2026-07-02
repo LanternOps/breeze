@@ -69,6 +69,17 @@ describe('ContractsList — empty states & locked org', () => {
     expect(screen.queryByTestId('contracts-empty-cta')).not.toBeInTheDocument();
   });
 
+  it('renders the access-denied state (not the retryable error) on a 403', async () => {
+    listContracts.mockResolvedValue(json({ error: 'forbidden' }, 403));
+    render(<ContractsList />);
+
+    await screen.findByTestId('access-denied');
+    expect(screen.getByText('Access denied')).toBeInTheDocument();
+    expect(screen.getByText("You don't have permission to view contracts.")).toBeInTheDocument();
+    // The generic data-load-failure UI must NOT appear for a 403.
+    expect(screen.queryByTestId('contracts-error')).not.toBeInTheDocument();
+  });
+
   it('hides the Organization column when locked to an org (embedded view)', async () => {
     listContracts.mockResolvedValue(json({ data: [ACTIVE_CONTRACT] }));
     render(<ContractsList lockedOrgId="o1" />);

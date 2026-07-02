@@ -448,6 +448,35 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
   const railTotal = optimisticTotals?.total ?? quote.total;
   const railDue = optimisticTotals?.dueOnAcceptanceTotal ?? quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
 
+  // The full "Live totals" sentence a screen reader would announce. The visible
+  // figures above update live (per keystroke), but re-announcing this whole
+  // sentence on every keypress is SR chatter, so the announcement is DEBOUNCED to
+  // settle-time (below) — only the debounced copy feeds the role="status" node.
+  const srSentence = useMemo(
+    () =>
+      `Totals updated. One-time ${formatMoney(railOneTime, currency)}, `
+      + `monthly recurring ${formatMoney(railMonthly, currency)}, `
+      + `annual recurring ${formatMoney(railAnnual, currency)}`
+      + (Number(railTax) > 0 ? `, tax ${formatMoney(railTax, currency)}` : '')
+      + `, due on acceptance ${formatMoney(railDue, currency)}.`,
+    [railOneTime, railMonthly, railAnnual, railTax, railDue, currency],
+  );
+
+  // Debounced announcement: the status node's text only updates ~800ms after the
+  // last change, so a screen reader announces the settled totals once per edit
+  // burst instead of re-reading the sentence on every keystroke. The VISIBLE
+  // numbers are unaffected — they still track `rail*` live. Starts empty so the
+  // very first settle is the first announcement (a status node ignores its
+  // initial content anyway).
+  const SR_SETTLE_MS = 800;
+  const [srAnnouncement, setSrAnnouncement] = useState('');
+  const srTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (srTimer.current) clearTimeout(srTimer.current);
+    srTimer.current = setTimeout(() => setSrAnnouncement(srSentence), SR_SETTLE_MS);
+    return () => { if (srTimer.current) clearTimeout(srTimer.current); };
+  }, [srSentence]);
+
   // Internal net-profit summary for the rail's "Margin (internal)" block. Built
   // over the SAME merged line set as the totals: draft-or-persisted values plus
   // each line's cost (draft cost from a cost-only edit, else the persisted cost).
@@ -1031,13 +1060,11 @@ export default function QuoteEditor({ detail, onChanged }: Props) {
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live totals</h3>
             {/* One concise SR announcement covering every figure, so editing a
                 recurring line (which doesn't move "due on acceptance") still tells
-                a screen-reader user the totals recomputed. */}
+                a screen-reader user the totals recomputed. Debounced to settle-time
+                (srAnnouncement) so rapid edits don't machine-gun the same sentence
+                at the screen reader — the visible figures below stay live. */}
             <p className="sr-only" role="status" data-testid="quote-totals-sr">
-              {`Totals updated. One-time ${formatMoney(railOneTime, currency)}, `
-                + `monthly recurring ${formatMoney(railMonthly, currency)}, `
-                + `annual recurring ${formatMoney(railAnnual, currency)}`
-                + (Number(railTax) > 0 ? `, tax ${formatMoney(railTax, currency)}` : '')
-                + `, due on acceptance ${formatMoney(railDue, currency)}.`}
+              {srAnnouncement}
             </p>
             <dl className="space-y-2 text-sm tabular-nums">
               <div className="flex items-baseline justify-between">

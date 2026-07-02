@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { InvoiceDocument } from './InvoiceDocument';
+import InvoiceDocumentPreview from './InvoiceDocument';
 import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
 
 // InvoiceDocument is presentational, but its module imports the auth/org stores
@@ -55,5 +56,23 @@ describe('InvoiceDocument — customer-facing, no internal cost', () => {
     expect(screen.queryByText(/^Cost$/)).not.toBeInTheDocument();
     expect(screen.queryByText('Secret component')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-margin')).not.toBeInTheDocument();
+  });
+});
+
+describe('InvoiceDocumentPreview — customer-name fallback', () => {
+  it('falls back to an em-dash (never a raw org UUID fragment) when neither billToName nor the org store resolves', () => {
+    const d: InvoiceDetailData = {
+      ...detail,
+      invoice: {
+        ...detail.invoice,
+        billToName: null, // no explicit bill-to
+        orgId: '9f8e7d6c-1234-4abc-9def-0123456789ab', // not in the mocked org store
+      },
+    };
+    render(<InvoiceDocumentPreview detail={d} />);
+    const customer = screen.getByTestId('invoice-document-customer');
+    expect(customer).toHaveTextContent('—');
+    // The UUID (or its first 8 chars) must never leak onto the customer document.
+    expect(customer).not.toHaveTextContent('9f8e7d6c');
   });
 });

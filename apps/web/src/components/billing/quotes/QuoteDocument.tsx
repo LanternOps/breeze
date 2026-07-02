@@ -325,7 +325,9 @@ export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailDa
     const billTo = quote.billToName?.trim();
     if (billTo) return billTo;
     const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
-    return resolved || quote.orgId.slice(0, 8);
+    // Never leak a raw org UUID fragment onto a customer-facing document — if the
+    // org store hasn't resolved a name yet, show a neutral em-dash instead.
+    return resolved || '—';
   }, [quote.billToName, quote.orgId, organizations]);
 
   return (

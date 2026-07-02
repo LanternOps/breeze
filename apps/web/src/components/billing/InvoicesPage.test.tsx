@@ -100,6 +100,22 @@ describe('InvoicesPage', () => {
     expect(navigateTo).not.toHaveBeenCalled();
   });
 
+  it('unnumbered draft rows show an em-dash link (no redundant DRAFT chip) with an accessible name', async () => {
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+
+    // inv-2 has invoiceNumber === null. The Status column already carries the Draft
+    // pill, so the Number column shows a plain em-dash rather than a second chip…
+    const link = screen.getByTestId('invoices-row-link-inv-2');
+    expect(link).toHaveTextContent('—');
+    expect(within(link).queryByText('Draft')).not.toBeInTheDocument();
+    // …but the link keeps an accessible name so it doesn't read as just a dash.
+    expect(link).toHaveAttribute('aria-label', 'Draft invoice');
+    // The Status column still communicates draft state.
+    expect(screen.getByTestId('invoices-status-inv-2')).toHaveTextContent('Draft');
+  });
+
   it('writes filter selections to the URL hash', async () => {
     wireDefault();
     render(<InvoicesPage />);

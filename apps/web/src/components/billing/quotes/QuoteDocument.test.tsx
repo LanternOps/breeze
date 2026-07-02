@@ -120,4 +120,15 @@ describe('QuoteDocumentPreview', () => {
     expect(screen.getByTestId('quote-document-customer')).toHaveTextContent('Acme Industries');
     expect(document.querySelector('iframe')).toBeNull();
   });
+
+  it('falls back to an em-dash (never a raw org UUID fragment) when neither billToName nor the org store resolves', () => {
+    const d = makeDetail();
+    d.quote.billToName = null; // no explicit bill-to
+    d.quote.orgId = '9f8e7d6c-1234-4abc-9def-0123456789ab'; // not in the mocked org store
+    render(<QuoteDocumentPreview detail={d} />);
+    const customer = screen.getByTestId('quote-document-customer');
+    expect(customer).toHaveTextContent('—');
+    // The UUID (or its first 8 chars) must never leak onto the customer document.
+    expect(customer).not.toHaveTextContent('9f8e7d6c');
+  });
 });
