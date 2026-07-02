@@ -42,6 +42,19 @@ const maintenanceDevice: Device = { ...baseDevice, status: 'maintenance' };
 const updatingDevice: Device = { ...baseDevice, status: 'updating' };
 const quarantinedDevice: Device = { ...baseDevice, status: 'quarantined' };
 
+// A policy that forbids remote tools, so we can exercise the `offlineTitle ??
+// (policy message)` tooltip precedence introduced by #2078.
+const remoteToolsDeniedPolicy = {
+  webrtcDesktop: true,
+  vncRelay: true,
+  remoteTools: false,
+  clipboardHostToViewer: false,
+  clipboardViewerToHost: true,
+  enableProxy: false,
+  policyName: 'Locked Down',
+  policyId: 'policy-1',
+};
+
 // Native disabled buttons aren't reported as disabled via getByRole's name in
 // every jsdom case, so query the DOM element directly and read its props.
 const button = (name: RegExp) => screen.getByRole('button', { name });
@@ -145,6 +158,31 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
     });
   });
 
+  // The Remote Tools tooltip is the one predicate whose SHAPE changed in #2078:
+  // it went from `offline ? "offline" : policy ? "…policy…" : undefined` to
+  // `offlineTitle ?? (policy ? "…policy…" : undefined)`. Lock both branches of
+  // that `??` so a future refactor can't silently drop the policy message or
+  // flip the precedence.
+  describe('Remote Tools policy tooltip precedence — issue #2078', () => {
+    it('shows the policy tooltip (not a status one) when online but remote tools are policy-disabled', () => {
+      const device: Device = { ...onlineDevice, remoteAccessPolicy: remoteToolsDeniedPolicy };
+      render(<DeviceActions device={device} />);
+
+      const remoteTools = button(/remote tools/i);
+      expect(remoteTools).toBeDisabled();
+      expect(remoteTools).toHaveAttribute('title', 'Remote tools disabled by policy "Locked Down"');
+    });
+
+    it('prefers the status tooltip over the policy tooltip when the device is also not online', () => {
+      const device: Device = { ...maintenanceDevice, remoteAccessPolicy: remoteToolsDeniedPolicy };
+      render(<DeviceActions device={device} />);
+
+      const remoteTools = button(/remote tools/i);
+      expect(remoteTools).toBeDisabled();
+      expect(remoteTools).toHaveAttribute('title', 'Device is in maintenance mode');
+    });
+  });
+
   // The compact variant duplicates the gating logic in its own menu, so it gets
   // its own coverage. The menu is collapsed until the trigger is clicked.
   describe('compact variant', () => {
@@ -169,6 +207,22 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       fireEvent.click(screen.getByRole('button'));
 
       expect(button(/^connect desktop$/i)).not.toBeDisabled();
+    });
+
+    // `offline` satisfies BOTH the old `=== 'offline'` and the new
+    // `!== 'online'` predicate, so an offline-only compact test can't tell the
+    // fix from the bug. An intermediate status can — the compact menu must
+    // disable session/command actions and show the status-accurate tooltip.
+    it('disables session/command actions for an intermediate status (maintenance) and shows the status tooltip', () => {
+      render(<DeviceActions device={maintenanceDevice} compact />);
+
+      fireEvent.click(screen.getByRole('button'));
+
+      expect(button(/run script/i)).toBeDisabled();
+      const connect = button(/^connect desktop$/i);
+      expect(connect).toBeDisabled();
+      expect(connect).toHaveAttribute('title', 'Device is in maintenance mode');
+      expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
     });
   });
 });
