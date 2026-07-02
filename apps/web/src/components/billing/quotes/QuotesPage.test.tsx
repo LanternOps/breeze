@@ -82,6 +82,27 @@ describe('QuotesPage', () => {
     await waitFor(() => expect(screen.getByTestId('quotes-empty')).toBeInTheDocument());
   });
 
+  it('labels a single-currency Out-for-signature total from the AWAITING subset, not quotes[0]', async () => {
+    // quotes[0] is a draft EUR quote (excluded from the sent/viewed subset); the
+    // only awaiting quote is USD. The strip must read $…, never €… — labeling
+    // the USD sum with quotes[0]'s currency was the original mislabeling bug.
+    const mixed = [
+      { ...QUOTES[0], id: 'q-eur-draft', quoteNumber: 'Q-EUR', status: 'draft', currencyCode: 'EUR', total: '999.00' },
+      { ...QUOTES[0], id: 'q-usd-sent', quoteNumber: 'Q-USD', status: 'sent', currencyCode: 'USD', total: '150.00' },
+    ];
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/quotes')) return json({ data: mixed });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-outstanding-strip')).toBeInTheDocument());
+
+    const strip = screen.getByTestId('quotes-outstanding-strip');
+    expect(strip).toHaveTextContent('$150.00');
+    expect(strip.textContent).not.toContain('€');
+  });
+
   it('renders quote rows with status badge and currency total', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });

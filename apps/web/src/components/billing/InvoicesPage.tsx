@@ -315,11 +315,13 @@ export function InvoicesPage() {
     return { outstanding, overdue, draftCount, openCount: open.length, byCurrency, ccy };
   }, [invoices]);
 
-  // '$12,300 + €4,100' when the outstanding book spans currencies; a single
-  // formatted total otherwise (identical to the pre-split single-currency path).
-  const outstandingDisplay = summary.byCurrency.length > 1
-    ? summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ')
-    : formatMoney(summary.outstanding, summary.ccy);
+  // '$12,300 + €4,100' when the outstanding book spans currencies. With one
+  // currency, label with the SUMMED SUBSET's code (byCurrency[0]) — not rows[0]'s
+  // (`summary.ccy`), which may come from a void/settled invoice in a different
+  // currency. The rows[0] fallback only applies when nothing is open ($0.00).
+  const outstandingDisplay = summary.byCurrency.length === 0
+    ? formatMoney(summary.outstanding, summary.ccy)
+    : summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ');
 
   // Any server- or client-side filter narrowing the list. Drives both the Clear
   // affordance and whether the toolbar shows on an otherwise-empty list.

@@ -220,10 +220,13 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     return { total, count: active.length, byCurrency, ccy: contracts[0]?.currencyCode || 'USD' };
   }, [contracts]);
 
-  // '$12,300 + €4,100' across currencies; a single total otherwise (unchanged).
-  const mrrDisplay = mrr.byCurrency.length > 1
-    ? mrr.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ')
-    : formatMoney(mrr.total, mrr.ccy);
+  // '$12,300 + €4,100' across currencies. With one currency, label with the
+  // SUMMED SUBSET's code (byCurrency[0]) — not contracts[0]'s (`mrr.ccy`), which
+  // may come from a draft/cancelled contract in a different currency. The
+  // contracts[0] fallback only applies when nothing is active ($0.00).
+  const mrrDisplay = mrr.byCurrency.length === 0
+    ? formatMoney(mrr.total, mrr.ccy)
+    : mrr.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ');
 
   const runBulkContracts = useCallback(
     async (path: string, verb: string) => {

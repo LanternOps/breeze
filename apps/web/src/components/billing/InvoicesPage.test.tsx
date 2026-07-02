@@ -138,6 +138,30 @@ describe('InvoicesPage', () => {
     expect(window.location.hash).toContain('status=draft');
   });
 
+  it('labels a single-currency Outstanding total from the OPEN subset, not rows[0]', async () => {
+    // rows[0] is a void EUR invoice (excluded from the open subset); every open
+    // invoice is USD. The strip must read $…, never €… — labeling the USD sum
+    // with rows[0]'s currency was the original mislabeling bug.
+    const mixed = [
+      {
+        ...INVOICES[0], id: 'inv-void', invoiceNumber: 'INV-VOID', status: 'void',
+        currencyCode: 'EUR', balance: '999.00', createdAt: '2026-06-02T00:00:00Z',
+      },
+      { ...INVOICES[0], id: 'inv-open', invoiceNumber: 'INV-OPEN', status: 'sent', currencyCode: 'USD', balance: '100.00' },
+    ];
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) return json({ data: mixed });
+      return json({}, false, 404);
+    });
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-outstanding-strip')).toBeInTheDocument());
+
+    const strip = screen.getByTestId('invoices-outstanding-strip');
+    expect(strip).toHaveTextContent('$100.00');
+    expect(strip.textContent).not.toContain('€');
+  });
+
   it('hides the filter toolbar on a genuinely empty list', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });

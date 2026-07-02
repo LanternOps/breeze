@@ -97,6 +97,27 @@ describe('ContractsList — search, sort & skeleton', () => {
     expect(screen.getByTestId(`contract-row-${ZETA.id}`)).toBeInTheDocument();
   });
 
+  it('labels a single-currency MRR total from the ACTIVE subset, not contracts[0]', async () => {
+    // contracts[0] is a draft EUR contract (excluded from the active subset); the
+    // only active contract is USD. The strip must read $…, never €… — labeling
+    // the USD sum with contracts[0]'s currency was the original mislabeling bug.
+    const eurDraft = {
+      ...ALPHA,
+      id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+      name: 'Euro Draft',
+      status: 'draft' as const,
+      currencyCode: 'EUR',
+      estimatedPeriodValue: '999.00',
+    };
+    listContracts.mockResolvedValue(json({ data: [eurDraft, ALPHA] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    const strip = screen.getByTestId('contracts-mrr-strip');
+    expect(strip).toHaveTextContent('$100.00'); // ALPHA: 100.00 / 1 month
+    expect(strip.textContent).not.toContain('€');
+  });
+
   it('exposes a focusable link to the contract detail so keyboard users can open it', async () => {
     listContracts.mockResolvedValue(json({ data: [ALPHA] }));
     render(<ContractsList />);

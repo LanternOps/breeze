@@ -231,10 +231,14 @@ export function QuotesPage() {
     return { outForSignature, awaitingCount: awaiting.length, draftCount, byCurrency, ccy };
   }, [quotes]);
 
-  // '$12,300 + €4,100' across currencies; a single total otherwise (unchanged).
-  const outForSignatureDisplay = summary.byCurrency.length > 1
-    ? summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ')
-    : formatMoney(summary.outForSignature, summary.ccy);
+  // '$12,300 + €4,100' across currencies. With one currency, label with the
+  // SUMMED SUBSET's code (byCurrency[0]) — not quotes[0]'s (`summary.ccy`),
+  // which may come from a draft/expired quote in a different currency. The
+  // quotes[0] fallback only applies when nothing is awaiting ($0.00; the card
+  // is hidden then anyway).
+  const outForSignatureDisplay = summary.byCurrency.length === 0
+    ? formatMoney(summary.outForSignature, summary.ccy)
+    : summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ');
 
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
