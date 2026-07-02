@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';
+import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
@@ -32,17 +33,18 @@ const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resou
 const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
 // Feature types whose per-feature config is fundamentally org-scoped and cannot
-// be authored on a partner-wide policy (#1724): backup/onedrive_helper settings
-// carry a concrete org_id FK, so a partner-wide policy has no owning org to
-// anchor them to. Rejecting these at the feature-link write layer keeps the
-// read side (effective-config resolution) and the write side consistent — a
+// be authored on a partner-wide policy (#1724). Sourced from
+// `@breeze/shared/constants` (ORG_SCOPED_ONLY_FEATURE_TYPES) so the web-side
+// tab gating (ConfigPolicyDetailPage.tsx, #2101) can't drift from this rule.
+// Rejecting these at the feature-link write layer keeps the read side
+// (effective-config resolution) and the write side consistent — a
 // partner-wide policy never advertises coverage that can't be delivered.
 //
 // patch is deliberately NOT here: update rings are partner-axis (partner_id, no
 // org_id) and the patch scheduler groups by each device's own org, so a
 // partner-wide patch policy resolves and schedules end-to-end across every org
 // under the partner. See configPolicyPatching.ts.
-const ORG_SCOPED_ONLY_FEATURES = new Set(['backup', 'onedrive_helper']);
+const ORG_SCOPED_ONLY_FEATURES: ReadonlySet<string> = ORG_SCOPED_ONLY_FEATURE_TYPES;
 
 // GET /:id/features — list feature links for a policy
 featureLinkRoutes.get(

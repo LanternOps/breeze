@@ -149,6 +149,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
                   <button
                     key={tab.id}
                     type="button"
+                    title={tab.title}
                     onClick={() => { onTabChange(tab.id); setMoreOpen(false); }}
                     className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition ${
                       activeTab === tab.id

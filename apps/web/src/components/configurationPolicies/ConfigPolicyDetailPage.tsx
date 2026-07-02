@@ -21,12 +21,18 @@ import {
   LifeBuoy,
   Monitor,
   ListChecks,
+  Info,
 } from 'lucide-react';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { OverflowTabs } from '../shared/OverflowTabs';
 import { fetchWithAuth } from '../../stores/auth';
+// The web layer only aliases the bare `@breeze/shared` root and the
+// `/reportPdf` subpath (see apps/web/vitest.config.ts + tsconfig.json) — the
+// `/constants` subpath isn't wired up here, so import from the root, which
+// re-exports it.
+import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
 import type { FeatureType, FeatureLink } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
 import AssignmentsTab from './AssignmentsTab';
@@ -249,13 +255,30 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
   const linkFor = (t: FeatureType) => featureLinks.find((l) => l.featureType === t);
   const parentLinkFor = (t: FeatureType) => parentFeatureLinks.find((l) => l.featureType === t);
 
-  const tabs: { id: Tab; label: string; icon: React.ReactNode; dot?: boolean }[] = [
+  // Partner-wide ("all organizations") policies carry orgId === null (#1724).
+  // A fixed, small set of feature types are fundamentally org-scoped (backup
+  // storage credentials carry an org_id FK) and are rejected with a 400 by the
+  // API if saved on a partner-wide policy — see ORG_SCOPED_ONLY_FEATURE_TYPES
+  // in @breeze/shared/constants, the single source of truth shared with
+  // apps/api/src/routes/configurationPolicies/featureLinks.ts. Gate those tabs
+  // here so the UI never offers an edit that can't be saved (#2101).
+  // `tabs` (and this gating) is computed before the `if (!policy) return null`
+  // guard below, so `policy` may still be null while the initial fetch is in
+  // flight — optional-chain rather than assume non-null.
+  const isPartnerWide = policy?.orgId === null;
+  const isOrgOnlyFeature = (ft: FeatureType) => ORG_SCOPED_ONLY_FEATURE_TYPES.has(ft);
+  const isGatedFeature = (ft: FeatureType) => isPartnerWide && isOrgOnlyFeature(ft);
+
+  const tabs: { id: Tab; label: string; icon: React.ReactNode; dot?: boolean; title?: string }[] = [
     { id: 'overview', label: 'Overview', icon: <Layers className="h-4 w-4" /> },
     ...FEATURE_TYPES.map((ft) => ({
       id: ft as Tab,
       label: FEATURE_META[ft].label,
       icon: featureTabIcons[ft],
       dot: !!linkFor(ft) || !!parentLinkFor(ft),
+      title: isGatedFeature(ft)
+        ? 'Not available on partner-wide policies — configure this feature on an organization-scoped policy.'
+        : undefined,
     })),
     { id: 'compliance_status', label: 'Compliance Status', icon: <ListChecks className="h-4 w-4" /> },
     { id: 'assignments', label: 'Assignments', icon: <Target className="h-4 w-4" /> },
@@ -408,7 +431,9 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
       )}
 
       {/* Parent policy banner — shown on feature tabs when inheriting from another policy */}
-      {FEATURE_TYPES.includes(activeTab as FeatureType) && linkedPolicyId && (
+      {FEATURE_TYPES.includes(activeTab as FeatureType) &&
+        linkedPolicyId &&
+        !isGatedFeature(activeTab as FeatureType) && (
         <div className="flex items-center rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-3">
           <div className="flex items-center gap-2 text-sm">
             <Link2 className="h-4 w-4 text-blue-600" />
@@ -428,8 +453,24 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
         </div>
       )}
 
-      {/* Feature Tabs */}
-      {FEATURE_TYPES.includes(activeTab as FeatureType) && renderFeatureTab(activeTab as FeatureType)}
+      {/* Feature Tabs — org-only features (e.g. Backup) are rendered read-only
+          with an inline hint on partner-wide policies instead of the editor,
+          since the API rejects that save with a 400 (#2101). */}
+      {FEATURE_TYPES.includes(activeTab as FeatureType) && (
+        isGatedFeature(activeTab as FeatureType) ? (
+          <div className="flex items-start gap-3 rounded-lg border border-dashed bg-muted/30 p-6 text-sm text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium text-foreground">
+                {FEATURE_META[activeTab as FeatureType].label} isn&apos;t available on partner-wide policies
+              </p>
+              <p className="mt-1">Configure this feature on an organization-scoped policy.</p>
+            </div>
+          </div>
+        ) : (
+          renderFeatureTab(activeTab as FeatureType)
+        )
+      )}
 
       {/* Compliance Status Tab (read-only results; the `compliance` feature tab is the rule editor) */}
       {activeTab === 'compliance_status' && policyId && (
