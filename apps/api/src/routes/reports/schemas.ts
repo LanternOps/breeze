@@ -36,6 +36,49 @@ const securityCompliancePostureConfigFields = {
   includeCis: z.boolean().optional()
 };
 
+/**
+ * Cadence detail + delivery config persisted inside `config`. The builder
+ * writes these and reportScheduleWorker reads them; they must be declared here
+ * because zod strips unknown object keys — before this schema existed, creates
+ * silently dropped schedule times and email recipients (edits survived only
+ * because update used z.any()).
+ */
+const reportScheduleDetailSchema = z.object({
+  // 24h "HH:MM"
+  time: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(),
+  // weekday name; the worker lowercases, so accept any case
+  day: z.string().max(16).optional(),
+  // day-of-month "1".."31" as string (builder sends strings)
+  date: z.string().regex(/^([1-9]|[12]\d|3[01])$/).optional()
+});
+
+const reportConfigFields = {
+  dateRange: z.object({
+    start: z.string().optional(),
+    end: z.string().optional(),
+    preset: z.enum(['last_7_days', 'last_30_days', 'last_90_days', 'custom']).optional()
+  }).optional(),
+  filters: z.object({
+    siteIds: z.array(z.string().guid()).optional(),
+    deviceIds: z.array(z.string().guid()).optional(),
+    osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
+    status: z.array(z.string()).optional(),
+    severity: z.array(z.string()).optional()
+  }).optional(),
+  columns: z.array(z.string()).optional(),
+  groupBy: z.string().optional(),
+  sortBy: z.string().optional(),
+  sortOrder: z.enum(['asc', 'desc']).optional(),
+  schedule: reportScheduleDetailSchema.optional(),
+  emailRecipients: z.array(z.string().email().max(254)).max(50).optional(),
+  ...securityCompliancePostureConfigFields
+};
+
+// Loose: the builder round-trips presentation metadata (builderType, dataSource,
+// filterConditions, aggregation, chartType, exportFormats, templateName…)
+// through config; declared keys above are validated, unknown keys pass through.
+export const reportConfigSchema = z.looseObject(reportConfigFields);
+
 export const listReportsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -48,32 +91,14 @@ export const createReportSchema = z.object({
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: reportTypeSchema,
-  config: z.object({
-    dateRange: z.object({
-      start: z.string().optional(),
-      end: z.string().optional(),
-      preset: z.enum(['last_7_days', 'last_30_days', 'last_90_days', 'custom']).optional()
-    }).optional(),
-    filters: z.object({
-      siteIds: z.array(z.string().guid()).optional(),
-      deviceIds: z.array(z.string().guid()).optional(),
-      osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
-      status: z.array(z.string()).optional(),
-      severity: z.array(z.string()).optional()
-    }).optional(),
-    columns: z.array(z.string()).optional(),
-    groupBy: z.string().optional(),
-    sortBy: z.string().optional(),
-    sortOrder: z.enum(['asc', 'desc']).optional(),
-    ...securityCompliancePostureConfigFields
-  }).optional().default({}),
+  config: reportConfigSchema.optional().default({}),
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).default('one_time'),
   format: z.enum(['csv', 'pdf', 'excel']).default('csv')
 });
 
 export const updateReportSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  config: z.any().optional(),
+  config: reportConfigSchema.optional(),
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
   format: z.enum(['csv', 'pdf', 'excel']).optional()
 });
