@@ -653,6 +653,8 @@ Device-scoped management commands exposed as REST endpoints.
 | `GET` | `/reports/data/compliance` | Compliance data |
 | `GET` | `/reports/data/metrics` | Metrics data |
 
+Saved reports schedule via `schedule` (`daily` / `weekly` / `monthly`) plus a `config.schedule` object (`time`, `day`, `date`) that pins the exact run time, and `config.emailRecipients` (up to 50 addresses) that emails the generated file -- a branded PDF attachment for `pdf`-format reports, CSV for `csv`/`excel` -- on every scheduled run. Both are validated and persisted on create and update.
+
 ## Analytics
 
 | Method | Path | Description |
@@ -772,6 +774,17 @@ Bulk endpoints accept a list of IDs and return per-item results, so partial succ
 | `GET` | `/pax8/subscriptions` | List Pax8 subscriptions |
 | `POST` | `/pax8/subscriptions/link` | Link (or re-point) a Pax8 subscription to a contract line — requires MFA |
 | `DELETE` | `/pax8/subscriptions/link` | Unlink a Pax8 subscription from its contract line (idempotent) — requires MFA |
+
+## Tickets
+
+Core ticket CRUD follows the standard REST pattern under `/tickets`; the endpoints below cover soft-delete, restore, and bulk actions.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/tickets?deleted=only` | List soft-deleted tickets (the Archived queue). Requires `tickets:manage`. |
+| `DELETE` | `/tickets/:id` | Soft-delete a ticket. Requires `tickets:manage`. Reversible; by-id operations on a deleted ticket return `404`. |
+| `POST` | `/tickets/:id/restore` | Restore a soft-deleted ticket. Requires `tickets:manage`. |
+| `POST` | `/tickets/bulk` | Bulk `assign` / status change / `delete` across up to 100 ticket IDs. The `delete` action requires `tickets:manage`; `assign` and status changes require `tickets:write`. Returns per-ticket `updated`/`skipped`/`failed` counts. |
 
 ## Ticketing
 

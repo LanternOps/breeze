@@ -31,6 +31,8 @@ The dispatcher runs with a concurrency of 5 workers and tracks delivery status (
 
 Channels define where notifications are delivered. Each channel belongs to an organization, has a type, a JSON configuration object, and an enabled/disabled flag.
 
+A channel can also be created **partner-wide** so a single Slack, PagerDuty, email, or other destination serves every organization the partner manages, instead of configuring the same destination per org -- see [Partner-wide Channels and Routing](#partner-wide-channels-and-routing) below.
+
 ### Supported channel types
 
 | Type | Description | Config key(s) |
@@ -351,7 +353,7 @@ When an alert triggers, the notification dispatcher determines which channels to
 <Steps>
 1. **In-app notifications** are sent immediately to all active users in the organization (always).
 2. If the alert was created by an **alert rule** with `notificationChannelIds` in its override settings, those specific channels are used.
-3. If no rule-level channel overrides exist (or the alert has no associated rule), **all enabled channels** for the organization are used.
+3. If no rule-level channel overrides exist (or the alert has no associated rule), **all enabled channels** for the organization are used -- including any partner-wide channels owned by the organization's partner.
 4. Each channel receives a queued send job via the background queue.
 </Steps>
 
@@ -385,6 +387,18 @@ Each step schedules delayed notification jobs. When an alert is acknowledged or 
 
 ---
 
+## Partner-wide Channels and Routing
+
+Notification channels, routing rules, and escalation policies can each be created **partner-wide** ("All organizations") instead of scoped to one organization. A partner-scoped user with access to every organization can set this up once -- one NOC Slack channel, one PagerDuty destination, one routing rule set, one escalation chain -- and have it apply across every org the partner manages.
+
+- **Creation** -- when creating a channel or routing rule, choose **All organizations** instead of **This organization only**. This choice is only available at creation time; ownership can't change afterward. Escalation policies support the same `ownerScope` field via the API.
+- **Delivery** -- when an alert triggers, the dispatcher considers both the alert org's own channels/routing rules/escalation policy and its partner's partner-wide ones. Org-owned and partner-wide routing rules compete in a single priority ordering (lowest priority number wins, regardless of which axis owns the rule). Partner-wide channels also participate in the no-rules fallback, so they go live for every member organization immediately without needing a routing rule.
+- **Test sends** -- sending a test notification on a partner-wide channel (`POST /alerts/channels/:id/test`) requires the same partner-wide management access as editing it, since it fires a real notification on the shared destination.
+- **Records stay per-device-org** -- individual notification send records always belong to the firing device's own organization, never the partner, so delivery history and throttling stay scoped correctly even for a shared channel.
+- **UI** -- partner-wide channels and routing rules show an **All orgs** badge in their respective lists on the **Alerts > Channels** page.
+
+---
+
 ## API Reference
 
 ### In-App Notification Endpoints
@@ -403,13 +417,13 @@ All endpoints require authentication via `authMiddleware`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/alerts/channels` | List notification channels (`?orgId=&type=&enabled=`) |
-| POST | `/alerts/channels` | Create a notification channel |
+| GET | `/alerts/channels` | List notification channels visible to the caller (`?orgId=&type=&enabled=`) -- includes partner-wide channels for partner-scoped tokens |
+| POST | `/alerts/channels` | Create a notification channel. Set `ownerScope: "partner"` to create it partner-wide |
 | PUT | `/alerts/channels/:id` | Update a notification channel |
 | DELETE | `/alerts/channels/:id` | Delete a notification channel |
 | POST | `/alerts/channels/:id/test` | Send a test notification through the channel |
 
-Channel endpoints require `organization`, `partner`, or `system` scope. Create, update, delete, and test all require MFA verification.
+Channel endpoints require `organization`, `partner`, or `system` scope. Create, update, delete, and test all require MFA verification. Creating, updating, deleting, or test-sending a partner-wide channel additionally requires partner-wide management access.
 
 ### Per-channel throttle
 

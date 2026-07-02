@@ -339,6 +339,8 @@ Outstanding patches are split into **Approved** and **Pending Approval**: approv
 
 Patch *scheduling and settings* — when to scan, which severities to auto-approve, and what reboot policy to apply — are managed through [Configuration Policies](/features/configuration-policies/). This is the primary way to automate patching at scale. The legacy `PATCH /patch-policies` and `DELETE /patch-policies` routes have been removed; `GET /patch-policies` remains for backwards compatibility only.
 
+A patch feature can be added to a [partner-wide (all organizations)](/features/configuration-policies/#policy-ownership-organization-vs-partner-wide) configuration policy, including linking an [update ring](/features/update-rings/) directly to it — you set the schedule, auto-approve rules, and ring once and it schedules across every organization you manage. Deployment jobs created from a partner-wide policy are still grouped and tracked one-per-organization, so per-customer compliance reporting is unaffected.
+
 ### Adding a patch feature to a policy
 
 ```bash

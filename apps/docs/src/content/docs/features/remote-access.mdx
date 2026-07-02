@@ -108,7 +108,7 @@ The remote desktop pipeline uses adaptive bitrate control to maintain smooth str
 - Frame delivery latency
 - Packet loss rate
 
-The bitrate ramps up when conditions are good and drops when congestion is detected. A stability threshold of 2 consecutive stable measurements is required before increasing bitrate to prevent oscillation.
+The bitrate ramps up when conditions are good and drops when congestion is detected. Sessions start at a conservative bitrate and ramp up over the first seconds after connect (a brief slow-start), so expect image quality to sharpen shortly after the session opens. Each increase requires a short run of stable measurements to prevent oscillation — the first step after congestion is deliberately gentle, then consecutive clean steps accelerate, so recovery after a network dip completes in seconds rather than a minute.
 
 ### Audio Streaming
 
@@ -156,7 +156,9 @@ Every consent outcome is audit logged — granted, denied, or bypassed (with the
 
 ### GPU-Accelerated Streaming
 
-Remote desktop uses hardware GPU encoding when available for better performance. The agent supports both NVIDIA (NVENC) and AMD (AMF) GPUs and auto-selects the best encoder based on the device's hardware.
+Remote desktop uses hardware GPU encoding when available for better performance. The agent supports NVIDIA (NVENC), AMD (AMF), and Intel (QuickSync) GPUs and auto-selects the best encoder based on the device's hardware.
+
+As of v0.89.0, hardware encoding on Windows is significantly more reliable and faster: a bug that caused Intel systems to silently fall back to software encoding has been fixed, encode latency is dramatically lower, and streams show fewer artifacts and less smearing at high resolutions. No configuration is needed — devices pick up the improvement with the agent update.
 
 If the hardware encoder stalls (for example, due to a driver issue), the agent automatically switches to a software encoder within approximately 600 milliseconds — previous builds took around 11 seconds to recover. Headless servers without a GPU use software rendering automatically with no configuration needed.
 

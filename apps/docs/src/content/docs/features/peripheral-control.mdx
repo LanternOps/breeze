@@ -9,6 +9,8 @@ Peripheral Control lets you define organization-wide policies for USB, Bluetooth
 
 Policies are scoped through the multi-tenant hierarchy -- you can target an entire organization, individual sites, device groups, or specific devices. When a policy is created or updated, Breeze distributes it to agents through a BullMQ job pipeline. The agent stores the latest policies locally and evaluates them against each detected peripheral in real time.
 
+A policy can also be created **partner-wide** so it applies to every organization the partner manages -- see [Partner-wide Policies](#partner-wide-policies-all-organizations) below.
+
 ---
 
 ## Key Concepts
@@ -107,6 +109,7 @@ Authorization: Bearer <token>
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `orgId` | UUID | No | Organization ID. Auto-resolved for org-scoped tokens |
+| `ownerScope` | string | No | `organization` (default) or `partner` for a partner-wide ("all orgs") policy. Create-only. Creating with `partner` requires partner-wide management access |
 | `name` | string | Yes | Policy name (max 200 chars) |
 | `deviceClass` | string | Yes | `storage`, `all_usb`, `bluetooth`, or `thunderbolt` |
 | `action` | string | Yes | `allow`, `block`, `read_only`, or `alert` |
@@ -118,6 +121,16 @@ Authorization: Bearer <token>
 <Aside type="caution">
   Creating or updating a policy requires the `orgs:write` permission and MFA verification. The policy is distributed to agents asynchronously through BullMQ. If distribution scheduling fails, the policy is still saved and a `warning` field is returned in the response.
 </Aside>
+
+---
+
+## Partner-wide Policies (All organizations)
+
+Instead of creating the same USB/Bluetooth/Thunderbolt policy separately for every customer, a partner-scoped user with access to all organizations can create one policy and apply it across the whole partner.
+
+When creating a policy, choose **All organizations (partner-wide policy)** instead of **This organization only**. This choice is only available at creation time -- ownership doesn't change on update, so moving a policy between an org and partner-wide means deleting and recreating it.
+
+Partner-wide policies are distributed to agents in every member organization, not just one. They show an **All orgs** badge in the policy list, and creating, updating, disabling, or adding/removing exceptions on one requires partner-wide management access -- the same requirement as `orgs:write` plus MFA for an org-scoped policy.
 
 ### Updating a Policy
 

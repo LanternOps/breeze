@@ -24,6 +24,7 @@ Across the top, view tabs slice the queue:
 | **All open** | Every open ticket you can see |
 | **Breaching soon** | Open tickets whose SLA is at risk or already breached |
 | **Closed** | Resolved and closed tickets, newest first |
+| **Archived** | Deleted tickets, with a **Restore** action -- only visible to Partner Admins and Org Admins (see [Deleting and Restoring Tickets](#deleting-and-restoring-tickets)) |
 
 Below the tabs, a filter bar narrows any view by **organization**, **priority**, **category**, and **assignee**, and a search box matches against ticket subjects. Each row shows the ticket number, subject, status, priority, and an SLA chip when the clock is running low.
 
@@ -54,6 +55,14 @@ Because the attached device belongs to the original organization, moving the tic
 <Aside>
   Tickets can only be moved between organizations of the **same partner**. This is a high-privilege action: it requires ticket and organization edit permissions plus MFA confirmation, and isn't available to site-restricted technicians.
 </Aside>
+
+### Deleting and Restoring Tickets
+
+Click **Delete**, next to **Move to another org…** in the ticket header, to remove a ticket. A confirm dialog explains that the ticket is hidden from every queue and can be restored by an admin, then deletes it. The same **Delete** action is available from the bulk action bar for a batch of selected tickets.
+
+A deleted ticket disappears immediately from every list, from stats, from the customer portal, from AI tools, and from email threading -- a customer replying to an old email about a deleted ticket can't reopen it. No notification is sent to the requester when a ticket is deleted.
+
+Deleting and restoring both require the **ticket management** permission, held by **Partner Admins** and **Org Admins** (technicians and viewers can't delete or restore). Find deleted tickets under the **Archived** tab and click **Restore** on any row to return it to the live queues. Both actions are recorded in the audit log.
 
 ## Replies and Internal Notes
 
@@ -110,6 +119,7 @@ Select tickets with the checkboxes in the list and an action bar slides up from 
 
 - **Bulk assign** -- hand a batch of tickets to a technician, or unassign them.
 - **Bulk status** -- move a batch to New, Open, Pending, On hold, or Closed.
+- **Bulk delete** -- soft-delete every selected ticket at once (Partner Admins and Org Admins only; see [Deleting and Restoring Tickets](#deleting-and-restoring-tickets)). A confirm dialog shows the count before anything is deleted.
 
 You can act on up to 100 tickets at once. Resolving is intentionally excluded from bulk actions: every resolution needs a per-ticket resolution note, so tickets are resolved individually from the workbench.
 

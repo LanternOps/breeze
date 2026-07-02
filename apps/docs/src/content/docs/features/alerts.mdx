@@ -131,6 +131,10 @@ Alert rules define what conditions to watch for and which devices to monitor.
 
 Before deploying a rule to production, you can test it against a specific device. From the rule list, click the **Test** button, select a target device, and Breeze will simulate condition evaluation and show you whether the rule would trigger.
 
+### Partner-wide Rules
+
+A partner-scoped user with access to every organization can create an alert rule as **partner-wide** ("All organizations") instead of scoping it to one org, so the same threshold or condition applies fleet-wide across every organization the partner manages. Choose the owner scope when creating the rule -- it's set once at creation and can't be changed afterward. Partner-wide rules show an **All orgs** badge in the rule list.
+
 ## Notification Channels
 
 Notification channels are the delivery endpoints where alert notifications are sent. Each channel belongs to an organization.
@@ -163,6 +167,8 @@ Notification channels are the delivery endpoints where alert notifications are s
 
 </Steps>
 
+A partner-scoped user with access to every organization can instead create the channel as **All organizations** (partner-wide) so one destination -- a shared NOC Slack channel or PagerDuty service, for example -- serves every org the partner manages. This choice is set at creation and can't change later. Partner-wide channels show an **All orgs** badge and require partner-wide management access to edit, delete, or test-send. See [Notifications](/features/notifications/#partner-wide-channels-and-routing) for delivery details.
+
 ## Notification Routing Rules
 
 Routing rules let you control which channels receive which alerts, based on conditions like severity, alert type, device tags, or site.
@@ -183,11 +189,11 @@ Routing rules let you control which channels receive which alerts, based on cond
 
 5. Select one or more **notification channels** to deliver to.
 
-6. Enable or disable the rule, then click **Save**.
+6. Choose an owner scope (partner users only) -- **This organization only** or **All organizations (partner-wide rule)** -- then enable or disable the rule and click **Save**.
 
 </Steps>
 
-Routing rules are evaluated from lowest priority number to highest. The first matching rule determines where the notification is sent.
+Routing rules are evaluated from lowest priority number to highest, and org-owned and partner-wide rules compete in the same ordering -- an org can define a higher-priority rule of its own to pre-empt a partner-wide rule. The first matching rule determines where the notification is sent. Partner-wide routing rules show an **All orgs** badge.
 
 ## Escalation Policies
 
@@ -204,6 +210,8 @@ For critical alerts that need a guaranteed response, create escalation policies 
 3. Attach the policy to alert rules by selecting it in the rule's **Escalation Policy** field.
 
 </Steps>
+
+Like notification channels, escalation policies can be created partner-wide (`ownerScope: "partner"` via the API) so one escalation chain applies across every organization the partner manages. Creating, updating, or deleting a partner-wide escalation policy requires partner-wide management access.
 
 ---
 

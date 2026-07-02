@@ -19,7 +19,7 @@ Breeze implements the **2024-11-05** protocol version with two capabilities:
 
 | Capability | Description |
 |---|---|
-| **Tools** | 100+ callable operations across device management, monitoring, alerting, compliance, backups, configuration policies, analytics, and more |
+| **Tools** | 100+ callable operations across device management, monitoring, alerting, compliance, backups, configuration policies, ticketing, billing, analytics, and more |
 | **Resources** | Read-only data endpoints (`breeze://devices`, `breeze://alerts`, etc.) |
 
 ---
@@ -267,6 +267,31 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `preview_configuration_change` | 1 | Preview how adding or removing policy assignments would change effective configuration. |
 | `apply_configuration_policy` | 2 | Assign a configuration policy to a target in the hierarchy. |
 | `remove_configuration_policy_assignment` | 2 | Remove a configuration policy assignment. |
+
+### Ticketing tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `manage_tickets` | 1/2/3 | Full ticket lifecycle. List/get are Tier 1. Create, comment, assign, update status, update fields (subject, description, category, priority, due date, tags, device, submitter), link/unlink alerts, create a ticket from an alert, and edit/delete comments are Tier 2. Time tracking (log time entry, start/stop timer) and moving a ticket to a different organization are Tier 3. |
+
+### Billing tools
+
+| Tool | Tier | Description |
+|---|---|---|
+| `list_invoices` | 2 | List invoices across the organizations you can access, newest first, with optional organization and status filters. |
+| `get_invoice` | 2 | Full accounting view of one invoice — header plus all line items. |
+| `manage_invoices` | 2/3 | Invoice lifecycle. Draft create/update/delete, line management (manual, catalog, bundle, and contract lines), assembling a draft from an organization's billable period or from a ticket's billable time and parts, and creating a Stripe payment link are Tier 2. Financial finalization — issue, void, record payment, void payment — is Tier 3. |
+| `search_catalog` | 2 | Search the partner product catalog (hardware, software, services, bundles) by name or type. |
+| `get_catalog_item` | 2 | Full detail for one catalog item, including bundle components. |
+| `manage_catalog` | 2 | Catalog maintenance: create, update, and archive items; set or remove per-organization price overrides; manage bundle components. All actions are Tier 2. |
+| `list_contracts` | 2 | List recurring contracts across accessible organizations, newest first, with optional filters. |
+| `get_contract` | 2 | Full contract view — header, lines, and billing-period history. |
+| `manage_contracts` | 2/3 | Contract lifecycle. Draft create/update/delete and line management are Tier 2. Lifecycle state changes — activate, pause, resume, cancel — are Tier 3. |
+| `manage_quotes` | 2/3 | Quote/proposal lifecycle. Draft, content-block, and line management, declining a quote, and creating a payment link are Tier 2. Sending a quote to the customer is Tier 3. |
+
+<Aside type="note">
+  The billing read tools (`list_invoices`, `get_invoice`, `search_catalog`, `get_catalog_item`, `list_contracts`, `get_contract`) are deliberately classified Tier 2 even though they are read-only — financial data requires the `ai:write` scope, not just `ai:read`. In earlier releases these six tools appeared in the catalogue but every call failed; they work as of v0.89.0. All ticketing and billing tools additionally require the matching role permission on the API key's creator (for example, issuing an invoice requires the invoices *send* grant, and contract lifecycle changes require the contracts *manage* grant).
+</Aside>
 
 <Aside>
   Tier classification is **action-level**, not tool-level. For example, `manage_alerts` is Tier 1 for list/get, but Tier 2 for acknowledge/resolve. The MCP server resolves the effective tier at runtime for each specific action.

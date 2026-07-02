@@ -60,7 +60,13 @@ Scans can be triggered manually for specific devices or scheduled through scan p
 
 ## Scan Policies
 
-Scan policies define the detection configuration, file scope, and schedule for sensitive data scans. Each policy is scoped to an organization and specifies which data types to detect, which paths to scan, and how often to run.
+Scan policies define the detection configuration, file scope, and schedule for sensitive data scans. Each policy is either scoped to a single organization, or created as a **partner-wide policy** that applies to every organization the partner manages.
+
+### Partner-wide (All organizations)
+
+A partner-scoped user with access to every organization under the partner can create a scan policy once and have it apply to all of them, instead of recreating the same policy per org. When creating a policy, choose **All organizations (partner-wide policy)** instead of **This organization only**. Ownership is set at creation time and can't be changed later -- to move a policy between an org and partner-wide, delete and recreate it.
+
+Scheduled scans on a partner-wide policy fan out across every organization under the partner: the scheduler enqueues scans for devices in each member org, checking each org independently so one backed-up org doesn't delay scans in the others. Scan results and findings always belong to the device's own organization, not the partner. Partner-wide policies show an **All orgs** badge in the policy list, and creating, updating, or deleting one requires partner-wide management access.
 
 ### Creating a Policy
 
@@ -96,6 +102,7 @@ Authorization: Bearer <token>
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `orgId` | UUID | No | Organization ID. Auto-resolved for org-scoped tokens |
+| `ownerScope` | string | No | `organization` (default) or `partner` for a partner-wide ("all orgs") policy. Create-only -- ignored on update. Creating with `partner` requires partner-wide management access |
 | `name` | string | Yes | Policy name (max 200 chars) |
 | `scope` | object | No | Scan scope configuration (see below) |
 | `detectionClasses` | string[] | Yes | Data types to detect: `pii`, `pci`, `phi`, `credential`, `financial` (1-5) |
@@ -401,8 +408,8 @@ For destructive actions, the response includes queued commands and any failures:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/sensitive-data/policies` | List all scan policies for the organization |
-| POST | `/sensitive-data/policies` | Create a new scan policy |
+| GET | `/sensitive-data/policies` | List scan policies visible to the caller (own org's policies, plus any partner-wide policies for partner-scoped tokens) |
+| POST | `/sensitive-data/policies` | Create a new scan policy. Set `ownerScope: "partner"` to create it partner-wide |
 | PUT | `/sensitive-data/policies/:id` | Update an existing policy |
 | DELETE | `/sensitive-data/policies/:id` | Delete a policy |
 

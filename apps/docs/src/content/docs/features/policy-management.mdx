@@ -18,7 +18,7 @@ The policy management system is built on two tables:
 - **`automation_policies`** -- stores the policy definition (name, rules, targets, enforcement level, check interval, optional remediation script).
 - **`automation_policy_compliance`** -- stores per-device compliance results (status, rule evaluation details, remediation attempt count, last checked timestamp).
 
-Policies are scoped to an organisation. Multi-tenant access control enforces that organisation-scoped users see only their own policies, partner-scoped users see policies for accessible organisations, and system-scoped users have unrestricted access.
+Compliance policies created through a Configuration Policy's **compliance** feature link can be owned by a single organisation or, for partner-level users with full access to every organisation they manage, made **partner-wide (all organisations)** — see [Policy ownership](/features/configuration-policies/#policy-ownership-organization-vs-partner-wide) on the Configuration Policies page. Multi-tenant access control enforces that organisation-scoped users see only their own policies, partner-scoped users see policies for accessible organisations plus their own partner-wide policies, and system-scoped users have unrestricted access.
 
 The API routes are mounted at `/api/v1/policies` and require authentication via the `authMiddleware`.
 

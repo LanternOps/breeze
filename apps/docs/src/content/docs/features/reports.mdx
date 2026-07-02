@@ -25,7 +25,7 @@ Every report has a `type` that determines which data is queried and how the outp
 | `alert_summary` | Alert history with severity breakdown | title, severity, status, triggered/acknowledged/resolved timestamps, rule name |
 | `compliance` | Device health and compliance posture | hostname, OS, status, last seen, compliance flag, identified issues |
 | `performance` | Aggregated CPU, RAM, and disk metrics per device | avg/max CPU %, avg/max RAM %, avg/max disk % |
-| `executive_summary` | High-level fleet overview with device counts, alert stats, OS distribution, and site breakdown | online/offline totals, health %, critical/high alert counts, resolution rate |
+| `executive_summary` | High-level fleet overview with device counts, alert stats, OS distribution, and site breakdown (see [Executive Summary Report](#executive-summary-report)) | online/offline totals, health %, critical/high alert counts, resolution rate |
 | `security_compliance_posture` | Per-control security and compliance evidence for one organization, built for cyber-insurance applications and vendor security questionnaires | EDR/AV coverage, disk encryption %, firewall %, patch currency %, password policy, local-admin exposure, MFA/PAM posture, backup, DNS filtering, optional CIS pass-rate (see [Security & Compliance Posture Report](#security--compliance-posture-report)) |
 
 ---
@@ -64,6 +64,19 @@ The `config.filters` object narrows the data:
 | `csv` | Comma-separated values (default) |
 | `pdf` | Formatted PDF document |
 | `excel` | Excel spreadsheet (.xlsx) |
+
+### Schedule Details and Email Recipients
+
+For recurring reports, the **Schedule and delivery** panel in the report builder (also available as `config.schedule` and `config.emailRecipients` via the API) controls exactly when the report runs and who gets emailed the result:
+
+| Field | Builder UI label | Applies to | Format |
+|-------|------------------|-----------|--------|
+| `schedule.time` | Run time | All recurring cadences | 24-hour `HH:MM`, e.g. `09:00` |
+| `schedule.day` | Day of week | `weekly` | Weekday name, e.g. `monday` |
+| `schedule.date` | Day of month | `monthly` | Day of month, `1`-`31` |
+| `emailRecipients` | Email distribution list | Any recurring cadence | Array of up to 50 email addresses |
+
+See [Scheduling](#scheduling) below for how these are evaluated and what recipients receive.
 
 ---
 
@@ -167,9 +180,21 @@ curl -X POST /api/v1/reports \
   }'
 ```
 
+Scheduled runs fire in the organization's local time zone (falling back to the partner's time zone, then UTC if neither is configured), pinned to the `schedule.time` / `schedule.day` / `schedule.date` values from `config.schedule` -- see [Schedule Details and Email Recipients](#schedule-details-and-email-recipients) above.
+
 <Aside>
   The `lastGeneratedAt` timestamp on the report record is updated each time a generation run is triggered, regardless of whether the run ultimately succeeds or fails.
 </Aside>
+
+### Email Delivery
+
+Add addresses to the **Email distribution list** (or `config.emailRecipients`) to have each scheduled run emailed automatically, in addition to appearing in the reports list:
+
+- **PDF-format** reports attach the same branded PDF you'd download from the run. If it's larger than 5 MB or fails to render, the email falls back to a link into Breeze instead of an attachment.
+- **CSV and Excel-format** reports attach the data as a CSV file.
+- The email leads with a one-line trend summary when a prior run exists to compare against, for example "Posture score 79 -- up from 74 last run."
+
+The reports list also shows the next scheduled run time (e.g. "Next: Mon, Jul 6, 9:00 AM") and a recipient count badge on recurring reports.
 
 ---
 
@@ -205,11 +230,19 @@ The **Security & Compliance Posture** report (`security_compliance_posture`) pac
 
 It is scoped to a single organization (with an optional site filter) and is honest about gaps: a control that hasn't been assessed is reported as **N/A**, never as a misleading 0% or a falsely favorable score. The PDF renders as a branded scorecard (overall score out of 100 with a STRONG / GOOD / FAIR / AT RISK band and a per-control grid) and carries point-in-time, not-a-certification disclaimers.
 
+The PDF also includes a **Recommended actions** section generated from whichever controls are currently failing, and a plain-language **glossary** so a non-technical reader -- an insurance underwriter, a customer's compliance contact -- can follow it without help. When a prior run exists to compare against, the scorecard shows how the score has moved since then (for example "+5 since Jun 1"). The cover carries your logo and name if [partner branding](/features/branding/) is configured; otherwise it uses the standard Breeze mark.
+
 <Aside type="note">
   You can start this report straight from the report builder: pick the **Security & Compliance Posture (Insurance)** template card, then set the name, date-range preset, schedule, and output format like any other report. Once saved, it generates and downloads exactly like the rest of your reports (it appears in your reports list as "Security & Compliance Posture").
 
   The template card covers the common case. A set of posture-specific fine-tuning options is **not** yet exposed as form controls in the builder and can only be set by editing the report's `config` through the API -- `POST /reports` / `PUT /reports/:id` / `POST /reports/generate` -- with a `config` object: `sites` (limit to specific sites), `windowDays` (recency window for "current" patch/AV data), `minPasswordLength`, `maxLocalAdmins`, `maxAvDefinitionsAgeDays`, and `includeCis` (add the CIS pass-rate section). If you don't set them, sensible defaults apply (30-day window, 8-character minimum password length, at most 2 local admins, 7-day AV-definition freshness, and CIS section included).
 </Aside>
+
+---
+
+## Executive Summary Report
+
+The **Executive Summary** report (`executive_summary`) is built for handing to a customer at a quarterly business review. Its PDF leads with a designed cover: a fleet-health scorecard, device and alert metrics, OS and site composition, and a **Recommended actions** section -- the same trend-aware, branded cover treatment as the [Security & Compliance Posture](#security--compliance-posture-report) report, including the partner logo when [branding](/features/branding/) is configured and a score-change chip when a prior run exists to compare against.
 
 ---
 
@@ -223,7 +256,7 @@ curl "/api/v1/reports/runs/RUN_UUID/download?format=csv" \
   -H "Authorization: Bearer $TOKEN" -OJ
 ```
 
-CSV and Excel files are produced on the server; PDF is rendered in the browser from the same snapshot. When retrieving a single report via `GET /reports/:id`, the response includes the five most recent runs, making it easy to find the latest completed download.
+CSV and Excel files are produced on the server; PDF downloads are rendered in the browser from the same snapshot (scheduled-email PDF attachments are rendered server-side instead, using the same branded layout, so the two always match). When retrieving a single report via `GET /reports/:id`, the response includes the five most recent runs, making it easy to find the latest completed download.
 
 ---
 

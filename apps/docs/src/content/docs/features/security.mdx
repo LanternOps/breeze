@@ -391,7 +391,18 @@ Returns each posture component with its score, weight, status (`good`/`warning`/
 
 ## Security Policies
 
-Security policies define the expected security configuration for devices within an organization.
+Security policies define the expected AV/EDR configuration (scan schedule, real-time protection, auto-quarantine, exclusions) for devices.
+
+### Policy Ownership: Organization vs. Partner-Wide
+
+A security policy is owned at one of two scopes, chosen when the policy is created and fixed for the life of the policy:
+
+- **This organization only** — the default. The policy applies only to devices in the organization it was created for.
+- **All organizations (partner-wide template)** — the policy applies to devices in **every** organization you manage. Use this for a baseline AV/EDR posture you want enforced everywhere without recreating the policy per customer.
+
+In the **Security Policy Editor**, partner-level users see a **Scope** selector when creating a new policy — choose **All organizations** or **This organization only**. The selector only appears on create; ownership cannot change afterward.
+
+Creating, editing, or deleting a partner-wide security policy requires a partner-level user with full access to every organization under the partner (not a user restricted to a subset of organizations). Users without that access can still see partner-wide policies but cannot modify or delete them.
 
 ```bash
 # Create a policy
@@ -408,13 +419,20 @@ POST /security/policies
 }
 ```
 
+To create a partner-wide policy instead, add `"ownerScope": "partner"` to the request body — no `orgId` is needed, since the partner is derived from your login.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `ownerScope` | `organization` | `organization` (default) or `partner`. Create-only — cannot be changed by a later update |
 | `scanSchedule` | `weekly` | Scheduled scan frequency: `daily`, `weekly`, `monthly`, or `manual` |
 | `realTimeProtection` | `true` | Whether real-time protection should be enforced |
 | `autoQuarantine` | `true` | Automatically quarantine threats at or above the severity threshold |
 | `severityThreshold` | `medium` | Minimum severity to trigger auto-quarantine: `low`, `medium`, `high`, `critical` |
 | `exclusions` | `[]` | File paths to exclude from scanning |
+
+<Aside type="tip">
+  Creating a partner-wide policy (`ownerScope: "partner"`) requires a partner-level user with full organization access. A `403` is returned otherwise, with the message `"Partner-wide security policies require full partner org access (orgAccess must be \"all\")"`.
+</Aside>
 
 ---
 
@@ -445,9 +463,9 @@ All security endpoints require authentication and are scoped to `organization`, 
 | `GET` | `/security/recommendations` | Get prioritized security recommendations |
 | `POST` | `/security/recommendations/:id/complete` | Mark a recommendation as completed |
 | `POST` | `/security/recommendations/:id/dismiss` | Dismiss a recommendation |
-| `GET` | `/security/policies` | List security policies for the organization |
-| `POST` | `/security/policies` | Create a new security policy |
-| `PUT` | `/security/policies/:id` | Update an existing security policy |
+| `GET` | `/security/policies` | List security policies for the organization. Partner-scoped tokens also see their own partner-wide policies |
+| `POST` | `/security/policies` | Create a new security policy. Accepts `ownerScope: "organization"` (default) or `"partner"` |
+| `PUT` | `/security/policies/:id` | Update an existing security policy. Does not accept `ownerScope` — ownership is immutable. Updating a partner-wide policy requires full partner org access |
 
 ---
 

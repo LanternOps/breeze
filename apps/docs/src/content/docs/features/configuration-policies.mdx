@@ -92,6 +92,8 @@ Open the policy detail editor and click the tab for the feature you want to conf
 | **Reboot policy** | How to handle required reboots after patching |
 | **Manage Windows Update exclusively through Breeze** | Windows-only. Off by default. When on, the agent suppresses the device's native Windows Update automatic-install channel (it sets the `NoAutoUpdate` registry value under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`) so that device only receives updates through Breeze's schedule and approval rings — no surprise reboots or out-of-band patches. Turning it back off returns update control to native Windows Update. |
 
+Patch Management is available on partner-wide (all organizations) policies — an [update ring](/features/update-rings/) can be linked directly, and the policy patches devices across every organization you manage. Behind the scenes, deployments are still tracked per organization: creating a deployment job from a partner-wide policy produces one job per organization with matching devices, so each customer's patch history and compliance reporting stay separate even though the schedule and approval rules are defined once.
+
 ### Alert Rules
 
 Add one or more alert conditions. Each condition requires:
@@ -264,8 +266,9 @@ For each device, Breeze checks:
 - Whether the device exists and is accessible — inaccessible devices are listed in `skipped.inaccessibleDeviceIds`
 - Whether the device is inside an active maintenance window with patching suppression — suppressed devices are listed in `skipped.maintenanceSuppressedDeviceIds`
 - Whether the device ID is valid — invalid IDs are listed in `skipped.missingDeviceIds`
+- Whether the device belongs to the policy's organization (org-owned policy) or to an organization under the policy's partner (partner-wide policy) — devices outside that scope are rejected with a `403` rather than silently skipped, since patching someone else's fleet is never allowed
 
-The job is created with the schedule defined in the policy's patch settings (e.g., weekly on Sunday at 2 AM).
+The job is created with the schedule defined in the policy's patch settings (e.g., weekly on Sunday at 2 AM). Targeting devices from a partner-wide policy creates one job per organization that has matching devices, so a single request can produce several jobs — the response lists every job created, each with its own `orgId` and device count.
 
 ## API reference
 

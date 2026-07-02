@@ -1646,6 +1646,102 @@
       "docs": [
         "features/product-catalog.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/partnerWideAccess.ts",
+      "docs": [
+        "features/configuration-policies.mdx",
+        "features/software-policies.mdx",
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/softwarePolicies.ts",
+      "docs": [
+        "features/software-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/security/**",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/security.ts",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/sensitiveData.ts",
+      "docs": [
+        "features/sensitive-data.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/sensitiveDataJobs.ts",
+      "docs": [
+        "features/sensitive-data.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/peripheralControl.ts",
+      "docs": [
+        "features/peripheral-control.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/peripheralJobs.ts",
+      "docs": [
+        "features/peripheral-control.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/maintenance.ts",
+      "docs": [
+        "features/maintenance-windows.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/maintenanceService.ts",
+      "docs": [
+        "features/maintenance-windows.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/reportScheduleWorker.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/reportPdf/**",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/automationWorker.ts",
+      "docs": [
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsBilling.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/mcp-server.mdx",
+        "features/invoices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsTicketing.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/mcp-server.mdx",
+        "features/ticketing.mdx"
+      ]
     }
   ]
 }

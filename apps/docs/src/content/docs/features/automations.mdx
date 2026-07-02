@@ -9,6 +9,8 @@ Automations let you define rules that execute automatically when something happe
 
 You manage automations from the **Automations** page in the Breeze dashboard. From there you can create new automations, enable or disable existing ones, run them on demand, and review their execution history.
 
+An automation normally belongs to a single organization, but a partner-scoped user with access to every organization can instead create one **partner-wide** ("All orgs") -- see [Partner-wide Automations](#partner-wide-automations-all-organizations) below.
+
 ---
 
 ## Creating an Automation
@@ -19,15 +21,17 @@ You manage automations from the **Automations** page in the Breeze dashboard. Fr
 
 2. **Enter a name and description.** Give the automation a descriptive name (e.g., "Daily maintenance check") and an optional description explaining its purpose.
 
-3. **Choose a trigger type.** Select one of the four trigger cards:
+3. **Choose an owner scope (partner users only).** If you have partner-wide access, choose **This organization only** (the default) or **All organizations (partner-wide automation)**. This choice is only available when creating the automation -- it can't be changed afterward.
+
+4. **Choose a trigger type.** Select one of the four trigger cards:
    - **Schedule** -- runs on a recurring cron schedule. Use the cron expression field or click a quick preset (Every 15 min, Every hour, Daily 9 AM, Weekdays 9 AM, Weekly Sunday). A plain-language description of the schedule appears below the field.
    - **Event** -- runs when a platform event occurs. Select the event type from the dropdown (Device Online, Device Offline, Alert Triggered, Alert Resolved, Script Completed, Script Failed, Policy Violation).
    - **Webhook** -- runs when an external system sends an HTTP POST to the automation's generated URL. After saving, the webhook URL appears and can be copied with one click. Optionally set a webhook secret for authentication.
    - **Manual** -- runs only when you trigger it from the UI or API.
 
-4. **Configure device targeting (optional).** Expand the **Device Targeting** section to filter which devices the automation applies to. Use **Simple** mode to add conditions (Site is, Group is not, OS contains, Tag is) or switch to **Advanced** mode for the full filter builder with live device preview.
+5. **Configure device targeting (optional).** Expand the **Device Targeting** section to filter which devices the automation applies to. Use **Simple** mode to add conditions (Site is, Group is not, OS contains, Tag is) or switch to **Advanced** mode for the full filter builder with live device preview.
 
-5. **Add actions.** Under **Actions**, click **Add Action** and choose the action type:
+6. **Add actions.** Under **Actions**, click **Add Action** and choose the action type:
    - **Run Script** -- select a script from the library.
    - **Send Notification** -- select a notification channel.
    - **Create Alert** -- set a severity level and message.
@@ -36,20 +40,31 @@ You manage automations from the **Automations** page in the Breeze dashboard. Fr
 
    Actions execute in order. Add multiple actions by clicking **Add Action** again. Each action is numbered and can be removed individually.
 
-6. **Set the failure policy.** Choose what happens if an action fails:
+7. **Set the failure policy.** Choose what happens if an action fails:
    - **Stop Execution** -- abort immediately.
    - **Continue** -- proceed with remaining actions.
    - **Notify & Continue** -- send a failure notification to a selected channel and continue.
 
-7. **Save.** Click **Create Automation** to save and enable the automation.
+8. **Save.** Click **Create Automation** to save and enable the automation.
 
 </Steps>
 
 ---
 
+## Partner-wide Automations (All organizations)
+
+Instead of recreating the same automation in every customer organization, a partner-scoped user with access to all organizations can create one automation that fires across every org the partner manages -- for example, "on device offline, run a diagnostic script" applied fleet-wide instead of per org.
+
+- Ownership is chosen at creation time (**This organization only** vs **All organizations (partner-wide automation)**) and can't be changed afterward. To move an automation between an org and partner-wide, delete and recreate it.
+- **Event triggers fan out**: an event (e.g. `device.offline`, `alert.triggered`) occurring in any member organization matches the partner's partner-wide automations, in addition to that org's own automations.
+- Any alert, deployment, or notification an automation's actions create always belongs to the **target device's own organization**, not the partner -- so `create_alert`, `deploy_software`, and `send_notification` actions stay correctly scoped even when the triggering automation is partner-wide.
+- Partner-wide automations show an **All orgs** badge in the automations list. Updating, deleting, or manually triggering one requires the same partner-wide management access as creating it.
+
+---
+
 ## Managing Automations
 
-The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle.
+The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle. Partner-wide automations show an **All orgs** badge next to their name.
 
 - **Search and filter.** Use the search bar to find automations by name or description. Filter by trigger type (Schedule, Event, Webhook, Manual) or by status (Enabled / Disabled).
 - **Enable or disable.** Toggle the switch in the Enabled column. Disabled automations do not fire on schedule or in response to events.
@@ -471,7 +486,7 @@ These routes remain active for existing integrations but are deprecated. New int
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/automations` | Create standalone automation |
+| POST | `/automations` | Create standalone automation. Set `ownerScope: "partner"` (instead of `orgId`) for a partner-wide ("all orgs") automation -- create-only, requires partner-wide management access |
 | PUT | `/automations/:id` | Replace automation (full update) |
 | PATCH | `/automations/:id` | Partial update |
 | DELETE | `/automations/:id` | Delete automation |

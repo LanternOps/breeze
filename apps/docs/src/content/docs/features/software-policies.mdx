@@ -33,19 +33,35 @@ Audit mode evaluates the same rules as allowlist or blocklist but does not suppo
 
 ---
 
-## Creating Policies
+## Policy Ownership: Organization vs. Partner-Wide
+
+A software policy is owned at one of two scopes, chosen when the policy is created and fixed for the life of the policy:
+
+- **This organization only** — the policy applies only to devices in the organization it was created for. This is the default.
+- **All organizations (partner-wide template)** — the policy applies to devices in **every** organization you manage, including organizations created later. Use this for standards you want enforced fleet-wide (e.g. "no unauthorized remote access tools") without recreating the policy per customer.
+
+In the web UI, the owner scope is a **Scope** selector shown only when creating a new policy as a partner-level user — choose **All organizations** or **This organization only**. The selector is not shown when editing an existing policy, because ownership cannot change after creation.
+
+Creating, editing, or deleting a partner-wide policy requires a partner-level user with full access to every organization under the partner (not a user restricted to a subset of organizations). Users without that access can still see partner-wide policies (they appear in compliance results and violation lists for their organizations) but cannot modify or delete them.
+
+Violations and remediation on a partner-wide policy are always attributed to the **device's own organization** in the audit log and route audit trail, while the policy-specific audit record (`software_policy_audit`) also carries the owning partner — so both the affected organization's admin and the partner admin can see the same events.
 
 ### Policy Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `orgId` | UUID | Yes* | Organization ID. Auto-resolved for org-scoped tokens |
+| `ownerScope` | enum | No | `organization` (default) or `partner`. Create-only — set once and immutable afterward. With `partner`, the policy is partner-wide and `orgId` is ignored; the partner is always derived from your own login, never from the request |
+| `orgId` | UUID | Yes* | Organization ID. Auto-resolved for org-scoped tokens. Not used when `ownerScope` is `partner` |
 | `name` | string | Yes | Policy name (max 200 characters) |
 | `description` | string | No | Description of the policy's purpose (max 4,000 characters) |
 | `mode` | enum | Yes | `allowlist`, `blocklist`, or `audit` |
 | `rules` | object | Yes | Rule definitions (see below) |
 | `enforceMode` | boolean | No | Enable automated enforcement. Default `false` |
 | `remediationOptions` | object | No | Remediation configuration (see below) |
+
+<Aside type="tip">
+  Creating a partner-wide policy (`ownerScope: "partner"`) requires a partner-level user with full organization access. A `403` is returned otherwise, with the message `"Partner-wide software policies require full partner org access (orgAccess must be \"all\")"`.
+</Aside>
 
 ### Creating a Blocklist Policy
 
@@ -118,6 +134,29 @@ Authorization: Bearer <token>
   "enforceMode": false
 }
 ```
+
+### Creating a Partner-Wide Policy
+
+```bash
+POST /software-policies
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "ownerScope": "partner",
+  "name": "MSP Standard Blocklist",
+  "description": "Baseline block rules applied to every managed organization.",
+  "mode": "blocklist",
+  "rules": {
+    "software": [
+      { "name": "TeamViewer", "reason": "Use Breeze Remote Access instead" }
+    ]
+  },
+  "enforceMode": true
+}
+```
+
+No `orgId` is sent — the partner is derived from the caller's token, and the policy is immediately in scope for every organization under that partner.
 
 When a policy is created, a compliance check is automatically scheduled through BullMQ. If Redis is unavailable, the policy is still created but a `warning` field is included in the response indicating the check could not be scheduled.
 
@@ -392,11 +431,11 @@ All policy operations are recorded in two audit systems:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/software-policies` | List policies (`?mode=&isActive=&limit=&offset=`) |
-| `POST` | `/software-policies` | Create a new policy |
+| `GET` | `/software-policies` | List policies (`?mode=&isActive=&limit=&offset=`). Partner-scoped tokens also see their own partner-wide policies |
+| `POST` | `/software-policies` | Create a new policy. Accepts `ownerScope: "organization"` (default) or `"partner"` |
 | `GET` | `/software-policies/:id` | Get policy by ID |
-| `PATCH` | `/software-policies/:id` | Update policy fields |
-| `DELETE` | `/software-policies/:id` | Soft-delete policy and clear compliance records |
+| `PATCH` | `/software-policies/:id` | Update policy fields. Does not accept `ownerScope` — ownership is immutable. Editing a partner-wide policy requires full partner org access |
+| `DELETE` | `/software-policies/:id` | Soft-delete policy and clear compliance records. Deleting a partner-wide policy requires full partner org access |
 
 ### Compliance and Violations
 
@@ -421,7 +460,10 @@ All policy operations are recorded in two audit systems:
 ## Troubleshooting
 
 **"orgId is required for this scope" when creating a policy.**
-Partner-scoped tokens that manage multiple organizations must specify `orgId` in the request body. If the partner token has access to exactly one organization, it is auto-resolved. Use an organization-scoped token or explicitly pass the `orgId` field.
+Partner-scoped tokens that manage multiple organizations must specify `orgId` in the request body (or use `ownerScope: "partner"` to create a partner-wide policy instead, which doesn't need an `orgId`). If the partner token has access to exactly one organization, `orgId` is auto-resolved. Use an organization-scoped token or explicitly pass the `orgId` field.
+
+**"Partner-wide software policies require full partner org access" when creating, editing, or deleting a partner-wide policy.**
+Only a partner-level user with access to **every** organization under the partner (not a subset) can create, edit, or delete a partner-wide policy. A user restricted to selected organizations can still view partner-wide policies and their compliance results but cannot modify them.
 
 **Compliance check shows no violations but unauthorized software is clearly installed.**
 Verify the policy's `mode` matches your intent. A blocklist only flags software that matches a rule; a missing or misspelled rule name will not match. For allowlist policies, check whether `allowUnknown` is set to `true` -- this suppresses violations for unmatched software. Also ensure the policy's `isActive` is `true` and that the device's software inventory has been recently updated by the agent.

@@ -11,6 +11,8 @@ The system supports two sources for maintenance settings. **Configuration Polici
 
 All maintenance window operations are audit-logged, and every create, update, cancel, and delete action records the actor, resource, and change details.
 
+A standalone maintenance window can also be created **partner-wide** so it applies to devices across every organization the partner manages -- see [Partner-wide Windows](#partner-wide-windows-all-organizations) below.
+
 ---
 
 ## Key Concepts
@@ -131,6 +133,16 @@ POST /maintenance/windows
 ```
 
 The response returns the created window object with a `201` status code.
+
+### Partner-wide Windows (All organizations)
+
+A standalone maintenance window is normally owned by a single organization (`orgId`). A partner-scoped user with access to every organization can instead create it as **partner-wide**, so the same window suppresses alerts, patching, automations, and scripts for devices in *every* organization under the partner -- useful for MSP-wide work like a shared patch-management provider outage window.
+
+To create a partner-wide window, submit `"ownerScope": "partner"` instead of `orgId` in the create request. Ownership is set at creation time only -- it cannot be changed on update. Creating, updating, cancelling, or deleting a partner-wide window (and modifying its occurrences) requires partner-wide management access.
+
+<Aside type="note">
+Partner-wide windows are also recognized by the primary Configuration Policy path: create the config policy itself as partner-wide and attach a `maintenance` feature link, and the resulting maintenance settings apply hierarchy-wide across every org the partner manages. See [Configuration Policies](/features/configuration-policies/).
+</Aside>
 
 ---
 
@@ -273,10 +285,14 @@ This endpoint resolves maintenance status using the unified `isDeviceInMaintenan
 <Steps>
 1. **Configuration Policy path**: Resolves the device's maintenance settings through the hierarchy (device > device group > site > organization > partner). If an active configuration policy maintenance window is found, its suppression flags are returned with `source: "config_policy"`.
 
-2. **Standalone window fallback**: Queries the `maintenance_windows` table for any window that is `scheduled` or `active`, whose time range includes the current moment, and whose target (by `targetType`, `deviceIds`, `siteIds`, or `groupIds`) includes the device. Returns with `source: "standalone"`.
+2. **Standalone window fallback**: Queries the `maintenance_windows` table for any window that is `scheduled` or `active`, whose time range includes the current moment, and whose target (by `targetType`, `deviceIds`, `siteIds`, or `groupIds`) includes the device. This match includes both windows owned by the device's own organization and any partner-wide window owned by that organization's partner. Returns with `source: "standalone"`.
 
 3. **No active window**: Returns `active: false` with `source: "none"` and all suppression flags set to `false`.
 </Steps>
+
+<Aside>
+Partner-wide windows are matched against every enforcement check that consults maintenance status -- alert evaluation, patch job creation, and automation execution -- not just the device status endpoint. A partner-wide window suppresses alerts/patching/automations/scripts for devices in all of the partner's organizations, the same as if that window had been created individually in each one.
+</Aside>
 
 **Response:**
 
@@ -406,7 +422,7 @@ All routes are mounted under `/maintenance` and require authentication. Scope re
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/maintenance/windows` | List windows for an organization. Supports `status` and `targetType` query filters. |
-| `POST` | `/maintenance/windows` | Create a new maintenance window with occurrences. *(Deprecated -- use configuration policies.)* |
+| `POST` | `/maintenance/windows` | Create a new maintenance window with occurrences. Set `ownerScope: "partner"` (instead of `orgId`) for a partner-wide window. *(Deprecated -- use configuration policies.)* |
 | `GET` | `/maintenance/windows/:id` | Get window details including the next 10 upcoming occurrences. |
 | `PATCH` | `/maintenance/windows/:id` | Update window properties. *(Deprecated.)* |
 | `DELETE` | `/maintenance/windows/:id` | Delete a window. Future occurrences are removed; past occurrences are preserved for audit. *(Deprecated.)* |
