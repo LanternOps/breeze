@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
+import { Dialog } from '../shared/Dialog';
 import LinkSubscriptionPicker from '../integrations/LinkSubscriptionPicker';
 
 interface Pax8Subscription {
@@ -47,14 +47,6 @@ export default function ContractPax8Drawer({ open, orgId, integrationId, onClose
   const [picked, setPicked] = useState<Pax8Subscription | null>(null);
 
   useEffect(() => {
-    if (!open) return;
-    document.body.style.overflow = 'hidden';
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => { document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); };
-  }, [open, onClose]);
-
-  useEffect(() => {
     if (!open) { setSubs(null); setError(null); setPicked(null); return; }
     void (async () => {
       try {
@@ -74,18 +66,23 @@ export default function ContractPax8Drawer({ open, orgId, integrationId, onClose
 
   const onDone = useCallback(() => { onLinked(); onClose(); }, [onLinked, onClose]);
 
-  if (!open || typeof document === 'undefined') return null;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      data-testid="contract-pax8-modal"
+  // Shared Dialog supplies role="dialog" + aria-modal, the focus trap, focus-in
+  // on open, Escape, overlay-click, and scroll lock. `alignTop` keeps the tall,
+  // scrollable drawer feel this modal had before.
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Link a Pax8 subscription"
+      labelledBy="contract-pax8-title"
+      maxWidth="xl"
+      alignTop
+      className="overflow-hidden"
     >
-      <div className="mt-8 w-full max-w-xl rounded-lg border bg-card shadow-xl">
+      <div data-testid="contract-pax8-modal">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold">Link a Pax8 subscription</h2>
+            <h2 id="contract-pax8-title" className="text-base font-semibold">Link a Pax8 subscription</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {picked ? 'Pick a line on this contract (or create one) to link.' : 'Choose a synced subscription to add to this contract.'}
             </p>
@@ -147,7 +144,6 @@ export default function ContractPax8Drawer({ open, orgId, integrationId, onClose
           )}
         </div>
       </div>
-    </div>,
-    document.body,
+    </Dialog>
   );
 }

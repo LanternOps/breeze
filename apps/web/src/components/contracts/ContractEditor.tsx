@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
   createContract,
   updateContract,
@@ -47,6 +48,23 @@ const INTERVAL_PRESETS = [
   { value: 12, label: 'Annual' },
 ];
 
+// ── Save-grammar helpers (byte-similar local copies of the invoice/quote
+//    editors' — kept inline per CLAUDE.md; a later pass may extract them). ──────
+
+// Visually-hidden polite live region — announces a transient "Saved" to screen
+// readers, pairing with the amber→green dirty-ring cue sighted users see.
+function SrSaved({ show, label = 'Saved', testId }: { show: boolean; label?: string; testId?: string }) {
+  // role="status" already implies aria-live="polite" — don't double it.
+  return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
+}
+
+// A field's save-state outline: amber while unsaved, a brief green pulse when it
+// lands, nothing at rest. It's a box-shadow (ring), so it never reflows
+// neighbours. Pair with a constant `transition-shadow` on the field.
+function fieldRing(dirty: boolean, saved: boolean): string {
+  return dirty ? 'ring-1 ring-warning' : saved ? 'ring-1 ring-success' : '';
+}
+
 interface Props {
   /** Present in edit mode (existing draft/active contract); absent when creating. */
   detail?: ContractDetail;
@@ -58,8 +76,13 @@ interface Props {
 
 export default function ContractEditor({ detail, presetOrgId, onChanged }: Props) {
   const { can } = usePermissions();
+  const canWrite = can('contracts', 'write');
   const isCreate = !detail;
   const contract = detail?.contract;
+  // Schedule fields (billingTiming, intervalMonths, startDate) drive next_billing_at
+  // and are draft-only server-side (PATCH 409s on a non-draft). Only offer them as
+  // editable while creating or on a draft; otherwise render read-only.
+  const scheduleEditable = isCreate || contract?.status === 'draft';
 
   const [busy, setBusy] = useState(false);
 
@@ -69,8 +92,11 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [billingTiming, setBillingTiming] = useState<ContractBillingTiming>(contract?.billingTiming ?? 'advance');
   const [intervalMonths, setIntervalMonths] = useState<number>(contract?.intervalMonths ?? 1);
   const [intervalCustom, setIntervalCustom] = useState(
-    contract && ![1, 3, 12].includes(contract.intervalMonths),
+    contract ? ![1, 3, 12].includes(contract.intervalMonths) : false,
   );
+  // Raw string for the custom-interval input so it can be emptied (an empty field
+  // reads as invalid → inline error, not a silent snap-back to 0).
+  const [customMonths, setCustomMonths] = useState<string>(String(contract?.intervalMonths ?? 1));
   const [startDate, setStartDate] = useState(
     contract?.startDate ?? new Date().toISOString().slice(0, 10),
   );
@@ -83,6 +109,41 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [terms, setTerms] = useState(contract?.terms ?? '');
   const [liveEstimate, setLiveEstimate] = useState<ContractEstimate | null>(null);
   const [estimateFailed, setEstimateFailed] = useState(false);
+
+  // Guard an in-progress edit from being clobbered by a server resync mid-type:
+  // the flag is set on keystroke and cleared when a commit is initiated (on
+  // blur), so a background refresh landing mid-edit keeps the user's keystrokes
+  // while a settled field re-adopts the server's canonical (e.g. trimmed) value
+  // — mirrors the invoice/quote editors' edited-flag pattern. Selects/checkboxes
+  // commit on the same event that changes them, so they resync unconditionally.
+  const nameEdited = useRef(false);
+  const startEdited = useRef(false);
+  const endEdited = useRef(false);
+  const notesEdited = useRef(false);
+  const termsEdited = useRef(false);
+  const renewalTermEdited = useRef(false);
+  const renewalNoticeEdited = useRef(false);
+  useEffect(() => { if (contract && !nameEdited.current) setName(contract.name); }, [contract?.name]);
+  useEffect(() => { if (contract && !startEdited.current) setStartDate(contract.startDate); }, [contract?.startDate]);
+  useEffect(() => { if (contract && !endEdited.current) setEndDate(contract.endDate ?? ''); }, [contract?.endDate]);
+  useEffect(() => { if (contract && !notesEdited.current) setNotes(contract.notes ?? ''); }, [contract?.notes]);
+  useEffect(() => { if (contract && !termsEdited.current) setTerms(contract.terms ?? ''); }, [contract?.terms]);
+  useEffect(() => {
+    if (contract && !renewalTermEdited.current) setRenewalTermMonths(contract.renewalTermMonths != null ? String(contract.renewalTermMonths) : '');
+  }, [contract?.renewalTermMonths]);
+  useEffect(() => {
+    if (contract && !renewalNoticeEdited.current) setRenewalNoticeDays(contract.renewalNoticeDays != null ? String(contract.renewalNoticeDays) : '');
+  }, [contract?.renewalNoticeDays]);
+  useEffect(() => { if (contract) setAutoIssue(contract.autoIssue); }, [contract?.autoIssue]);
+  useEffect(() => { if (contract) setAutoRenew(contract.autoRenew); }, [contract?.autoRenew]);
+  useEffect(() => { if (contract) setBillingTiming(contract.billingTiming); }, [contract?.billingTiming]);
+  useEffect(() => {
+    if (!contract) return;
+    setIntervalMonths(contract.intervalMonths);
+    const custom = ![1, 3, 12].includes(contract.intervalMonths);
+    setIntervalCustom(custom);
+    if (custom) setCustomMonths(String(contract.intervalMonths));
+  }, [contract?.intervalMonths]);
 
   // ---- reference data ------------------------------------------------------
   const [orgs, setOrgs] = useState<Organization[]>([]);
@@ -109,6 +170,56 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [pax8Active, setPax8Active] = useState(false);
 
   const lines: ContractLine[] = detail?.lines ?? [];
+
+  // Line removal is irreversible, so it goes through a confirm step (mirrors the
+  // quote/invoice editors) instead of deleting outright.
+  const [pendingRemove, setPendingRemove] = useState<ContractLine | null>(null);
+
+  // Per-field scoped pending + a keyed "Saved" flash, so one in-flight field save
+  // never freezes its siblings and each field can pulse green on its own. Keys:
+  // 'name', 'timing', 'interval', 'startDate', 'endDate', 'autoIssue',
+  // 'autoRenew', 'renewalTerm', 'renewalNotice', 'notes', 'terms',
+  // `remove-<lineId>`. `pending` drives disabled styling; `inFlight` is the
+  // synchronous double-submit guard (state updates are async).
+  const inFlight = useRef<Set<string>>(new Set());
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  const isPending = useCallback((key: string) => pending.has(key), [pending]);
+
+  const [savedKeys, setSavedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const savedTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  useEffect(() => () => { savedTimers.current.forEach((t) => clearTimeout(t)); }, []);
+  const flashSaved = useCallback((key: string) => {
+    setSavedKeys((s) => { const n = new Set(s); n.add(key); return n; });
+    const existing = savedTimers.current.get(key);
+    if (existing) clearTimeout(existing);
+    savedTimers.current.set(key, setTimeout(() => {
+      setSavedKeys((s) => { const n = new Set(s); n.delete(key); return n; });
+      savedTimers.current.delete(key);
+    }, 1500));
+  }, []);
+  const isSaved = useCallback((key: string) => savedKeys.has(key), [savedKeys]);
+
+  // Run a scoped mutation: mark the key pending, run, surface failures via the
+  // standard handleActionError path, and always clear the key. Returns whether
+  // the mutation succeeded so callers can flash a quiet "Saved" cue.
+  const runScoped = useCallback(
+    async (key: string, fn: () => Promise<void>, errMsg: string): Promise<boolean> => {
+      if (inFlight.current.has(key)) return false;
+      inFlight.current.add(key);
+      setPending((s) => { const n = new Set(s); n.add(key); return n; });
+      try {
+        await fn();
+        return true;
+      } catch (err) {
+        handleActionError(err, errMsg);
+        return false;
+      } finally {
+        inFlight.current.delete(key);
+        setPending((s) => { const n = new Set(s); n.delete(key); return n; });
+      }
+    },
+    [],
+  );
 
   const loadOrgs = useCallback(async () => {
     const res = await fetchWithAuth('/orgs/organizations');
@@ -152,7 +263,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     setLiveEstimate(body?.data ?? null);
   }, [contract]);
 
-  useEffect(() => { if (isCreate) void loadOrgs(); }, [isCreate, loadOrgs]);
+  // Load orgs in both modes: the create form needs the picker; the edit form
+  // resolves the (immutable) org's display name for the read-only Schedule field.
+  useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
 
   // Gate the distributor-import entry on a connected EC Express integration.
@@ -209,8 +322,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   useEffect(() => { void loadSites(orgId); }, [orgId, loadSites]);
   useEffect(() => { if (!isCreate) void loadEstimate(); }, [isCreate, loadEstimate]);
 
-  const intervalIsValid = intervalMonths >= 1 && intervalMonths <= 60;
-  const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalIsValid;
+  // Effective cadence in months: the custom text input when "Custom…" is chosen,
+  // otherwise the selected preset. Validation covers the empty/non-integer/out-of-
+  // range cases so the operator sees why, instead of a silently-disabled control.
+  const effectiveMonths = intervalCustom ? Number(customMonths) : intervalMonths;
+  const intervalValid = intervalCustom
+    ? customMonths.trim() !== '' && Number.isInteger(effectiveMonths) && effectiveMonths >= 1 && effectiveMonths <= 60
+    : intervalMonths >= 1 && intervalMonths <= 60;
+  const intervalError = intervalCustom && !intervalValid ? 'Enter the number of months' : null;
+  const canSaveHeader = !!orgId && name.trim().length > 0 && !!startDate && intervalValid;
+  const orgName = orgs.find((o) => o.id === orgId)?.name ?? orgId;
 
   // ---- live "Estimated this period" ----------------------------------------
   // flat/manual contribute qty×price; per_device/per_seat are resolved by the
@@ -255,7 +376,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           orgId,
           name: name.trim(),
           billingTiming,
-          intervalMonths,
+          intervalMonths: effectiveMonths,
           startDate,
           endDate: endDate || null,
           autoIssue,
@@ -276,42 +397,113 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, canSaveHeader, orgId, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms]);
+  }, [busy, canSaveHeader, orgId, name, billingTiming, effectiveMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms]);
 
-  // ---- edit flow -----------------------------------------------------------
-  const saveHeader = useCallback(async () => {
-    if (busy || !contract || !canSaveHeader) return;
-    setBusy(true);
-    try {
-      if (autoRenew && !renewalTermMonths) {
-        showToast({ type: 'error', message: 'Enter a renewal term (months) before saving.' });
-        return;
-      }
+  // ---- edit flow: per-field blur/change autosave ---------------------------
+  // Each header field PATCHes independently (updateContractSchema is fully
+  // partial). No per-field success toast — the amber→green ring + a single SR
+  // "Saved" announcement are the feedback; failures fall through to
+  // handleActionError. Selects/checkboxes commit on change; text/date/number
+  // fields on blur (with the same guards the create/commit paths use).
+  const savePatch = useCallback(async (patch: Record<string, unknown>, key: string) => {
+    if (!contract) return;
+    const ok = await runScoped(key, async () => {
       await runAction({
-        request: () => updateContract(contract.id, {
-          name: name.trim(),
-          billingTiming,
-          intervalMonths,
-          startDate,
-          endDate: endDate || null,
-          autoIssue,
-          autoRenew,
-          renewalTermMonths: autoRenew ? Number(renewalTermMonths) : null,
-          renewalNoticeDays: autoRenew ? (renewalNoticeDays === '' ? null : Number(renewalNoticeDays)) : null,
-          notes: notes.trim() || null,
-          terms: terms.trim() || null,
-        }),
+        request: () => updateContract(contract.id, patch),
         errorFallback: 'Could not save the contract.',
-        successMessage: 'Contract saved',
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not save the contract.');
-    } finally {
-      setBusy(false);
+    }, 'Could not save the contract.');
+    if (ok) flashSaved(key);
+  }, [contract, runScoped, refresh, flashSaved]);
+
+  // Per-field dirty cues compare the live value against the persisted contract so
+  // a successful save (which reloads `detail`) auto-clears the amber ring.
+  const nameDirty = !isCreate && name !== (contract?.name ?? '');
+  const startDirty = !isCreate && startDate !== (contract?.startDate ?? '');
+  const endDirty = !isCreate && (endDate || '') !== (contract?.endDate ?? '');
+  const intervalDirty = !isCreate && intervalCustom && intervalValid && effectiveMonths !== (contract?.intervalMonths ?? 0);
+  const notesDirty = !isCreate && notes !== (contract?.notes ?? '');
+  const termsDirty = !isCreate && terms !== (contract?.terms ?? '');
+  const persistedTerm = contract?.renewalTermMonths != null ? String(contract.renewalTermMonths) : '';
+  const persistedNotice = contract?.renewalNoticeDays != null ? String(contract.renewalNoticeDays) : '';
+  const renewalTermDirty = !isCreate && renewalTermMonths !== persistedTerm;
+  const renewalNoticeDirty = !isCreate && renewalNoticeDays !== persistedNotice;
+
+  const commitName = useCallback(() => {
+    if (!canWrite || isCreate) return;
+    nameEdited.current = false; // committing — let the server value re-adopt next
+    const next = name.trim();
+    if (next === (contract?.name ?? '')) return;
+    if (!next) { handleActionError(new Error('empty name'), 'Enter a contract name.'); return; }
+    void savePatch({ name: next }, 'name');
+  }, [canWrite, isCreate, name, contract, savePatch]);
+
+  const commitStart = useCallback(() => {
+    if (!canWrite || isCreate || !scheduleEditable) return;
+    startEdited.current = false;
+    if (startDate === (contract?.startDate ?? '')) return;
+    if (!startDate) { handleActionError(new Error('empty start'), 'Enter a start date.'); return; }
+    void savePatch({ startDate }, 'startDate');
+  }, [canWrite, isCreate, scheduleEditable, startDate, contract, savePatch]);
+
+  const commitEnd = useCallback(() => {
+    if (!canWrite || isCreate) return;
+    endEdited.current = false;
+    const norm = endDate || null;
+    if (norm === (contract?.endDate ?? null)) return;
+    // Clearing the end date also disables auto-renew (which requires an end date).
+    void savePatch(norm === null ? { endDate: null, autoRenew: false } : { endDate: norm }, 'endDate');
+  }, [canWrite, isCreate, endDate, contract, savePatch]);
+
+  const commitInterval = useCallback(() => {
+    if (!canWrite || isCreate || !scheduleEditable) return;
+    if (!intervalValid) return; // inline error already tells the operator why
+    if (effectiveMonths === (contract?.intervalMonths ?? 0)) return;
+    setIntervalMonths(effectiveMonths);
+    void savePatch({ intervalMonths: effectiveMonths }, 'interval');
+  }, [canWrite, isCreate, scheduleEditable, intervalValid, effectiveMonths, contract, savePatch]);
+
+  const commitRenewalTerm = useCallback(() => {
+    if (!canWrite || isCreate) return;
+    renewalTermEdited.current = false;
+    if (renewalTermMonths === persistedTerm) return;
+    const n = renewalTermMonths === '' ? null : Number(renewalTermMonths);
+    if (n !== null && (!Number.isInteger(n) || n < 1 || n > 120)) {
+      handleActionError(new Error('invalid term'), 'Enter a renewal term between 1 and 120 months.');
+      return;
     }
-  }, [busy, contract, canSaveHeader, name, billingTiming, intervalMonths, startDate, endDate, autoIssue, autoRenew, renewalTermMonths, renewalNoticeDays, notes, terms, refresh]);
+    void savePatch({ renewalTermMonths: n }, 'renewalTerm');
+  }, [canWrite, isCreate, renewalTermMonths, persistedTerm, savePatch]);
+
+  const commitRenewalNotice = useCallback(() => {
+    if (!canWrite || isCreate) return;
+    renewalNoticeEdited.current = false;
+    if (renewalNoticeDays === persistedNotice) return;
+    const n = renewalNoticeDays === '' ? null : Number(renewalNoticeDays);
+    if (n !== null && (!Number.isInteger(n) || n < 0 || n > 365)) {
+      handleActionError(new Error('invalid notice'), 'Enter advance notice between 0 and 365 days.');
+      return;
+    }
+    void savePatch({ renewalNoticeDays: n }, 'renewalNotice');
+  }, [canWrite, isCreate, renewalNoticeDays, persistedNotice, savePatch]);
+
+  const commitNotes = useCallback(() => {
+    if (!canWrite || isCreate) return;
+    notesEdited.current = false;
+    const next = notes.trim();
+    if (next === (contract?.notes ?? '')) return;
+    void savePatch({ notes: next || null }, 'notes');
+  }, [canWrite, isCreate, notes, contract, savePatch]);
+
+  const commitTerms = useCallback(() => {
+    if (!canWrite || isCreate) return;
+    termsEdited.current = false;
+    const next = terms.trim();
+    if (next === (contract?.terms ?? '')) return;
+    void savePatch({ terms: next || null }, 'terms');
+  }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
     if (busy || !contract || !lineDesc.trim()) return;
@@ -344,10 +536,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     }
   }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineCatalogId, lineTaxable, refresh]);
 
-  const removeLine = useCallback(async (lineId: string) => {
-    if (busy || !contract) return;
-    setBusy(true);
-    try {
+  const removeLine = useCallback((lineId: string) =>
+    runScoped(`remove-${lineId}`, async () => {
+      if (!contract) return;
       await runAction({
         request: () => removeContractLine(contract.id, lineId),
         errorFallback: 'Could not remove the line.',
@@ -355,12 +546,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    } catch (err) {
-      handleActionError(err, 'Could not remove the line.');
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, contract, refresh]);
+    }, 'Could not remove the line.'),
+  [runScoped, contract, refresh]);
 
   const activate = useCallback(async () => {
     if (busy || !contract) return;
@@ -385,147 +572,222 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     [sites],
   );
 
+  // Shared field chrome. `transition-shadow` pairs with fieldRing's box-shadow so
+  // the amber→green cue animates without reflowing neighbours; `disabled:opacity-60`
+  // renders the read-only (no contracts:write) and non-draft schedule states.
+  const baseInput = 'h-10 rounded-md border bg-background px-3 text-sm text-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60';
+  const dateInput = `${baseInput} dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 hover:[&::-webkit-calendar-picker-indicator]:opacity-100`;
+  const areaInput = 'rounded-md border bg-background px-3 py-2 text-sm text-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60';
+  const legendCls = 'mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground';
+
   return (
     <div className="space-y-6" data-testid="contract-editor">
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header form + lines ─────────────────────────────────────── */}
         <div className="space-y-6">
-          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header-form">
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contract</h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {isCreate && (
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                  Organization
-                  <select
-                    value={orgId}
-                    onChange={(e) => setOrgId(e.target.value)}
-                    data-testid="contract-form-org"
-                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  >
-                    <option value="">Select an organization…</option>
-                    {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                  </select>
-                </label>
-              )}
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                Name
-                <input
-                  type="text" value={name} onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Managed Services — Acme Co"
-                  data-testid="contract-form-name"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Billing timing
-                <select
-                  value={billingTiming} onChange={(e) => setBillingTiming(e.target.value as ContractBillingTiming)}
-                  data-testid="contract-form-timing"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                >
-                  <option value="advance">In advance</option>
-                  <option value="arrears">In arrears</option>
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Billing cadence
-                <select
-                  value={intervalCustom ? 'custom' : String(intervalMonths)}
-                  onChange={(e) => {
-                    if (e.target.value === 'custom') { setIntervalCustom(true); return; }
-                    setIntervalCustom(false);
-                    setIntervalMonths(Number(e.target.value));
-                  }}
-                  data-testid="contract-form-interval"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                >
-                  {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                  <option value="custom">Custom…</option>
-                </select>
-              </label>
-              {intervalCustom && (
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Interval (months)
-                  <input
-                    type="number" min="1" max="60" value={intervalMonths}
-                    onChange={(e) => setIntervalMonths(Number(e.target.value))}
-                    data-testid="contract-form-interval-custom"
-                    className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  />
-                </label>
-              )}
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Start date
-                <input
-                  type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-                  data-testid="contract-form-start"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                End date (optional)
-                <input
-                  type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); if (!e.target.value) setAutoRenew(false); }}
-                  data-testid="contract-form-end"
-                  className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
-                />
-              </label>
-              <label className="flex items-center gap-2 text-sm sm:col-span-2">
-                <input
-                  type="checkbox" checked={autoIssue} onChange={(e) => setAutoIssue(e.target.checked)}
-                  data-testid="contract-form-auto-issue"
-                />
-                Auto-issue generated invoices (otherwise they land as drafts)
-              </label>
-              <div className="sm:col-span-2">
-                <label className="flex items-center gap-2 text-sm" data-testid="contract-auto-renew-toggle">
-                  <input
-                    type="checkbox" checked={autoRenew} disabled={!endDate}
-                    onChange={(e) => setAutoRenew(e.target.checked)}
-                  />
-                  <span>Auto-renew at end of term{!endDate ? ' (set an end date first)' : ''}</span>
-                </label>
-                {autoRenew && (
-                  <div className="mt-2 grid grid-cols-2 gap-3" data-testid="contract-renewal-fields">
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Renewal term (months)
-                      <input
-                        type="number" min={1} max={120} value={renewalTermMonths}
-                        onChange={(e) => setRenewalTermMonths(e.target.value)}
-                        data-testid="contract-renewal-term"
-                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                      />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Advance notice (days)
-                      <input
-                        type="number" min={0} max={365} value={renewalNoticeDays}
-                        onChange={(e) => setRenewalNoticeDays(e.target.value)}
-                        data-testid="contract-renewal-notice-days"
-                        className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                      />
-                    </label>
+          <div className="space-y-6 rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header-form">
+            {/* Existing contracts blur-autosave per field; a single polite live
+                region announces the "Saved" that the amber→green ring shows. */}
+            <SrSaved show={!isCreate && savedKeys.size > 0} testId="contract-field-saved" />
+
+            {/* ── Schedule ─────────────────────────────────────────────── */}
+            <fieldset className="min-w-0" data-testid="contract-schedule-group">
+              <legend className={legendCls}>Schedule</legend>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {isCreate ? (
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
+                    Organization
+                    <select
+                      value={orgId}
+                      onChange={(e) => setOrgId(e.target.value)}
+                      data-testid="contract-form-org"
+                      className={baseInput}
+                    >
+                      <option value="">Select an organization…</option>
+                      {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </label>
+                ) : (
+                  // Org is fixed at creation — the API never re-parents a contract,
+                  // so it's a read-only display here.
+                  <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
+                    Organization
+                    <span
+                      data-testid="contract-form-org-readonly"
+                      className="inline-flex h-10 items-center rounded-md border bg-muted/40 px-3 text-sm text-foreground"
+                    >
+                      {orgName}
+                    </span>
                   </div>
                 )}
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
+                  Name
+                  <input
+                    type="text" value={name} onChange={(e) => { setName(e.target.value); nameEdited.current = true; }} onBlur={commitName}
+                    disabled={!canWrite}
+                    placeholder="e.g. Managed Services — Acme Co"
+                    data-testid="contract-form-name"
+                    className={`${baseInput} ${fieldRing(nameDirty, isSaved('name'))}`}
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Billing timing
+                  <select
+                    value={billingTiming}
+                    disabled={!canWrite || !scheduleEditable}
+                    onChange={(e) => {
+                      const v = e.target.value as ContractBillingTiming;
+                      setBillingTiming(v);
+                      if (!isCreate) void savePatch({ billingTiming: v }, 'timing');
+                    }}
+                    data-testid="contract-form-timing"
+                    className={`${baseInput} ${fieldRing(false, isSaved('timing'))}`}
+                  >
+                    <option value="advance">In advance</option>
+                    <option value="arrears">In arrears</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Billing cadence
+                  <select
+                    value={intervalCustom ? 'custom' : String(intervalMonths)}
+                    disabled={!canWrite || !scheduleEditable}
+                    onChange={(e) => {
+                      if (e.target.value === 'custom') { setIntervalCustom(true); setCustomMonths(String(intervalMonths)); return; }
+                      setIntervalCustom(false);
+                      const n = Number(e.target.value);
+                      setIntervalMonths(n);
+                      if (!isCreate) void savePatch({ intervalMonths: n }, 'interval');
+                    }}
+                    data-testid="contract-form-interval"
+                    className={`${baseInput} ${fieldRing(false, isSaved('interval'))}`}
+                  >
+                    {INTERVAL_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                    <option value="custom">Custom…</option>
+                  </select>
+                </label>
+                {intervalCustom && (
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    Interval (months)
+                    <input
+                      type="number" min="1" max="60" value={customMonths}
+                      onChange={(e) => setCustomMonths(e.target.value)}
+                      onBlur={commitInterval}
+                      disabled={!canWrite || !scheduleEditable}
+                      data-testid="contract-form-interval-custom"
+                      className={`${baseInput} ${fieldRing(intervalDirty, isSaved('interval'))}`}
+                    />
+                    {intervalError && (
+                      <span className="text-destructive" data-testid="contract-interval-error">{intervalError}</span>
+                    )}
+                  </label>
+                )}
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Start date
+                  <input
+                    type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); startEdited.current = true; }} onBlur={commitStart}
+                    disabled={!canWrite || !scheduleEditable}
+                    data-testid="contract-form-start"
+                    className={`${dateInput} ${fieldRing(startDirty, isSaved('startDate'))}`}
+                  />
+                </label>
               </div>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                Notes (optional)
-                <textarea
-                  value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
-                  data-testid="contract-form-notes"
-                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
-                Terms (optional, shown on the invoice)
-                <textarea
-                  value={terms} onChange={(e) => setTerms(e.target.value)} rows={2}
-                  data-testid="contract-form-terms"
-                  placeholder="e.g. Net 30. Auto-renews unless cancelled 30 days prior."
-                  className="rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-              </label>
-            </div>
+            </fieldset>
+
+            {/* ── Renewal ──────────────────────────────────────────────── */}
+            <fieldset className="min-w-0" data-testid="contract-renewal-group">
+              <legend className={legendCls}>Renewal</legend>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  End date (optional)
+                  <input
+                    type="date" value={endDate}
+                    onChange={(e) => { setEndDate(e.target.value); endEdited.current = true; if (!e.target.value) setAutoRenew(false); }}
+                    onBlur={commitEnd}
+                    disabled={!canWrite}
+                    data-testid="contract-form-end"
+                    className={`${dateInput} ${fieldRing(endDirty, isSaved('endDate'))}`}
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-sm sm:col-span-2">
+                  <input
+                    type="checkbox" checked={autoIssue} disabled={!canWrite}
+                    onChange={(e) => { setAutoIssue(e.target.checked); if (!isCreate) void savePatch({ autoIssue: e.target.checked }, 'autoIssue'); }}
+                    data-testid="contract-form-auto-issue"
+                  />
+                  Auto-issue generated invoices (otherwise they land as drafts)
+                </label>
+                <div className="sm:col-span-2">
+                  <label className="flex items-center gap-2 text-sm" data-testid="contract-auto-renew-toggle">
+                    <input
+                      type="checkbox" checked={autoRenew} disabled={!canWrite || !endDate}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setAutoRenew(checked);
+                        if (!isCreate) void savePatch({
+                          autoRenew: checked,
+                          renewalTermMonths: checked ? (renewalTermMonths === '' ? null : Number(renewalTermMonths)) : null,
+                          renewalNoticeDays: checked ? (renewalNoticeDays === '' ? null : Number(renewalNoticeDays)) : null,
+                        }, 'autoRenew');
+                      }}
+                    />
+                    <span>Auto-renew at end of term{!endDate ? ' (set an end date first)' : ''}</span>
+                  </label>
+                  {autoRenew && (
+                    <div className="mt-2 grid grid-cols-2 gap-3" data-testid="contract-renewal-fields">
+                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                        Renewal term (months)
+                        <input
+                          type="number" min={1} max={120} value={renewalTermMonths}
+                          onChange={(e) => { setRenewalTermMonths(e.target.value); renewalTermEdited.current = true; }}
+                          onBlur={commitRenewalTerm}
+                          disabled={!canWrite}
+                          data-testid="contract-renewal-term"
+                          className={`${baseInput} ${fieldRing(renewalTermDirty, isSaved('renewalTerm'))}`}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                        Advance notice (days)
+                        <input
+                          type="number" min={0} max={365} value={renewalNoticeDays}
+                          onChange={(e) => { setRenewalNoticeDays(e.target.value); renewalNoticeEdited.current = true; }}
+                          onBlur={commitRenewalNotice}
+                          disabled={!canWrite}
+                          data-testid="contract-renewal-notice-days"
+                          className={`${baseInput} ${fieldRing(renewalNoticeDirty, isSaved('renewalNotice'))}`}
+                        />
+                      </label>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </fieldset>
+
+            {/* ── Content ──────────────────────────────────────────────── */}
+            <fieldset className="min-w-0" data-testid="contract-content-group">
+              <legend className={legendCls}>Content</legend>
+              <div className="grid grid-cols-1 gap-3">
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Notes (optional)
+                  <textarea
+                    value={notes} onChange={(e) => { setNotes(e.target.value); notesEdited.current = true; }} onBlur={commitNotes}
+                    disabled={!canWrite} rows={2}
+                    data-testid="contract-form-notes"
+                    className={`${areaInput} ${fieldRing(notesDirty, isSaved('notes'))}`}
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Terms (optional, shown on the invoice)
+                  <textarea
+                    value={terms} onChange={(e) => { setTerms(e.target.value); termsEdited.current = true; }} onBlur={commitTerms}
+                    disabled={!canWrite} rows={2}
+                    data-testid="contract-form-terms"
+                    placeholder="e.g. Net 30. Auto-renews unless cancelled 30 days prior."
+                    className={`${areaInput} ${fieldRing(termsDirty, isSaved('terms'))}`}
+                  />
+                </label>
+              </div>
+            </fieldset>
           </div>
 
           {/* Lines (edit mode only — a contract needs an id before lines attach) */}
@@ -570,9 +832,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           </td>
                           <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
                           <td className="px-3 py-2 text-right">
-                            {can('contracts', 'write') && (
+                            {canWrite && (
                               <button
-                                type="button" onClick={() => void removeLine(l.id)} disabled={busy}
+                                type="button" onClick={() => setPendingRemove(l)} disabled={isPending(`remove-${l.id}`)}
                                 data-testid={`line-remove-${idx}`}
                                 className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                               >
@@ -778,15 +1040,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
               )
             ) : (
               <>
-                {can('contracts', 'write') && (
-                  <button
-                    type="button" onClick={() => void saveHeader()} disabled={busy || !canSaveHeader}
-                    data-testid="save-contract-btn"
-                    className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-                  >
-                    Save changes
-                  </button>
-                )}
+                {/* No whole-form Save button: existing contracts blur-autosave each
+                    field. Status transitions (Activate) stay explicit. */}
                 {can('contracts', 'manage') && contract?.status === 'draft' && (
                   <button
                     type="button" onClick={() => void activate()} disabled={busy || lines.length === 0}
@@ -828,6 +1083,30 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
           onLinked={refresh}
         />
       )}
+
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        onClose={() => setPendingRemove(null)}
+        onConfirm={() => {
+          const line = pendingRemove;
+          if (!line) return;
+          // Leave the dialog open on failure (already toasted) so the user can
+          // retry; only close once the line is actually gone.
+          void (async () => {
+            if (!(await removeLine(line.id))) return;
+            setPendingRemove(null);
+          })();
+        }}
+        isLoading={pendingRemove ? isPending(`remove-${pendingRemove.id}`) : false}
+        title="Remove line"
+        message={
+          pendingRemove
+            ? `This removes "${pendingRemove.description || 'this line'}" from the contract. This can't be undone.`
+            : ''
+        }
+        confirmLabel="Remove line"
+        confirmTestId="contract-line-remove-confirm"
+      />
     </div>
   );
 }

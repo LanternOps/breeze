@@ -65,6 +65,17 @@ describe('ContractPax8Drawer pick list', () => {
   });
 });
 
+describe('ContractPax8Drawer dialog semantics', () => {
+  it('renders a modal dialog and moves focus inside on open', async () => {
+    fetchWithAuth.mockResolvedValue(ok([baseSub]));
+    renderOpen();
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    // Focus lands on the first focusable control inside the dialog (the close button).
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+  });
+});
+
 describe('ContractPax8Drawer load failures', () => {
   it('surfaces an error when the subscriptions request is not ok', async () => {
     fetchWithAuth.mockResolvedValue(new Response('{"error":"nope"}', { status: 500 }));
