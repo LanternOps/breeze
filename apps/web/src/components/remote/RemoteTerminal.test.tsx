@@ -144,6 +144,9 @@ describe('RemoteTerminal auto-connect / disconnect (#2137)', () => {
     renderTerminal();
 
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+    // Settle past the 500ms auto-connect delay to prove it does not fire again.
+    await new Promise((r) => setTimeout(r, 700));
+    expect(MockWebSocket.instances).toHaveLength(1);
     expect(sessionPostCount()).toBe(1);
   });
 
@@ -177,6 +180,47 @@ describe('RemoteTerminal auto-connect / disconnect (#2137)', () => {
 
     const reconnectBtn = await screen.findByRole('button', { name: /reconnect/i });
     await userEvent.click(reconnectBtn);
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), { timeout: 2000 });
+    expect(sessionPostCount()).toBe(2);
+  });
+
+  it('does NOT reconnect on a clean server-side session end (close 1000)', async () => {
+    renderTerminal();
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+    fireConnected(MockWebSocket.instances[0]!);
+    await screen.findByRole('button', { name: /disconnect/i });
+
+    // Server ends the session cleanly (no user click) — same disconnected+no-
+    // session state a manual Disconnect produces. Must not auto-reconnect.
+    act(() => {
+      MockWebSocket.instances[0]!.close(1000);
+    });
+
+    await new Promise((r) => setTimeout(r, 700));
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(sessionPostCount()).toBe(1);
+    expect(await screen.findByRole('button', { name: /reconnect/i })).toBeInTheDocument();
+  });
+
+  it('surfaces a failed connection with a Retry button that reconnects', async () => {
+    renderTerminal();
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+
+    // An unexpected close (code !== 1000) marks the connection failed.
+    act(() => {
+      MockWebSocket.instances[0]!.close(1006);
+    });
+
+    const retryBtn = await screen.findByRole('button', { name: /retry/i });
+
+    // Retry must not have auto-reconnected on its own before the click.
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    await userEvent.click(retryBtn);
 
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), { timeout: 2000 });
     expect(sessionPostCount()).toBe(2);
