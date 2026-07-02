@@ -46,9 +46,13 @@ the current schema.
 Follow the **dual-owner precedent** already shipped for
 `configuration_policies` (`apps/api/src/db/schema/configurationPolicies.ts:64-82`,
 migration `2026-06-27-config-policies-partner-ownership.sql`), and identically for
-`custom_field_definitions`, `software_catalog`, `software_policies`,
-`security_policies` (commit `e42b34ac0`, #2143). The pattern is settled; we are
-the next table onto it.
+`custom_field_definitions`, `software_catalog`, and `client_ai_prompt_templates`
+— the dual-owner (org XOR partner) tables present on this branch. On main, `software_policies`
+and `security_policies` gained the same axis in commit `e42b34ac0` (#2143),
+which is **not** an ancestor of this branch yet (we're stacked one commit
+behind); it will be once this branch rebases after #2148 merges, giving the
+implementer two more copies of the template. The pattern is settled; we are the
+next table onto it.
 
 ### 2.1 Schema change
 
