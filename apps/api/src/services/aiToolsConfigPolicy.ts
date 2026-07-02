@@ -1,5 +1,6 @@
 import { db } from '../db';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -605,6 +606,16 @@ For link-only types, set featurePolicyId instead of inlineSettings:
       if (action === 'add') {
         const featureType = input.featureType as string | undefined;
         if (!featureType) return JSON.stringify({ error: 'featureType is required for add' });
+
+        // Org-scoped-only features (backup, onedrive_helper) can't be authored
+        // on a partner-wide policy — mirror the HTTP route's 400 rejection
+        // (featureLinks.ts) here, since addFeatureLink itself doesn't know the
+        // policy's owner. Shared source of truth: ORG_SCOPED_ONLY_FEATURE_TYPES.
+        if (policy.orgId === null && ORG_SCOPED_ONLY_FEATURE_TYPES.has(featureType as ConfigFeatureType)) {
+          return JSON.stringify({
+            error: `The "${featureType}" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy.`,
+          });
+        }
 
         try {
           const link = await addFeatureLink(

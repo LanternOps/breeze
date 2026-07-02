@@ -35,6 +35,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
 import type { FeatureType, FeatureLink } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
+import { useFeatureLink } from './featureTabs/useFeatureLink';
 import AssignmentsTab from './AssignmentsTab';
 import PatchTab from './featureTabs/PatchTab';
 import AlertRuleTab from './featureTabs/AlertRuleTab';
@@ -123,6 +124,17 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
   // Feature links state (fetched on mount, not gated by active tab)
   const [featureLinks, setFeatureLinks] = useState<FeatureLink[]>([]);
+
+  // Removal affordance for a leftover feature link on a gated (org-only) tab —
+  // see the gated hint panel below. Partner-wide policies can't author these
+  // features, but a link may pre-date the restriction (or arrive via backfill);
+  // the editor is never rendered for gated tabs, so without this the link
+  // would be stuck with no way to view or remove it.
+  const {
+    remove: removeGatedLink,
+    saving: removingGatedLink,
+    error: gatedRemoveError,
+  } = useFeatureLink(policyId ?? '');
 
   // Policy-level linked configuration policy (set once at creation time via ?linked= query param)
   const [linkedPolicyId, setLinkedPolicyId] = useState<string | null>(() => {
@@ -465,6 +477,35 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
                 {FEATURE_META[activeTab as FeatureType].label} isn&apos;t available on partner-wide policies
               </p>
               <p className="mt-1">Configure this feature on an organization-scoped policy.</p>
+              {/* A gated tab never renders its editor, so a leftover link
+                  (pre-dating the restriction) needs a removal path here or it
+                  would be permanently stuck. */}
+              {linkFor(activeTab as FeatureType) && (
+                <div className="mt-4">
+                  <p className="text-warning">
+                    This policy still carries an existing{' '}
+                    {FEATURE_META[activeTab as FeatureType].label.toLowerCase()} configuration that
+                    will never be applied.
+                  </p>
+                  {gatedRemoveError && (
+                    <p className="mt-2 text-destructive">{gatedRemoveError}</p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={removingGatedLink}
+                    onClick={async () => {
+                      const ft = activeTab as FeatureType;
+                      const link = linkFor(ft);
+                      if (!link) return;
+                      const ok = await removeGatedLink(link.id);
+                      if (ok) handleLinkChanged(null, ft);
+                    }}
+                    className="mt-2 h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    {removingGatedLink ? 'Removing...' : 'Remove configuration'}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ) : (

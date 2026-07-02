@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -23,20 +23,34 @@ const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 400, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-function mockPolicy(owner: { orgId: string | null; partnerId: string | null }) {
-  fetchMock.mockImplementation(async (input) => {
+type MockLink = {
+  id: string;
+  featureType: string;
+  featurePolicyId: string | null;
+  inlineSettings: Record<string, unknown> | null;
+};
+
+function mockPolicy(
+  owner: { orgId: string | null; partnerId: string | null },
+  featureLinks: MockLink[] = []
+) {
+  fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
-    if (url === '/configuration-policies/pol-1') {
+    const method = (init as RequestInit | undefined)?.method ?? 'GET';
+    if (url === '/configuration-policies/pol-1' && method === 'GET') {
       return json({
         id: 'pol-1',
         name: 'Test Policy',
         status: 'active',
-        featureLinks: [],
+        featureLinks,
         ...owner,
       });
     }
-    if (url === '/configuration-policies/pol-1/features') {
-      return json({ data: [] });
+    if (url === '/configuration-policies/pol-1/features' && method === 'GET') {
+      return json({ data: featureLinks });
+    }
+    if (url.startsWith('/configuration-policies/pol-1/features/') && method === 'DELETE') {
+      return json({ success: true });
     }
     return json({ error: 'not found' }, false);
   });
@@ -103,5 +117,53 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     );
     // Patch tab isn't gated, so it shouldn't carry the hint tooltip.
     expect(screen.getByText('Patches').closest('button')).not.toHaveAttribute('title');
+  });
+
+  it('still gates the Backup tab when the partner-wide policy carries an EXISTING backup link, and offers removal', async () => {
+    // A backup link on a partner-wide policy shouldn't be creatable today, but
+    // may pre-date the restriction. The editor must NOT leak back in — and the
+    // leftover link needs a removal path, or it would be permanently stuck.
+    const backupLink: MockLink = {
+      id: 'link-9',
+      featureType: 'backup',
+      featurePolicyId: 'cfg-1',
+      inlineSettings: null,
+    };
+    mockPolicy({ orgId: null, partnerId: 'partner-1' }, [backupLink]);
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Backup');
+
+    expect(screen.queryByTestId('backup-tab-editor')).not.toBeInTheDocument();
+    expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
+    expect(screen.getByText(/existing backup configuration/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Remove configuration/i }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          (c) =>
+            c[0] === '/configuration-policies/pol-1/features/link-9' &&
+            (c[1] as RequestInit)?.method === 'DELETE'
+        )
+      ).toBe(true)
+    );
+    // Once removed, the leftover-link warning disappears (the generic hint stays).
+    await waitFor(() =>
+      expect(screen.queryByText(/existing backup configuration/i)).not.toBeInTheDocument()
+    );
+    expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
+  });
+
+  it('does not show the leftover-link removal affordance when the gated tab has no existing link', async () => {
+    mockPolicy({ orgId: null, partnerId: 'partner-1' });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Backup');
+
+    expect(screen.queryByRole('button', { name: /Remove configuration/i })).not.toBeInTheDocument();
   });
 });
