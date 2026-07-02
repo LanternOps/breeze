@@ -65,6 +65,8 @@ type PolicyDetail = {
   status: 'active' | 'inactive' | 'archived';
   orgId: string | null;
   partnerId: string | null;
+  // Owning org's name, joined in by the API for org-owned policies.
+  orgName?: string | null;
   createdAt?: string;
   updatedAt?: string;
   featureLinks: FeatureLink[];
@@ -520,7 +522,12 @@ export default function ConfigPolicyDetailPage({ policyId }: ConfigPolicyDetailP
 
       {/* Assignments Tab */}
       {activeTab === 'assignments' && policyId && policy && (
-        <AssignmentsTab policyId={policyId} orgId={policy.orgId} partnerId={policy.partnerId} />
+        <AssignmentsTab
+          policyId={policyId}
+          orgId={policy.orgId}
+          orgName={policy.orgName}
+          partnerId={policy.partnerId}
+        />
       )}
     </div>
   );
