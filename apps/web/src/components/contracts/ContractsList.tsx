@@ -11,8 +11,9 @@ import {
   type ContractStatus,
   type ContractSummary,
 } from '../../lib/api/contracts';
-import { formatMoney, formatDate } from '../billing/invoiceTypes';
+import { formatMoney, formatDate, sumByCurrency } from '../billing/invoiceTypes';
 import { StatusPill } from '../billing/shared/StatusPill';
+import { StatCard } from '../billing/shared/StatCard';
 import { SortableTh } from '../billing/shared/SortableTh';
 import { TableSkeleton } from '../billing/shared/TableSkeleton';
 import { usePermissions } from '../../lib/permissions';
@@ -212,8 +213,17 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   const mrr = useMemo(() => {
     const active = contracts.filter((c) => c.status === 'active');
     const total = active.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
-    return { total, count: active.length, ccy: contracts[0]?.currencyCode || 'USD' };
+    // Per-currency so a mixed-currency book isn't summed under one wrong code.
+    const byCurrency = sumByCurrency(
+      active.map((c) => ({ amount: monthlyValue(c.estimatedPeriodValue, c.intervalMonths), currencyCode: c.currencyCode })),
+    );
+    return { total, count: active.length, byCurrency, ccy: contracts[0]?.currencyCode || 'USD' };
   }, [contracts]);
+
+  // '$12,300 + €4,100' across currencies; a single total otherwise (unchanged).
+  const mrrDisplay = mrr.byCurrency.length > 1
+    ? mrr.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ')
+    : formatMoney(mrr.total, mrr.ccy);
 
   const runBulkContracts = useCallback(
     async (path: string, verb: string) => {
@@ -322,11 +332,13 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
       {/* Estimated monthly recurring */}
       {!loading && !error && rows.length > 0 && (
-        <div className="inline-flex flex-col rounded-lg border bg-card px-4 py-3" data-testid="contracts-mrr-strip">
-          <span className="text-xs text-muted-foreground">Est. monthly recurring</span>
-          <span className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(mrr.total, mrr.ccy)}</span>
-          <span className="text-xs text-muted-foreground">{mrr.count} active contract{mrr.count === 1 ? '' : 's'}</span>
-        </div>
+        <StatCard
+          label="Est. monthly recurring"
+          value={mrrDisplay}
+          hint={`${mrr.count} active contract${mrr.count === 1 ? '' : 's'}`}
+          className="inline-flex flex-col"
+          testId="contracts-mrr-strip"
+        />
       )}
 
       {/* Table */}

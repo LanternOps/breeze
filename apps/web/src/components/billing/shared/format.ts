@@ -20,6 +20,25 @@ export function formatMoney(value: string | number | null | undefined, currencyC
   }
 }
 
+/** Sum money amounts grouped by currency, preserving first-seen order.
+ *  Amounts are *dollars* (the same units `formatMoney` and the list-row money
+ *  fields use), NOT cents. The list summary strips use this to render honest
+ *  per-currency totals when rows span more than one currency, instead of
+ *  labeling a mixed-currency sum with a single (wrong) currency code. Empty
+ *  input → []; a single currency → one entry (renders exactly as before). */
+export function sumByCurrency(
+  entries: { amount: number; currencyCode: string }[],
+): { code: string; amount: number }[] {
+  const order: string[] = [];
+  const totals = new Map<string, number>();
+  for (const { amount, currencyCode } of entries) {
+    const code = currencyCode || 'USD';
+    if (!totals.has(code)) order.push(code);
+    totals.set(code, (totals.get(code) ?? 0) + amount);
+  }
+  return order.map((code) => ({ code, amount: totals.get(code) ?? 0 }));
+}
+
 /** Render an ISO date (YYYY-MM-DD or timestamp) as a short locale date, '—' if absent. */
 export function formatDate(value: string | null | undefined): string {
   if (!value) return '—';

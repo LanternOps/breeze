@@ -1929,9 +1929,11 @@ function EditableLineRow({
     <>
     <tr className="border-t align-top" data-testid={`quote-line-${line.id}`}>
       <td className="px-2 py-2">
-        <div className="flex items-start gap-2">
+        {/* min-w-0 lets the name input honour its own min-w-[12rem] floor rather
+            than the flex row's min-content, so a catalog thumbnail can't crush it. */}
+        <div className="flex min-w-0 items-start gap-2">
           {line.catalogItemId && <CatalogLineThumb catalogItemId={line.catalogItemId} />}
-          <div className="w-full space-y-1">
+          <div className="w-full min-w-0 space-y-1">
             <input
               type="text"
               value={name}
@@ -1941,7 +1943,7 @@ function EditableLineRow({
               onBlur={commitName}
               disabled={busy}
               data-testid={`quote-line-name-${line.id}`}
-              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
+              className={`h-9 w-full min-w-[12rem] rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
             />
           </div>
         </div>
@@ -1981,7 +1983,7 @@ function EditableLineRow({
           }}
           disabled={busy}
           data-testid={`quote-line-recurrence-${line.id}`}
-          className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className="h-9 w-full min-w-0 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
         >
           <option value="one_time">One-time</option>
           <option value="monthly">Monthly</option>

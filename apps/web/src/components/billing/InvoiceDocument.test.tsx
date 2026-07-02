@@ -59,6 +59,33 @@ describe('InvoiceDocument — customer-facing, no internal cost', () => {
   });
 });
 
+describe('InvoiceDocument — partner branding letterhead', () => {
+  const branded: InvoiceDetailData = {
+    ...detail,
+    branding: {
+      partnerName: 'Lantern IT', logoUrl: null, primaryColor: '#1c8a9e',
+      footer: 'Thank you for your business.', currencyCode: 'USD', seller: null,
+    },
+  };
+
+  it('renders the partner wordmark from branding when no logo is present', () => {
+    render(<InvoiceDocument detail={branded} customerName="Acme Industries" />);
+    expect(screen.getByTestId('invoice-document-wordmark')).toHaveTextContent('Lantern IT');
+  });
+
+  it('renders the partner logo (alt = partner name) when a logoUrl is present', () => {
+    const withLogo: InvoiceDetailData = {
+      ...branded,
+      branding: { ...branded.branding!, logoUrl: 'https://cdn.example.com/logo.png' },
+    };
+    render(<InvoiceDocument detail={withLogo} customerName="Acme Industries" />);
+    const logo = screen.getByAltText('Lantern IT');
+    expect(logo).toHaveAttribute('src', 'https://cdn.example.com/logo.png');
+    // The wordmark fallback must not also render when a logo is shown.
+    expect(screen.queryByTestId('invoice-document-wordmark')).not.toBeInTheDocument();
+  });
+});
+
 describe('InvoiceDocumentPreview — customer-name fallback', () => {
   it('falls back to an em-dash (never a raw org UUID fragment) when neither billToName nor the org store resolves', () => {
     const d: InvoiceDetailData = {

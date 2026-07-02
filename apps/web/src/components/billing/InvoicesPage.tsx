@@ -19,8 +19,10 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  sumByCurrency,
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
+import { StatCard } from './shared/StatCard';
 import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
@@ -305,11 +307,19 @@ export function InvoicesPage() {
     const outstanding = open.reduce((sum, i) => sum + num(i.balance), 0);
     const overdue = invoices.filter((i) => i.status === 'overdue').length;
     const draftCount = invoices.filter((i) => i.status === 'draft').length;
-    // Single-currency partners are the norm; label the strip with the first
-    // invoice's currency. Multi-currency outstanding totals are not split in v1.
+    // Per-currency outstanding so a mixed-currency book isn't summed under one
+    // (wrong) currency label. Single-currency partners (the norm) get one entry
+    // that renders exactly as a plain total did.
+    const byCurrency = sumByCurrency(open.map((i) => ({ amount: num(i.balance), currencyCode: i.currencyCode })));
     const ccy = (invoices[0]?.currencyCode) || 'USD';
-    return { outstanding, overdue, draftCount, openCount: open.length, ccy };
+    return { outstanding, overdue, draftCount, openCount: open.length, byCurrency, ccy };
   }, [invoices]);
+
+  // '$12,300 + €4,100' when the outstanding book spans currencies; a single
+  // formatted total otherwise (identical to the pre-split single-currency path).
+  const outstandingDisplay = summary.byCurrency.length > 1
+    ? summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ')
+    : formatMoney(summary.outstanding, summary.ccy);
 
   // Any server- or client-side filter narrowing the list. Drives both the Clear
   // affordance and whether the toolbar shows on an otherwise-empty list.
@@ -347,34 +357,27 @@ export function InvoicesPage() {
       {/* Outstanding summary */}
       {!loading && !error && invoices.length > 0 && (
         <div className="flex flex-wrap gap-3" data-testid="invoices-outstanding-strip">
-          <div className="rounded-lg border bg-card px-4 py-3">
-            <div className="text-xs text-muted-foreground">Outstanding</div>
-            <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(summary.outstanding, summary.ccy)}</div>
-            <div className="text-xs text-muted-foreground">{summary.openCount} open</div>
-          </div>
+          <StatCard label="Outstanding" value={outstandingDisplay} hint={`${summary.openCount} open`} />
           {summary.draftCount > 0 && (
-            <button
-              type="button"
+            <StatCard
+              label="Drafts"
+              value={summary.draftCount}
+              hint="not yet issued"
               onClick={() => applyFilter({ status: 'draft' })}
-              className="rounded-lg border bg-card px-4 py-3 text-left transition hover:bg-muted/40"
-              data-testid="invoices-drafts-card"
-            >
-              <div className="text-xs text-muted-foreground">Drafts</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums">{summary.draftCount}</div>
-              <div className="text-xs text-muted-foreground">not yet issued</div>
-            </button>
+              active={filters.status === 'draft'}
+              testId="invoices-drafts-card"
+            />
           )}
           {summary.overdue > 0 && (
-            <button
-              type="button"
+            <StatCard
+              label="Overdue"
+              value={summary.overdue}
+              hint="needs follow-up"
+              tone="destructive"
               onClick={() => applyFilter({ status: 'overdue' })}
-              className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-left transition hover:bg-destructive/10"
-              data-testid="invoices-overdue-card"
-            >
-              <div className="text-xs text-destructive">Overdue</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums text-destructive">{summary.overdue}</div>
-              <div className="text-xs text-muted-foreground">needs follow-up</div>
-            </button>
+              active={filters.status === 'overdue'}
+              testId="invoices-overdue-card"
+            />
           )}
         </div>
       )}

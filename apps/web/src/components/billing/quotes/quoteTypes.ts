@@ -163,7 +163,7 @@ export function statusLabel(quote: { status: QuoteStatus; sentAt: string | null 
 // Money/date formatters live in ../shared/format (the canonical copies, shared
 // with invoices + contracts); re-exported here so existing './quoteTypes' import
 // sites are unaffected.
-export { formatMoney, formatDate } from '../shared/format';
+export { formatMoney, formatDate, sumByCurrency } from '../shared/format';
 
 /** Convert a stored tax-rate FRACTION (e.g. '0.07') to a percent string for an
  *  input ('7'), rounding to 3 decimals to match the numeric(6,3)-on-fraction

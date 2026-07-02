@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatMoney, formatDate } from './format';
+import { formatMoney, formatDate, sumByCurrency } from './format';
 
 describe('formatMoney', () => {
   // NOTE: formatMoney takes a *dollar* amount (numeric(12,2)), not cents — every
@@ -29,6 +29,47 @@ describe('formatMoney', () => {
 
   it('coerces a non-finite value to 0', () => {
     expect(formatMoney(null)).toBe('$0.00');
+  });
+});
+
+describe('sumByCurrency', () => {
+  it('returns [] for no entries', () => {
+    expect(sumByCurrency([])).toEqual([]);
+  });
+
+  it('collapses a single currency to one entry (the pre-existing single-currency path)', () => {
+    expect(
+      sumByCurrency([
+        { amount: 10, currencyCode: 'USD' },
+        { amount: 5, currencyCode: 'USD' },
+      ]),
+    ).toEqual([{ code: 'USD', amount: 15 }]);
+  });
+
+  it('splits a mixed-currency set into one entry per currency, summed within each', () => {
+    expect(
+      sumByCurrency([
+        { amount: 100, currencyCode: 'USD' },
+        { amount: 50, currencyCode: 'EUR' },
+        { amount: 25, currencyCode: 'USD' },
+      ]),
+    ).toEqual([
+      { code: 'USD', amount: 125 },
+      { code: 'EUR', amount: 50 },
+    ]);
+  });
+
+  it('preserves first-seen order (stable), not alphabetical', () => {
+    expect(
+      sumByCurrency([
+        { amount: 1, currencyCode: 'EUR' },
+        { amount: 2, currencyCode: 'USD' },
+      ]).map((e) => e.code),
+    ).toEqual(['EUR', 'USD']);
+  });
+
+  it('coalesces a falsy currency code to USD (matching the strips’ || "USD" default)', () => {
+    expect(sumByCurrency([{ amount: 3, currencyCode: '' }])).toEqual([{ code: 'USD', amount: 3 }]);
   });
 });
 

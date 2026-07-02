@@ -17,8 +17,10 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  sumByCurrency,
 } from './quoteTypes';
 import { StatusPill } from '../shared/StatusPill';
+import { StatCard } from '../shared/StatCard';
 import AccessDenied from '../../shared/AccessDenied';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 
@@ -222,9 +224,17 @@ export function QuotesPage() {
   const summary = useMemo(() => {
     const awaiting = quotes.filter((qt) => qt.status === 'sent' || qt.status === 'viewed');
     const outForSignature = awaiting.reduce((sum, qt) => sum + num(qt.total), 0);
+    const draftCount = quotes.filter((qt) => qt.status === 'draft').length;
+    // Per-currency so a mixed-currency pipeline isn't summed under one wrong code.
+    const byCurrency = sumByCurrency(awaiting.map((qt) => ({ amount: num(qt.total), currencyCode: qt.currencyCode })));
     const ccy = quotes[0]?.currencyCode || 'USD';
-    return { outForSignature, awaitingCount: awaiting.length, ccy };
+    return { outForSignature, awaitingCount: awaiting.length, draftCount, byCurrency, ccy };
   }, [quotes]);
+
+  // '$12,300 + €4,100' across currencies; a single total otherwise (unchanged).
+  const outForSignatureDisplay = summary.byCurrency.length > 1
+    ? summary.byCurrency.map((e) => formatMoney(e.amount, e.code)).join(' + ')
+    : formatMoney(summary.outForSignature, summary.ccy);
 
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
@@ -309,14 +319,26 @@ export function QuotesPage() {
         )}
       </div>
 
-      {/* Out-for-signature summary */}
-      {!loading && !error && summary.awaitingCount > 0 && (
+      {/* Out-for-signature + drafts summary */}
+      {!loading && !error && (summary.awaitingCount > 0 || summary.draftCount > 0) && (
         <div className="flex flex-wrap gap-3" data-testid="quotes-outstanding-strip">
-          <div className="rounded-lg border bg-card px-4 py-3">
-            <div className="text-xs text-muted-foreground">Out for signature</div>
-            <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatMoney(summary.outForSignature, summary.ccy)}</div>
-            <div className="text-xs text-muted-foreground">{summary.awaitingCount} awaiting</div>
-          </div>
+          {summary.awaitingCount > 0 && (
+            <StatCard
+              label="Out for signature"
+              value={outForSignatureDisplay}
+              hint={`${summary.awaitingCount} awaiting`}
+            />
+          )}
+          {summary.draftCount > 0 && (
+            <StatCard
+              label="Drafts"
+              value={summary.draftCount}
+              hint="not yet sent"
+              onClick={() => applyFilter({ status: 'draft' })}
+              active={filters.status === 'draft'}
+              testId="quotes-drafts-card"
+            />
+          )}
         </div>
       )}
 

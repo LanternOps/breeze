@@ -90,9 +90,24 @@ export function lineBlurb(l: { name: string | null; description: string | null }
   return b || null;
 }
 
+/** Document branding resolved server-side (same partner/portal source the invoice
+ *  PDF uses) so the in-app Preview matches what the customer receives. Optional
+ *  because test fixtures and the list endpoint don't carry it. Mirrors
+ *  QuoteBranding — invoices and quotes share the one letterhead. */
+export interface InvoiceBranding {
+  partnerName: string;
+  logoUrl: string | null;
+  /** Partner brand accent (hex); null → fall back to the app's primary accent. */
+  primaryColor: string | null;
+  footer: string | null;
+  currencyCode: string;
+  seller: SellerSnapshot | null;
+}
+
 export interface InvoiceDetail {
   invoice: InvoiceSummary;
   lines: InvoiceLine[];
+  branding?: InvoiceBranding;
   /** Whether the partner has an active Stripe Connect account (gates "Send
    *  payment link"). Absent on older API responses → treated as not connected. */
   stripeConnected?: boolean;
@@ -187,7 +202,7 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 // Money/date formatters live in ./shared/format (the canonical copies, shared
 // with quotes + contracts); re-exported here so existing './invoiceTypes'
 // import sites are unaffected.
-export { formatMoney, formatDate } from './shared/format';
+export { formatMoney, formatDate, sumByCurrency } from './shared/format';
 
 /** Convert a stored tax-rate FRACTION (e.g. '0.07') to a percent string for an
  *  input ('7'), rounding the percent to 3 decimals — equivalently the numeric(8,5)

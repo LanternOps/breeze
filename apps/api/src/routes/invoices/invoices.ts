@@ -12,6 +12,7 @@ import {
   updateLine, removeLine, deleteDraftInvoice, updateInvoice
 } from '../../services/invoiceService';
 import { InvoiceServiceError, type InvoiceActor } from '../../services/invoiceTypes';
+import { resolveQuoteBranding } from '../../services/quoteBranding';
 
 export const invoiceCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -38,8 +39,14 @@ invoiceCrudRoutes.post('/', scopes, writePerm, zValidator('json', createManualIn
   catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await getInvoice(c.req.valid('param').id, invoiceActorFrom(c)) }); }
-  catch (err) { return handleServiceError(c, err); }
+  try {
+    const detail = await getInvoice(c.req.valid('param').id, invoiceActorFrom(c));
+    // Branding (partner name/logo, accent, seller, footer) lets the in-app Preview
+    // render the customer-facing document without a second round-trip — the same
+    // partner/portal source the invoice PDF resolves, so the two brand identically.
+    const branding = await resolveQuoteBranding(detail.invoice);
+    return c.json({ data: { ...detail, branding } });
+  } catch (err) { return handleServiceError(c, err); }
 });
 invoiceCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateInvoiceSchema), async (c) => {
   try { return c.json({ data: await updateInvoice(c.req.valid('param').id, c.req.valid('json'), invoiceActorFrom(c)) }); }

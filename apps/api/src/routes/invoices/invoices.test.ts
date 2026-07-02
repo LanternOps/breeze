@@ -28,6 +28,12 @@ vi.mock('../../services/invoicePdf', () => ({
   getInvoicePdf: vi.fn()
 }));
 
+// GET /:id resolves document branding (partner/portal) for the in-app preview,
+// mirroring the quotes route. Stub it so route tests don't hit the real DB.
+vi.mock('../../services/quoteBranding', () => ({
+  resolveQuoteBranding: vi.fn()
+}));
+
 // Payment routes write to the durable audit chain; stub it so route tests don't
 // hit the real audit persistence path.
 vi.mock('../../services/auditEvents', () => ({
@@ -55,6 +61,7 @@ import { invoiceRoutes } from './index';
 import { invoiceAssemblyRoutes } from './assembly';
 import * as svc from '../../services/invoiceService';
 import * as pdfSvc from '../../services/invoicePdf';
+import * as brandingSvc from '../../services/quoteBranding';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 
 function app() {
@@ -101,13 +108,16 @@ describe('invoice crud + lines routes', () => {
     expect(svc.listInvoices).toHaveBeenCalledOnce();
   });
 
-  it('GET /:id fetches one invoice', async () => {
-    (svc.getInvoice as any).mockResolvedValue({ id: INV_ID });
+  it('GET /:id fetches one invoice and attaches resolved branding', async () => {
+    (svc.getInvoice as any).mockResolvedValue({ invoice: { id: INV_ID }, lines: [], stripeConnected: false });
+    (brandingSvc.resolveQuoteBranding as any).mockResolvedValue({ partnerName: 'Lantern IT', logoUrl: null, primaryColor: null, footer: null, currencyCode: 'USD', seller: null });
     const res = await app().request(`/${INV_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.id).toBe(INV_ID);
+    expect(body.data.invoice.id).toBe(INV_ID);
+    expect(body.data.branding.partnerName).toBe('Lantern IT');
     expect(svc.getInvoice).toHaveBeenCalledWith(INV_ID, expect.anything());
+    expect(brandingSvc.resolveQuoteBranding).toHaveBeenCalledWith({ id: INV_ID });
   });
 
   it('POST /:id/lines adds a manual line', async () => {

@@ -46,12 +46,16 @@ interface DocumentProps {
  *  using the seller snapshot and the app accent. The sibling of QuoteDocument;
  *  works for drafts without a portal round-trip. */
 export function InvoiceDocument({ detail, customerName }: DocumentProps) {
-  const { invoice, lines } = detail;
-  const currency = invoice.currencyCode;
-  const seller = invoice.sellerSnapshot;
-  // Invoices carry no per-partner branding payload (unlike quotes), so the
-  // document is anchored on the app's primary accent.
-  const accentStyle = { ['--doc-accent']: 'hsl(var(--primary))' } as CSSProperties;
+  const { invoice, lines, branding } = detail;
+  const currency = branding?.currencyCode ?? invoice.currencyCode;
+  const seller = branding?.seller ?? invoice.sellerSnapshot;
+  // Partner brand accent when resolved; otherwise the app's primary accent.
+  const accent = branding?.primaryColor || 'hsl(var(--primary))';
+  const accentStyle = { ['--doc-accent']: accent } as CSSProperties;
+  // Wordmark/logo identity: partner logo → partner name → seller name. The
+  // letterhead rule renders whenever any identity is shown. Same source and
+  // precedence as QuoteDocument so invoices and quotes brand identically.
+  const wordmark = branding?.partnerName || seller?.name || null;
 
   // Customers only ever see customer-visible lines — cost/margin and hidden
   // bundle components never reach the document.
@@ -75,17 +79,19 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
         {/* ── Header ─────────────────────────────────────────────── */}
         <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-3">
-            {/* Seller wordmark + letterhead rule only when the seller is named. An
-                unbranded invoice lets the right-hand "Invoice" meta carry identity
-                rather than repeating the word "Invoice" on both sides of the header. */}
-            {seller?.name && (
-              <>
-                <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
-                  {seller.name}
-                </p>
-                {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
-                <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
-              </>
+            {/* Partner logo (or wordmark) + letterhead rule, mirroring the quote
+                document. An unbranded invoice with no seller name lets the
+                right-hand "Invoice" meta carry identity instead. */}
+            {branding?.logoUrl ? (
+              <img src={branding.logoUrl} alt={branding.partnerName} className="h-11 w-auto max-w-[220px] object-contain" />
+            ) : wordmark ? (
+              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="invoice-document-wordmark">
+                {wordmark}
+              </p>
+            ) : null}
+            {(branding?.logoUrl || wordmark) && (
+              /* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */
+              <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
             )}
             {seller && (
               <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
