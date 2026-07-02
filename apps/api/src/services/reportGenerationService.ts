@@ -7,9 +7,11 @@ import {
   deviceHardware,
   alerts,
   alertRules,
-  sites
+  sites,
+  organizations
 } from '../db/schema';
 import { canAccessSite, type UserPermissions } from './permissions';
+import type { ExecutiveSummary } from '@breeze/shared';
 
 export type ReportType =
   | 'device_inventory'
@@ -344,6 +346,12 @@ export async function generatePerformanceReport(orgId: string, config: Record<st
 }
 
 export async function generateExecutiveSummaryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+  const [orgRow] = await db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
   const dateRange = config.dateRange as Record<string, string> | undefined;
   const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
   const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, perms);
@@ -415,6 +423,7 @@ export async function generateExecutiveSummaryReport(orgId: string, config: Reco
 
   return {
     summary: {
+      org: { id: orgId, name: orgRow?.name ?? '' },
       devices: {
         total: Number(deviceStats[0]?.total ?? 0),
         online: Number(deviceStats[0]?.online ?? 0),
@@ -434,7 +443,7 @@ export async function generateExecutiveSummaryReport(orgId: string, config: Reco
       },
       osDistribution: Object.fromEntries(osDistribution.map(o => [o.osType, Number(o.count)])),
       siteBreakdown: siteBreakdown.map(s => ({ site: s.siteName, count: Number(s.deviceCount) }))
-    },
+    } satisfies ExecutiveSummary,
     generatedAt: new Date().toISOString()
   };
 }

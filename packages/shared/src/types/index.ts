@@ -689,3 +689,4 @@ export * from './billing-enums';
 // ============================================
 
 export * from './postureReport';
+export * from './executiveSummaryReport';
