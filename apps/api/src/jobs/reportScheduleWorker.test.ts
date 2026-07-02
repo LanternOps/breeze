@@ -58,6 +58,22 @@ vi.mock('../services/reportBranding', () => ({
   loadReportBrandingForOrg: (...args: unknown[]) => loadReportBrandingForOrgMock(...(args as [])),
 }));
 
+// Passthrough mock of the shared PDF renderer with a failure switch: by default
+// it delegates to the REAL buildReportPdf (so the %PDF magic-byte test stays a
+// genuine end-to-end Node render proof); flipping `shouldThrow` simulates a
+// render bug to verify delivery degrades to a link-only email instead of failing.
+const pdfRender = vi.hoisted(() => ({ shouldThrow: false }));
+vi.mock('@breeze/shared/reportPdf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@breeze/shared/reportPdf')>();
+  return {
+    ...actual,
+    buildReportPdf: (...args: Parameters<typeof actual.buildReportPdf>) => {
+      if (pdfRender.shouldThrow) throw new Error('render exploded');
+      return actual.buildReportPdf(...args);
+    },
+  };
+});
+
 vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false),
   getBullMQConnection: vi.fn(() => ({})),
@@ -107,6 +123,7 @@ function updateChain() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pdfRender.shouldThrow = false;
 });
 
 // ─── Occurrence math (pure) ──────────────────────────────────────────────────
@@ -336,6 +353,42 @@ describe('processRunScheduledReport', () => {
     expect(attachment.contentType).toBe('application/pdf');
     expect(Buffer.isBuffer(attachment.content)).toBe(true);
     expect(attachment.content.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('falls back to a link-only email (run still completed) when the PDF render throws', async () => {
+    pdfRender.shouldThrow = true;
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    const updates = [updateChain(), updateChain()];
+    updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+      // Prove the render actually failed (vs. silently succeeding): the catch
+      // block logs the fallback before sending the link-only email.
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('PDF render failed; sending link-only email'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    // A render failure must not block delivery: the email still goes out,
+    // link-only, and the run row is still marked completed.
+    expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const mail = sendEmailMock.mock.calls[0]![0] as { attachments: unknown[]; html: string; text: string };
+    expect(mail.attachments).toHaveLength(0);
+    expect(mail.html).toContain('Open Breeze to view and download the formatted report.');
+    expect(mail.text).toContain('Open Breeze to view and download the formatted report.');
   });
 
   it('does not query branding when there are no valid recipients', async () => {
