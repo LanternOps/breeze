@@ -227,7 +227,8 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           format: 'pdf',
           reportType: payload.type ?? run.reportType ?? 'report',
           timezone: effectiveTimezone,
-          // posture report carries a summary scorecard; harmless for other types
+          // The posture and executive-summary covers consume this snapshot to
+          // render their designed cover pages; ignored by other report types.
           summary: data?.summary as PostureSummary | undefined,
         });
         return;
