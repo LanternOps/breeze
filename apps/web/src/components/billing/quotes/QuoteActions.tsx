@@ -60,7 +60,9 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
       await runAction({
         request: () => sendQuote(quote.id),
         errorFallback: 'Could not send the proposal.',
-        successMessage: 'Proposal sent',
+        // Tell the seller what happens next: the quote advances to Viewed and
+        // Accepted on its own as the customer engages — no further action here.
+        successMessage: `Proposal sent — we'll mark it Viewed and Accepted as ${orgName} opens and signs.`,
         onUnauthorized: UNAUTHORIZED,
       });
       setSendOpen(false);
@@ -70,7 +72,7 @@ export default function QuoteActions({ detail, onChanged, variant }: Props) {
     } finally {
       setSending(false);
     }
-  }, [sending, quote.id, refresh]);
+  }, [sending, quote.id, orgName, refresh]);
 
   const remove = useCallback(async () => {
     if (deleting) return;
