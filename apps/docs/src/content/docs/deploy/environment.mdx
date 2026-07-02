@@ -49,7 +49,8 @@ All configuration is done through environment variables, defined in your `.env.p
 
 Access-token (15m) and refresh-token (7d) lifetimes are fixed in code
 (`apps/api/src/services/jwt.ts`) — short-lived access tokens backed by
-refresh-token rotation — and are intentionally not env-configurable.
+refresh-token rotation — and are intentionally not configurable via
+deployment env vars.
 
 ## Server
 
