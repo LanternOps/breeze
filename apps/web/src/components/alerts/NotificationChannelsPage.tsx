@@ -5,6 +5,7 @@ import NotificationChannelForm, { type NotificationChannelFormValues } from './N
 import AlertsTabStrip from './AlertsTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -71,7 +72,7 @@ export async function runChannelDelete(
 
 // Exported for unit-testing without mounting the full component.
 export async function runRoutingRuleSave(
-  rule: { id?: string; name: string; priority: number; conditions: unknown; channelIds: string[]; enabled: boolean },
+  rule: { id?: string; name: string; priority: number; conditions: unknown; channelIds: string[]; enabled: boolean; ownerScope?: 'organization' | 'partner' },
   deps: { onUnauthorized: () => void }
 ): Promise<void> {
   const isEdit = !!rule.id;
@@ -86,6 +87,8 @@ export async function runRoutingRuleSave(
         conditions: rule.conditions,
         channelIds: rule.channelIds,
         enabled: rule.enabled,
+        // Create-only (#2130): updates never move a rule between axes.
+        ...(!isEdit && rule.ownerScope ? { ownerScope: rule.ownerScope } : {}),
       }),
     }),
     successMessage: isEdit ? 'Routing rule saved' : 'Routing rule created',
@@ -111,6 +114,8 @@ type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
 type RoutingRule = {
   id: string;
+  // null = partner-wide ("All organizations") rule (#2130)
+  orgId?: string | null;
   name: string;
   priority: number;
   conditions: {
@@ -128,7 +133,14 @@ export default function NotificationChannelsPage() {
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedChannel, setSelectedChannel] = useState<NotificationChannel | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const { currentOrgId } = useOrgStore();
+  const { currentOrgId, allOrgs } = useOrgStore();
+
+  // Ownership axis (#2130, mirrors AlertRuleEditPage #2128): partner-scope
+  // creators may own a channel/rule partner-wide ("all orgs"). Gate on the
+  // JWT scope; default to partner-wide when viewing All orgs. Create-only.
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const [channelOwnerScope, setChannelOwnerScope] = useState<'organization' | 'partner'>('organization');
 
   // Routing rules state
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
@@ -181,6 +193,7 @@ export default function NotificationChannelsPage() {
   }, [fetchChannels, fetchRoutingRules]);
 
   const handleCreate = () => {
+    setChannelOwnerScope(isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization');
     setSelectedChannel(null);
     setModalMode('create');
   };
@@ -369,7 +382,12 @@ export default function NotificationChannelsPage() {
     const isCreate = modalMode === 'create';
     const url = isCreate ? '/alerts/channels' : `/alerts/channels/${selectedChannel?.id}`;
     const method = isCreate ? 'POST' : 'PUT';
-    const requestPayload = isCreate && currentOrgId ? { ...payload, orgId: currentOrgId } : payload;
+    const partnerWideCreate = isCreate && isPartnerScope && channelOwnerScope === 'partner';
+    const requestPayload = partnerWideCreate
+      ? { ...payload, ownerScope: 'partner' }
+      : isCreate && currentOrgId
+        ? { ...payload, orgId: currentOrgId }
+        : payload;
 
     try {
       await runChannelSave(
@@ -549,6 +567,15 @@ export default function NotificationChannelsPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium">{rule.name}</span>
+                            {rule.orgId === null && (
+                              <span
+                                className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary"
+                                title="Partner-wide rule — routes alerts from every organization"
+                                data-testid="routing-rule-partner-wide-badge"
+                              >
+                                All orgs
+                              </span>
+                            )}
                             {!rule.enabled && (
                               <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Disabled</span>
                             )}
@@ -605,6 +632,8 @@ export default function NotificationChannelsPage() {
               <RoutingRuleForm
                 rule={editingRule}
                 channels={channels}
+                showOwnerScope={isPartnerScope}
+                defaultOwnerScope={isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'}
                 onSave={handleSaveRoutingRule}
                 onCancel={() => { setShowRuleForm(false); setEditingRule(null); }}
               />
@@ -626,6 +655,30 @@ export default function NotificationChannelsPage() {
               <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {error}
               </div>
+            )}
+            {/* Ownership scope — partner-scope creators only, create-only (#2130) */}
+            {modalMode === 'create' && isPartnerScope && (
+              <fieldset className="mb-4 space-y-2 rounded-md border bg-card p-4" data-testid="notification-channel-owner">
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    checked={channelOwnerScope === 'partner'}
+                    onChange={() => setChannelOwnerScope('partner')}
+                    data-testid="notification-channel-owner-partner"
+                  />
+                  All organizations <span className="text-muted-foreground">(partner-wide channel — receives alerts from every org)</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    checked={channelOwnerScope === 'organization'}
+                    onChange={() => setChannelOwnerScope('organization')}
+                    data-testid="notification-channel-owner-org"
+                  />
+                  This organization only
+                </label>
+              </fieldset>
             )}
             <NotificationChannelForm
               onSubmit={handleSubmit}
@@ -685,12 +738,16 @@ const SEVERITY_OPTIONS = ['critical', 'high', 'medium', 'low', 'info'];
 function RoutingRuleForm({
   rule,
   channels,
+  showOwnerScope = false,
+  defaultOwnerScope = 'organization',
   onSave,
   onCancel,
 }: {
   rule: RoutingRule | null;
   channels: NotificationChannel[];
-  onSave: (rule: Omit<RoutingRule, 'id'> & { id?: string }) => void;
+  showOwnerScope?: boolean;
+  defaultOwnerScope?: 'organization' | 'partner';
+  onSave: (rule: Omit<RoutingRule, 'id'> & { id?: string; ownerScope?: 'organization' | 'partner' }) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(rule?.name ?? '');
@@ -698,6 +755,7 @@ function RoutingRuleForm({
   const [severities, setSeverities] = useState<string[]>(rule?.conditions.severities ?? []);
   const [channelIds, setChannelIds] = useState<string[]>(rule?.channelIds ?? []);
   const [enabled, setEnabled] = useState(rule?.enabled ?? true);
+  const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>(defaultOwnerScope);
 
   const toggleSeverity = (sev: string) => {
     setSeverities((prev) =>
@@ -720,12 +778,39 @@ function RoutingRuleForm({
       conditions: { severities: severities.length > 0 ? severities : undefined },
       channelIds,
       enabled,
+      // Create-only (#2130): updates never move a rule between axes.
+      ...(!rule?.id && showOwnerScope ? { ownerScope } : {}),
     });
   };
 
   return (
     <div className="mt-4 rounded-md border bg-card p-4 space-y-4">
       <h3 className="text-sm font-semibold">{rule ? 'Edit Routing Rule' : 'New Routing Rule'}</h3>
+
+      {/* Ownership scope — partner-scope creators only, create-only (#2130) */}
+      {!rule && showOwnerScope && (
+        <fieldset className="space-y-2 rounded-md border p-3" data-testid="routing-rule-owner">
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              checked={ownerScope === 'partner'}
+              onChange={() => setOwnerScope('partner')}
+              data-testid="routing-rule-owner-partner"
+            />
+            All organizations <span className="text-muted-foreground">(partner-wide rule)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              checked={ownerScope === 'organization'}
+              onChange={() => setOwnerScope('organization')}
+              data-testid="routing-rule-owner-org"
+            />
+            This organization only
+          </label>
+        </fieldset>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>

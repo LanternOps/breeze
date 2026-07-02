@@ -18,7 +18,7 @@ import {
   organizations,
   partners
 } from '../db/schema';
-import { eq, and, inArray, asc } from 'drizzle-orm';
+import { eq, and, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { checkNotificationThrottle } from './notificationThrottle';
@@ -108,9 +108,44 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
 }
 
 /**
- * Process an alert and queue notifications to all configured channels
+ * Delivery rails are dual-owned (#2130): a channel / routing rule /
+ * escalation policy is org-owned (org_id set) OR partner-wide (org_id NULL,
+ * partner_id set). Every dispatcher lookup must match the alert org's own
+ * rows OR partner-wide rows owned by that org's partner — a plain
+ * eq(orgId, alert.orgId) silently never matches partner-wide rows (the #1724
+ * trap; the worker runs under system context, so RLS is not the filter here).
  */
-async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
+async function partnerIdForOrg(orgId: string): Promise<string | null> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return org?.partnerId ?? null;
+}
+
+function railOwnershipCondition(
+  orgCol: Column,
+  partnerCol: Column,
+  orgId: string,
+  orgPartnerId: string | null
+): SQL {
+  if (!orgPartnerId) {
+    return eq(orgCol, orgId);
+  }
+  return or(
+    eq(orgCol, orgId),
+    and(isNull(orgCol), eq(partnerCol, orgPartnerId))
+  ) as SQL;
+}
+
+/**
+ * Process an alert and queue notifications to all configured channels.
+ * Exported for the notificationRailsPartnerRls integration suite, which
+ * proves the partner-wide rail fan-out (#2130) against real Postgres — every
+ * unit test mocks the rail lookups away.
+ */
+export async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
   queued: number;
   inAppSent: boolean;
   durationMs: number;
@@ -173,24 +208,29 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     }
   }
 
+  // Dual-axis rail resolution (#2130): resolve the alert org's partner once,
+  // so routing/channel/escalation lookups can match partner-wide rows too.
+  const orgPartnerId = await partnerIdForOrg(alert.orgId);
+
   // Phase 5: Notification routing rules (currently evaluates severity; conditionTypes/deviceTags/siteIds matching planned)
   // Check routing rules before falling back to all channels
   if (channelIds.length === 0) {
-    const routedChannelIds = await resolveRoutingRules(alert.orgId, alert.severity);
+    const routedChannelIds = await resolveRoutingRules(alert.orgId, alert.severity, orgPartnerId);
     if (routedChannelIds.length > 0) {
       channelIds = routedChannelIds;
     }
   }
 
   // For config policy alerts (no ruleId) or rules without channel overrides and no routing rules,
-  // fall back to all enabled channels for the org
+  // fall back to all enabled channels for the org — including the partner's
+  // partner-wide channels, which are active for every member org by design.
   if (channelIds.length === 0) {
     const orgChannels = await db
       .select({ id: notificationChannels.id })
       .from(notificationChannels)
       .where(
         and(
-          eq(notificationChannels.orgId, alert.orgId),
+          railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, orgPartnerId),
           eq(notificationChannels.enabled, true)
         )
       );
@@ -213,7 +253,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
     .from(notificationChannels)
     .where(
       and(
-        eq(notificationChannels.orgId, alert.orgId),
+        railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, orgPartnerId),
         eq(notificationChannels.enabled, true),
         inArray(notificationChannels.id, requestedChannelIds)
       )
@@ -221,7 +261,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
   channelIds = validChannels.map((channel) => channel.id);
 
   if (channelIds.length === 0) {
-    console.log(`[NotificationDispatcher] No valid channels in alert org for alert ${data.alertId}`);
+    console.log(`[NotificationDispatcher] No valid channels in alert org or its partner for alert ${data.alertId}`);
     return { queued: 0, inAppSent, durationMs: Date.now() - startTime };
   }
 
@@ -247,7 +287,7 @@ async function processAlertNotifications(data: ProcessAlertJobData): Promise<{
   // Check for escalation policy (only applicable to rule-based alerts)
   const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
   if (escalationPolicyId) {
-    await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId);
+    await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId, orgPartnerId);
   }
 
   return {
@@ -284,24 +324,34 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     };
   }
 
-  // Get channel
+  // Get channel — the alert org's own, or a partner-wide channel owned by
+  // that org's partner (#2130).
+  const sendOrgPartnerId = await partnerIdForOrg(alert.orgId);
   const [channel] = await db
     .select()
     .from(notificationChannels)
     .where(
       and(
         eq(notificationChannels.id, data.channelId),
-        eq(notificationChannels.orgId, alert.orgId),
+        railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, sendOrgPartnerId),
         eq(notificationChannels.enabled, true)
       )
     )
     .limit(1);
 
   if (!channel) {
+    // A resolved {success:false} completes the BullMQ job (no 'failed' event)
+    // and no alert_notifications row exists yet on this path — without a log
+    // this send (possibly a DELAYED escalation step whose channel/partner
+    // state drifted since scheduling) vanishes without a trace (#2130 review).
+    console.warn(
+      `[NotificationDispatcher] Channel ${data.channelId} not found (or disabled) for alert ${data.alertId}`
+      + `${data.escalationStep ? ` escalation step ${data.escalationStep}` : ''} — send dropped`
+    );
     return {
       success: false,
       channelType: 'unknown',
-      error: 'Channel not found for alert organization',
+      error: 'Channel not found for alert organization or its partner',
       durationMs: Date.now() - startTime
     };
   }
@@ -817,13 +867,17 @@ async function sendPushoverChannelNotification(
  * Returns channel IDs from the first matching routing rule (by priority).
  * Returns empty array if no routing rules match (falls through to default behavior).
  */
-async function resolveRoutingRules(orgId: string, severity: string): Promise<string[]> {
+async function resolveRoutingRules(orgId: string, severity: string, orgPartnerId: string | null): Promise<string[]> {
+  // Dual-axis (#2130): the org's own rules AND its partner's partner-wide
+  // rules compete in one priority ordering; the first match wins regardless
+  // of axis, so an org can pre-empt a partner-wide rule with a
+  // higher-priority org rule.
   const rules = await db
     .select()
     .from(notificationRoutingRules)
     .where(
       and(
-        eq(notificationRoutingRules.orgId, orgId),
+        railOwnershipCondition(notificationRoutingRules.orgId, notificationRoutingRules.partnerId, orgId, orgPartnerId),
         eq(notificationRoutingRules.enabled, true)
       )
     )
@@ -858,19 +912,26 @@ async function resolveRoutingRules(orgId: string, severity: string): Promise<str
 /**
  * Schedule escalation steps based on policy
  */
-async function scheduleEscalation(alertId: string, policyId: string, orgId: string): Promise<void> {
+async function scheduleEscalation(alertId: string, policyId: string, orgId: string, orgPartnerId: string | null): Promise<void> {
   const [policy] = await db
     .select()
     .from(escalationPolicies)
     .where(
       and(
         eq(escalationPolicies.id, policyId),
-        eq(escalationPolicies.orgId, orgId)
+        railOwnershipCondition(escalationPolicies.orgId, escalationPolicies.partnerId, orgId, orgPartnerId)
       )
     )
     .limit(1);
 
   if (!policy) {
+    // The rule still references this policy but the dual-axis lookup missed —
+    // deleted policy, or the org's partner changed since the rule was bound.
+    // Silently dropping would erase the whole escalation chain (#2130 review).
+    console.warn(
+      `[NotificationDispatcher] Escalation policy ${policyId} not found for alert ${alertId} `
+      + `(org ${orgId}, partner ${orgPartnerId ?? 'none'}) — escalation skipped`
+    );
     return;
   }
 
@@ -880,6 +941,9 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   }>;
 
   if (!Array.isArray(steps) || steps.length === 0) {
+    console.warn(
+      `[NotificationDispatcher] Escalation policy ${policyId} has no steps for alert ${alertId} — escalation skipped`
+    );
     return;
   }
 
@@ -893,7 +957,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
       .from(notificationChannels)
       .where(
         and(
-          eq(notificationChannels.orgId, orgId),
+          railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, orgId, orgPartnerId),
           eq(notificationChannels.enabled, true),
           inArray(notificationChannels.id, requestedChannelIds)
         )

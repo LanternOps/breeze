@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   dbInsert: vi.fn(),
   dbSelect: vi.fn(),
   dbUpdate: vi.fn(),
+  dbDelete: vi.fn(),
   encryptNotificationChannelConfig: vi.fn(),
   decryptNotificationChannelConfig: vi.fn(),
   validateNotificationChannelConfig: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('../db', () => ({
     insert: mocks.dbInsert,
     select: mocks.dbSelect,
     update: mocks.dbUpdate,
+    delete: mocks.dbDelete,
   },
 }));
 
@@ -84,6 +86,30 @@ function makeAuth(orgId = 'org-1'): AuthContext {
     accessibleOrgIds: [orgId],
     orgCondition: () => undefined,
     canAccessOrg: (id: string) => id === orgId,
+  } as unknown as AuthContext;
+}
+
+// Partner-scoped caller (#2130): partnerOrgAccess gates administration of
+// partner-wide (orgId NULL) rows via canManagePartnerWidePolicies.
+function makePartnerAuth(
+  partnerOrgAccess: 'all' | 'selected' | 'none',
+  partnerId = 'partner-1',
+): AuthContext {
+  return {
+    user: {
+      id: '22222222-2222-4222-8222-222222222222',
+      email: 'partner-admin@msp.example',
+      name: 'Partner Admin',
+      isPlatformAdmin: false,
+    },
+    token: {} as never,
+    partnerId,
+    orgId: null,
+    scope: 'partner',
+    partnerOrgAccess,
+    accessibleOrgIds: ['org-1'],
+    orgCondition: () => undefined,
+    canAccessOrg: () => true,
   } as unknown as AuthContext;
 }
 
@@ -318,5 +344,119 @@ describe('manage_notification_channels — update action', () => {
     expect(result.error).toMatch(/not found/i);
     expect(mocks.encryptNotificationChannelConfig).not.toHaveBeenCalled();
     expect(mocks.dbUpdate).not.toHaveBeenCalled();
+  });
+});
+
+// ---- tests: partner-wide gating (#2130) --------------------------------
+//
+// A partner-wide channel (orgId NULL, partnerId = owning partner) is visible
+// to any caller on that partner (dual-axis lookup, same as the HTTP route's
+// getNotificationChannelWithOrgCheck), but administrable only when
+// canManagePartnerWidePolicies(auth) is true — i.e. partnerOrgAccess 'all'.
+// partnerWideAccess.ts is a dependency-free leaf and intentionally NOT mocked.
+
+describe('manage_notification_channels — partner-wide gating (#2130)', () => {
+  let handler: AiTool['handler'];
+
+  const PARTNER_ID = 'partner-1';
+  const PARTNER_WIDE_CHANNEL = {
+    id: 'chan-partner-wide',
+    orgId: null,
+    partnerId: PARTNER_ID,
+    name: 'Fleet Slack',
+    type: 'slack',
+    config: { webhookUrl: ENCRYPTED_STUB },
+    enabled: true,
+  };
+
+  function mockChannelLookup(channel: unknown | null) {
+    mocks.dbSelect.mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue(channel ? [channel] : []),
+        })),
+      })),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handler = getHandler('manage_notification_channels');
+  });
+
+  it('update: denies a partner-wide channel without full partner org access', async () => {
+    mockChannelLookup(PARTNER_WIDE_CHANNEL);
+
+    const result = JSON.parse(
+      await handler(
+        { action: 'update', channelId: PARTNER_WIDE_CHANNEL.id, name: 'Hijacked' },
+        makePartnerAuth('selected', PARTNER_ID),
+      ) as string,
+    );
+
+    expect(result.error).toMatch(/partner-wide/i);
+    expect(result.error).toMatch(/full partner org access/i);
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+  });
+
+  it('update: allows a partner-wide channel with full partner org access', async () => {
+    mockChannelLookup(PARTNER_WIDE_CHANNEL);
+    const setMock = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    mocks.dbUpdate.mockReturnValue({ set: setMock });
+
+    const result = JSON.parse(
+      await handler(
+        { action: 'update', channelId: PARTNER_WIDE_CHANNEL.id, name: 'Renamed Fleet Slack' },
+        makePartnerAuth('all', PARTNER_ID),
+      ) as string,
+    );
+
+    expect(result.success).toBe(true);
+    expect(mocks.dbUpdate).toHaveBeenCalled();
+    const setCallArg = (setMock.mock.calls[0] as any)[0] as Record<string, unknown>;
+    expect(setCallArg.name).toBe('Renamed Fleet Slack');
+  });
+
+  it('delete: denies a partner-wide channel without full partner org access', async () => {
+    mocks.dbSelect.mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([PARTNER_WIDE_CHANNEL]),
+        })),
+      })),
+    });
+
+    const result = JSON.parse(
+      await handler(
+        { action: 'delete', channelId: PARTNER_WIDE_CHANNEL.id },
+        makePartnerAuth('none', PARTNER_ID),
+      ) as string,
+    );
+
+    expect(result.error).toMatch(/partner-wide/i);
+    expect(result.error).toMatch(/full partner org access/i);
+    expect(mocks.dbDelete).not.toHaveBeenCalled();
+  });
+
+  it('delete: allows a partner-wide channel with full partner org access', async () => {
+    mocks.dbSelect.mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([PARTNER_WIDE_CHANNEL]),
+        })),
+      })),
+    });
+    const deleteWhereMock = vi.fn().mockResolvedValue(undefined);
+    mocks.dbDelete.mockReturnValue({ where: deleteWhereMock });
+
+    const result = JSON.parse(
+      await handler(
+        { action: 'delete', channelId: PARTNER_WIDE_CHANNEL.id },
+        makePartnerAuth('all', PARTNER_ID),
+      ) as string,
+    );
+
+    expect(result.success).toBe(true);
+    expect(mocks.dbDelete).toHaveBeenCalled();
   });
 });

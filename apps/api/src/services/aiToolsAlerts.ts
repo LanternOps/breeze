@@ -7,6 +7,7 @@
  */
 
 import { db } from '../db';
+import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { alerts, devices, notificationChannels } from '../db/schema';
 import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -383,8 +384,16 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 50);
 
         const conditions: SQL[] = [];
+        // Dual-axis (#2130): org-owned channels the caller can reach OR
+        // partner-wide channels (org_id NULL) owned by the caller's partner.
         const orgCond = auth.orgCondition(notificationChannels.orgId);
-        if (orgCond) conditions.push(orgCond);
+        if (orgCond) {
+          conditions.push(
+            auth.scope === 'partner' && auth.partnerId
+              ? sql`(${orgCond} OR (${notificationChannels.orgId} IS NULL AND ${notificationChannels.partnerId} = ${auth.partnerId}))`
+              : orgCond
+          );
+        }
 
         if (input.type) {
           conditions.push(eq(notificationChannels.type, input.type as typeof notificationChannels.type.enumValues[number]));
@@ -480,11 +489,24 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (!input.channelId) return JSON.stringify({ error: 'channelId is required for update' });
 
         const conditions: SQL[] = [eq(notificationChannels.id, input.channelId as string)];
+        // Dual-axis (#2130) — see the list action.
         const orgCond = auth.orgCondition(notificationChannels.orgId);
-        if (orgCond) conditions.push(orgCond);
+        if (orgCond) {
+          conditions.push(
+            auth.scope === 'partner' && auth.partnerId
+              ? sql`(${orgCond} OR (${notificationChannels.orgId} IS NULL AND ${notificationChannels.partnerId} = ${auth.partnerId}))`
+              : orgCond
+          );
+        }
 
         const [existing] = await db.select().from(notificationChannels).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Notification channel not found or access denied' });
+
+        // Partner-wide channels are administrable only with the partner-wide
+        // capability (same gate as the HTTP route, #2130).
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide notification channel requires full partner org access (orgAccess must be "all")' });
+        }
 
         // Channel type is immutable after creation: the config crypto + validation
         // below all run under `existing.type`, so allowing a type change here would
@@ -519,11 +541,24 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (!input.channelId) return JSON.stringify({ error: 'channelId is required for delete' });
 
         const conditions: SQL[] = [eq(notificationChannels.id, input.channelId as string)];
+        // Dual-axis (#2130) — see the list action.
         const orgCond = auth.orgCondition(notificationChannels.orgId);
-        if (orgCond) conditions.push(orgCond);
+        if (orgCond) {
+          conditions.push(
+            auth.scope === 'partner' && auth.partnerId
+              ? sql`(${orgCond} OR (${notificationChannels.orgId} IS NULL AND ${notificationChannels.partnerId} = ${auth.partnerId}))`
+              : orgCond
+          );
+        }
 
-        const [existing] = await db.select({ id: notificationChannels.id, name: notificationChannels.name }).from(notificationChannels).where(and(...conditions)).limit(1);
+        const [existing] = await db.select({ id: notificationChannels.id, name: notificationChannels.name, orgId: notificationChannels.orgId }).from(notificationChannels).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Notification channel not found or access denied' });
+
+        // Partner-wide channels are administrable only with the partner-wide
+        // capability (same gate as the HTTP route, #2130).
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide notification channel requires full partner org access (orgAccess must be "all")' });
+        }
 
         await db.delete(notificationChannels).where(eq(notificationChannels.id, existing.id));
         return JSON.stringify({ success: true, message: `Channel "${existing.name}" deleted` });

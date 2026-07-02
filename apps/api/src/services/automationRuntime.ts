@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
@@ -12,6 +12,7 @@ import {
   deviceGroupMemberships,
   devices,
   notificationChannels,
+  organizations,
   scripts,
 } from '../db/schema';
 import { resolveDeploymentTargets } from './deploymentEngine';
@@ -28,6 +29,30 @@ import {
 // import chain into partial-mock test suites at module-load time.
 
 const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+
+/**
+ * Delivery rails are dual-owned (#2130): an automation's notify targets may
+ * reference the org's own channels OR partner-wide channels (org_id NULL)
+ * owned by the org's partner. A plain eq(orgId, ...) silently drops
+ * partner-wide channels (the #1724 trap; automation runs execute under
+ * system context, so RLS is not the filter here).
+ */
+async function notificationChannelOwnershipCondition(orgId: string): Promise<SQL> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org?.partnerId) {
+    return eq(notificationChannels.orgId, orgId);
+  }
+
+  return or(
+    eq(notificationChannels.orgId, orgId),
+    and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, org.partnerId))
+  ) as SQL;
+}
 
 export type AlertSeverity = typeof ALERT_SEVERITIES[number];
 
@@ -1422,13 +1447,15 @@ export async function executeAutomationRun(
     notificationChannelIds.add(channelId);
   }
 
+  // Dual-axis (#2130): an automation's notify targets may reference the
+  // org's own channels OR partner-wide channels owned by the org's partner.
   const channelRows = notificationChannelIds.size > 0
     ? await db
       .select()
       .from(notificationChannels)
       .where(
         and(
-          eq(notificationChannels.orgId, automation.orgId),
+          await notificationChannelOwnershipCondition(automation.orgId),
           inArray(notificationChannels.id, [...notificationChannelIds]),
         ),
       )
@@ -1889,13 +1916,14 @@ export async function executeConfigPolicyAutomationRun(
     }
   }
 
+  // Dual-axis (#2130) — see the automation notify-channel lookup above.
   const channelRows = notificationChannelIds.size > 0
     ? await db
       .select()
       .from(notificationChannels)
       .where(
         and(
-          eq(notificationChannels.orgId, orgId),
+          await notificationChannelOwnershipCondition(orgId),
           inArray(notificationChannels.id, [...notificationChannelIds]),
         ),
       )

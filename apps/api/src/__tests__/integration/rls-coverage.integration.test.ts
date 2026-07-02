@@ -294,6 +294,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge + enforcement fan-out proof:
   // maintenanceWindowsPartnerRls.integration.test.ts.
   'maintenance_windows',
+  // Alert delivery rails (#2130, epic #2135): org-scoped OR partner-wide
+  // notification channel / routing rule / escalation policy.
+  // alert_notifications stay alert-join (the firing device's org).
+  // Converted in 2026-07-01-notification-rails-partner-ownership. CHECK
+  // *_one_owner_chk enforces exactly one axis per table. Functional
+  // cross-partner forge + dispatcher fan-out proof:
+  // notificationRailsPartnerRls.integration.test.ts.
+  'notification_channels',
+  'notification_routing_rules',
+  'escalation_policies',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

@@ -225,3 +225,106 @@ describe('routing-rule writes — partner org resolution (#1633)', () => {
     expect(insertedRef.current?.orgId).toBe('org-x');
   });
 });
+
+// ============================================================
+// Partner-wide routing rules (#2130)
+// ============================================================
+//
+// Partner-wide rows (orgId NULL, partnerId = owning partner) are administrable
+// only with canManagePartnerWidePolicies(auth) — system scope, or partner
+// scope with partnerOrgAccess 'all'. The dual-axis by-id lookup
+// (getRoutingRuleWithAccess, local to routing.ts) lets a partner-scope caller
+// on the matching partner LOAD the row; the 403 for PATCH/DELETE comes from
+// the capability gate in the route itself. partnerWideAccess.ts is a
+// dependency-free leaf and intentionally NOT mocked.
+
+describe('routing-rule writes — partner-wide gating (#2130)', () => {
+  const PARTNER_ID = '99999999-9999-4999-8999-999999999999';
+
+  function setPartnerAuth(partnerOrgAccess: 'all' | 'selected' | 'none') {
+    authRef.current = {
+      scope: 'partner',
+      user: { id: 'u-1', name: 'Partner Admin', email: 'admin@msp.example' },
+      partnerId: PARTNER_ID,
+      partnerOrgAccess,
+      orgId: null,
+      accessibleOrgIds: ['org-a'],
+      canAccessOrg: () => true,
+    } as typeof authRef.current;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    insertedRef.current = undefined;
+    capturedWhere.current = undefined;
+    existingRowRef.current = undefined;
+  });
+
+  it('denies partner-wide create without full partner org access', async () => {
+    setPartnerAuth('selected');
+    const res = await makeApp().request('/alerts/routing-rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'partner' }),
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as any).error).toMatch(/full partner org access/);
+    expect(insertedRef.current).toBeUndefined();
+  });
+
+  it('creates a partner-wide routing rule with full partner org access ({ orgId: null, partnerId })', async () => {
+    setPartnerAuth('all');
+    const res = await makeApp().request('/alerts/routing-rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...validBody, ownerScope: 'partner' }),
+    });
+    expect(res.status).toBe(201);
+    expect(insertedRef.current?.orgId).toBeNull();
+    expect(insertedRef.current?.partnerId).toBe(PARTNER_ID);
+  });
+
+  it('denies PATCH of a partner-wide routing rule without the partner-wide capability', async () => {
+    setPartnerAuth('none');
+    existingRowRef.current = { id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet routing' };
+
+    const res = await makeApp().request(`/alerts/routing-rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hijacked' }),
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as any).error).toMatch(/full partner org access/);
+  });
+
+  it('allows PATCH of a partner-wide routing rule with full partner org access', async () => {
+    setPartnerAuth('all');
+    existingRowRef.current = { id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet routing' };
+
+    const res = await makeApp().request(`/alerts/routing-rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed Fleet routing' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('denies DELETE of a partner-wide routing rule without the partner-wide capability', async () => {
+    setPartnerAuth('selected');
+    existingRowRef.current = { id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet routing' };
+
+    const res = await makeApp().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as any).error).toMatch(/full partner org access/);
+  });
+
+  it('allows DELETE of a partner-wide routing rule with full partner org access', async () => {
+    setPartnerAuth('all');
+    existingRowRef.current = { id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet routing' };
+
+    const res = await makeApp().request(`/alerts/routing-rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ data: { id: RULE_ID, deleted: true } });
+  });
+});
