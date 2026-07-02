@@ -73,17 +73,23 @@ export default function AdminSessionManager() {
 
     const loadOrgSessionTimeout = async () => {
       try {
-        const response = await fetchWithAuth(`/orgs/organizations/${currentOrgId}`);
+        // Use effective settings so a partner-level `security.sessionTimeout`
+        // default is honored by the idle-logout runtime, matching what the
+        // settings UI shows as effective/locked. Reading the raw org record
+        // missed partner defaults the org hadn't overridden locally (#2147).
+        const response = await fetchWithAuth(
+          `/orgs/organizations/${currentOrgId}/effective-settings`
+        );
         if (!response.ok) {
           return;
         }
         const data = await response.json();
-        const configuredMinutes = Number(data?.settings?.security?.sessionTimeout);
+        const configuredMinutes = Number(data?.effective?.security?.sessionTimeout);
         if (!cancelled && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
           setIdleTimeoutMs(Math.max(1, configuredMinutes) * 60 * 1000);
         }
       } catch {
-        // Keep current timeout fallback when org settings cannot be loaded.
+        // Keep current timeout fallback when effective settings cannot be loaded.
       }
     };
 
