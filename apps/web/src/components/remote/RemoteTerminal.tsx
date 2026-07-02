@@ -68,6 +68,13 @@ export default function RemoteTerminal({
   const webSocketRef = useRef<WebSocket | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const disconnectFiredRef = useRef(false);
+  // Guards the auto-connect effect so it fires exactly once, on initial mount.
+  // Without this, the disconnected+no-session state produced by a manual
+  // Disconnect (or a clean server-side session end) re-satisfies the effect's
+  // condition and it silently reconnects — defeating the Disconnect button
+  // (issue #2137). After the first attempt, reconnecting requires an explicit
+  // user action (the Reconnect / Retry button).
+  const autoConnectAttemptedRef = useRef(false);
 
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId || null);
@@ -394,11 +401,17 @@ export default function RemoteTerminal({
     };
   }, [initTerminal]);
 
-  // Auto-connect after terminal is initialized
+  // Auto-connect exactly once, on initial mount. The attempt flag is only set
+  // when the timer actually fires (not when scheduled), so an effect re-run
+  // caused by a changing `connect` identity during the delay reschedules
+  // rather than dropping the initial connection. After this first attempt the
+  // terminal never auto-reconnects — a manual Disconnect or a clean session
+  // end leaves it disconnected until the user explicitly reconnects (#2137).
   useEffect(() => {
-    if (terminalReady && status === 'disconnected' && !sessionId) {
+    if (terminalReady && status === 'disconnected' && !sessionId && !autoConnectAttemptedRef.current) {
       // Small delay to ensure terminal is ready
       const timer = setTimeout(() => {
+        autoConnectAttemptedRef.current = true;
         connect();
       }, 500);
       return () => clearTimeout(timer);
@@ -513,6 +526,20 @@ export default function RemoteTerminal({
             >
               <RefreshCw className="h-4 w-4" />
               Retry
+            </button>
+          ) : status === 'disconnected' && autoConnectAttemptedRef.current ? (
+            // Shown only after the initial auto-connect has run, i.e. the user
+            // has landed on a real disconnected state (manual Disconnect or a
+            // clean session end) rather than the brief pre-connect window on
+            // mount. Gives an explicit reconnect affordance now that we no
+            // longer auto-reconnect (#2137).
+            <button
+              type="button"
+              onClick={connect}
+              className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reconnect
             </button>
           ) : null}
         </div>
