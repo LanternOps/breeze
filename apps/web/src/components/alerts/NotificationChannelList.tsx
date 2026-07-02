@@ -22,6 +22,8 @@ export type { NotificationChannelType };
 
 export type NotificationChannel = {
   id: string;
+  // null = partner-wide ("All organizations") channel (#2130)
+  orgId?: string | null;
   name: string;
   type: NotificationChannelType;
   enabled: boolean;
@@ -250,7 +252,18 @@ export default function NotificationChannelList({
                       <Icon className="h-5 w-5" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-semibold">{channel.name}</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold">{channel.name}</h3>
+                        {channel.orgId === null && (
+                          <span
+                            className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary"
+                            title="Partner-wide channel — receives alerts from every organization"
+                            data-testid="notification-channel-partner-wide-badge"
+                          >
+                            All orgs
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-muted-foreground">{typeConfig.label}</p>
                     </div>
                   </div>

@@ -46,7 +46,9 @@ vi.mock('../../db', () => {
   };
   return { db: { select: () => builder } };
 });
-vi.mock('../../db/schema', () => ({ notificationRoutingRules: { orgId: { name: 'org_id' } } }));
+vi.mock('../../db/schema', () => ({
+  notificationRoutingRules: { orgId: { name: 'org_id' }, partnerId: { name: 'partner_id' } },
+}));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
 import { routingRoutes } from './routing';
@@ -64,7 +66,23 @@ describe('GET /alerts/routing-rules (list-on-load)', () => {
     rowsRef.current = [];
   });
 
-  it('returns 200 with an empty list for a partner with no accessible orgs (no orgId)', async () => {
+  it('returns 200 with an empty list for a partner with no accessible orgs and no partnerId (no orgId)', async () => {
+    authRef.current = {
+      scope: 'partner',
+      user: { id: 'u-1', name: 'Pat', email: 'pat@partner.example' },
+      partnerId: null, orgId: null, accessibleOrgIds: [], canAccessOrg: () => true,
+    } as typeof authRef.current;
+
+    const res = await makeApp().request('/alerts/routing-rules');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ data: [] });
+    // Short-circuited before touching the db — neither the org-accessible nor
+    // the partner-wide (#2130) condition applies, so there is nothing to query.
+    expect(capturedWhere.current).toBeUndefined();
+  });
+
+  it('queries for partner-wide rules when a partner has no accessible orgs but does have a partnerId (#2130)', async () => {
     authRef.current = {
       scope: 'partner',
       user: { id: 'u-1', name: 'Pat', email: 'pat@partner.example' },
@@ -75,8 +93,10 @@ describe('GET /alerts/routing-rules (list-on-load)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ data: [] });
-    // Short-circuited before touching the db — no where-condition captured.
-    expect(capturedWhere.current).toBeUndefined();
+    // Not short-circuited: even with zero accessible orgs, a partner-scoped
+    // caller still owns their own partner-wide rules (org_id NULL), so the
+    // partner condition is queried.
+    expect(capturedWhere.current).toBeDefined();
   });
 
   it('returns 200 (not 400) for a partner with accessible orgs but no orgId selected', async () => {

@@ -1,10 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '../../db';
 import { escalationPolicies } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { listPoliciesSchema, createPolicySchema, updatePolicySchema } from './schemas';
 import { getPagination, ensureOrgAccess, getEscalationPolicyWithOrgCheck } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
@@ -40,14 +44,25 @@ policiesRoutes.get(
         }
         conditions.push(eq(escalationPolicies.orgId, query.orgId));
       } else {
+        // "All orgs" view: org-owned policies across accessible orgs PLUS
+        // this partner's own partner-wide policies (org_id NULL, #2130).
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
+        const orgCondition = orgIds.length > 0
+          ? inArray(escalationPolicies.orgId, orgIds)
+          : undefined;
+        const partnerCondition = auth.partnerId
+          ? and(isNull(escalationPolicies.orgId), eq(escalationPolicies.partnerId, auth.partnerId))
+          : undefined;
+        const ownership = orgCondition && partnerCondition
+          ? or(orgCondition, partnerCondition)
+          : (orgCondition ?? partnerCondition);
+        if (!ownership) {
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 }
           });
         }
-        conditions.push(inArray(escalationPolicies.orgId, orgIds));
+        conditions.push(ownership as ReturnType<typeof eq>);
       }
     } else if (auth.scope === 'system' && query.orgId) {
       conditions.push(eq(escalationPolicies.orgId, query.orgId));
@@ -89,35 +104,45 @@ policiesRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Determine orgId
-    let orgId = data.orgId;
-
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
+    // Resolve the ownership axis (#2130): partner-wide creation requires the
+    // partner-wide capability; the default path stays org-owned.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (data.ownerScope === 'partner') {
+      if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
-      orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
-        } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      let orgId = data.orgId;
+      if (auth.scope === 'organization') {
+        if (!auth.orgId) {
+          return c.json({ error: 'Organization context required' }, 403);
         }
+        orgId = auth.orgId;
+      } else if (auth.scope === 'partner') {
+        if (!orgId) {
+          const singleOrg = auth.accessibleOrgIds?.[0];
+          if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+            orgId = singleOrg;
+          } else {
+            return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+          }
+        }
+        const hasAccess = ensureOrgAccess(orgId, auth);
+        if (!hasAccess) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+      } else if (auth.scope === 'system' && !orgId) {
+        return c.json({ error: 'orgId is required' }, 400);
       }
-      const hasAccess = ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
-      }
-    } else if (auth.scope === 'system' && !orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
+      owner = { orgId: orgId!, partnerId: null };
     }
 
     const [policy] = await db
       .insert(escalationPolicies)
       .values({
-        orgId: orgId!,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         name: data.name,
         steps: data.steps
       })
@@ -160,6 +185,12 @@ policiesRoutes.put(
     const policy = await getEscalationPolicyWithOrgCheck(policyId, auth);
     if (!policy) {
       return c.json({ error: 'Escalation policy not found' }, 404);
+    }
+
+    // Partner-wide escalation policies are administrable only with the
+    // partner-wide capability (#2130).
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     // Build updates object
@@ -205,6 +236,12 @@ policiesRoutes.delete(
     const policy = await getEscalationPolicyWithOrgCheck(policyId, auth);
     if (!policy) {
       return c.json({ error: 'Escalation policy not found' }, 404);
+    }
+
+    // Partner-wide escalation policies are administrable only with the
+    // partner-wide capability (#2130).
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     await db

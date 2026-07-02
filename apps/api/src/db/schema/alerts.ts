@@ -147,9 +147,16 @@ export const alertCorrelationMembers = pgTable('alert_correlation_members', {
   orgGroupIdx: index('alert_correlation_members_org_group_idx').on(table.orgId, table.groupId)
 }));
 
+// Delivery rails (#2131 sibling, issue #2130): a channel / routing rule /
+// escalation policy is owned by EITHER an org (orgId set, partnerId NULL —
+// the original shape) OR a partner (partnerId set, orgId NULL — "partner-wide
+// / all orgs", epic #2135). Exactly one axis per row; CHECK constraints
+// `*_one_owner_chk` (migration 2026-07-01) enforce it. alert_notifications
+// stay alert-join (the alert's org) and are unchanged.
 export const notificationChannels = pgTable('notification_channels', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   type: notificationChannelTypeEnum('type').notNull(),
   config: jsonb('config').notNull(),
@@ -162,11 +169,14 @@ export const notificationChannels = pgTable('notification_channels', {
   throttleWindowSeconds: integer('throttle_window_seconds').default(3600),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  partnerIdIdx: index('notification_channels_partner_id_idx').on(table.partnerId),
+}));
 
 export const notificationRoutingRules = pgTable('notification_routing_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   priority: integer('priority').notNull(),
   conditions: jsonb('conditions').notNull(), // { severities?, conditionTypes?, deviceTags?, siteIds? }
@@ -176,17 +186,21 @@ export const notificationRoutingRules = pgTable('notification_routing_rules', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('notification_routing_rules_org_id_idx').on(table.orgId),
-  priorityIdx: index('notification_routing_rules_priority_idx').on(table.orgId, table.priority)
+  priorityIdx: index('notification_routing_rules_priority_idx').on(table.orgId, table.priority),
+  partnerIdIdx: index('notification_routing_rules_partner_id_idx').on(table.partnerId),
 }));
 
 export const escalationPolicies = pgTable('escalation_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   steps: jsonb('steps').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  partnerIdIdx: index('escalation_policies_partner_id_idx').on(table.partnerId),
+}));
 
 export const alertNotifications = pgTable('alert_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),

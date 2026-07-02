@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { NotificationChannelType } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -175,7 +175,10 @@ export async function getAlertWithOrgCheck(
   return alert;
 }
 
-export async function getNotificationChannelWithOrgCheck(channelId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+export async function getNotificationChannelWithOrgCheck(
+  channelId: string,
+  auth: { canAccessOrg: (orgId: string) => boolean; scope?: string; partnerId?: string | null }
+) {
   const [channel] = await db
     .select()
     .from(notificationChannels)
@@ -186,7 +189,13 @@ export async function getNotificationChannelWithOrgCheck(channelId: string, auth
     return null;
   }
 
-  const hasAccess = ensureOrgAccess(channel.orgId, auth);
+  // Dual-axis access (#2130, same shape as getAlertRuleWithOrgCheck): org-owned
+  // channels via org access; partner-wide channels (orgId NULL) via the
+  // caller's own partner (or system scope). Writes are additionally gated on
+  // canManagePartnerWidePolicies at the routes.
+  const hasAccess = channel.orgId !== null
+    ? ensureOrgAccess(channel.orgId, auth)
+    : auth.scope === 'system' || (!!auth.partnerId && channel.partnerId === auth.partnerId);
   if (!hasAccess) {
     return null;
   }
@@ -194,7 +203,10 @@ export async function getNotificationChannelWithOrgCheck(channelId: string, auth
   return channel;
 }
 
-export async function getEscalationPolicyWithOrgCheck(policyId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
+export async function getEscalationPolicyWithOrgCheck(
+  policyId: string,
+  auth: { canAccessOrg: (orgId: string) => boolean; scope?: string; partnerId?: string | null }
+) {
   const [policy] = await db
     .select()
     .from(escalationPolicies)
@@ -205,7 +217,10 @@ export async function getEscalationPolicyWithOrgCheck(policyId: string, auth: { 
     return null;
   }
 
-  const hasAccess = ensureOrgAccess(policy.orgId, auth);
+  // Dual-axis access (#2130) — see getNotificationChannelWithOrgCheck.
+  const hasAccess = policy.orgId !== null
+    ? ensureOrgAccess(policy.orgId, auth)
+    : auth.scope === 'system' || (!!auth.partnerId && policy.partnerId === auth.partnerId);
   if (!hasAccess) {
     return null;
   }
@@ -328,7 +343,7 @@ export function validateNotificationChannelConfig(
  * out, the channel would save with no token, and alerts would drop silently.
  */
 export async function validatePushoverChannelInheritance(
-  orgId: string,
+  owner: { orgId: string | null; partnerId?: string | null },
   config: unknown
 ): Promise<string | null> {
   if (!isRecord(config)) {
@@ -342,18 +357,24 @@ export async function validatePushoverChannelInheritance(
   }
 
   const inherited = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [orgRow] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-    if (!orgRow?.partnerId) {
+    // Partner-wide channels (#2130) carry the partner directly; org-owned
+    // channels derive it from their org.
+    let partnerId = owner.partnerId ?? null;
+    if (!partnerId && owner.orgId) {
+      const [orgRow] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, owner.orgId))
+        .limit(1);
+      partnerId = orgRow?.partnerId ?? null;
+    }
+    if (!partnerId) {
       return null;
     }
     const [partner] = await db
       .select({ settings: partners.settings })
       .from(partners)
-      .where(eq(partners.id, orgRow.partnerId))
+      .where(eq(partners.id, partnerId))
       .limit(1);
     return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
   }));
@@ -375,36 +396,67 @@ export async function validateAlertRuleNotificationBindings(
   overrides: AlertRuleOverrides
 ): Promise<string | null> {
   const requestedChannelIds = [...new Set(getNotificationChannelIds(overrides).filter(Boolean))];
+  const needsPartnerAxis = requestedChannelIds.length > 0
+    || (typeof overrides.escalationPolicyId === 'string' && overrides.escalationPolicyId.length > 0);
+
+  // Dual-axis (#2130): a rule may bind the org's own rails OR partner-wide
+  // rails (org_id NULL) owned by the org's partner. Partner-wide rows are
+  // RLS-invisible to org-scope callers, so for them this still resolves to
+  // "same organization" — which is also what their UI offers.
+  let orgPartnerId: string | null = null;
+  if (needsPartnerAxis) {
+    const [orgRow] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    orgPartnerId = orgRow?.partnerId ?? null;
+  }
+
+  const channelOwnership = orgPartnerId
+    ? or(
+        eq(notificationChannels.orgId, orgId),
+        and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, orgPartnerId))
+      )
+    : eq(notificationChannels.orgId, orgId);
+
   if (requestedChannelIds.length > 0) {
     const channels = await db
       .select({ id: notificationChannels.id })
       .from(notificationChannels)
       .where(
         and(
-          eq(notificationChannels.orgId, orgId),
+          channelOwnership,
           inArray(notificationChannels.id, requestedChannelIds)
         )
       );
 
     if (channels.length !== requestedChannelIds.length) {
-      return 'Notification channels must belong to the same organization as the alert rule';
+      return 'Notification channels must belong to the same organization as the alert rule or its partner';
     }
   }
 
   if (typeof overrides.escalationPolicyId === 'string' && overrides.escalationPolicyId.length > 0) {
+    const policyOwnership = orgPartnerId
+      ? or(
+          eq(escalationPolicies.orgId, orgId),
+          and(isNull(escalationPolicies.orgId), eq(escalationPolicies.partnerId, orgPartnerId))
+        )
+      : eq(escalationPolicies.orgId, orgId);
+
     const [policy] = await db
       .select({ id: escalationPolicies.id })
       .from(escalationPolicies)
       .where(
         and(
           eq(escalationPolicies.id, overrides.escalationPolicyId),
-          eq(escalationPolicies.orgId, orgId)
+          policyOwnership
         )
       )
       .limit(1);
 
     if (!policy) {
-      return 'Escalation policy must belong to the same organization as the alert rule';
+      return 'Escalation policy must belong to the same organization as the alert rule or its partner';
     }
   }
 

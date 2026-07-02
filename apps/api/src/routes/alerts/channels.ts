@@ -1,10 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, sql, desc, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { notificationChannels, organizations, partners } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import {
   decryptNotificationChannelConfig,
   encryptNotificationChannelConfig,
@@ -82,14 +86,25 @@ channelsRoutes.get(
         }
         conditions.push(eq(notificationChannels.orgId, query.orgId));
       } else {
+        // "All orgs" view: org-owned channels across accessible orgs PLUS
+        // this partner's own partner-wide channels (org_id NULL, #2130).
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
+        const orgCondition = orgIds.length > 0
+          ? inArray(notificationChannels.orgId, orgIds)
+          : undefined;
+        const partnerCondition = auth.partnerId
+          ? and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, auth.partnerId))
+          : undefined;
+        const ownership = orgCondition && partnerCondition
+          ? or(orgCondition, partnerCondition)
+          : (orgCondition ?? partnerCondition);
+        if (!ownership) {
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 }
           });
         }
-        conditions.push(inArray(notificationChannels.orgId, orgIds));
+        conditions.push(ownership as ReturnType<typeof eq>);
       }
     } else if (auth.scope === 'system' && query.orgId) {
       conditions.push(eq(notificationChannels.orgId, query.orgId));
@@ -140,13 +155,23 @@ channelsRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    const orgId = data.orgId ?? auth.orgId;
-    if (!orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
-    }
-
-    if (!auth.canAccessOrg(orgId)) {
-      return c.json({ error: 'Access to this organization denied' }, 403);
+    // Resolve the ownership axis (#2130): partner-wide creation requires the
+    // partner-wide capability; the default path stays org-owned.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (data.ownerScope === 'partner') {
+      if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgId = data.orgId ?? auth.orgId;
+      if (!orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      if (!auth.canAccessOrg(orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+      owner = { orgId, partnerId: null };
     }
 
     const configErrors = validateNotificationChannelConfig(data.type, data.config);
@@ -158,7 +183,7 @@ channelsRoutes.post(
     }
 
     if (data.type === 'pushover') {
-      const inheritanceError = await validatePushoverChannelInheritance(orgId, data.config);
+      const inheritanceError = await validatePushoverChannelInheritance(owner, data.config);
       if (inheritanceError) {
         return c.json({
           error: `Invalid ${data.type} channel configuration`,
@@ -170,7 +195,8 @@ channelsRoutes.post(
     const [channel] = await db
       .insert(notificationChannels)
       .values({
-        orgId,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         name: data.name,
         type: data.type,
         config: encryptNotificationChannelConfig(data.type, data.config),
@@ -184,7 +210,7 @@ channelsRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: owner.orgId,
       action: 'notification_channel.create',
       resourceType: 'notification_channel',
       resourceId: channel.id,
@@ -220,6 +246,12 @@ channelsRoutes.put(
       return c.json({ error: 'Notification channel not found' }, 404);
     }
 
+    // Partner-wide channels are administrable only with the partner-wide
+    // capability (#2130).
+    if (channel.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     if (data.config !== undefined) {
       const configForValidation = decryptNotificationChannelConfig(
         channel.type,
@@ -234,7 +266,7 @@ channelsRoutes.put(
       }
 
       if (channel.type === 'pushover') {
-        const inheritanceError = await validatePushoverChannelInheritance(channel.orgId, configForValidation);
+        const inheritanceError = await validatePushoverChannelInheritance(channel, configForValidation);
         if (inheritanceError) {
           return c.json({
             error: `Invalid ${channel.type} channel configuration`,
@@ -296,6 +328,12 @@ channelsRoutes.delete(
     const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
     if (!channel) {
       return c.json({ error: 'Notification channel not found' }, 404);
+    }
+
+    // Partner-wide channels are administrable only with the partner-wide
+    // capability (#2130).
+    if (channel.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     await db
@@ -413,7 +451,9 @@ channelsRoutes.post(
               alertName: testMessage.title,
               severity: testMessage.severity,
               summary: testMessage.message,
-              orgId: channel.orgId,
+              // Partner-wide channels (#2130) have no owning org; the test
+              // payload's orgId is informational only.
+              orgId: channel.orgId ?? channel.partnerId ?? 'partner-wide',
               orgName: 'Breeze',
               triggeredAt: new Date().toISOString(),
               context: { dashboardUrl: dashboardUrl ? ` ${dashboardUrl}` : '' }
@@ -441,7 +481,9 @@ channelsRoutes.post(
               alertName: testMessage.title,
               severity: testMessage.severity as AlertSeverity,
               summary: testMessage.message,
-              orgId: channel.orgId,
+              // Partner-wide channels (#2130) have no owning org; the test
+              // payload's orgId is informational only.
+              orgId: channel.orgId ?? channel.partnerId ?? 'partner-wide',
               orgName: 'Breeze',
               triggeredAt: new Date().toISOString(),
               dashboardUrl
@@ -474,18 +516,24 @@ channelsRoutes.post(
             // partner row is silently filtered and inheritance fails open
             // with a misleading "token required" error.
             const inherited = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-              const [orgRow] = await db
-                .select({ partnerId: organizations.partnerId })
-                .from(organizations)
-                .where(eq(organizations.id, channel.orgId))
-                .limit(1);
-              if (!orgRow?.partnerId) {
+              // Partner-wide channels (#2130) carry the partner directly;
+              // org-owned channels derive it from their org.
+              let partnerId = channel.partnerId ?? null;
+              if (!partnerId && channel.orgId) {
+                const [orgRow] = await db
+                  .select({ partnerId: organizations.partnerId })
+                  .from(organizations)
+                  .where(eq(organizations.id, channel.orgId))
+                  .limit(1);
+                partnerId = orgRow?.partnerId ?? null;
+              }
+              if (!partnerId) {
                 return null;
               }
               const [partner] = await db
                 .select({ settings: partners.settings })
                 .from(partners)
-                .where(eq(partners.id, orgRow.partnerId))
+                .where(eq(partners.id, partnerId))
                 .limit(1);
               return (partner?.settings as { notifications?: Record<string, unknown> } | null)?.notifications ?? null;
             }));
@@ -511,7 +559,8 @@ channelsRoutes.post(
             alertName: testMessage.title,
             severity: testMessage.severity as AlertSeverity,
             summary: testMessage.message,
-            orgId: channel.orgId,
+            // Partner-wide channels (#2130) have no owning org; informational.
+            orgId: channel.orgId ?? channel.partnerId ?? 'partner-wide',
             orgName: 'Breeze',
             triggeredAt: new Date().toISOString(),
             dashboardUrl

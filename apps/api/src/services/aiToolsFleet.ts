@@ -94,6 +94,18 @@ function alertRuleWhere(auth: AuthContext): SQL | undefined {
   return oc;
 }
 
+// Dual-axis access for notification_channels (#2130): same shape as
+// alertRuleWhere — org-owned channels the caller can reach OR partner-wide
+// ones (org_id NULL) owned by the caller's own partner.
+function notificationChannelWhere(auth: AuthContext): SQL | undefined {
+  const oc = orgWhere(auth, notificationChannels.orgId);
+  if (!oc) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${oc} OR (${notificationChannels.orgId} IS NULL AND ${notificationChannels.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
+}
+
 // Dual-axis access for maintenance_windows (#2131): same shape as
 // alertRuleWhere — org-owned windows the caller can reach OR partner-wide
 // ones (org_id NULL) owned by the caller's own partner.
@@ -1466,7 +1478,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list_channels') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, notificationChannels.orgId);
+        const oc = notificationChannelWhere(auth);
         if (oc) conditions.push(oc);
 
         const rows = await db.select({

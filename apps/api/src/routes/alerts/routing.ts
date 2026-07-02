@@ -3,10 +3,14 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { db } from '../../db';
 import { notificationRoutingRules } from '../../db/schema';
-import { eq, and, asc, inArray } from 'drizzle-orm';
+import { eq, and, asc, inArray, isNull, or } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { ensureOrgAccess, resolveWriteOrgId } from './helpers';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
 
 const listRoutingRulesSchema = z.object({
@@ -14,6 +18,9 @@ const listRoutingRulesSchema = z.object({
 });
 
 const createRoutingRuleSchema = z.object({
+  // 'partner' creates a partner-wide ("all orgs") routing rule: orgId NULL,
+  // partnerId = caller's partner (#2130). Create-only.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(255),
   priority: z.number().int().min(0),
   conditions: z.object({
@@ -43,6 +50,29 @@ export const routingRoutes = new Hono();
 
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
+// Dual-axis by-id lookup (#2130): org-owned rules via org access; partner-wide
+// rules (orgId NULL) via the caller's own partner (or system scope). Writes are
+// additionally gated on canManagePartnerWidePolicies at the routes.
+async function getRoutingRuleWithAccess(
+  ruleId: string,
+  auth: { scope?: string; partnerId?: string | null; canAccessOrg: (orgId: string) => boolean }
+) {
+  const [rule] = await db
+    .select()
+    .from(notificationRoutingRules)
+    .where(eq(notificationRoutingRules.id, ruleId))
+    .limit(1);
+
+  if (!rule) {
+    return null;
+  }
+
+  const hasAccess = rule.orgId !== null
+    ? ensureOrgAccess(rule.orgId, auth)
+    : auth.scope === 'system' || (!!auth.partnerId && rule.partnerId === auth.partnerId);
+  return hasAccess ? rule : null;
+}
+
 routingRoutes.get(
   '/routing-rules',
   requireScope('organization', 'partner', 'system'),
@@ -69,11 +99,21 @@ routingRoutes.get(
         }
         orgFilter = eq(notificationRoutingRules.orgId, query.orgId);
       } else if (auth.scope === 'partner') {
+        // "All orgs" view: org-owned rules across accessible orgs PLUS this
+        // partner's own partner-wide rules (org_id NULL, #2130).
         const orgIds = auth.accessibleOrgIds ?? [];
-        if (orgIds.length === 0) {
+        const orgCondition = orgIds.length > 0
+          ? inArray(notificationRoutingRules.orgId, orgIds)
+          : undefined;
+        const partnerCondition = auth.partnerId
+          ? and(isNull(notificationRoutingRules.orgId), eq(notificationRoutingRules.partnerId, auth.partnerId))
+          : undefined;
+        orgFilter = orgCondition && partnerCondition
+          ? or(orgCondition, partnerCondition)
+          : (orgCondition ?? partnerCondition);
+        if (!orgFilter) {
           return c.json({ data: [] });
         }
-        orgFilter = inArray(notificationRoutingRules.orgId, orgIds);
       }
       // system scope with no orgId falls through to no filter (sees all rules);
       // RLS still constrains what breeze_app can read.
@@ -101,18 +141,29 @@ routingRoutes.post(
   async (c) => {
     try {
       const auth = c.get('auth');
-      const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
-      if (resolved.error) {
-        return c.json({ error: resolved.error }, resolved.status ?? 400);
-      }
-      const orgId = resolved.orgId!;
-
       const data = c.req.valid('json');
+
+      // Resolve the ownership axis (#2130): partner-wide creation requires
+      // the partner-wide capability; the default path stays org-owned.
+      let owner: { orgId: string | null; partnerId: string | null };
+      if (data.ownerScope === 'partner') {
+        if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+          return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+        }
+        owner = { orgId: null, partnerId: auth.partnerId };
+      } else {
+        const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
+        if (resolved.error) {
+          return c.json({ error: resolved.error }, resolved.status ?? 400);
+        }
+        owner = { orgId: resolved.orgId!, partnerId: null };
+      }
 
       const [rule] = await db
         .insert(notificationRoutingRules)
         .values({
-          orgId,
+          orgId: owner.orgId,
+          partnerId: owner.partnerId,
           name: data.name,
           priority: data.priority,
           conditions: data.conditions,
@@ -122,7 +173,7 @@ routingRoutes.post(
         .returning();
 
       writeRouteAudit(c, {
-        orgId,
+        orgId: owner.orgId,
         action: 'notification_routing_rule.create',
         resourceType: 'notification_routing_rule',
         resourceId: rule?.id,
@@ -147,23 +198,18 @@ routingRoutes.patch(
   async (c) => {
     try {
       const auth = c.get('auth');
-      const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
-      if (resolved.error) {
-        return c.json({ error: resolved.error }, resolved.status ?? 400);
-      }
-      const orgId = resolved.orgId!;
-
       const ruleId = c.req.param('id')!;
       const updates = c.req.valid('json');
 
-      const [existing] = await db
-        .select()
-        .from(notificationRoutingRules)
-        .where(and(eq(notificationRoutingRules.id, ruleId), eq(notificationRoutingRules.orgId, orgId)))
-        .limit(1);
-
+      const existing = await getRoutingRuleWithAccess(ruleId, auth);
       if (!existing) {
         return c.json({ error: 'Routing rule not found' }, 404);
+      }
+
+      // Partner-wide routing rules are administrable only with the
+      // partner-wide capability (#2130).
+      if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
 
       const setValues: Record<string, unknown> = { updatedAt: new Date() };
@@ -176,11 +222,11 @@ routingRoutes.patch(
       const [updated] = await db
         .update(notificationRoutingRules)
         .set(setValues)
-        .where(and(eq(notificationRoutingRules.id, ruleId), eq(notificationRoutingRules.orgId, orgId)))
+        .where(eq(notificationRoutingRules.id, ruleId))
         .returning();
 
       writeRouteAudit(c, {
-        orgId,
+        orgId: existing.orgId,
         action: 'notification_routing_rule.update',
         resourceType: 'notification_routing_rule',
         resourceId: ruleId,
@@ -204,30 +250,25 @@ routingRoutes.delete(
   async (c) => {
     try {
       const auth = c.get('auth');
-      const resolved = resolveWriteOrgId(auth, c.req.query('orgId'));
-      if (resolved.error) {
-        return c.json({ error: resolved.error }, resolved.status ?? 400);
-      }
-      const orgId = resolved.orgId!;
-
       const ruleId = c.req.param('id')!;
 
-      const [existing] = await db
-        .select()
-        .from(notificationRoutingRules)
-        .where(and(eq(notificationRoutingRules.id, ruleId), eq(notificationRoutingRules.orgId, orgId)))
-        .limit(1);
-
+      const existing = await getRoutingRuleWithAccess(ruleId, auth);
       if (!existing) {
         return c.json({ error: 'Routing rule not found' }, 404);
       }
 
+      // Partner-wide routing rules are administrable only with the
+      // partner-wide capability (#2130).
+      if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
       await db.delete(notificationRoutingRules).where(
-        and(eq(notificationRoutingRules.id, ruleId), eq(notificationRoutingRules.orgId, orgId))
+        eq(notificationRoutingRules.id, ruleId)
       );
 
       writeRouteAudit(c, {
-        orgId,
+        orgId: existing.orgId,
         action: 'notification_routing_rule.delete',
         resourceType: 'notification_routing_rule',
         resourceId: existing.id,

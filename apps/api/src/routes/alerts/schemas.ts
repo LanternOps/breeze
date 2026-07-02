@@ -133,6 +133,9 @@ export const listChannelsSchema = z.object({
 
 export const createChannelSchema = z.object({
   orgId: z.string().guid().optional(),
+  // 'partner' creates a partner-wide ("all orgs") channel: orgId NULL,
+  // partnerId = caller's partner (#2130). Create-only.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(255),
   type: z.enum(NOTIFICATION_CHANNEL_TYPES),
   config: z.record(z.string(), z.unknown()), // JSONB for type-specific config
@@ -159,6 +162,8 @@ export const listPoliciesSchema = z.object({
 
 export const createPolicySchema = z.object({
   orgId: z.string().guid().optional(),
+  // 'partner' creates a partner-wide ("all orgs") escalation policy (#2130).
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(255),
   steps: z.any() // JSONB for escalation steps
 });
