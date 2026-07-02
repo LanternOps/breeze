@@ -19,7 +19,8 @@ with final disposition. Ordered by original ranking.
 | T4 | Input handled inline on the SCTP goroutine | 2 | ✅ Fixed | #9 |
 | T5 | Redundant per-frame `Flush` in `CaptureTexture` | 2 | ✅ Fixed | #8 |
 | F1 | Delivered fps caps at ~48–50, not 60 (capture/display pacing, exposed by #1) | Follow-up | ✅ Resolved (root cause revised) | #7 — cap is the motion-source present rate, not the loop; #7 fixes the loop's real defects (exact-target pacing, coalescing recovery) |
-| V1 | Viewer: stats/control effects stay bound to the DEAD connection after auto-reconnect → `viewer_stats` stop → adaptive bitrate frozen at 2.5 Mbps initial (severe artifacting/ghosting at 1440p60); monitor switching + desktop-state also silently dead | Structural (viewer, pre-existing) | ✅ Fixed | PR #2158 (found during phase visual testing 2026-07-02) |
+| V1 | Viewer: stats/control effects stay bound to the DEAD connection after auto-reconnect → `viewer_stats` stop → adaptive bitrate frozen at 2.5 Mbps initial (severe artifacting/ghosting at 1440p60); monitor switching + desktop-state also silently dead | Structural (viewer, pre-existing) | ✅ Fixed + live-verified | PR #2158, merged 2026-07-02; verified on Kit same day — post-login reconnect now ramps to the 30 Mbps ceiling (quality=ultra, 0.4% loss, 15–55 KB frames vs the frozen 5 KB) |
+| — | RDP session (or RDP-disconnected session) streams silent black — broker binds to the RDP virtual display, no capturable surface | Structural (session broker, pre-existing) | ⬜ Open | Issue #2160 (fix layers spec'd there; out of phase scope) |
 
 ## Detail — fixed findings
 

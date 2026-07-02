@@ -733,6 +733,24 @@ typed, drag tracks, Ctrl+Alt+Del — analogue of #8's visual pass); end-of-phase
 visual pass on the final squashed binary; live bursty-loss validation of Change
 #6 when a network shaper is available.
 
+**2026-07-02 (end of day) — status checkpoint:**
+- **V1 CLOSED, live-verified.** PR #2158 merged to main; Todd runs a local
+  0.88.1 viewer build (backup of 0.88.0 kept in /Applications; next official
+  release supersedes it). Re-test of the exact repro (connect at logon screen →
+  log in through Breeze → auto-reconnect) ramped to the full 30 Mbps 1440p
+  ceiling within ~20s (quality=ultra, smoothedLoss 0.4%, frames 15–55 KB).
+  The two earlier "artifacting/ghosting" reports are fully explained by V1.
+- **RDP black screen registered** as issue #2160 (session broker binds to the
+  RDP virtual display; no capturable surface once RDP-disconnected). Out of
+  phase scope; fix layers spec'd in the issue.
+- **Ship decision:** current `main` (changes #1–#6 via #2145 + viewer fix
+  #2158) ships as the next release while the stacked branches (#7–#9 + #10
+  skip-note) continue toward their own gate. The stack's outstanding gates
+  (interactive pass for #9, end-of-phase visual pass, NVENC leg if hardware
+  arrives, VM .55 → T3) apply to the STACK release, not this one.
+- Rig note: Kit services bounced 2026-07-02 (stale duplicate helpers in a
+  disconnected session removed); single console helper confirmed.
+
 **2026-07-02 (later): "more artifacting/ghosting" report — root-caused, NOT the
 perf changes.** Todd's interactive test connected while Kit sat at the lock
 screen; the console login killed the first WebRTC connection and the viewer
