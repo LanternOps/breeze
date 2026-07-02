@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, ChevronDown, Cpu, RefreshCw, Settings, ShieldCheck, Sparkles, Wrench, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, ChevronDown, Cpu, RefreshCw, Settings, ShieldCheck, Sparkles, Wrench } from 'lucide-react';
 
 import type { AiPageContext } from '@breeze/shared';
-import { runAction, handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
-import { useClickOutside } from '../../hooks/useClickOutside';
 import { useAiStore } from '../../stores/aiStore';
 import HelpTooltip from '../shared/HelpTooltip';
 
@@ -96,36 +94,6 @@ const issueLabels: Record<ReliabilityTopIssue['type'], string> = {
   hardware: 'Hardware errors',
   uptime: 'Uptime',
 };
-
-const OUTCOME_ITEMS: Array<{
-  outcome: 'failure_confirmed' | 'replaced' | 'false_alarm';
-  label: string;
-  description: string;
-  Icon: typeof AlertTriangle;
-  iconClass: string;
-}> = [
-  {
-    outcome: 'failure_confirmed',
-    label: 'Device failed',
-    description: 'It broke down or needed major repair — the risk was real.',
-    Icon: AlertTriangle,
-    iconClass: 'text-destructive',
-  },
-  {
-    outcome: 'replaced',
-    label: 'Device replaced',
-    description: 'You retired or swapped it because of reliability problems.',
-    Icon: Wrench,
-    iconClass: 'text-muted-foreground',
-  },
-  {
-    outcome: 'false_alarm',
-    label: 'False alarm',
-    description: 'The device is fine — this score overstated the risk.',
-    Icon: XCircle,
-    iconClass: 'text-muted-foreground',
-  },
-];
 
 function scoreClass(score: number): string {
   if (score <= 50) return 'text-destructive';
@@ -320,7 +288,6 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const [snapshot, setSnapshot] = useState<ReliabilitySnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [labeling, setLabeling] = useState<string | null>(null);
   const reliabilityDisabled = mlFlags.isDisabled('ml.device_reliability.enabled');
 
   const fetchReliability = useCallback(async () => {
@@ -383,10 +350,6 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     void startDeviceTask(deviceId, ctx, buildReliabilitySeedPrompt(snapshot, drivers));
   }, [snapshot, deviceId, drivers, startDeviceTask]);
 
-  const [outcomeMenuOpen, setOutcomeMenuOpen] = useState(false);
-  const outcomeMenuRef = useRef<HTMLDivElement>(null);
-  useClickOutside(outcomeMenuOpen, outcomeMenuRef, () => setOutcomeMenuOpen(false));
-
   // Offenders drill-down (issue #1907): lazily fetched on first expand so the
   // initial panel render stays a single request and healthy devices pay nothing.
   const [offendersOpen, setOffendersOpen] = useState(false);
@@ -444,34 +407,6 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     setOffendersOpen(true);
     if (!offendersFetchedRef.current) void loadOffenders();
   }, [offendersOpen, loadOffenders]);
-
-  function handleOutcome(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
-    setOutcomeMenuOpen(false);
-    void submitFeedback(outcome);
-  }
-
-  async function submitFeedback(outcome: 'failure_confirmed' | 'replaced' | 'false_alarm') {
-    setLabeling(outcome);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/reliability/${deviceId}/feedback`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ outcome, snapshotComputedAt: snapshot?.computedAt }),
-        }),
-        errorFallback: 'Could not save reliability feedback',
-        successMessage: outcome === 'false_alarm'
-          ? 'Marked as false alarm — this helps tune future scores'
-          : outcome === 'replaced'
-            ? 'Marked as replaced — this helps tune future scores'
-            : 'Marked as failed — this helps tune future scores',
-      });
-    } catch (err) {
-      handleActionError(err, 'Could not save reliability feedback');
-    } finally {
-      setLabeling(null);
-    }
-  }
 
   if (loading) {
     return (
@@ -667,58 +602,10 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
             <Sparkles className="h-4 w-4" />
             Ask AI about reliability
           </button>
-          {/* Feedback resolves the At-risk PREDICTION, not the ongoing score —
-              a healthy device has no prediction to resolve, so the affordance
-              only exists while the card shows the At-risk chip. Labels feed the
-              model's precision evaluation (was the at-risk call real?). */}
-          {snapshot.reliabilityScore <= 70 && (
-          <div ref={outcomeMenuRef} className="relative">
-            <button
-              type="button"
-              data-testid="reliability-outcome-trigger"
-              aria-haspopup="true"
-              aria-expanded={outcomeMenuOpen}
-              disabled={labeling !== null}
-              onClick={() => setOutcomeMenuOpen((o) => !o)}
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Was this right?
-              <ChevronDown className="h-3.5 w-3.5" />
-            </button>
-
-            {outcomeMenuOpen && (
-              <div
-                role="menu"
-                data-testid="reliability-outcome-menu"
-                className="absolute right-0 top-9 z-30 w-72 rounded-md border bg-popover p-1 shadow-lg"
-              >
-                <p className="px-2 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-                  This device is flagged at risk. What actually happened?
-                </p>
-                {OUTCOME_ITEMS.map(({ outcome, label, description, Icon, iconClass }) => (
-                  <button
-                    key={outcome}
-                    type="button"
-                    data-testid={`reliability-outcome-${outcome}`}
-                    disabled={labeling !== null}
-                    onClick={() => handleOutcome(outcome)}
-                    className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${iconClass}`} />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium">{label}</span>
-                      <span className="block text-xs text-muted-foreground">{description}</span>
-                    </span>
-                  </button>
-                ))}
-                <hr className="my-1" />
-                <p className="px-2 pb-1.5 pt-0.5 text-xs text-muted-foreground">
-                  Your answer trains the scoring model. It doesn't change this device or its score.
-                </p>
-              </div>
-            )}
-          </div>
-          )}
+          {/* Outcome-feedback UI removed for now: the labels only feed a
+              precision evaluation endpoint no UI consumes, and there is no
+              learning loop for them to train yet. The POST /reliability/:id/
+              feedback route remains for when a real loop exists. */}
         </div>
       </div>
 

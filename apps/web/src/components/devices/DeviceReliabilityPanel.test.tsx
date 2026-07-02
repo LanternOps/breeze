@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceReliabilityPanel from './DeviceReliabilityPanel';
@@ -36,10 +36,6 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
   }) as unknown as Response;
 
 describe('DeviceReliabilityPanel', () => {
-  const openOutcomeMenu = async () => {
-    fireEvent.click(await screen.findByTestId('reliability-outcome-trigger'));
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
     showToast.mockReset();
@@ -96,119 +92,19 @@ describe('DeviceReliabilityPanel', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/reliability/dev-1');
   });
 
-  it('posts false alarm feedback through runAction', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          snapshot: {
-            deviceId: 'dev-1',
-            reliabilityScore: 65,
-            trendDirection: 'stable',
-            trendConfidence: 0.4,
-            uptime30d: 99.1,
-            crashCount30d: 0,
-            hangCount30d: 1,
-            serviceFailureCount30d: 0,
-            hardwareErrorCount30d: 0,
-            mtbfHours: null,
-            topIssues: [],
-            drivers: [],
-            computedAt: '2026-06-18T12:00:00.000Z',
-          },
-          history: [],
-        }),
-      )
-      .mockResolvedValueOnce(makeJsonResponse({ success: true }));
-
-    render(<DeviceReliabilityPanel deviceId="dev-1" />);
-
-    await openOutcomeMenu();
-    expect(screen.getByTestId('reliability-outcome-menu')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('reliability-outcome-false_alarm'));
-
-    await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        '/reliability/dev-1/feedback',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({
-            outcome: 'false_alarm',
-            snapshotComputedAt: '2026-06-18T12:00:00.000Z',
-          }),
-        }),
-      );
-    });
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'success',
-      message: 'Marked as false alarm — this helps tune future scores',
-    }));
-
-    // Menu closes after selecting an outcome (close-on-select).
-    await waitFor(() => {
-      expect(screen.queryByTestId('reliability-outcome-menu')).toBeNull();
-    });
-  });
-
-  it('explains each outcome action in the menu', async () => {
+  // Outcome-feedback UI removed: the labels only fed an evaluation endpoint no
+  // UI consumes and there is no learning loop yet. The card must not render any
+  // outcome affordance.
+  it('renders no outcome-feedback affordance', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({ snapshot: baseSnapshot(), history: [] }),
-    );
-
-    render(<DeviceReliabilityPanel deviceId="dev-1" />);
-    await openOutcomeMenu();
-
-    expect(screen.getByText('This device is flagged at risk. What actually happened?')).toBeInTheDocument();
-    expect(screen.getByText('It broke down or needed major repair — the risk was real.')).toBeInTheDocument();
-    expect(screen.getByText('You retired or swapped it because of reliability problems.')).toBeInTheDocument();
-    expect(screen.getByText('The device is fine — this score overstated the risk.')).toBeInTheDocument();
-  });
-
-  it('hides the outcome-feedback affordance on devices that are not at risk', async () => {
-    // Feedback resolves the At-risk prediction; a healthy device has no
-    // prediction to resolve, so there is nothing to "mark".
-    fetchWithAuthMock.mockResolvedValue(
-      makeJsonResponse({ snapshot: baseSnapshot({ reliabilityScore: 92 }), history: [] }),
     );
 
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
 
     await screen.findByText('Reliability');
     expect(screen.queryByTestId('reliability-outcome-trigger')).toBeNull();
-  });
-
-  it('toasts an error when feedback submission fails (non-2xx)', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          snapshot: {
-            deviceId: 'dev-1',
-            reliabilityScore: 65,
-            trendDirection: 'stable',
-            trendConfidence: 0.4,
-            uptime30d: 99.1,
-            crashCount30d: 0,
-            hangCount30d: 1,
-            serviceFailureCount30d: 0,
-            hardwareErrorCount30d: 0,
-            mtbfHours: null,
-            topIssues: [],
-            drivers: [],
-            computedAt: '2026-06-18T12:00:00.000Z',
-          },
-          history: [],
-        }),
-      )
-      .mockResolvedValueOnce(makeJsonResponse({ error: 'boom' }, false, 500));
-
-    render(<DeviceReliabilityPanel deviceId="dev-1" />);
-
-    await openOutcomeMenu();
-    fireEvent.click(screen.getByTestId('reliability-outcome-false_alarm'));
-
-    await waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
-    });
-    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.queryByText(/Mark outcome|Was this right/)).toBeNull();
   });
 
   it('renders an error state with a working Retry when the load fails', async () => {
