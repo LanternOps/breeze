@@ -450,6 +450,35 @@ describe('DeviceReliabilityPanel', () => {
     expect(screen.queryByTestId('reliability-top-drag')).toBeNull();
   });
 
+  // The uptime factor is scored from the 90d window; the evidence line must
+  // lead with the scored figure so "0/30 pts" can't sit next to a bare
+  // "100.0% in 30d" (the win-build confusion).
+  it('shows the scored 90d uptime figure ahead of the 30d context figure', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        snapshot: baseSnapshot({
+          uptime30d: 100,
+          drivers: [
+            {
+              factor: 'uptime',
+              label: 'Uptime',
+              score: 0,
+              weight: 30,
+              lostPoints: 30,
+              evidence: { uptime90d: 88.6, uptime30d: 100 },
+            },
+          ],
+        }),
+        history: [],
+      }),
+    );
+
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+
+    await screen.findByTestId('reliability-uptime-window');
+    expect(screen.getByText(/88\.6% in 90d \(scored window\) · 100\.0% in 30d/)).toBeInTheDocument();
+  });
+
   it('keeps the fixed 30d window phrasing on a young device (no since-enroll labels)', async () => {
     const enrolledAt = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     fetchWithAuthMock.mockResolvedValue(

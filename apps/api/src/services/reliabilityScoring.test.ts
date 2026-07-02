@@ -21,6 +21,7 @@ function makeBucket(overrides: Record<string, unknown>) {
     serviceFailureCount: 0,
     recoveredServiceCount: 0,
     selfServiceFailureCount: 0,
+    recoveredSelfServiceCount: 0,
     hardwareErrorCount: 0,
     hardwareCriticalCount: 0,
     hardwareErrorSeverityCount: 0,
@@ -136,6 +137,24 @@ describe('reliabilityScoringInternals', () => {
     const now = new Date('2026-02-21T00:00:00.000Z');
     const buckets = [makeBucket({ date: '2026-02-20', crashCount: 9 })] as any[];
     expect(reliabilityScoringInternals.computeMtbfHours(buckets, 0, now)).toBeNull();
+  });
+
+  it('excludes Breeze self service failures from MTBF (restarts we caused are not device failures)', () => {
+    const now = new Date('2026-02-21T00:00:00.000Z');
+    // 9 service failures but 3 are Breeze's own → 6 genuine failures over
+    // 90 up-days (2160h) → 360h, not 240h.
+    const buckets = [
+      makeBucket({ date: '2026-02-20', serviceFailureCount: 9, selfServiceFailureCount: 3 }),
+    ] as any[];
+    expect(reliabilityScoringInternals.computeMtbfHours(buckets, 90, now)).toBe(360);
+  });
+
+  it('returns null MTBF when every failure is self-inflicted', () => {
+    const now = new Date('2026-02-21T00:00:00.000Z');
+    const buckets = [
+      makeBucket({ date: '2026-02-20', serviceFailureCount: 4, selfServiceFailureCount: 4 }),
+    ] as any[];
+    expect(reliabilityScoringInternals.computeMtbfHours(buckets, 90, now)).toBeNull();
   });
 
   it('parses stored aggregate state and prunes out-of-window buckets', () => {
@@ -700,6 +719,70 @@ describe('computeUptimePercent', () => {
   });
 });
 
+describe('bootSpanUpDayKeys', () => {
+  const { bootSpanUpDayKeys, computeUptimePercent } = reliabilityScoringInternals;
+  const now = new Date('2026-02-20T00:00:00.000Z');
+  const DAY = 24 * 60 * 60 * 1000;
+  const windowStart = new Date(now.getTime() - 90 * DAY);
+
+  function dayKeyOffset(daysAgo: number): string {
+    return new Date(now.getTime() - daysAgo * DAY).toISOString().slice(0, 10);
+  }
+
+  function row(bootDaysAgo: number, collectedDaysAgo: number) {
+    return {
+      bootTime: new Date(now.getTime() - bootDaysAgo * DAY),
+      collectedAt: new Date(now.getTime() - collectedDaysAgo * DAY),
+    };
+  }
+
+  it('credits every day of a row\'s continuous boot span, not just the collection day', () => {
+    // A row posted 40 days ago whose boot was 52 days ago proves the device was
+    // up on all 13 calendar days in between — even though no samples were posted
+    // on days 41..52.
+    const days = bootSpanUpDayKeys([row(52, 40)], windowStart, now);
+    for (let d = 40; d <= 52; d += 1) {
+      expect(days.has(dayKeyOffset(d)), `day -${d} should be covered`).toBe(true);
+    }
+    expect(days.has(dayKeyOffset(53))).toBe(false);
+    expect(days.has(dayKeyOffset(39))).toBe(false);
+  });
+
+  it('clamps span starts to the lookback window start', () => {
+    // Boot 200 days ago, sample 89 days ago: only in-window days are emitted.
+    const days = bootSpanUpDayKeys([row(200, 89)], windowStart, now);
+    expect(days.has(dayKeyOffset(89))).toBe(true);
+    expect(days.has(dayKeyOffset(90))).toBe(true); // window-start day itself
+    expect(days.has(dayKeyOffset(91))).toBe(false);
+  });
+
+  it('ignores rows with bootTime after collectedAt (clock skew / bogus data)', () => {
+    const days = bootSpanUpDayKeys([row(1, 5)], windowStart, now);
+    expect(days.size).toBe(0);
+  });
+
+  it('bridges an agent posting gap inside an unbroken boot span (prod repro)', () => {
+    // The win-build case: samples exist every window day EXCEPT a 9-day posting
+    // gap (days 61..69 ago), but the first post-gap row carries the same
+    // bootTime from before the gap — the machine never went down. Boot-span
+    // crediting must lift uptime90d from ~88.6% (below the 90% score cliff) to 100%.
+    const enrolledAt = new Date(now.getTime() - 200 * DAY);
+    const observed = new Set<string>();
+    for (let d = 0; d <= 90; d += 1) {
+      if (d < 61 || d > 69) observed.add(dayKeyOffset(d));
+    }
+    // Without span crediting the gap reads as downtime.
+    const latest = { collectedAt: now, uptimeSeconds: 5 * 24 * 60 * 60, bootTime: new Date(now.getTime() - 5 * DAY) };
+    const before = computeUptimePercent(latest, observed, 90, now, enrolledAt);
+    expect(before).toBeLessThan(95);
+
+    // Row posted the day after the gap ended, booted before the gap started.
+    const spanDays = bootSpanUpDayKeys([row(75, 60)], windowStart, now);
+    for (const key of spanDays) observed.add(key);
+    expect(computeUptimePercent(latest, observed, 90, now, enrolledAt)).toBe(100);
+  });
+});
+
 // Issue #1908: saturating curve helper — the foundation for all factor scorers.
 describe('saturatingScore', () => {
   const { saturatingScore } = reliabilityScoringInternals;
@@ -827,6 +910,19 @@ describe('scoreServiceFailures', () => {
     expect(scoreServiceFailures(6, 0, 30, 1)).toBe(scoreServiceFailures(5, 0, 30));
     // Omitting the argument keeps legacy behavior (nothing excluded).
     expect(scoreServiceFailures(5, 0, 30)).toBe(37);
+  });
+  // A recovered failure that is ALSO one of Breeze's own must not earn the
+  // half-weight recovery credit on top of the full self exclusion — that would
+  // hand out -0.5 net credit per agent auto-update (SCM 7031 + Windows restart
+  // = recovered self failure) and quietly offset genuine failures.
+  it('recovered self failures do not double-dip (self exclusion + recovery credit)', () => {
+    // 6 total: 5 genuine unrecovered + 1 self recovered. Must score exactly
+    // like 5 genuine failures, not 5 - 0.5 weighted.
+    expect(scoreServiceFailures(6, 1, 30, 1, 1)).toBe(scoreServiceFailures(5, 0, 30));
+    // Genuine recoveries still earn the credit when a self recovery coexists.
+    expect(scoreServiceFailures(7, 2, 30, 1, 1)).toBe(scoreServiceFailures(6, 1, 30));
+    // Defensive: recoveredSelf exceeding recovered clamps instead of inflating.
+    expect(scoreServiceFailures(5, 1, 30, 3, 3)).toBe(scoreServiceFailures(2, 0, 30));
   });
 });
 
@@ -972,6 +1068,20 @@ describe('scoreDailyBucket', () => {
 
   it('a bucket whose service failures are all Breeze self-failures scores clean', () => {
     expect(scoreDailyBucket(emptyBucket({ serviceFailureCount: 2, selfServiceFailureCount: 2 }))).toBe(100);
+  });
+
+  it('a recovered self failure does not earn recovery credit on top of the self exclusion', () => {
+    // 3 total: 2 genuine unrecovered + 1 self recovered. The self failure is
+    // excluded outright; its recovery must not also shave 0.5 off the genuine
+    // load. Expected = same day-score as 2 genuine failures.
+    const withRecoveredSelf = scoreDailyBucket(emptyBucket({
+      serviceFailureCount: 3,
+      selfServiceFailureCount: 1,
+      recoveredServiceCount: 1,
+      recoveredSelfServiceCount: 1,
+    }));
+    const twoGenuine = scoreDailyBucket(emptyBucket({ serviceFailureCount: 2 }));
+    expect(withRecoveredSelf).toBe(twoGenuine);
   });
 
   it('a bucket with more service failures scores strictly lower (no plateau)', () => {
