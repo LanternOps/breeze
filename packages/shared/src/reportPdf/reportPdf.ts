@@ -705,9 +705,10 @@ function buildExecRecommendations(summary: ExecutiveSummary): Recommendation[] {
   if ((d.offline ?? 0) > 0) {
     recs.push({ severity: 'bad', text: `Investigate ${d.offline} offline device${d.offline === 1 ? '' : 's'} — offline endpoints are unmonitored and unpatched.` });
   }
-  const unresolvedCritical = Math.max(0, (a.critical ?? 0) - (a.resolved ?? 0));
   if ((a.critical ?? 0) > 0) {
-    recs.push({ severity: 'bad', text: `Triage the ${a.critical} critical alert${a.critical === 1 ? '' : 's'} raised in this reporting window${unresolvedCritical > 0 ? '' : ' (all resolved — verify root causes)'}.` });
+    // The snapshot's `resolved` count spans all severities, so we can't claim
+    // anything about *critical* resolution status — just flag the criticals.
+    recs.push({ severity: 'bad', text: `Triage the ${a.critical} critical alert${a.critical === 1 ? '' : 's'} raised in this reporting window.` });
   }
   if (a.resolutionRate != null && a.resolutionRate < 80 && (a.total ?? 0) > 0) {
     recs.push({ severity: 'warn', text: `Raise the alert resolution rate — ${a.resolutionRate}% of alerts were resolved against an 80% target.` });
