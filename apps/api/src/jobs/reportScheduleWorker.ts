@@ -28,10 +28,24 @@ import { generateReport, previousBaselineFor, type ReportResult } from '../servi
 import { getEmailService } from '../services/email';
 import { renderLayout, renderButton, renderParagraph, escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
-import { resolveEffectiveTimezone, canonicalizeTimezone, rowsToCsv } from '@breeze/shared';
+import {
+  resolveEffectiveTimezone,
+  canonicalizeTimezone,
+  rowsToCsv,
+  lastOccurrenceKey,
+  isDue,
+  type ScheduleCadence,
+  type ScheduleConfig,
+} from '@breeze/shared';
 import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 import { loadReportBrandingForOrg } from '../services/reportBranding';
 import { attachWorkerObservability } from './workerObservability';
+
+// Re-exported so the occurrence-math tests colocated with this worker keep
+// importing from here; the implementation lives in @breeze/shared so the web
+// can compute "next run" from the same math.
+export { lastOccurrenceKey, isDue, wallClockIn } from '@breeze/shared';
+export type { ScheduleCadence, ScheduleConfig } from '@breeze/shared';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -59,130 +73,6 @@ type ReportScheduleJobData = CheckSchedulesJobData | RunScheduledReportJobData;
 
 let reportScheduleQueue: Queue<ReportScheduleJobData> | null = null;
 let reportScheduleWorker: Worker<ReportScheduleJobData> | null = null;
-
-// ─── Occurrence math ─────────────────────────────────────────────────────────
-// All comparisons happen in wall-clock space for the report's timezone, encoded
-// as a sortable number (YYYYMMDDHHmm). This avoids DST/offset conversions: a
-// "daily at 09:00" report is due once the org's local clock passes 09:00,
-// whatever UTC instant that is.
-
-export type ScheduleCadence = 'daily' | 'weekly' | 'monthly';
-
-export type ScheduleConfig = {
-  /** 24h "HH:MM"; defaults to 09:00 (the builder's default). */
-  time?: string;
-  /** Weekly: lowercase weekday name; defaults to monday. */
-  day?: string;
-  /** Monthly: day-of-month "1".."31" (clamped to month length); defaults to 1. */
-  date?: string;
-};
-
-const DAY_INDEX: Record<string, number> = {
-  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
-};
-
-const WEEKDAY_SHORT_INDEX: Record<string, number> = {
-  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
-};
-
-type WallClock = { y: number; m: number; d: number; hh: number; mm: number; weekday: number };
-
-/** Decompose a UTC instant into wall-clock parts for a timezone. */
-export function wallClockIn(instant: Date, timeZone: string): WallClock {
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-      weekday: 'short',
-    }).formatToParts(instant);
-  } catch {
-    // Bad/unknown zone string in stored settings — fall back to UTC.
-    return wallClockIn(instant, 'UTC');
-  }
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-  return {
-    y: Number(get('year')),
-    m: Number(get('month')),
-    d: Number(get('day')),
-    hh: Number(get('hour')),
-    mm: Number(get('minute')),
-    weekday: WEEKDAY_SHORT_INDEX[get('weekday')] ?? 0,
-  };
-}
-
-const keyOf = (y: number, m: number, d: number, hh: number, mm: number): number =>
-  ((y * 100 + m) * 100 + d) * 10000 + hh * 100 + mm;
-
-/** Pure calendar arithmetic (timezone-free): shift a Y/M/D by whole days. */
-function shiftDays(y: number, m: number, d: number, days: number): { y: number; m: number; d: number } {
-  const t = new Date(Date.UTC(y, m - 1, d + days));
-  return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
-}
-
-const daysInMonth = (y: number, m: number): number => new Date(Date.UTC(y, m, 0)).getUTCDate();
-
-function parseTime(time: string | undefined): { hh: number; mm: number } {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(time ?? '');
-  const hh = match ? Number(match[1]) : 9;
-  const mm = match ? Number(match[2]) : 0;
-  if (!match || hh > 23 || mm > 59) return { hh: 9, mm: 0 };
-  return { hh, mm };
-}
-
-/**
- * The most recent scheduled occurrence at or before `now`, as a wall-clock key
- * in `timeZone`. A report is due when its lastGeneratedAt (in the same
- * wall-clock space) predates this key.
- */
-export function lastOccurrenceKey(
-  now: Date,
-  cadence: ScheduleCadence,
-  cfg: ScheduleConfig,
-  timeZone: string,
-): number {
-  const nowWc = wallClockIn(now, timeZone);
-  const nowKey = keyOf(nowWc.y, nowWc.m, nowWc.d, nowWc.hh, nowWc.mm);
-  const { hh, mm } = parseTime(cfg.time);
-
-  if (cadence === 'daily') {
-    let day = { y: nowWc.y, m: nowWc.m, d: nowWc.d };
-    if (keyOf(day.y, day.m, day.d, hh, mm) > nowKey) day = shiftDays(day.y, day.m, day.d, -1);
-    return keyOf(day.y, day.m, day.d, hh, mm);
-  }
-
-  if (cadence === 'weekly') {
-    const target = DAY_INDEX[(cfg.day ?? 'monday').toLowerCase()] ?? 1;
-    const delta = (nowWc.weekday - target + 7) % 7;
-    let day = shiftDays(nowWc.y, nowWc.m, nowWc.d, -delta);
-    if (keyOf(day.y, day.m, day.d, hh, mm) > nowKey) day = shiftDays(day.y, day.m, day.d, -7);
-    return keyOf(day.y, day.m, day.d, hh, mm);
-  }
-
-  // monthly
-  const wanted = Math.max(1, Math.min(31, Number(cfg.date) || 1));
-  let y = nowWc.y;
-  let m = nowWc.m;
-  let d = Math.min(wanted, daysInMonth(y, m));
-  if (keyOf(y, m, d, hh, mm) > nowKey) {
-    m -= 1;
-    if (m === 0) { m = 12; y -= 1; }
-    d = Math.min(wanted, daysInMonth(y, m));
-  }
-  return keyOf(y, m, d, hh, mm);
-}
-
-/** Due when the report has never run, or last ran before the latest occurrence. */
-export function isDue(
-  lastGeneratedAt: Date | null,
-  occurrenceKey: number,
-  timeZone: string,
-): boolean {
-  if (!lastGeneratedAt) return true;
-  const wc = wallClockIn(lastGeneratedAt, timeZone);
-  return keyOf(wc.y, wc.m, wc.d, wc.hh, wc.mm) < occurrenceKey;
-}
 
 // ─── Due-report discovery ────────────────────────────────────────────────────
 
