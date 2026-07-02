@@ -6,7 +6,7 @@ import { reports, reportRuns } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
-import { generateReport, siteScopeRequestAllowed, type ReportResult } from '../../services/reportGenerationService';
+import { generateReport, previousBaselineFor, siteScopeRequestAllowed, type ReportResult } from '../../services/reportGenerationService';
 import { rowsToCsv, rowsToTsv } from '@breeze/shared';
 import { getPagination, ensureOrgAccess, getReportWithOrgCheck, getReportRunWithOrgCheck } from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
@@ -71,6 +71,8 @@ runsRoutes.post(
 
     try {
       const result = await generateReport(report.type, report.orgId, config, perms);
+      const previous = await previousBaselineFor(report.id);
+      if (previous) result.previous = previous;
       const rowCount = result.rowCount ?? (Array.isArray(result.rows) ? result.rows.length : 0);
       await db
         .update(reportRuns)

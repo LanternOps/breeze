@@ -19,5 +19,5 @@ export default defineConfig({
   // feed's UNION ALL query builder — failing the build for ~150 bytes of unused
   // .d.cts. Disable it; the Dockerfile and runbook only ever run dist/*.cjs.
   dts: false,
-  noExternal: ['@breeze/shared', 'dotenv'],
+  noExternal: [/^@breeze\/shared/, 'dotenv'],
 });

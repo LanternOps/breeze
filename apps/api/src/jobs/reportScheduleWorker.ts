@@ -12,9 +12,10 @@
  *   when `lastGeneratedAt` predates that occurrence.
  * - `run-scheduled-report` mirrors the on-demand POST /reports/:id/generate
  *   path: insert a report_runs row, generateReport, store the snapshot. When
- *   `config.emailRecipients` is set, recipients get an email with a CSV
- *   attachment (tabular formats) or a link into the app (PDF renders
- *   client-side).
+ *   `config.emailRecipients` is set, recipients get an email with the branded
+ *   PDF attached for PDF-format reports (rendered server-side via
+ *   @breeze/shared/reportPdf) or a CSV attachment for tabular formats — either
+ *   way, plus an in-app link.
  * - Without Redis the check falls back to inline processing, matching the
  *   other queue workers.
  */
@@ -24,12 +25,29 @@ import { Job, Queue, Worker } from 'bullmq';
 
 import * as dbModule from '../db';
 import { reports, reportRuns, organizations, partners } from '../db/schema';
-import { generateReport } from '../services/reportGenerationService';
+import { generateReport, previousBaselineFor, type ReportResult } from '../services/reportGenerationService';
 import { getEmailService } from '../services/email';
 import { renderLayout, renderButton, renderParagraph, escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
-import { resolveEffectiveTimezone, canonicalizeTimezone, rowsToCsv } from '@breeze/shared';
+import {
+  resolveEffectiveTimezone,
+  canonicalizeTimezone,
+  rowsToCsv,
+  lastOccurrenceKey,
+  isDue,
+  type ScheduleCadence,
+  type ScheduleConfig,
+} from '@breeze/shared';
+import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
+import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
+import { loadReportBrandingForOrg } from '../services/reportBranding';
 import { attachWorkerObservability } from './workerObservability';
+
+// Re-exported so the occurrence-math tests colocated with this worker keep
+// importing from here; the implementation lives in @breeze/shared so the web
+// can compute "next run" from the same math.
+export { lastOccurrenceKey, isDue, wallClockIn } from '@breeze/shared';
+export type { ScheduleCadence, ScheduleConfig } from '@breeze/shared';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -57,130 +75,6 @@ type ReportScheduleJobData = CheckSchedulesJobData | RunScheduledReportJobData;
 
 let reportScheduleQueue: Queue<ReportScheduleJobData> | null = null;
 let reportScheduleWorker: Worker<ReportScheduleJobData> | null = null;
-
-// ─── Occurrence math ─────────────────────────────────────────────────────────
-// All comparisons happen in wall-clock space for the report's timezone, encoded
-// as a sortable number (YYYYMMDDHHmm). This avoids DST/offset conversions: a
-// "daily at 09:00" report is due once the org's local clock passes 09:00,
-// whatever UTC instant that is.
-
-export type ScheduleCadence = 'daily' | 'weekly' | 'monthly';
-
-export type ScheduleConfig = {
-  /** 24h "HH:MM"; defaults to 09:00 (the builder's default). */
-  time?: string;
-  /** Weekly: lowercase weekday name; defaults to monday. */
-  day?: string;
-  /** Monthly: day-of-month "1".."31" (clamped to month length); defaults to 1. */
-  date?: string;
-};
-
-const DAY_INDEX: Record<string, number> = {
-  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
-};
-
-const WEEKDAY_SHORT_INDEX: Record<string, number> = {
-  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
-};
-
-type WallClock = { y: number; m: number; d: number; hh: number; mm: number; weekday: number };
-
-/** Decompose a UTC instant into wall-clock parts for a timezone. */
-export function wallClockIn(instant: Date, timeZone: string): WallClock {
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-      weekday: 'short',
-    }).formatToParts(instant);
-  } catch {
-    // Bad/unknown zone string in stored settings — fall back to UTC.
-    return wallClockIn(instant, 'UTC');
-  }
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-  return {
-    y: Number(get('year')),
-    m: Number(get('month')),
-    d: Number(get('day')),
-    hh: Number(get('hour')),
-    mm: Number(get('minute')),
-    weekday: WEEKDAY_SHORT_INDEX[get('weekday')] ?? 0,
-  };
-}
-
-const keyOf = (y: number, m: number, d: number, hh: number, mm: number): number =>
-  ((y * 100 + m) * 100 + d) * 10000 + hh * 100 + mm;
-
-/** Pure calendar arithmetic (timezone-free): shift a Y/M/D by whole days. */
-function shiftDays(y: number, m: number, d: number, days: number): { y: number; m: number; d: number } {
-  const t = new Date(Date.UTC(y, m - 1, d + days));
-  return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
-}
-
-const daysInMonth = (y: number, m: number): number => new Date(Date.UTC(y, m, 0)).getUTCDate();
-
-function parseTime(time: string | undefined): { hh: number; mm: number } {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(time ?? '');
-  const hh = match ? Number(match[1]) : 9;
-  const mm = match ? Number(match[2]) : 0;
-  if (!match || hh > 23 || mm > 59) return { hh: 9, mm: 0 };
-  return { hh, mm };
-}
-
-/**
- * The most recent scheduled occurrence at or before `now`, as a wall-clock key
- * in `timeZone`. A report is due when its lastGeneratedAt (in the same
- * wall-clock space) predates this key.
- */
-export function lastOccurrenceKey(
-  now: Date,
-  cadence: ScheduleCadence,
-  cfg: ScheduleConfig,
-  timeZone: string,
-): number {
-  const nowWc = wallClockIn(now, timeZone);
-  const nowKey = keyOf(nowWc.y, nowWc.m, nowWc.d, nowWc.hh, nowWc.mm);
-  const { hh, mm } = parseTime(cfg.time);
-
-  if (cadence === 'daily') {
-    let day = { y: nowWc.y, m: nowWc.m, d: nowWc.d };
-    if (keyOf(day.y, day.m, day.d, hh, mm) > nowKey) day = shiftDays(day.y, day.m, day.d, -1);
-    return keyOf(day.y, day.m, day.d, hh, mm);
-  }
-
-  if (cadence === 'weekly') {
-    const target = DAY_INDEX[(cfg.day ?? 'monday').toLowerCase()] ?? 1;
-    const delta = (nowWc.weekday - target + 7) % 7;
-    let day = shiftDays(nowWc.y, nowWc.m, nowWc.d, -delta);
-    if (keyOf(day.y, day.m, day.d, hh, mm) > nowKey) day = shiftDays(day.y, day.m, day.d, -7);
-    return keyOf(day.y, day.m, day.d, hh, mm);
-  }
-
-  // monthly
-  const wanted = Math.max(1, Math.min(31, Number(cfg.date) || 1));
-  let y = nowWc.y;
-  let m = nowWc.m;
-  let d = Math.min(wanted, daysInMonth(y, m));
-  if (keyOf(y, m, d, hh, mm) > nowKey) {
-    m -= 1;
-    if (m === 0) { m = 12; y -= 1; }
-    d = Math.min(wanted, daysInMonth(y, m));
-  }
-  return keyOf(y, m, d, hh, mm);
-}
-
-/** Due when the report has never run, or last ran before the latest occurrence. */
-export function isDue(
-  lastGeneratedAt: Date | null,
-  occurrenceKey: number,
-  timeZone: string,
-): boolean {
-  if (!lastGeneratedAt) return true;
-  const wc = wallClockIn(lastGeneratedAt, timeZone);
-  return keyOf(wc.y, wc.m, wc.d, wc.hh, wc.mm) < occurrenceKey;
-}
 
 // ─── Due-report discovery ────────────────────────────────────────────────────
 
@@ -270,12 +164,42 @@ function recipientsOf(config: Record<string, unknown>): string[] {
     .filter((r) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r));
 }
 
+/** One-line trend summary for the email body — "Posture score 79 — up from
+ * 74 last run." — built from the same `result.summary`/`result.previous`
+ * snapshot the PDF scorecard reads, so the two never disagree. */
+function trendLineOf(result: ReportResult): string | null {
+  const s = result.summary as Record<string, unknown> | undefined;
+  const prev = result.previous?.summary as Record<string, unknown> | undefined;
+  const score = typeof s?.postureScore === 'number' ? (s.postureScore as number) : null;
+  if (score != null) {
+    const prevScore = typeof prev?.postureScore === 'number' ? (prev.postureScore as number) : null;
+    if (prevScore != null && prevScore !== score) {
+      return `Posture score ${score} — ${score > prevScore ? 'up' : 'down'} from ${prevScore} last run.`;
+    }
+    return `Posture score ${score}.`;
+  }
+  const health = (s?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+  if (typeof health === 'number') {
+    const prevHealth = (prev?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+    if (typeof prevHealth === 'number' && prevHealth !== health) {
+      return `Fleet health ${health}% — ${health > prevHealth ? 'up' : 'down'} from ${prevHealth}% last run.`;
+    }
+    return `Fleet health ${health}%.`;
+  }
+  return null;
+}
+
 async function emailReportRun(opts: {
   reportName: string;
   reportType: string;
   format: string;
   recipients: string[];
   rows: unknown[];
+  summary?: Record<string, unknown>;
+  previous?: ReportResult['previous'];
+  trendLine?: string | null;
+  timezone: string;
+  branding: ReportBranding;
 }): Promise<void> {
   const email = getEmailService();
   if (!email) {
@@ -284,17 +208,46 @@ async function emailReportRun(opts: {
   }
   const base = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
   const link = `${base}/reports`;
+  const dateStr = new Date().toISOString().split('T')[0];
 
   const attachments = [] as Array<{ filename: string; content: Buffer; contentType?: string }>;
-  if (opts.rows.length > 0 && opts.format !== 'pdf') {
+  if (opts.format === 'pdf') {
+    // The branded PDF is the deliverable an MSP wants landing in the client's
+    // inbox — render it here exactly as the web does (same shared renderer).
+    try {
+      const generatedAt = new Intl.DateTimeFormat('en-US', {
+        timeZone: opts.timezone, dateStyle: 'medium', timeStyle: 'short',
+      }).format(new Date());
+      const doc = buildReportPdf(opts.rows, {
+        reportType: opts.reportType,
+        generatedAt,
+        timezone: opts.timezone,
+        summary: opts.summary as PostureSummary | ExecutiveSummary | undefined,
+        previous: opts.previous,
+        branding: opts.branding,
+      });
+      const content = Buffer.from(doc.output('arraybuffer'));
+      if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
+        attachments.push({ filename: `${opts.reportType}-report-${dateStr}.pdf`, content, contentType: 'application/pdf' });
+      } else {
+        console.warn('[ReportScheduleWorker] Attachment exceeds 5MB; sending link-only', {
+          reportName: opts.reportName,
+          bytes: content.byteLength,
+        });
+      }
+    } catch (err) {
+      // A render failure must not block delivery — fall back to the link-only email.
+      console.error('[ReportScheduleWorker] PDF render failed; sending link-only email:', err);
+    }
+  } else if (opts.rows.length > 0) {
     const csv = rowsToCsv(opts.rows);
     const content = Buffer.from(csv, 'utf8');
     if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
-      const dateStr = new Date().toISOString().split('T')[0];
-      attachments.push({
-        filename: `${opts.reportType}-report-${dateStr}.csv`,
-        content,
-        contentType: 'text/csv',
+      attachments.push({ filename: `${opts.reportType}-report-${dateStr}.csv`, content, contentType: 'text/csv' });
+    } else {
+      console.warn('[ReportScheduleWorker] Attachment exceeds 5MB; sending link-only', {
+        reportName: opts.reportName,
+        bytes: content.byteLength,
       });
     }
   }
@@ -304,24 +257,29 @@ async function emailReportRun(opts: {
       ? `Your scheduled report "${opts.reportName}" has been generated with ${opts.rows.length} record${opts.rows.length === 1 ? '' : 's'}.`
       : `Your scheduled report "${opts.reportName}" has been generated.`;
   const attachmentNote =
-    attachments.length > 0
-      ? 'The data is attached as CSV; open Breeze for the fully formatted report.'
-      : 'Open Breeze to view and download the formatted report.';
+    attachments.length === 0
+      ? 'Open Breeze to view and download the formatted report.'
+      : attachments[0]!.contentType === 'application/pdf'
+        ? 'The formatted report is attached as a PDF.'
+        : 'The data is attached as CSV; open Breeze for the fully formatted report.';
+
+  const trendLine = opts.trendLine;
 
   await email.sendEmail({
     to: opts.recipients,
     subject: `Scheduled report ready: ${opts.reportName}`,
     html: renderLayout({
       title: 'Scheduled report',
-      preheader: bodyText,
+      preheader: trendLine ?? bodyText,
       heading: 'Scheduled report ready',
       body: [
         renderParagraph(escapeHtml(bodyText)),
+        ...(trendLine ? [renderParagraph(escapeHtml(trendLine))] : []),
         renderParagraph(escapeHtml(attachmentNote), { muted: true }),
         renderButton('View in Breeze', link),
       ].join(''),
     }),
-    text: `${bodyText}\n${attachmentNote}\n${link}`,
+    text: `${bodyText}${trendLine ? `\n${trendLine}` : ''}\n${attachmentNote}\n${link}`,
     attachments,
   });
 }
@@ -353,6 +311,8 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
     // System context: scheduled runs execute with full org scope (no user
     // site-permission filter — parity with a report owner generating it).
     const result = await generateReport(report.type, report.orgId, config, undefined);
+    const previous = await previousBaselineFor(report.id);
+    if (previous) result.previous = previous;
     const rows = Array.isArray(result.rows) ? result.rows : [];
     const rowCount = result.rowCount ?? rows.length;
     await db
@@ -369,12 +329,34 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
     const recipients = recipientsOf(config);
     if (recipients.length > 0) {
       try {
+        // Timezone + branding are only needed to build the email — deferred
+        // here (rather than fetched unconditionally for every run) so a
+        // transient failure in either lookup can't sink a no-recipient run's
+        // occurrence-keyed job (a failed job blocks re-enqueue of that
+        // occurrence, and by this point the run row is already stored).
+        const [tzRow] = await db
+          .select({ orgSettings: organizations.settings, partnerTimezone: partners.timezone, partnerSettings: partners.settings })
+          .from(organizations)
+          .leftJoin(partners, eq(organizations.partnerId, partners.id))
+          .where(eq(organizations.id, report.orgId))
+          .limit(1);
+        const timeZone = timezoneFor(tzRow?.orgSettings ?? null, tzRow?.partnerTimezone ?? null, tzRow?.partnerSettings ?? null);
+        const branding = await loadReportBrandingForOrg(report.orgId).catch((err) => {
+          console.error('[ReportScheduleWorker] Branding load failed; sending unbranded:', err);
+          return { name: null, logoDataUrl: null, logoAspect: null };
+        });
+
         await emailReportRun({
           reportName: report.name,
           reportType: report.type,
           format: report.format,
           recipients,
           rows,
+          summary: result.summary,
+          previous: result.previous,
+          trendLine: trendLineOf(result),
+          timezone: timeZone,
+          branding,
         });
       } catch (err) {
         // Delivery failure must not fail the (already stored) run.

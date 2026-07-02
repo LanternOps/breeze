@@ -7,9 +7,12 @@ import {
   deviceHardware,
   alerts,
   alertRules,
-  sites
+  sites,
+  organizations,
+  reportRuns
 } from '../db/schema';
 import { canAccessSite, type UserPermissions } from './permissions';
+import type { ExecutiveSummary } from '@breeze/shared';
 
 export type ReportType =
   | 'device_inventory'
@@ -25,7 +28,43 @@ export type ReportResult = {
   rowCount?: number;
   summary?: Record<string, unknown>;
   generatedAt?: string;
+  /** Slim baseline from the previous completed run of the same report, copied
+   * into the snapshot at generation time so trend deltas ("79, up from 74")
+   * render from the stored result alone. Only `summary` is copied — never
+   * `previous` — so baselines don't chain. */
+  previous?: { generatedAt: string | null; summary?: Record<string, unknown> };
 };
+
+/** Baseline from the most recent completed run of this report, if it captured
+ * a summary. Call BEFORE marking the new run completed.
+ *
+ * Projects only `result->summary` / `result->>generatedAt` instead of the full
+ * `result` JSONB (which can be many MB — it includes every row) and never
+ * throws: this sits in the success path of both generation call sites, so a
+ * lookup failure must degrade to "no baseline" rather than fail an otherwise
+ * good run. */
+export async function previousBaselineFor(reportId: string): Promise<ReportResult['previous']> {
+  try {
+    const [prior] = await db
+      .select({
+        summary: sql<Record<string, unknown> | null>`${reportRuns.result}->'summary'`,
+        generatedAt: sql<string | null>`${reportRuns.result}->>'generatedAt'`,
+        completedAt: reportRuns.completedAt,
+      })
+      .from(reportRuns)
+      .where(and(eq(reportRuns.reportId, reportId), eq(reportRuns.status, 'completed')))
+      .orderBy(desc(reportRuns.completedAt))
+      .limit(1);
+    if (!prior?.summary || typeof prior.summary !== 'object') return undefined;
+    return {
+      generatedAt: prior.generatedAt ?? prior.completedAt?.toISOString() ?? null,
+      summary: prior.summary,
+    };
+  } catch (err) {
+    console.error('[reports] previous-baseline lookup failed', { reportId }, err);
+    return undefined;
+  }
+}
 
 export async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
   if (!perms?.allowedSiteIds) return null;
@@ -344,6 +383,12 @@ export async function generatePerformanceReport(orgId: string, config: Record<st
 }
 
 export async function generateExecutiveSummaryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+  const [orgRow] = await db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
   const dateRange = config.dateRange as Record<string, string> | undefined;
   const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
   const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, perms);
@@ -415,6 +460,7 @@ export async function generateExecutiveSummaryReport(orgId: string, config: Reco
 
   return {
     summary: {
+      org: { id: orgId, name: orgRow?.name ?? '' },
       devices: {
         total: Number(deviceStats[0]?.total ?? 0),
         online: Number(deviceStats[0]?.online ?? 0),
@@ -434,7 +480,7 @@ export async function generateExecutiveSummaryReport(orgId: string, config: Reco
       },
       osDistribution: Object.fromEntries(osDistribution.map(o => [o.osType, Number(o.count)])),
       siteBreakdown: siteBreakdown.map(s => ({ site: s.siteName, count: Number(s.deviceCount) }))
-    },
+    } satisfies ExecutiveSummary,
     generatedAt: new Date().toISOString()
   };
 }

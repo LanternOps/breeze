@@ -39,15 +39,44 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+type PreviousBaseline = { generatedAt: string | null; summary?: Record<string, unknown> } | undefined;
+
 const generateReportMock = vi.fn();
+const previousBaselineForMock = vi.fn<() => Promise<PreviousBaseline>>(async () => undefined);
 vi.mock('../services/reportGenerationService', () => ({
   generateReport: (...args: unknown[]) => generateReportMock(...(args as [])),
+  previousBaselineFor: (...args: unknown[]) => previousBaselineForMock(...(args as [])),
 }));
 
 const sendEmailMock = vi.fn();
 vi.mock('../services/email', () => ({
   getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock })),
 }));
+
+const loadReportBrandingForOrgMock = vi.fn(async () => ({
+  name: 'Olive MSP',
+  logoDataUrl: null,
+  logoAspect: null,
+}));
+vi.mock('../services/reportBranding', () => ({
+  loadReportBrandingForOrg: (...args: unknown[]) => loadReportBrandingForOrgMock(...(args as [])),
+}));
+
+// Passthrough mock of the shared PDF renderer with a failure switch: by default
+// it delegates to the REAL buildReportPdf (so the %PDF magic-byte test stays a
+// genuine end-to-end Node render proof); flipping `shouldThrow` simulates a
+// render bug to verify delivery degrades to a link-only email instead of failing.
+const pdfRender = vi.hoisted(() => ({ shouldThrow: false }));
+vi.mock('@breeze/shared/reportPdf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@breeze/shared/reportPdf')>();
+  return {
+    ...actual,
+    buildReportPdf: (...args: Parameters<typeof actual.buildReportPdf>) => {
+      if (pdfRender.shouldThrow) throw new Error('render exploded');
+      return actual.buildReportPdf(...args);
+    },
+  };
+});
 
 vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false),
@@ -98,6 +127,8 @@ function updateChain() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pdfRender.shouldThrow = false;
+  previousBaselineForMock.mockResolvedValue(undefined);
 });
 
 // ─── Occurrence math (pure) ──────────────────────────────────────────────────
@@ -250,6 +281,7 @@ describe('processRunScheduledReport', () => {
 
   it('stores a completed run, stamps lastGeneratedAt, and emails valid recipients with a CSV', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
+    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
     const runInsert = insertChain([{ id: RUN_ID }]);
     insertMock.mockReturnValueOnce(runInsert);
     const updates = [updateChain(), updateChain()];
@@ -278,6 +310,8 @@ describe('processRunScheduledReport', () => {
 
   it('marks the run failed (and still stamps lastGeneratedAt) when generation throws', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
+    // No org/partner timezone select here: generateReport throws before the
+    // recipients branch (where the tz lookup now lives) is ever reached.
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     const updates = [updateChain(), updateChain()];
     updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
@@ -302,14 +336,177 @@ describe('processRunScheduledReport', () => {
     expect(generateReportMock).not.toHaveBeenCalled();
   });
 
-  it('does not attach a CSV for pdf-format reports (link-only email)', async () => {
-    selectMock.mockReturnValueOnce(selectChain([{ ...report, format: 'pdf' }]));
+  it('includes a trend line in the email when a previous baseline exists', async () => {
+    const postureReport = {
+      ...report,
+      type: 'security_compliance_posture',
+      config: { emailRecipients: ['ops@example.com'] },
+    };
+    selectMock.mockReturnValueOnce(selectChain([postureReport]));
+    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    const updates = [updateChain(), updateChain()];
+    updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockResolvedValueOnce({
+      rows: [{ hostname: 'PC-1' }],
+      rowCount: 1,
+      summary: { postureScore: 79 },
+    });
+    previousBaselineForMock.mockResolvedValueOnce({
+      generatedAt: '2026-06-01T09:00:00Z',
+      summary: { postureScore: 74 },
+    });
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(previousBaselineForMock).toHaveBeenCalledWith(REPORT_ID);
+    // The stored snapshot carries the baseline forward so the download path
+    // (and any future re-render) reflects the same trend as this email.
+    expect(updates[1]!.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          previous: { generatedAt: '2026-06-01T09:00:00Z', summary: { postureScore: 74 } },
+        }),
+      }),
+    );
+    const mail = sendEmailMock.mock.calls[0]![0] as { html: string; text: string };
+    expect(mail.html).toContain('up from 74');
+    expect(mail.text).toContain('up from 74');
+  });
+
+  it('attaches a real branded PDF for pdf-format reports (end-to-end Node render, not mocked)', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(loadReportBrandingForOrgMock).toHaveBeenCalledWith(ORG_ID);
+    const mail = sendEmailMock.mock.calls[0]![0] as {
+      attachments: Array<{ filename: string; content: Buffer; contentType?: string }>;
+    };
+    expect(mail.attachments).toHaveLength(1);
+    const attachment = mail.attachments[0]!;
+    expect(attachment.filename).toMatch(/device_inventory-report-.*\.pdf$/);
+    expect(attachment.contentType).toBe('application/pdf');
+    expect(Buffer.isBuffer(attachment.content)).toBe(true);
+    expect(attachment.content.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('falls back to a link-only email (run still completed) when the PDF render throws', async () => {
+    pdfRender.shouldThrow = true;
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    const updates = [updateChain(), updateChain()];
+    updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+      // Prove the render actually failed (vs. silently succeeding): the catch
+      // block logs the fallback before sending the link-only email.
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('PDF render failed; sending link-only email'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    // A render failure must not block delivery: the email still goes out,
+    // link-only, and the run row is still marked completed.
+    expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const mail = sendEmailMock.mock.calls[0]![0] as { attachments: unknown[]; html: string; text: string };
+    expect(mail.attachments).toHaveLength(0);
+    expect(mail.html).toContain('Open Breeze to view and download the formatted report.');
+    expect(mail.text).toContain('Open Breeze to view and download the formatted report.');
+  });
+
+  it('does not query branding when there are no valid recipients', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['not-an-email'] } }]),
+    );
+    // No org/partner timezone select here either: with zero valid recipients
+    // the recipients branch (where both the tz lookup and branding load now
+    // live) never runs.
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
     generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'pc-1' }], rowCount: 1 });
 
     await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
 
+    expect(loadReportBrandingForOrgMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('still emails (unbranded) when the branding load throws', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+    loadReportBrandingForOrgMock.mockRejectedValueOnce(new Error('branding query failed'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Branding load failed; sending unbranded'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    // A branding lookup failure must not drop the whole email — it still
+    // goes out (unbranded), same as a PDF render failure degrading to link-only.
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const mail = sendEmailMock.mock.calls[0]![0] as { attachments: Array<{ filename: string }> };
+    expect(mail.attachments).toHaveLength(1);
+    expect(mail.attachments[0]!.filename).toMatch(/device_inventory-report-.*\.csv/);
+  });
+
+  it('warns when an attachment exceeds 5MB and sends link-only', async () => {
+    const bigHostname = 'x'.repeat(6 * 1024 * 1024);
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: bigHostname }], rowCount: 1 });
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('Attachment exceeds 5MB; sending link-only'),
+        expect.objectContaining({ reportName: report.name, bytes: expect.any(Number) }),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
     const mail = sendEmailMock.mock.calls[0]![0] as { attachments: unknown[] };
     expect(mail.attachments).toHaveLength(0);
   });

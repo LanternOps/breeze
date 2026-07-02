@@ -1,9 +1,9 @@
-import type { PostureSummary } from '@breeze/shared';
+import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
-import { buildReportPdf, type ReportBranding } from './reportPdf';
+import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 
 // Re-export the shared CSV helpers so existing importers of these names from
 // './reportExport' keep working; the canonical definitions now live in
@@ -60,12 +60,15 @@ export async function exportReport(
     format: 'csv' | 'pdf' | 'excel';
     reportType: string;
     timezone: string;
-    summary?: PostureSummary;
+    summary?: PostureSummary | ExecutiveSummary;
+    /** Slim baseline from the previous completed run (report_runs.result.previous),
+     * used to draw the scorecard trend chip; ignored by non-cover report types. */
+    previous?: { generatedAt?: string | null; summary?: unknown };
     /** Pre-resolved partner branding; loaded automatically for PDFs when omitted. */
     branding?: ReportBranding;
   }
 ): Promise<void> {
-  const { format, reportType, timezone, summary } = opts;
+  const { format, reportType, timezone, summary, previous } = opts;
   const dateStr = new Date().toISOString().split('T')[0];
   const baseFilename = `${reportType}-report-${dateStr}`;
 
@@ -106,7 +109,7 @@ export async function exportReport(
     timeStyle: 'short',
   });
   const branding = opts.branding ?? (await loadPartnerBranding());
-  const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, branding });
+  const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, previous, branding });
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
 }
 

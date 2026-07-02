@@ -11,12 +11,20 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
-  LayoutTemplate
+  LayoutTemplate,
+  Mail
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import {
+  nextOccurrence,
+  formatNextOccurrence,
+  type ScheduleCadence,
+  type ScheduleConfig,
+  type ExecutiveSummary
+} from '@breeze/shared';
 
 export type ReportType =
   | 'device_inventory'
@@ -91,6 +99,16 @@ function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   const match = /filename="?([^";]+)"?/.exec(header);
   return match?.[1] ?? null;
+}
+
+function scheduleConfigOf(config: Record<string, unknown> | undefined): ScheduleConfig {
+  const raw = config?.schedule;
+  return raw && typeof raw === 'object' ? (raw as ScheduleConfig) : {};
+}
+
+function recipientCountOf(config: Record<string, unknown> | undefined): number {
+  const raw = config?.emailRecipients;
+  return Array.isArray(raw) ? raw.filter((r) => typeof r === 'string' && r.trim() !== '').length : 0;
 }
 
 export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: ReportsListProps) {
@@ -221,14 +239,22 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       if (contentType.includes('application/json')) {
         // PDF path: server returned the stored snapshot; render client-side.
         const payload = await res.json();
-        const data = payload.data as { rows?: unknown[]; summary?: unknown } | undefined;
+        const data = payload.data as {
+          rows?: unknown[];
+          summary?: unknown;
+          previous?: { generatedAt?: string | null; summary?: unknown };
+        } | undefined;
         const rows = data?.rows ?? [];
         await exportReport(rows, {
           format: 'pdf',
           reportType: payload.type ?? run.reportType ?? 'report',
           timezone: effectiveTimezone,
-          // posture report carries a summary scorecard; harmless for other types
-          summary: data?.summary as PostureSummary | undefined,
+          // The posture and executive-summary covers consume this snapshot to
+          // render their designed cover pages; ignored by other report types.
+          summary: data?.summary as PostureSummary | ExecutiveSummary | undefined,
+          // Drives the scorecard trend chip ("79, up from 74 last month")
+          // when the stored run snapshot captured a prior baseline.
+          previous: data?.previous,
         });
         return;
       }
@@ -411,6 +437,30 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                           <Calendar className="h-3 w-3" />
                           {scheduleLabels[report.schedule]}
                         </span>
+                        {report.schedule !== 'one_time' && (
+                          /* Computed in the viewer's timezone; the worker fires in the
+                             org's timezone, so this is a close approximation shown to
+                             the user, not a contract for when the run actually fires. */
+                          <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                            <span>
+                              Next: {formatNextOccurrence(
+                                nextOccurrence(
+                                  new Date(),
+                                  report.schedule as ScheduleCadence,
+                                  scheduleConfigOf(report.config),
+                                  effectiveTimezone
+                                ),
+                                { weekday: report.schedule === 'weekly' }
+                              )}
+                            </span>
+                            {recipientCountOf(report.config) > 0 && (
+                              <span className="inline-flex items-center gap-1" title="Email recipients">
+                                <Mail className="h-3 w-3" />
+                                {recipientCountOf(report.config)}
+                              </span>
+                            )}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-sm">
                         {formatLabels[report.format]}

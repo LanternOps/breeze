@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf';
 import autoTable, { type CellHookData } from 'jspdf-autotable';
-import type { PostureSummary } from '@breeze/shared';
+import type { PostureSummary } from '../types/postureReport';
+import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 
 /**
  * Branded PDF design system for Breeze reports.
@@ -45,13 +46,17 @@ export type ReportBranding = {
   logoAspect: number | null;
 };
 
-type BuildOpts = {
+export type BuildOpts = {
   reportType: string;
   /** Already-formatted, timezone-correct generation timestamp. */
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary;
+  summary?: PostureSummary | ExecutiveSummary;
+  /** Slim baseline from the previous completed run, when the caller supplied
+   * one (report_runs.result.previous) — drives the scorecard trend chip and
+   * its "since <date>" label. */
+  previous?: { generatedAt?: string | null; summary?: unknown };
   branding?: ReportBranding;
 };
 
@@ -248,6 +253,7 @@ function drawScorecard(
   caption: string,
   stats: ScoreStat[],
   top: number,
+  trend?: { delta: number; sinceLabel: string } | null,
 ): number {
   const x = PAGE.mx;
   const w = PAGE.w - PAGE.mx * 2; // full content width — no dead right half
@@ -278,6 +284,25 @@ function drawScorecard(
   doc.roundedRect(x + 10, top + 24.5, chipW, 4.8, 2.4, 2.4, 'F');
   set.text(doc, C.white);
   doc.text(chipLabel, x + 10 + chipW / 2, top + 27.8, { align: 'center' });
+
+  // Trend vs the previous run: "+5 since Jun 1" — the line that makes a
+  // recurring report feel alive. Muted date; signed delta carries the colour.
+  // Plain +/- text, not a ▲/▼ glyph: jsPDF's built-in helvetica doesn't carry
+  // those glyphs, so they rendered as garbage with a miscalculated width that
+  // overlapped the "since" label (visually confirmed via the PNG harness).
+  if (trend && trend.delta !== 0) {
+    const up = trend.delta > 0;
+    set.text(doc, up ? C.success : C.danger);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    const deltaStr = `${up ? '+' : ''}${trend.delta}`;
+    const chipRight = x + 10 + chipW;
+    doc.text(deltaStr, chipRight + 4, top + 27.8);
+    set.text(doc, C.muted);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.text(trend.sinceLabel, chipRight + 4 + doc.getTextWidth(deltaStr) + 2, top + 27.8);
+  }
 
   // Meter: caption above, track + filled portion, 0/50/100 ticks below.
   const meterX = x + 74;
@@ -331,6 +356,27 @@ function drawScorecard(
   return top + h + 6;
 }
 
+/** Delta + "since <date>" label for the scorecard trend chip, derived from
+ * `opts.previous` — the slim baseline copied onto the run snapshot at
+ * generation time. Returns null when there's nothing to compare (no prior
+ * run, or the prior summary didn't capture this metric). */
+function trendFor(opts: BuildOpts, current: number | null | undefined, pick: (s: Record<string, unknown>) => unknown): { delta: number; sinceLabel: string } | null {
+  const prevSummary = opts.previous?.summary;
+  if (current == null || !prevSummary || typeof prevSummary !== 'object') return null;
+  const prevRaw = pick(prevSummary as Record<string, unknown>);
+  const prev = typeof prevRaw === 'number' ? prevRaw : null;
+  if (prev == null) return null;
+  let since = 'vs previous run';
+  const iso = opts.previous?.generatedAt;
+  if (iso) {
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) {
+      since = `since ${new Intl.DateTimeFormat('en-US', { timeZone: opts.timezone, month: 'short', day: 'numeric' }).format(d)}`;
+    }
+  }
+  return { delta: current - prev, sinceLabel: since };
+}
+
 function drawSectionHeading(doc: jsPDF, text: string, y: number): number {
   set.fill(doc, C.teal);
   doc.rect(PAGE.mx, y - 3.4, 1.7, 4.4, 'F');
@@ -363,6 +409,9 @@ function drawMetricGrid(doc: jsPDF, metrics: Metric[], top: number): number {
   const rowH = 6.0;
   const rows = Math.ceil(metrics.length / 2);
   metrics.forEach((m, i) => {
+    // Padding slots (empty label, used to keep a shorter column aligned with a
+    // taller one under column-major fill) draw nothing — no stray dot/hairline.
+    if (!m.label) return;
     const col = Math.floor(i / rows);
     const row = i % rows;
     const x = PAGE.mx + col * (colW + 8);
@@ -479,7 +528,14 @@ function renderPostureCover(
       { label: 'Critical patches/vulns', value: String(agg.criticalCount), tone: agg.criticalCount > 0 ? C.danger : C.success },
       { label: 'Unprotected', value: String(unprotected), tone: unprotected > 0 ? C.danger : C.success },
     ];
-    y = drawScorecard(doc, summary.postureScore, caption, stats, y);
+    y = drawScorecard(
+      doc,
+      summary.postureScore,
+      caption,
+      stats,
+      y,
+      trendFor(opts, summary.postureScore, (s) => (s as { postureScore?: unknown }).postureScore),
+    );
     // Methodology in one muted line, so "79 — GOOD" is auditable rather than oracular.
     set.text(doc, C.faint);
     doc.setFont('helvetica', 'normal');
@@ -686,6 +742,152 @@ function drawRecommendedActions(
     y += 4;
   }
   return y;
+}
+
+// ----------------------------------------------------------------------------
+// Executive summary cover: the QBR artifact. Same designed skeleton as the
+// posture cover — fleet-health scorecard, thematic metric grids, recommended
+// actions — driven by the ExecutiveSummary snapshot instead of posture data.
+// ----------------------------------------------------------------------------
+
+function buildExecRecommendations(summary: ExecutiveSummary): Recommendation[] {
+  const d = summary.devices ?? {};
+  const a = summary.alerts ?? {};
+  const recs: Recommendation[] = [];
+  if ((d.offline ?? 0) > 0) {
+    recs.push({ severity: 'bad', text: `Investigate ${d.offline} offline device${d.offline === 1 ? '' : 's'} — offline endpoints are unmonitored and unpatched.` });
+  }
+  if ((a.critical ?? 0) > 0) {
+    // The snapshot's `resolved` count spans all severities, so we can't claim
+    // anything about *critical* resolution status — just flag the criticals.
+    recs.push({ severity: 'bad', text: `Triage the ${a.critical} critical alert${a.critical === 1 ? '' : 's'} raised in this reporting window.` });
+  }
+  if (a.resolutionRate != null && a.resolutionRate < 80 && (a.total ?? 0) > 0) {
+    recs.push({ severity: 'warn', text: `Raise the alert resolution rate — ${a.resolutionRate}% of alerts were resolved against an 80% target.` });
+  }
+  if (d.healthPercentage != null && d.healthPercentage < 90 && (d.total ?? 0) > 0) {
+    recs.push({ severity: 'warn', text: `Restore fleet health to 90%+ — ${d.healthPercentage}% of devices are currently online.` });
+  }
+  if ((a.high ?? 0) > 0) {
+    recs.push({ severity: 'warn', text: `Review ${a.high} high-severity alert${a.high === 1 ? '' : 's'} for recurring patterns worth automating away.` });
+  }
+  return [...recs.filter((r) => r.severity === 'bad'), ...recs.filter((r) => r.severity === 'warn')];
+}
+
+function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts: BuildOpts): void {
+  const d = summary.devices ?? {};
+  const a = summary.alerts ?? {};
+  const total = d.total ?? 0;
+
+  let y = drawTitleBlock(
+    doc,
+    'Executive Summary',
+    summary.org?.name ?? '',
+    `Generated ${opts.generatedAt}   ·   ${total} managed device${total === 1 ? '' : 's'}`,
+    PAGE.bandH + 8,
+  );
+
+  if (d.healthPercentage != null) {
+    const offline = d.offline ?? 0;
+    const stats: ScoreStat[] = [
+      { label: 'Devices online', value: `${d.online ?? 0}/${total}`, tone: offline > 0 ? C.warning : C.success },
+      { label: 'Critical alerts', value: String(a.critical ?? 0), tone: (a.critical ?? 0) > 0 ? C.danger : C.success },
+      { label: 'Alerts resolved', value: a.resolutionRate == null ? 'N/A' : `${a.resolutionRate}%`, tone: (a.resolutionRate ?? 100) >= 80 ? C.success : C.warning },
+    ];
+    y = drawScorecard(
+      doc,
+      d.healthPercentage,
+      'Fleet health — share of managed devices online',
+      stats,
+      y,
+      trendFor(opts, d.healthPercentage, (s) => ((s as { devices?: { healthPercentage?: unknown } }).devices ?? {}).healthPercentage),
+    );
+    set.text(doc, C.faint);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text(
+      'Fleet health: percentage of managed devices reporting online. Alert figures cover the configured reporting window.',
+      PAGE.mx,
+      y - 2.5,
+    );
+    y += 1.5;
+  }
+
+  const overviewHeadingY = y + 2;
+  y = drawSectionHeading(doc, 'Fleet & alert overview', overviewHeadingY);
+  drawLegend(doc, overviewHeadingY);
+  // Left column: device availability. Right column: alert activity.
+  // Column-major fill, so array order = reading order per column.
+  const deviceMetrics: Metric[] = [
+    { label: 'Managed devices', value: String(total), status: 'neutral' },
+    { label: 'Online now', value: String(d.online ?? 0), status: pctStatus(d.healthPercentage) },
+    { label: 'Offline', value: String(d.offline ?? 0), status: (d.offline ?? 0) > 0 ? 'warn' : 'good', target: 'none' },
+    { label: 'Fleet health', value: d.healthPercentage == null ? 'N/A' : `${d.healthPercentage}%`, status: pctStatus(d.healthPercentage), target: '>=90%' },
+  ];
+  const alertMetrics: Metric[] = [
+    { label: 'Alerts in window', value: String(a.total ?? 0), status: 'neutral' },
+    { label: 'Critical', value: String(a.critical ?? 0), status: (a.critical ?? 0) > 0 ? 'bad' : 'good', target: 'none' },
+    { label: 'High severity', value: String(a.high ?? 0), status: (a.high ?? 0) > 0 ? 'warn' : 'good', target: 'none' },
+    { label: 'Resolution rate', value: a.resolutionRate == null ? 'N/A' : `${a.resolutionRate}%`, status: pctStatus(a.resolutionRate, 80, 50), target: '>=80%' },
+  ];
+  y = drawMetricGrid(doc, [...deviceMetrics, ...alertMetrics], y);
+
+  // OS + site composition, side by side via the same two-column grid: left
+  // column = OS distribution, right column = largest sites. Pad the shorter
+  // list so column-major fill keeps each theme in its own column.
+  const osEntries = Object.entries(summary.osDistribution ?? {});
+  const sites = summary.siteBreakdown ?? [];
+  if (osEntries.length > 0 || sites.length > 0) {
+    y = drawSectionHeading(doc, 'Fleet composition', y + 2.5);
+    const MAX_COMPOSITION_ROWS = 5;
+    const osMetrics: Metric[] = osEntries
+      .sort(([, x], [, z]) => z - x)
+      .slice(0, MAX_COMPOSITION_ROWS)
+      .map(([os, count]) => ({
+        label: OS_LABELS[os.toLowerCase()] ?? titleCase(os),
+        value: `${count} device${count === 1 ? '' : 's'}`,
+        status: 'neutral' as MetricStatus,
+      }));
+    const shownSites = sites.slice(0, MAX_COMPOSITION_ROWS);
+    const siteMetrics: Metric[] = shownSites.map((s) => ({
+      label: s.site,
+      value: `${s.count} device${s.count === 1 ? '' : 's'}`,
+      status: 'neutral' as MetricStatus,
+    }));
+    if (sites.length > MAX_COMPOSITION_ROWS) {
+      const rest = sites.slice(MAX_COMPOSITION_ROWS).reduce((acc, s) => acc + s.count, 0);
+      siteMetrics[MAX_COMPOSITION_ROWS - 1] = {
+        label: `${shownSites[MAX_COMPOSITION_ROWS - 1]!.site} + ${sites.length - MAX_COMPOSITION_ROWS} more`,
+        value: `${(shownSites[MAX_COMPOSITION_ROWS - 1]!.count) + rest} devices`,
+        status: 'neutral',
+      };
+    }
+    const rows = Math.max(osMetrics.length, siteMetrics.length);
+    const pad = (arr: Metric[]): Metric[] =>
+      arr.concat(Array.from({ length: rows - arr.length }, () => ({ label: '', value: '', status: 'na' as MetricStatus })));
+    y = drawMetricGrid(doc, [...pad(osMetrics), ...pad(siteMetrics)], y);
+  }
+
+  // Recommended actions close the page — the reader leaves with next steps.
+  const recs = buildExecRecommendations(summary);
+  if (recs.length > 0) {
+    const rowH = 5.2;
+    const maxY = PAGE.footY - 4;
+    if (y + 5 + rowH <= maxY) {
+      const fit = Math.min(recs.length, 5, Math.floor((maxY - y - 5) / rowH));
+      y = drawSectionHeading(doc, 'Recommended actions', y + 2.5);
+      doc.setFontSize(9);
+      recs.slice(0, fit).forEach((rec, i) => {
+        set.text(doc, rec.severity === 'bad' ? C.danger : C.warning);
+        doc.setFont('helvetica', 'bold');
+        doc.text(`${i + 1}.`, PAGE.mx + 1, y);
+        set.text(doc, C.ink);
+        doc.setFont('helvetica', 'normal');
+        doc.text(rec.text, PAGE.mx + 6.5, y);
+        y += rowH;
+      });
+    }
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -993,7 +1195,11 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
   const doc = new jsPDF({ orientation: 'landscape' });
   const records = rows as Record<string, unknown>[];
 
-  if (opts.reportType === 'security_compliance_posture' && opts.summary) {
+  // SAFE guard is intentionally asymmetric: a summary carrying an exec shape
+  // ('devices' key) must not enter the posture cover, but we don't require any
+  // posture-specific key here because legacy posture snapshots are all-optional
+  // and must keep rendering.
+  if (opts.reportType === 'security_compliance_posture' && opts.summary && !('devices' in (opts.summary as object))) {
     // Aggregate the per-device rows for the scorecard right-rail risk stats.
     const agg: PostureAggregates = records.reduce<PostureAggregates>(
       (acc, r) => {
@@ -1007,13 +1213,17 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
       },
       { criticalCount: 0, unprotectedCount: 0 },
     );
-    renderPostureCover(doc, opts.summary, opts, agg);
+    renderPostureCover(doc, opts.summary as PostureSummary, opts, agg);
     // Draw chrome on the cover page (no autotable runs on it).
     drawHeaderBand(doc, opts);
     drawFooter(doc, opts);
     if (records.length > 0) {
       renderPostureTable(doc, records, opts);
     }
+  } else if (opts.reportType === 'executive_summary' && opts.summary && 'devices' in (opts.summary as object)) {
+    renderExecutiveSummaryCover(doc, opts.summary as ExecutiveSummary, opts);
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
   } else {
     renderGenericReport(doc, records, opts);
   }
