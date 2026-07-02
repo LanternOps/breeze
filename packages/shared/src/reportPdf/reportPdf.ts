@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable, { type CellHookData } from 'jspdf-autotable';
-import type { PostureSummary } from '@breeze/shared';
+import type { PostureSummary } from '../types/postureReport';
 
 /**
  * Branded PDF design system for Breeze reports.
@@ -45,7 +45,7 @@ export type ReportBranding = {
   logoAspect: number | null;
 };
 
-type BuildOpts = {
+export type BuildOpts = {
   reportType: string;
   /** Already-formatted, timezone-correct generation timestamp. */
   generatedAt: string;

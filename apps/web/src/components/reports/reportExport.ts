@@ -3,7 +3,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
-import { buildReportPdf, type ReportBranding } from './reportPdf';
+import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 
 // Re-export the shared CSV helpers so existing importers of these names from
 // './reportExport' keep working; the canonical definitions now live in

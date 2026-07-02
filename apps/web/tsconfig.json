@@ -4,7 +4,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@breeze/shared": ["../../packages/shared/src"]
+      "@breeze/shared": ["../../packages/shared/src"],
+      "@breeze/shared/reportPdf": ["../../packages/shared/src/reportPdf"]
     },
     "jsx": "react-jsx",
     "jsxImportSource": "react"

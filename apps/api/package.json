@@ -61,6 +61,8 @@
     "hono": "^4.12.27",
     "ioredis": "^5.10.1",
     "jose": "^6.2.3",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "nanoid": "^5.1.15",
     "node-stream-zip": "^1.15.0",
     "nodemailer": "^9.0.1",

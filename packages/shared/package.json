@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./types": "./src/types/index.ts",
     "./validators": "./src/validators/index.ts",
-    "./constants": "./src/constants/index.ts"
+    "./constants": "./src/constants/index.ts",
+    "./reportPdf": "./src/reportPdf/index.ts"
   },
   "scripts": {
     "test": "vitest",
@@ -17,9 +18,12 @@
   },
   "dependencies": {
     "disposable-email-domains": "^1.0.62",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^25.9.3",
     "typescript": "^5.7.2",
     "vitest": "^4.1.9"
   }

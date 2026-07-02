@@ -45,7 +45,7 @@ vi.mock('jspdf', () => {
 vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
 
 import { exportReport, type PostureSummary } from './reportExport';
-import type { ReportBranding } from './reportPdf';
+import type { ReportBranding } from '@breeze/shared/reportPdf';
 
 // Pass branding explicitly so the PDF path never hits the network branding fetch.
 const noBranding: ReportBranding = { name: 'Breeze', logoDataUrl: null, logoAspect: null };
