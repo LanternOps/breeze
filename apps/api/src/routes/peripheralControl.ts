@@ -274,6 +274,56 @@ async function emitPolicyChanged(
   );
 }
 
+/**
+ * Fan a policy change out to its target orgs (#2131): schedule the org-keyed
+ * distribution job and emit the change event PER ORG, each with its own
+ * try/catch — one org's Redis/queue failure must not silently skip the
+ * remaining orgs of a partner-wide fan-out. Returns a warning naming how many
+ * orgs failed (mirrors processPolicyDistribution's per-device accounting).
+ */
+async function fanOutPolicyChange(
+  targetOrgIds: string[],
+  policyId: string,
+  reason: string,
+  eventPayload: Record<string, unknown>
+): Promise<string | undefined> {
+  let warning: string | undefined;
+
+  const distributionFailures: string[] = [];
+  for (const targetOrgId of targetOrgIds) {
+    try {
+      await schedulePeripheralPolicyDistribution(targetOrgId, [policyId], reason);
+    } catch (error) {
+      distributionFailures.push(targetOrgId);
+      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${policyId} (org ${targetOrgId}):`, error);
+    }
+  }
+  if (distributionFailures.length > 0) {
+    warning = combineWarning(
+      warning,
+      `distribution scheduling failed for ${distributionFailures.length}/${targetOrgIds.length} org(s): ${distributionFailures.join(', ')}`
+    );
+  }
+
+  const eventFailures: string[] = [];
+  for (const targetOrgId of targetOrgIds) {
+    try {
+      await emitPolicyChanged(targetOrgId, eventPayload);
+    } catch (error) {
+      eventFailures.push(targetOrgId);
+      console.error(`[peripheralControl] Failed to emit policy change event for policy ${policyId} (org ${targetOrgId}):`, error);
+    }
+  }
+  if (eventFailures.length > 0) {
+    warning = combineWarning(
+      warning,
+      `event publish failed for ${eventFailures.length}/${targetOrgIds.length} org(s): ${eventFailures.join(', ')}`
+    );
+  }
+
+  return warning;
+}
+
 peripheralControlRoutes.get(
   '/activity',
   // Populates `permissions` in context (site-scope narrowing below depends on
@@ -383,8 +433,10 @@ peripheralControlRoutes.get(
     }
 
     const conditions: SQL[] = [];
-    const orgCondition = auth.orgCondition(peripheralPolicies.orgId);
-    if (orgCondition) conditions.push(orgCondition);
+    // Dual-axis (#2131): partner-scope callers also see their partner-wide
+    // policies in the list, not just via get-by-id.
+    const accessCondition = peripheralPolicyAccessCondition(auth);
+    if (accessCondition) conditions.push(accessCondition);
 
     if (query.orgId) conditions.push(eq(peripheralPolicies.orgId, query.orgId));
     if (query.isActive !== undefined) conditions.push(eq(peripheralPolicies.isActive, query.isActive === 'true'));
@@ -477,31 +529,11 @@ peripheralControlRoutes.post(
       }
 
       const updateTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
-
-      let distributionWarning: string | undefined;
-      try {
-        for (const targetOrgId of updateTargetOrgIds) {
-          await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'policy-updated');
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
-        console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${updated.id}:`, error);
-      }
-
-      try {
-        for (const targetOrgId of updateTargetOrgIds) {
-          await emitPolicyChanged(targetOrgId, {
-            policyId: updated.id,
-            action: 'updated',
-            changedBy: auth.user.id
-          });
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
-        console.error(`[peripheralControl] Failed to emit policy change event for policy ${updated.id}:`, error);
-      }
+      const distributionWarning = await fanOutPolicyChange(updateTargetOrgIds, updated.id, 'policy-updated', {
+        policyId: updated.id,
+        action: 'updated',
+        changedBy: auth.user.id
+      });
 
       try {
         writeRouteAudit(c, {
@@ -561,31 +593,11 @@ peripheralControlRoutes.post(
     }
 
     const createTargetOrgIds = await resolvePolicyTargetOrgIds(created);
-
-    let distributionWarning: string | undefined;
-    try {
-      for (const targetOrgId of createTargetOrgIds) {
-        await schedulePeripheralPolicyDistribution(targetOrgId, [created.id], 'policy-created');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
-      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${created.id}:`, error);
-    }
-
-    try {
-      for (const targetOrgId of createTargetOrgIds) {
-        await emitPolicyChanged(targetOrgId, {
-          policyId: created.id,
-          action: 'created',
-          changedBy: auth.user.id
-        });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
-      console.error(`[peripheralControl] Failed to emit policy change event for policy ${created.id}:`, error);
-    }
+    const distributionWarning = await fanOutPolicyChange(createTargetOrgIds, created.id, 'policy-created', {
+      policyId: created.id,
+      action: 'created',
+      changedBy: auth.user.id
+    });
 
     try {
       writeRouteAudit(c, {
@@ -643,31 +655,11 @@ peripheralControlRoutes.post(
     }
 
     const disableTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
-
-    let distributionWarning: string | undefined;
-    try {
-      for (const targetOrgId of disableTargetOrgIds) {
-        await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'policy-disabled');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
-      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${updated.id}:`, error);
-    }
-
-    try {
-      for (const targetOrgId of disableTargetOrgIds) {
-        await emitPolicyChanged(targetOrgId, {
-          policyId: updated.id,
-          action: 'disabled',
-          changedBy: auth.user.id
-        });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
-      console.error(`[peripheralControl] Failed to emit policy change event for policy ${updated.id}:`, error);
-    }
+    const distributionWarning = await fanOutPolicyChange(disableTargetOrgIds, updated.id, 'policy-disabled', {
+      policyId: updated.id,
+      action: 'disabled',
+      changedBy: auth.user.id
+    });
 
     try {
       writeRouteAudit(c, {
@@ -752,33 +744,13 @@ peripheralControlRoutes.post(
     }
 
     const exceptionsTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
-
-    let distributionWarning: string | undefined;
-    try {
-      for (const targetOrgId of exceptionsTargetOrgIds) {
-        await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'policy-exceptions-updated');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
-      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${updated.id}:`, error);
-    }
-
-    try {
-      for (const targetOrgId of exceptionsTargetOrgIds) {
-        await emitPolicyChanged(targetOrgId, {
-          policyId: updated.id,
-          action: 'exceptions_updated',
-          changedBy: auth.user.id,
-          operation: payload.operation,
-          changed
-        });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
-      console.error(`[peripheralControl] Failed to emit policy change event for policy ${updated.id}:`, error);
-    }
+    const distributionWarning = await fanOutPolicyChange(exceptionsTargetOrgIds, updated.id, 'policy-exceptions-updated', {
+      policyId: updated.id,
+      action: 'exceptions_updated',
+      changedBy: auth.user.id,
+      operation: payload.operation,
+      changed
+    });
 
     try {
       writeRouteAudit(c, {

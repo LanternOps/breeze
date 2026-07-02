@@ -128,6 +128,13 @@ actionRoutes.post(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
+    // Evaluate requests remediation, so for a partner-wide policy it fans
+    // enforcement out to EVERY org under the partner — gate it like the
+    // sibling mutators, not like a read (#2149 review).
+    if (partnerWideWriteDenied(policy, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     if (!policy.enabled) {
       return c.json({ error: 'Cannot evaluate disabled policy' }, 400);
     }

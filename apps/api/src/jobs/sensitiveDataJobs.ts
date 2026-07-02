@@ -403,11 +403,23 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
   }
 
   const admittedOrgIds: string[] = [];
+  const backpressuredOrgIds: string[] = [];
   for (const orgId of ownerOrgIds) {
     const orgQueued = await getOrgQueuedScans(orgId);
     if (orgQueued < SENSITIVE_DATA_ORG_QUEUE_BACKPRESSURE_LIMIT) {
       admittedOrgIds.push(orgId);
+    } else {
+      backpressuredOrgIds.push(orgId);
     }
+  }
+  if (backpressuredOrgIds.length > 0) {
+    // A chronically backpressured member org under a partner-wide policy
+    // would otherwise be starved of scans with no trace in the logs — the
+    // policy still reports "scheduled" for the admitted orgs.
+    console.warn(
+      `[SensitiveDataJobs] policy ${policy.id}: skipped ${backpressuredOrgIds.length}/${ownerOrgIds.length} `
+      + `backpressured org(s) this cycle: ${backpressuredOrgIds.join(', ')}`
+    );
   }
   if (admittedOrgIds.length === 0) return 0;
 

@@ -50,6 +50,7 @@ vi.mock('../db/schema', () => ({
   automationPolicies: {
     id: 'id',
     orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     description: 'description',
     enabled: 'enabled',
@@ -143,6 +144,7 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 function makePolicy(overrides: Record<string, unknown> = {}) {
   return {
@@ -265,6 +267,88 @@ describe('policyManagement routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // ----------------------------------------------------------------
+    // Partner-wide dual-ownership gate (#2129): a policy with orgId null +
+    // partnerId set is only mutable by a partner-scope caller whose
+    // partnerOrgAccess is 'all' (or system scope). PR review flagged this
+    // app-layer 403 as unit-untested — only real-DB integration suites (not
+    // run in the required CI job) covered it.
+    // ----------------------------------------------------------------
+    it('should return 403 activating a partner-wide policy when the partner caller lacks partnerOrgAccess=all', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        return next();
+      });
+
+      const policy = makePolicy({ orgId: null, partnerId: PARTNER_ID, enabled: false });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([policy])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('should allow activating a partner-wide policy when the partner caller has partnerOrgAccess=all and a matching partnerId', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess: 'all',
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        return next();
+      });
+
+      const policy = makePolicy({ orgId: null, partnerId: PARTNER_ID, enabled: false });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([policy])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...policy, enabled: true }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/policies/${POLICY_ID}/activate`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.enabled).toBe(true);
+      expect(db.update).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -98,7 +98,7 @@ function alertRuleWhere(auth: AuthContext): SQL | undefined {
 // alertRuleWhere — org-owned windows the caller can reach OR partner-wide
 // ones (org_id NULL) owned by the caller's own partner.
 function maintenanceWindowWhere(auth: AuthContext): SQL | undefined {
-  const oc = maintenanceWindowWhere(auth);
+  const oc = orgWhere(auth, maintenanceWindows.orgId);
   if (!oc) return undefined; // system scope
   if (auth.scope === 'partner' && auth.partnerId) {
     return sql`(${oc} OR (${maintenanceWindows.orgId} IS NULL AND ${maintenanceWindows.partnerId} = ${auth.partnerId}))`;

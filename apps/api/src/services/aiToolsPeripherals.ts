@@ -262,6 +262,58 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         return rows.map((row) => row.id);
       };
 
+      // Per-org fan-out with per-iteration try/catch (#2131): one org's
+      // Redis/queue failure must not silently skip the remaining orgs of a
+      // partner-wide fan-out. Returns a warning naming how many orgs failed.
+      const fanOutPolicyChange = async (
+        targetOrgIds: string[],
+        distributedPolicyId: string,
+        reason: string,
+        eventPayload: Record<string, unknown>
+      ): Promise<string | undefined> => {
+        let warning: string | undefined;
+
+        const distributionFailures: string[] = [];
+        for (const targetOrgId of targetOrgIds) {
+          try {
+            await schedulePeripheralPolicyDistribution(targetOrgId, [distributedPolicyId], reason);
+          } catch (error) {
+            distributionFailures.push(targetOrgId);
+            console.error(`[aiTools] Failed to schedule peripheral policy distribution for policy ${distributedPolicyId} (org ${targetOrgId}):`, error);
+          }
+        }
+        if (distributionFailures.length > 0) {
+          warning = combineWarning(
+            warning,
+            `policy distribution scheduling failed for ${distributionFailures.length}/${targetOrgIds.length} org(s): ${distributionFailures.join(', ')}`
+          );
+        }
+
+        const eventFailures: string[] = [];
+        for (const targetOrgId of targetOrgIds) {
+          try {
+            await publishEvent(
+              'peripheral.policy_changed',
+              targetOrgId,
+              eventPayload,
+              'ai-tools',
+              { userId: auth.user.id }
+            );
+          } catch (error) {
+            eventFailures.push(targetOrgId);
+            console.error(`[aiTools] Failed to publish peripheral policy change event for policy ${distributedPolicyId} (org ${targetOrgId}):`, error);
+          }
+        }
+        if (eventFailures.length > 0) {
+          warning = combineWarning(
+            warning,
+            `event publish failed for ${eventFailures.length}/${targetOrgIds.length} org(s): ${eventFailures.join(', ')}`
+          );
+        }
+
+        return warning;
+      };
+
       if (action === 'create') {
         const orgResolved = resolveWritableToolOrgId(
           auth,
@@ -370,33 +422,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         const updateTargetOrgIds = await policyTargetOrgIds(updated);
-
-        let warning: string | undefined;
-        try {
-          for (const targetOrgId of updateTargetOrgIds) {
-            await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'ai-tool-update');
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
-          console.error(`[aiTools] Failed to schedule peripheral policy distribution for policy ${updated.id}:`, error);
-        }
-
-        try {
-          for (const targetOrgId of updateTargetOrgIds) {
-            await publishEvent(
-              'peripheral.policy_changed',
-              targetOrgId,
-              { policyId: updated.id, action: 'updated', changedBy: auth.user.id },
-              'ai-tools',
-              { userId: auth.user.id }
-            );
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warning = combineWarning(warning, `event publish failed: ${message}`);
-          console.error(`[aiTools] Failed to publish peripheral policy change event for policy ${updated.id}:`, error);
-        }
+        const warning = await fanOutPolicyChange(updateTargetOrgIds, updated.id, 'ai-tool-update',
+          { policyId: updated.id, action: 'updated', changedBy: auth.user.id });
 
         return JSON.stringify({ success: true, policyId: updated.id, action, ...(warning ? { warning } : {}) });
       }
@@ -421,33 +448,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         const disableTargetOrgIds = await policyTargetOrgIds(disabled);
-
-        let warning: string | undefined;
-        try {
-          for (const targetOrgId of disableTargetOrgIds) {
-            await schedulePeripheralPolicyDistribution(targetOrgId, [disabled.id], 'ai-tool-disable');
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
-          console.error(`[aiTools] Failed to schedule peripheral policy distribution for policy ${policy.id}:`, error);
-        }
-
-        try {
-          for (const targetOrgId of disableTargetOrgIds) {
-            await publishEvent(
-              'peripheral.policy_changed',
-              targetOrgId,
-              { policyId: policy.id, action: 'disabled', changedBy: auth.user.id },
-              'ai-tools',
-              { userId: auth.user.id }
-            );
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warning = combineWarning(warning, `event publish failed: ${message}`);
-          console.error(`[aiTools] Failed to publish peripheral policy change event for policy ${policy.id}:`, error);
-        }
+        const warning = await fanOutPolicyChange(disableTargetOrgIds, disabled.id, 'ai-tool-disable',
+          { policyId: policy.id, action: 'disabled', changedBy: auth.user.id });
 
         return JSON.stringify({ success: true, policyId: policy.id, action, ...(warning ? { warning } : {}) });
       }
@@ -516,33 +518,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         const exceptionTargetOrgIds = await policyTargetOrgIds(policy);
-
-        let warning: string | undefined;
-        try {
-          for (const targetOrgId of exceptionTargetOrgIds) {
-            await schedulePeripheralPolicyDistribution(targetOrgId, [policy.id], `ai-tool-${action}`);
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
-          console.error(`[aiTools] Failed to schedule peripheral policy distribution for policy ${policy.id}:`, error);
-        }
-
-        try {
-          for (const targetOrgId of exceptionTargetOrgIds) {
-            await publishEvent(
-              'peripheral.policy_changed',
-              targetOrgId,
-              { policyId: policy.id, action, changedBy: auth.user.id, changed },
-              'ai-tools',
-              { userId: auth.user.id }
-            );
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warning = combineWarning(warning, `event publish failed: ${message}`);
-          console.error(`[aiTools] Failed to publish peripheral policy change event for policy ${policy.id}:`, error);
-        }
+        const warning = await fanOutPolicyChange(exceptionTargetOrgIds, policy.id, `ai-tool-${action}`,
+          { policyId: policy.id, action, changedBy: auth.user.id, changed });
 
         return JSON.stringify({ success: true, policyId: policy.id, action, changed, ...(warning ? { warning } : {}) });
       }

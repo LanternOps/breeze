@@ -1,4 +1,4 @@
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, deviceGroupMemberships, maintenanceWindows, organizations } from '../db/schema';
 import { eq, sql } from 'drizzle-orm';
 import {
@@ -31,6 +31,13 @@ export interface DeviceMaintenanceStatus {
  *   2. Standalone maintenance windows (legacy `maintenance_windows` table)
  *
  * The first source that yields an active window wins.
+ *
+ * Runs its reads in a SHORT system-context block: callers include org-scoped
+ * request paths (GET /maintenance/device/:deviceId/status), whose RLS context
+ * cannot see partner-wide windows/config policies (org_id NULL, #2131) — the
+ * answer would silently be wrong for them. The lookup is anchored to a
+ * deviceId the ROUTE has already authorized, so there is no tenant pivot;
+ * same pattern as the agent heartbeat probe config and commands.ts.
  */
 export async function isDeviceInMaintenance(
   deviceId: string
@@ -44,31 +51,35 @@ export async function isDeviceInMaintenance(
     suppressScripts: false,
   };
 
-  // ---- 1. Try config policy path ----
-  const cpSettings = await resolveMaintenanceConfigForDevice(deviceId);
-  if (cpSettings) {
-    const status = isInMaintenanceWindow(cpSettings);
-    if (status.active) {
-      return {
-        active: true,
-        source: 'config_policy',
-        suppressAlerts: status.suppressAlerts,
-        suppressPatching: status.suppressPatching,
-        suppressAutomations: status.suppressAutomations,
-        suppressScripts: status.suppressScripts,
-      };
-    }
-    // Config policy exists but window is not currently active — still fall through
-    // to check standalone windows for backward compatibility.
-  }
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      // ---- 1. Try config policy path ----
+      const cpSettings = await resolveMaintenanceConfigForDevice(deviceId);
+      if (cpSettings) {
+        const status = isInMaintenanceWindow(cpSettings);
+        if (status.active) {
+          return {
+            active: true,
+            source: 'config_policy' as const,
+            suppressAlerts: status.suppressAlerts,
+            suppressPatching: status.suppressPatching,
+            suppressAutomations: status.suppressAutomations,
+            suppressScripts: status.suppressScripts,
+          };
+        }
+        // Config policy exists but window is not currently active — still fall
+        // through to check standalone windows for backward compatibility.
+      }
 
-  // ---- 2. Fall back to standalone maintenance windows ----
-  const standaloneStatus = await checkStandaloneMaintenanceWindows(deviceId);
-  if (standaloneStatus) {
-    return standaloneStatus;
-  }
+      // ---- 2. Fall back to standalone maintenance windows ----
+      const standaloneStatus = await checkStandaloneMaintenanceWindows(deviceId);
+      if (standaloneStatus) {
+        return standaloneStatus;
+      }
 
-  return inactive;
+      return inactive;
+    })
+  );
 }
 
 // ============================================

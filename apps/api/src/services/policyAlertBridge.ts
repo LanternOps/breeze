@@ -141,7 +141,10 @@ async function resolvePolicyAlertsForDevice(ruleId: string, deviceId: string): P
   }
 }
 
-async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload): Promise<void> {
+// Exported for unit testing (dual-axis partner-wide policy check, #2149) — not
+// used outside this module otherwise; subscribeToPolicyEvents wires it to the
+// event bus.
+export async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload): Promise<void> {
   if (!payload.policyId || !payload.deviceId) {
     return;
   }
@@ -163,6 +166,13 @@ async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload)
 
   if (policy.orgId !== null) {
     if (policy.orgId !== orgId) {
+      // Should never happen — an org-owned policy only evaluates its own
+      // org's devices. Leave a trace: silently dropping means an alert that
+      // should have fired never does.
+      console.warn(
+        `[policyAlertBridge] dropping policy.violation for policy ${payload.policyId}: `
+        + `policy org ${policy.orgId} does not match event org ${orgId}`
+      );
       return;
     }
   } else {
@@ -173,6 +183,12 @@ async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload)
       .limit(1);
 
     if (!org || !policy.partnerId || org.partnerId !== policy.partnerId) {
+      // Race (policy deleted / org re-parented mid-evaluation) — log rather
+      // than silently swallowing the violation.
+      console.warn(
+        `[policyAlertBridge] dropping policy.violation for partner-wide policy ${payload.policyId}: `
+        + `event org ${orgId} is not under owning partner ${policy.partnerId ?? 'NULL'}`
+      );
       return;
     }
   }
