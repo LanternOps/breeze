@@ -1537,14 +1537,13 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch, software_policy, security, alert_rule, and compliance are handled
-  // separately in validateFeaturePolicyExists: rings are pure partner-axis,
-  // and software / security / alert-rule / compliance (automation) policies
-  // are dual-ownership (org XOR partner, #2126/#2127/#2128/#2129) — none fits
-  // the org-only lookup below.
+  // patch, software_policy, security, alert_rule, compliance, and
+  // sensitive_data are handled separately in validateFeaturePolicyExists:
+  // rings are pure partner-axis, and the rest are dual-ownership (org XOR
+  // partner, #2126/#2127/#2128/#2129/#2131) — none fits the org-only lookup
+  // below.
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
-  sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
   peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
 };
 
@@ -1561,6 +1560,7 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'security',
   'alert_rule',
   'compliance',
+  'sensitive_data',
 ]);
 
 export async function validateFeaturePolicyExists(
@@ -1604,15 +1604,16 @@ export async function validateFeaturePolicyExists(
     featureType === 'software_policy' ||
     featureType === 'security' ||
     featureType === 'alert_rule' ||
-    featureType === 'compliance'
+    featureType === 'compliance' ||
+    featureType === 'sensitive_data'
   ) {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
-    // Software (#2126), security (#2127), alert-rule (#2128), and compliance
-    // (#2129, automation_policies) policies are dual-ownership. A config
-    // policy may link:
+    // Software (#2126), security (#2127), alert-rule (#2128), compliance
+    // (#2129, automation_policies), and sensitive-data (#2131) policies are
+    // dual-ownership. A config policy may link:
     //  - an org-owned policy belonging to the config policy's own org
     //  - a partner-owned ("all orgs") template belonging to the config
     //    policy's partner (derived from its org for org-owned config policies)
@@ -1624,7 +1625,9 @@ export async function validateFeaturePolicyExists(
         ? { table: securityPolicies, label: 'Security policy' }
         : featureType === 'alert_rule'
           ? { table: alertRules, label: 'Alert rule' }
-          : { table: automationPolicies, label: 'Compliance policy' };
+          : featureType === 'compliance'
+            ? { table: automationPolicies, label: 'Compliance policy' }
+            : { table: sensitiveDataPolicies, label: 'Sensitive data policy' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 
@@ -1648,6 +1651,31 @@ export async function validateFeaturePolicyExists(
       .limit(1);
 
     if (!row) {
+      // sensitive_data historically also accepts a featurePolicyId that
+      // references another Configuration Policy (whole-policy linking) — the
+      // generic fallback below used to allow it. Preserve that with the same
+      // dual-axis ownership conditions (config policies are dual-owned).
+      if (featureType === 'sensitive_data') {
+        const cpConditions: SQL[] = [];
+        if (owner.orgId) {
+          cpConditions.push(eq(configurationPolicies.orgId, owner.orgId));
+        }
+        if (partnerId) {
+          cpConditions.push(
+            sql`(${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${partnerId})`
+          );
+        }
+        if (cpConditions.length > 0) {
+          const [configPolicy] = await db
+            .select({ id: configurationPolicies.id })
+            .from(configurationPolicies)
+            .where(and(eq(configurationPolicies.id, featurePolicyId), or(...cpConditions)))
+            .limit(1);
+          if (configPolicy) {
+            return { valid: true };
+          }
+        }
+      }
       return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found for this organization or partner` };
     }
 
@@ -1667,8 +1695,8 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  // sensitive_data supports both linked policy and inline settings
-  // If featurePolicyId is provided, it can reference a sensitiveDataPolicies record or a config policy
+  // (sensitive_data is handled in the dual-axis branch above, including its
+  // legacy config-policy-reference fallback.)
 
   if (!featurePolicyId) {
     return { valid: true }; // inline-only is allowed; schema ensures inlineSettings is present

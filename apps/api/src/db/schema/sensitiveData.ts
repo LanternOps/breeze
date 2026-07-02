@@ -11,12 +11,18 @@ import {
   varchar
 } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 
+// A sensitive-data policy is owned by EITHER an org (orgId set, partnerId
+// NULL — the original shape) OR a partner (partnerId set, orgId NULL —
+// "partner-wide / all orgs", epic #2135 / #2131). Exactly one axis is set per
+// row; CHECK `sensitive_data_policies_one_owner_chk` (migration 2026-07-01)
+// enforces it. Scans/findings stay owned by the scanned DEVICE's org.
 export const sensitiveDataPolicies = pgTable('sensitive_data_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 200 }).notNull(),
   scope: jsonb('scope').notNull().default({}),
   detectionClasses: jsonb('detection_classes').notNull().default([]),
@@ -27,6 +33,7 @@ export const sensitiveDataPolicies = pgTable('sensitive_data_policies', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   orgIdx: index('sensitive_policy_org_idx').on(table.orgId),
+  partnerIdx: index('sensitive_policy_partner_idx').on(table.partnerId),
 }));
 
 export const sensitiveDataScans = pgTable('sensitive_data_scans', {

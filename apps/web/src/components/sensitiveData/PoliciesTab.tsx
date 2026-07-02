@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, Globe } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import { DETECTION_CLASSES, DATA_TYPE_COLORS } from './constants';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 
 type Policy = {
   id: string;
-  orgId: string;
+  // null = partner-wide ("All organizations") policy (#2131)
+  orgId: string | null;
+  partnerId?: string | null;
   name: string;
   scope: Record<string, unknown>;
   detectionClasses: unknown;
@@ -48,6 +52,15 @@ export default function PoliciesTab() {
   const [deleteTarget, setDeleteTarget] = useState<Policy | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Ownership axis (#2131, mirrors software PolicyForm #2126): partner-scope
+  // creators may own the policy partner-wide ("all orgs"). Gate on the JWT
+  // scope; default to partner-wide when viewing All orgs. Create-only.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>('organization');
+
   const fetchPolicies = useCallback(async () => {
     try {
       setLoading(true);
@@ -70,6 +83,7 @@ export default function PoliciesTab() {
   const openCreate = () => {
     setEditingId(null);
     setForm(defaultForm);
+    setOwnerScope(isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization');
     setShowForm(true);
   };
 
@@ -112,6 +126,8 @@ export default function PoliciesTab() {
         detectionClasses: form.detectionClasses,
         isActive: form.isActive,
         schedule,
+        // Create-only: updates never move a policy between ownership axes.
+        ...(editingId ? {} : isPartnerScope ? { ownerScope } : {}),
       };
 
       const url = editingId ? `/sensitive-data/policies/${editingId}` : '/sensitive-data/policies';
@@ -196,6 +212,30 @@ export default function PoliciesTab() {
         <div className="rounded-lg border bg-card p-5 shadow-xs">
           <h3 className="text-sm font-semibold">{editingId ? 'Edit Policy' : 'Create Policy'}</h3>
           <div className="mt-4 grid gap-4">
+            {/* Ownership scope — partner-scope creators only, create-only (#2131) */}
+            {!editingId && isPartnerScope && (
+              <fieldset className="space-y-2 rounded-md border p-4" data-testid="sensitive-policy-owner">
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    checked={ownerScope === 'partner'}
+                    onChange={() => setOwnerScope('partner')}
+                    data-testid="sensitive-policy-owner-partner"
+                  />
+                  All organizations <span className="text-muted-foreground">(partner-wide policy)</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    checked={ownerScope === 'organization'}
+                    onChange={() => setOwnerScope('organization')}
+                    data-testid="sensitive-policy-owner-org"
+                  />
+                  This organization only
+                </label>
+              </fieldset>
+            )}
             <div>
               <label className="text-sm font-medium">Name</label>
               <input
@@ -317,7 +357,21 @@ export default function PoliciesTab() {
 
               return (
                 <tr key={policy.id} className="text-sm hover:bg-muted/20">
-                  <td className="px-4 py-3 font-medium">{policy.name}</td>
+                  <td className="px-4 py-3 font-medium">
+                    <div className="flex items-center gap-2">
+                      <span>{policy.name}</span>
+                      {policy.orgId === null && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                          title="Partner-wide policy — scans devices in every organization"
+                          data-testid="sensitive-policy-partner-wide-badge"
+                        >
+                          <Globe className="h-3 w-3" />
+                          All orgs
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {classes.map((cls) => (

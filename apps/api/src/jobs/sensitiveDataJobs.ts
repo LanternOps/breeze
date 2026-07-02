@@ -2,7 +2,7 @@ import { Job, Queue, Worker, type JobsOptions } from 'bullmq';
 import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 
 import * as dbModule from '../db';
-import { deviceCommands, devices, sensitiveDataPolicies, sensitiveDataScans } from '../db/schema';
+import { deviceCommands, devices, organizations, sensitiveDataPolicies, sensitiveDataScans } from '../db/schema';
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
 import { isCronDue } from '../services/automationRuntime';
 import { attachWorkerObservability } from './workerObservability';
@@ -370,6 +370,119 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
   };
 }
 
+type SchedulablePolicy = {
+  id: string;
+  orgId: string | null;
+  partnerId: string | null;
+  scope: unknown;
+  detectionClasses: unknown;
+  schedule: unknown;
+};
+
+/**
+ * Queue scheduled scans for ONE due policy. Exported so the integration suite
+ * can prove the partner-wide device fan-out against real Postgres without
+ * sweeping every active policy in the shared test DB.
+ */
+export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date): Promise<number> {
+  // Resolve the policy owner's device-org pool (#2131): an org-owned policy
+  // targets its own org; a partner-wide policy (orgId NULL) fans out to
+  // every org under the owning partner. The per-org queue backpressure
+  // check runs per member org so one saturated org doesn't starve the rest.
+  let ownerOrgIds: string[];
+  if (policy.orgId) {
+    ownerOrgIds = [policy.orgId];
+  } else if (policy.partnerId) {
+    const orgRows = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, policy.partnerId));
+    ownerOrgIds = orgRows.map((row) => row.id);
+  } else {
+    ownerOrgIds = [];
+  }
+
+  const admittedOrgIds: string[] = [];
+  for (const orgId of ownerOrgIds) {
+    const orgQueued = await getOrgQueuedScans(orgId);
+    if (orgQueued < SENSITIVE_DATA_ORG_QUEUE_BACKPRESSURE_LIMIT) {
+      admittedOrgIds.push(orgId);
+    }
+  }
+  if (admittedOrgIds.length === 0) return 0;
+
+  const schedule = parsePolicySchedule(policy.schedule);
+  const conditions: SQL[] = [
+    inArray(devices.orgId, admittedOrgIds),
+    ne(devices.status, 'decommissioned')
+  ];
+  if (schedule.deviceIds.length > 0) {
+    conditions.push(inArray(devices.id, schedule.deviceIds));
+  }
+
+  const targetDevices = await db
+    .select({ id: devices.id, orgId: devices.orgId })
+    .from(devices)
+    .where(and(...conditions));
+
+  if (targetDevices.length === 0) return 0;
+
+  const created = await db
+    .insert(sensitiveDataScans)
+    .values(
+      targetDevices.map((device) => ({
+        // Scan rows always take the DEVICE's org — identical to the
+        // policy's org for org-owned policies, and the only correct org
+        // for partner-wide ones.
+        orgId: device.orgId,
+        deviceId: device.id,
+        policyId: policy.id,
+        status: 'queued',
+        summary: {
+          source: 'policy_scheduler',
+          policySchedule: {
+            type: schedule.type,
+            cron: schedule.cron,
+            intervalMinutes: schedule.intervalMinutes
+          },
+          request: {
+            scope: isRecord(policy.scope) ? policy.scope : {},
+            detectionClasses: parseDetectionClasses(policy.detectionClasses)
+          }
+        }
+      }))
+    )
+    .returning({ id: sensitiveDataScans.id });
+
+  if (created.length > 0) {
+    const queue = getSensitiveDataQueue();
+    await queue.addBulk(
+      created.map((scan) => ({
+        name: 'dispatch-scan',
+        data: { type: 'dispatch-scan' as const, scanId: scan.id },
+        opts: {
+          jobId: `sensitive-scan-${scan.id}`,
+          removeOnComplete: { count: 200 },
+          removeOnFail: { count: 500 }
+        }
+      }))
+    );
+  }
+
+  await db
+    .update(sensitiveDataPolicies)
+    .set({
+      schedule: {
+        ...(isRecord(policy.schedule) ? policy.schedule : {}),
+        lastRunAt: now.toISOString()
+      },
+      updatedAt: new Date()
+    })
+    .where(eq(sensitiveDataPolicies.id, policy.id));
+
+  return created.length;
+}
+
 async function processSchedulePolicies(data: SchedulePoliciesJobData): Promise<{
   scheduledPolicies: number;
   scansQueued: number;
@@ -381,6 +494,7 @@ async function processSchedulePolicies(data: SchedulePoliciesJobData): Promise<{
     .select({
       id: sensitiveDataPolicies.id,
       orgId: sensitiveDataPolicies.orgId,
+      partnerId: sensitiveDataPolicies.partnerId,
       scope: sensitiveDataPolicies.scope,
       detectionClasses: sensitiveDataPolicies.detectionClasses,
       schedule: sensitiveDataPolicies.schedule
@@ -390,84 +504,17 @@ async function processSchedulePolicies(data: SchedulePoliciesJobData): Promise<{
 
   if (policies.length === 0) return { scheduledPolicies: 0, scansQueued: 0 };
 
-  const queue = getSensitiveDataQueue();
   let scheduledPolicies = 0;
   let scansQueued = 0;
 
   for (const policy of policies) {
     if (!shouldSchedulePolicy(policy.schedule, now)) continue;
 
-    const orgQueued = await getOrgQueuedScans(policy.orgId);
-    if (orgQueued >= SENSITIVE_DATA_ORG_QUEUE_BACKPRESSURE_LIMIT) {
-      continue;
-    }
-
-    const schedule = parsePolicySchedule(policy.schedule);
-    const conditions: SQL[] = [
-      eq(devices.orgId, policy.orgId),
-      ne(devices.status, 'decommissioned')
-    ];
-    if (schedule.deviceIds.length > 0) {
-      conditions.push(inArray(devices.id, schedule.deviceIds));
-    }
-
-    const targetDevices = await db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(...conditions));
-
-    if (targetDevices.length === 0) continue;
-
-    const created = await db
-      .insert(sensitiveDataScans)
-      .values(
-        targetDevices.map((device) => ({
-          orgId: policy.orgId,
-          deviceId: device.id,
-          policyId: policy.id,
-          status: 'queued',
-          summary: {
-            source: 'policy_scheduler',
-            policySchedule: {
-              type: schedule.type,
-              cron: schedule.cron,
-              intervalMinutes: schedule.intervalMinutes
-            },
-            request: {
-              scope: isRecord(policy.scope) ? policy.scope : {},
-              detectionClasses: parseDetectionClasses(policy.detectionClasses)
-            }
-          }
-        }))
-      )
-      .returning({ id: sensitiveDataScans.id });
-
-    if (created.length > 0) {
-      await queue.addBulk(
-        created.map((scan) => ({
-          name: 'dispatch-scan',
-          data: { type: 'dispatch-scan' as const, scanId: scan.id },
-          opts: {
-            jobId: `sensitive-scan-${scan.id}`,
-            removeOnComplete: { count: 200 },
-            removeOnFail: { count: 500 }
-          }
-        }))
-      );
-      scansQueued += created.length;
+    const queued = await schedulePolicyScans(policy, now);
+    if (queued > 0) {
+      scansQueued += queued;
       scheduledPolicies++;
     }
-
-    await db
-      .update(sensitiveDataPolicies)
-      .set({
-        schedule: {
-          ...(isRecord(policy.schedule) ? policy.schedule : {}),
-          lastRunAt: now.toISOString()
-        },
-        updatedAt: new Date()
-      })
-      .where(eq(sensitiveDataPolicies.id, policy.id));
   }
 
   return { scheduledPolicies, scansQueued };

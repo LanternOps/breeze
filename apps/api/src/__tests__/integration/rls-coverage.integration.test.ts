@@ -271,6 +271,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge + evaluation fan-out proof:
   // automationPoliciesPartnerRls.integration.test.ts.
   'automation_policies',
+  // sensitive_data_policies (#2131, epic #2135): org-scoped OR partner-wide
+  // data-discovery policy. Scans/findings stay org-owned by the scanned
+  // DEVICE's org (the scheduler sources scan org_id from the device).
+  // Converted in 2026-07-01-sensitive-data-policies-partner-ownership. CHECK
+  // sensitive_data_policies_one_owner_chk enforces exactly one axis.
+  // Functional cross-partner forge + scheduler fan-out proof:
+  // sensitiveDataPoliciesPartnerRls.integration.test.ts.
+  'sensitive_data_policies',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

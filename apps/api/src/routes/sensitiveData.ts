@@ -11,7 +11,11 @@ import {
   sensitiveDataPolicies,
   sensitiveDataScans
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 import { getPagination } from '../utils/pagination';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { enqueueSensitiveDataScan } from '../jobs/sensitiveDataJobs';
@@ -67,6 +71,10 @@ const policyScheduleSchema = z.object({
 
 const createPolicySchema = z.object({
   orgId: z.string().guid().optional(),
+  // 'partner' creates a partner-wide ("all orgs") policy: orgId NULL,
+  // partnerId = caller's partner (#2131). Create-only — updates never move a
+  // policy between ownership axes.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(200),
   scope: policyScopeSchema.default({}),
   detectionClasses: z.array(z.enum(dataTypeValues)).min(1).max(5),
@@ -139,6 +147,19 @@ function readOrgIdFromAuth(auth: {
     return auth.accessibleOrgIds[0] ?? null;
   }
   return null;
+}
+
+// Dual-axis access condition (#2131): org-owned rows the caller can reach OR
+// partner-wide rows (org_id NULL) owned by the caller's own partner. Gated on
+// partner scope — org tokens carry a partnerId but never pass
+// breeze_has_partner_access, so RLS is stricter than this app condition.
+function sensitivePolicyAccessCondition(auth: AuthContext): SQL | undefined {
+  const orgCond = auth.orgCondition(sensitiveDataPolicies.orgId);
+  if (!orgCond) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${orgCond} OR (${sensitiveDataPolicies.orgId} IS NULL AND ${sensitiveDataPolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return orgCond;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -233,8 +254,8 @@ sensitiveDataRoutes.post(
     let policyRow: typeof sensitiveDataPolicies.$inferSelect | undefined;
     if (payload.policyId) {
       const policyConditions: SQL[] = [eq(sensitiveDataPolicies.id, payload.policyId)];
-      const orgCondition = auth.orgCondition(sensitiveDataPolicies.orgId);
-      if (orgCondition) policyConditions.push(orgCondition);
+      const accessCondition = sensitivePolicyAccessCondition(auth);
+      if (accessCondition) policyConditions.push(accessCondition);
 
       [policyRow] = await db
         .select()
@@ -918,8 +939,8 @@ sensitiveDataRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const conditions: SQL[] = [];
-    const orgCondition = auth.orgCondition(sensitiveDataPolicies.orgId);
-    if (orgCondition) conditions.push(orgCondition);
+    const accessCondition = sensitivePolicyAccessCondition(auth);
+    if (accessCondition) conditions.push(accessCondition);
 
     const rows = await db
       .select()
@@ -946,15 +967,28 @@ sensitiveDataRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
-    const orgId = readOrgIdFromAuth(auth, payload.orgId);
-    if (!orgId) {
-      return c.json({ error: 'Unable to resolve target organization for policy creation' }, 400);
+
+    // Resolve the ownership axis (#2131): partner-wide creation requires the
+    // partner-wide capability; the default path stays org-owned.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (payload.ownerScope === 'partner') {
+      if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgId = readOrgIdFromAuth(auth, payload.orgId);
+      if (!orgId) {
+        return c.json({ error: 'Unable to resolve target organization for policy creation' }, 400);
+      }
+      owner = { orgId, partnerId: null };
     }
 
     const [policy] = await db
       .insert(sensitiveDataPolicies)
       .values({
-        orgId,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         name: payload.name,
         scope: payload.scope,
         detectionClasses: payload.detectionClasses,
@@ -997,8 +1031,8 @@ sensitiveDataRoutes.put(
     const payload = c.req.valid('json');
 
     const conditions: SQL[] = [eq(sensitiveDataPolicies.id, id)];
-    const orgCondition = auth.orgCondition(sensitiveDataPolicies.orgId);
-    if (orgCondition) conditions.push(orgCondition);
+    const accessCondition = sensitivePolicyAccessCondition(auth);
+    if (accessCondition) conditions.push(accessCondition);
 
     const [existing] = await db
       .select()
@@ -1007,6 +1041,12 @@ sensitiveDataRoutes.put(
       .limit(1);
 
     if (!existing) return c.json({ error: 'Policy not found' }, 404);
+
+    // Partner-wide templates are administrable only with the partner-wide
+    // capability (#2131).
+    if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
 
     const [updated] = await db
       .update(sensitiveDataPolicies)
@@ -1053,8 +1093,8 @@ sensitiveDataRoutes.delete(
     const { id } = c.req.valid('param');
 
     const conditions: SQL[] = [eq(sensitiveDataPolicies.id, id)];
-    const orgCondition = auth.orgCondition(sensitiveDataPolicies.orgId);
-    if (orgCondition) conditions.push(orgCondition);
+    const accessCondition = sensitivePolicyAccessCondition(auth);
+    if (accessCondition) conditions.push(accessCondition);
 
     const [existing] = await db
       .select({
@@ -1067,6 +1107,12 @@ sensitiveDataRoutes.delete(
       .limit(1);
 
     if (!existing) return c.json({ error: 'Policy not found' }, 404);
+
+    // Partner-wide templates are administrable only with the partner-wide
+    // capability (#2131).
+    if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
 
     await db.delete(sensitiveDataPolicies).where(eq(sensitiveDataPolicies.id, id));
 
