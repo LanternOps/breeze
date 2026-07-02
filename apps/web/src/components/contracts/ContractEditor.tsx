@@ -468,14 +468,18 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const commitRenewalTerm = useCallback(() => {
     if (!canWrite || isCreate) return;
     renewalTermEdited.current = false;
-    if (renewalTermMonths === persistedTerm) return;
+    // A locally-on but not-yet-persisted auto-renew rides along with the term
+    // (the toggle defers its PATCH until a term exists — see its onChange).
+    const autoRenewPending = autoRenew && !contract?.autoRenew;
+    if (renewalTermMonths === persistedTerm && !autoRenewPending) return;
     const n = renewalTermMonths === '' ? null : Number(renewalTermMonths);
     if (n !== null && (!Number.isInteger(n) || n < 1 || n > 120)) {
       handleActionError(new Error('invalid term'), 'Enter a renewal term between 1 and 120 months.');
       return;
     }
-    void savePatch({ renewalTermMonths: n }, 'renewalTerm');
-  }, [canWrite, isCreate, renewalTermMonths, persistedTerm, savePatch]);
+    if (autoRenewPending && n === null) return; // still waiting for a term
+    void savePatch(autoRenewPending ? { autoRenew: true, renewalTermMonths: n } : { renewalTermMonths: n }, 'renewalTerm');
+  }, [canWrite, isCreate, autoRenew, contract, renewalTermMonths, persistedTerm, savePatch]);
 
   const commitRenewalNotice = useCallback(() => {
     if (!canWrite || isCreate) return;
@@ -724,11 +728,20 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       onChange={(e) => {
                         const checked = e.target.checked;
                         setAutoRenew(checked);
-                        if (!isCreate) void savePatch({
-                          autoRenew: checked,
-                          renewalTermMonths: checked ? (renewalTermMonths === '' ? null : Number(renewalTermMonths)) : null,
-                          renewalNoticeDays: checked ? (renewalNoticeDays === '' ? null : Number(renewalNoticeDays)) : null,
-                        }, 'autoRenew');
+                        if (isCreate) return;
+                        if (!checked) { void savePatch({ autoRenew: false }, 'autoRenew'); return; }
+                        // The server requires a renewal term alongside autoRenew:true.
+                        // With a term already entered, save both now; otherwise just
+                        // reveal the fields — commitRenewalTerm carries autoRenew:true
+                        // once a term is typed (an immediate PATCH would 400).
+                        const term = renewalTermMonths === '' ? null : Number(renewalTermMonths);
+                        if (term !== null && Number.isInteger(term) && term >= 1 && term <= 120) {
+                          void savePatch({
+                            autoRenew: true,
+                            renewalTermMonths: term,
+                            renewalNoticeDays: renewalNoticeDays === '' ? null : Number(renewalNoticeDays),
+                          }, 'autoRenew');
+                        }
                       }}
                     />
                     <span>Auto-renew at end of term{!endDate ? ' (set an end date first)' : ''}</span>

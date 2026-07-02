@@ -146,6 +146,41 @@ describe('ContractEditor — blur autosave (existing contract)', () => {
     expect((api.updateContract as any).mock.calls[0][1]).toEqual({ endDate: null, autoRenew: false });
   });
 
+  it('defers the auto-renew PATCH until a renewal term is entered', async () => {
+    // autoRenew:true without a term 400s server-side, so checking the box only
+    // reveals the fields; the term's blur commit carries autoRenew:true.
+    const withEnd: ContractDetail = {
+      ...draftDetail,
+      contract: { ...draftDetail.contract, endDate: '2027-06-01' },
+    };
+    render(<ContractEditor detail={withEnd} onChanged={vi.fn()} />);
+    const toggle = await screen.findByTestId('contract-auto-renew-toggle');
+    fireEvent.click(toggle.querySelector('input')!);
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.updateContract).not.toHaveBeenCalled();
+
+    const term = await screen.findByTestId('contract-renewal-term');
+    fireEvent.change(term, { target: { value: '12' } });
+    fireEvent.blur(term);
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    expect((api.updateContract as any).mock.calls[0][1]).toEqual({ autoRenew: true, renewalTermMonths: 12 });
+  });
+
+  it('unchecking auto-renew PATCHes autoRenew:false immediately', async () => {
+    const renewing: ContractDetail = {
+      ...draftDetail,
+      contract: { ...draftDetail.contract, endDate: '2027-06-01', autoRenew: true, renewalTermMonths: 12 },
+    };
+    render(<ContractEditor detail={renewing} onChanged={vi.fn()} />);
+    const toggle = await screen.findByTestId('contract-auto-renew-toggle');
+    fireEvent.click(toggle.querySelector('input')!);
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    expect((api.updateContract as any).mock.calls[0][1]).toEqual({ autoRenew: false });
+  });
+
   it('locks schedule fields (timing, cadence, start) on a non-draft contract', async () => {
     const active: ContractDetail = { ...draftDetail, contract: { ...draftDetail.contract, status: 'active' } };
     render(<ContractEditor detail={active} onChanged={vi.fn()} />);
