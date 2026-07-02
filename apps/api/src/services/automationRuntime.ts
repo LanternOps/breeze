@@ -64,8 +64,13 @@ async function notificationChannelOwnershipCondition(
   }
 
   // Partner-wide automation: the one-owner CHECK guarantees partnerId is set;
-  // guard against bad legacy data with an always-false condition.
+  // guard against bad legacy data with an always-false condition. Log loudly —
+  // if this ever fires, the symptom downstream is "notifications silently
+  // stopped", which is undebuggable without this line.
   if (!owner.partnerId) {
+    console.error(
+      '[AutomationRuntime] notificationChannelOwnershipCondition called with neither orgId nor partnerId — matching no channels',
+    );
     return sql`false`;
   }
 
@@ -95,7 +100,12 @@ async function automationOwnerOrgIds(
   }
 
   if (!automation.partnerId) {
-    // The one-owner CHECK makes this unreachable; guard against bad legacy data.
+    // The one-owner CHECK makes this unreachable; guard against bad legacy
+    // data. Log loudly — the downstream symptom is "automation targets zero
+    // devices and the run completes", a silent no-op.
+    console.error(
+      '[AutomationRuntime] automation has neither orgId nor partnerId — resolving zero target devices',
+    );
     return [];
   }
 
@@ -1438,6 +1448,13 @@ export async function createAutomationRunRecord(options: {
   const eventOrgIds = options.automation.orgId
     ? [options.automation.orgId]
     : await distinctDeviceOrgIds(targetDeviceIds);
+  if (eventOrgIds.length === 0) {
+    // Partner-wide run with zero resolved targets: there is no org to publish
+    // to, so lifecycle consumers see nothing. Leave a trace for operators.
+    console.warn(
+      `[AutomationRuntime] partner-wide automation ${options.automation.id} run ${run.id} resolved zero target devices — no automation.started event published`,
+    );
+  }
   for (const eventOrgId of eventOrgIds) {
     await publishEvent(
       'automation.started',
@@ -1670,6 +1687,11 @@ export async function executeAutomationRun(
   const completionOrgIds = automation.orgId
     ? [automation.orgId]
     : [...new Set(deviceRows.map((device) => device.orgId))];
+  if (completionOrgIds.length === 0) {
+    console.warn(
+      `[AutomationRuntime] partner-wide automation ${automation.id} run ${run.id} finished (${status}) with zero target devices — no completion event published`,
+    );
+  }
   for (const eventOrgId of completionOrgIds) {
     await publishEvent(
       status === 'completed' ? 'automation.completed' : 'automation.failed',

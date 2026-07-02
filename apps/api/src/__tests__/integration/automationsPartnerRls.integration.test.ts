@@ -50,9 +50,24 @@ vi.mock('../../services/redis', async (importOriginal) => {
   };
 });
 
+// publishEvent writes to a Redis stream — mock it (no Redis in this
+// environment) and use the captured calls to assert the per-device-org
+// lifecycle fan-out for partner-wide runs.
+const { publishEventMock } = vi.hoisted(() => ({ publishEventMock: vi.fn() }));
+vi.mock('../../services/eventBus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/eventBus')>();
+  return {
+    ...actual,
+    publishEvent: publishEventMock,
+    getEventBus: () => ({ subscribe: () => () => undefined }) as never,
+  };
+});
+
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { automationRuns, automations, devices, sites } from '../../db/schema';
+import { alertRules, alerts, alertTemplates, automationRuns, automations, devices, sites } from '../../db/schema';
 import { queueEventTriggers } from '../../jobs/automationWorker';
+import { createAutomationRunRecord, executeAutomationRun } from '../../services/automationRuntime';
+import { resolvePolicyRemediationAutomationIdForOrg } from '../../services/policyEvaluationService';
 import type { BreezeEvent } from '../../services/eventBus';
 import { createOrganization, createPartner } from './db-utils';
 
@@ -70,6 +85,7 @@ const SYSTEM_CTX: DbAccessContext = {
 
 beforeEach(() => {
   queueAddMock.mockReset().mockResolvedValue({ id: 'job-1' });
+  publishEventMock.mockReset().mockResolvedValue('evt-mock');
 });
 
 afterEach(async () => {
@@ -82,6 +98,11 @@ afterEach(async () => {
     }
     for (const id of createdAutomations) {
       await db.delete(automations).where(eq(automations.id, id));
+    }
+    if (createdDevices.length > 0) {
+      // Alert rows (created by the execution-attribution tests) hold a device
+      // FK — remove them before their devices.
+      await db.delete(alerts).where(inArray(alerts.deviceId, createdDevices));
     }
     for (const id of createdDevices) {
       await db.delete(devices).where(eq(devices.id, id));
@@ -284,31 +305,31 @@ describe('automations RLS — dual-axis (2026-07-02 migration)', () => {
 // DB context (RLS bypass); mirror that here.
 // ============================================================
 
-describe('queueEventTriggers — partner-wide event fan-out (#2133)', () => {
-  async function seedDevice(orgId: string, hostname: string): Promise<string> {
-    const [site] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db.insert(sites).values({ orgId, name: 'HQ' }).returning(),
-    );
-    createdSites.push(site!.id);
-    const [device] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db
-        .insert(devices)
-        .values({
-          orgId,
-          siteId: site!.id,
-          agentId: `agent-${site!.id.slice(0, 18)}`,
-          hostname,
-          osType: 'windows',
-          osVersion: '10.0',
-          architecture: 'x64',
-          agentVersion: '1.0.0',
-        })
-        .returning(),
-    );
-    createdDevices.push(device!.id);
-    return device!.id;
-  }
+async function seedDevice(orgId: string, hostname: string): Promise<string> {
+  const [site] = await withDbAccessContext(SYSTEM_CTX, () =>
+    db.insert(sites).values({ orgId, name: 'HQ' }).returning(),
+  );
+  createdSites.push(site!.id);
+  const [device] = await withDbAccessContext(SYSTEM_CTX, () =>
+    db
+      .insert(devices)
+      .values({
+        orgId,
+        siteId: site!.id,
+        agentId: `agent-${site!.id.slice(0, 18)}`,
+        hostname,
+        osType: 'windows',
+        osVersion: '10.0',
+        architecture: 'x64',
+        agentVersion: '1.0.0',
+      })
+      .returning(),
+  );
+  createdDevices.push(device!.id);
+  return device!.id;
+}
 
+describe('queueEventTriggers — partner-wide event fan-out (#2133)', () => {
   function offlineEvent(orgId: string, deviceId: string, eventId: string): BreezeEvent<Record<string, unknown>> {
     return {
       id: eventId,
@@ -388,5 +409,145 @@ describe('queueEventTriggers — partner-wide event fan-out (#2133)', () => {
       queueEventTriggers(offlineEvent(org.id, device, 'evt-disabled')),
     );
     expect(queuedAutomationIds()).not.toContain(id);
+  });
+});
+
+// ============================================================
+// Execution attribution (#2133, playbook rule 5): worker-created child rows
+// take the DEVICE's org, never the automation owner's. A partner-wide
+// automation has NO org of its own — a regression back to automation.orgId
+// would insert alerts with org_id NULL (RLS/NOT NULL failure) or, worse,
+// attribute them to the wrong tenant. Lifecycle events must publish once per
+// distinct target-device org (publishEvent is mocked; Postgres is real).
+// ============================================================
+
+describe('executeAutomationRun — partner-wide child-row org attribution (#2133)', () => {
+  it('create_alert lands one alert per device carrying that DEVICE\'s org; lifecycle events publish per distinct device org', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const deviceA = await seedDevice(orgA.id, 'attr-a');
+    const deviceB = await seedDevice(orgB.id, 'attr-b');
+
+    const [automation] = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .insert(automations)
+        .values({
+          name: 'Partner-wide alerting automation',
+          orgId: null,
+          partnerId: partner.id,
+          trigger: { type: 'manual' },
+          actions: [{ type: 'create_alert', alertSeverity: 'high', alertMessage: 'Cross-org alert' }],
+          enabled: true,
+        })
+        .returning(),
+    );
+    createdAutomations.push(automation!.id);
+
+    // The worker executes under system context — mirror that.
+    const { run, targetDeviceIds } = await withDbAccessContext(SYSTEM_CTX, () =>
+      createAutomationRunRecord({ automation: automation!, triggeredBy: 'manual:test' }),
+    );
+    expect(targetDeviceIds.sort()).toEqual([deviceA, deviceB].sort());
+
+    const result = await withDbAccessContext(SYSTEM_CTX, () =>
+      executeAutomationRun(run.id, targetDeviceIds),
+    );
+    expect(result.status).toBe('completed');
+    expect(result.devicesSucceeded).toBe(2);
+
+    // Each alert carries its own device's org — NOT the (NULL) automation org.
+    const alertRows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .select({ deviceId: alerts.deviceId, orgId: alerts.orgId })
+        .from(alerts)
+        .where(inArray(alerts.deviceId, [deviceA, deviceB])),
+    );
+    expect(alertRows).toHaveLength(2);
+    const orgByDevice = new Map(alertRows.map((row) => [row.deviceId, row.orgId]));
+    expect(orgByDevice.get(deviceA)).toBe(orgA.id);
+    expect(orgByDevice.get(deviceB)).toBe(orgB.id);
+
+    // The backing rule/template are created in each DEVICE org.
+    const ruleRows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .select({ orgId: alertRules.orgId })
+        .from(alertRules)
+        .where(inArray(alertRules.orgId, [orgA.id, orgB.id])),
+    );
+    expect(ruleRows.map((r) => r.orgId).sort()).toEqual([orgA.id, orgB.id].sort());
+    const templateRows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .select({ orgId: alertTemplates.orgId })
+        .from(alertTemplates)
+        .where(inArray(alertTemplates.orgId, [orgA.id, orgB.id])),
+    );
+    expect(templateRows).toHaveLength(2);
+
+    // Lifecycle events fan out per distinct device org.
+    const startedOrgs = publishEventMock.mock.calls
+      .filter(([type]) => type === 'automation.started')
+      .map(([, orgId]) => orgId);
+    expect(startedOrgs.sort()).toEqual([orgA.id, orgB.id].sort());
+    const completedOrgs = publishEventMock.mock.calls
+      .filter(([type]) => type === 'automation.completed')
+      .map(([, orgId]) => orgId);
+    expect(completedOrgs.sort()).toEqual([orgA.id, orgB.id].sort());
+    // alert.triggered also carries each DEVICE's org.
+    const alertEventOrgs = publishEventMock.mock.calls
+      .filter(([type]) => type === 'alert.triggered')
+      .map(([, orgId]) => orgId);
+    expect(alertEventOrgs.sort()).toEqual([orgA.id, orgB.id].sort());
+  });
+});
+
+// ============================================================
+// Remediation resolution (#2133): a partner-wide automation whose actions
+// reference a policy's remediationScriptId must be found when remediation is
+// anchored to a member-org device — resolvePolicyRemediationAutomationIdForOrg
+// previously filtered by eq(automations.orgId, orgId), silently never matching
+// org_id NULL rows.
+// ============================================================
+
+describe('resolvePolicyRemediationAutomationIdForOrg — partner-wide matching (#2133)', () => {
+  const SCRIPT_ID = '00000000-0000-4000-8000-00000000cafe';
+
+  function policyWithRemediationScript() {
+    // Only .rules and .remediationScriptId are read by the resolver.
+    return { rules: [], remediationScriptId: SCRIPT_ID } as never;
+  }
+
+  it('matches a partner-wide automation for a member org, and never for another partner\'s org', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA1 = await createOrganization({ partnerId: partnerA.id });
+    const orgB1 = await createOrganization({ partnerId: partnerB.id });
+
+    const [automation] = await withDbAccessContext(partnerContext(partnerA.id, []), () =>
+      db
+        .insert(automations)
+        .values({
+          name: 'Partner-wide remediation automation',
+          orgId: null,
+          partnerId: partnerA.id,
+          trigger: { type: 'manual' },
+          actions: [{ type: 'run_script', scriptId: SCRIPT_ID }],
+          enabled: true,
+        })
+        .returning(),
+    );
+    createdAutomations.push(automation!.id);
+
+    // Anchored to a member org of the owning partner → found.
+    const resolvedForMember = await withDbAccessContext(SYSTEM_CTX, () =>
+      resolvePolicyRemediationAutomationIdForOrg(policyWithRemediationScript(), orgA1.id),
+    );
+    expect(resolvedForMember).toBe(automation!.id);
+
+    // Anchored to another partner's org → never matches.
+    const resolvedForStranger = await withDbAccessContext(SYSTEM_CTX, () =>
+      resolvePolicyRemediationAutomationIdForOrg(policyWithRemediationScript(), orgB1.id),
+    );
+    expect(resolvedForStranger).toBeNull();
   });
 });

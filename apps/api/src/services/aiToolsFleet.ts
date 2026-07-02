@@ -1279,6 +1279,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
 
+        // Defense-in-depth (#2133): this action is disabled by the early
+        // return above, but if it is ever re-enabled, mutating a partner-wide
+        // automation must require the partner-wide capability.
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide automation requires full partner org access' });
+        }
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.description === 'string') updates.description = input.description;
@@ -1300,6 +1307,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+
+        // Defense-in-depth (#2133): see the update-action gate above.
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Deleting a partner-wide automation requires full partner org access' });
+        }
 
         await db.transaction(async (tx) => {
           await tx.delete(automationRuns).where(eq(automationRuns.automationId, existing.id));
