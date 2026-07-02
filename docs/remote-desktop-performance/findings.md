@@ -17,7 +17,7 @@ with final disposition. Ordered by original ranking.
 | T2 | Per-frame encoder output allocation | 2 | ⬜ Open | planned #10 (optional) |
 | T3 | CRC32 IEEE→Castagnoli on GDI/software path | 2 | ⬜ Open | planned (after VM leg enrolled) |
 | T4 | Input handled inline on the SCTP goroutine | 2 | ⬜ Open | planned #9 |
-| T5 | Redundant per-frame `Flush` in `CaptureTexture` | 2 | ⬜ Open | planned #8 |
+| T5 | Redundant per-frame `Flush` in `CaptureTexture` | 2 | ✅ Fixed | #8 |
 | F1 | Delivered fps caps at ~48–50, not 60 (capture/display pacing, exposed by #1) | Follow-up | ✅ Resolved (root cause revised) | #7 — cap is the motion-source present rate, not the loop; #7 fixes the loop's real defects (exact-target pacing, coalescing recovery) |
 
 ## Detail — fixed findings
@@ -76,6 +76,36 @@ stable + gentle step), then consecutive clean upgrades accelerate (1 sample,
 doubling step, 25%-of-max cap); any degrade/dead-zone resets. Unit-test pinned
 (`adaptive_test.go`); live loss injection wasn't possible over the TURN relay.
 
+### Per-frame capture Flush removal (Change #8) — mind the cross-engine caveat
+
+`CaptureTexture` flushed the immediate D3D11 context after every
+`CopyResource(gpuTexture, acquired)`. A `Flush` controls *when* a command batch
+submits, not the *ordering* of dependent ops, so it was redundant and defeated
+driver command batching. Removed after a pre-check that found **no**
+cross-device / shared-handle (`OpenSharedResource`, `CreateSharedHandle`,
+`D3D11_RESOURCE_MISC_SHARED`, keyed-mutex) / second-device / deferred-context
+consumer of `c.gpuTexture` anywhere in the package.
+
+Two distinctions worth remembering:
+
+1. **Not all downstream readers share the immediate context.** The MFT/
+   VideoProcessor path reads `c.gpuTexture` via `VideoProcessorBlt` on the *same*
+   immediate context (submission order guarantees copy-before-read). But
+   **AMF and NVENC** consume the texture from a separate hardware encode engine
+   (same D3D11 device, via `InitDX11`/`OpenEncodeSessionEx`), *not* through that
+   context — their safety rests on the driver's **same-device cross-engine hazard
+   tracking**, the standard D3D11 implicit-sync contract, which holds only because
+   there's no shared handle. If a shared handle existed, a keyed mutex (not a
+   flush) would be the correct guard. The failure mode if this were wrong is
+   **tearing**, which the node-peer (no decoder) cannot see — hence the mandated
+   human visual pass on AMD.
+2. **Measure the metric's variance before calling a regression.** Intel #8
+   encodeMs first looked elevated (1.9–3.5 vs a 1.0–1.3 baseline), but more runs
+   hit 1.1 — the MFT zero-copy path just swings 1.1–3.5 ms run-to-run and the
+   3-run baseline sampled the low end. `encodeMs` is the *encoder* timer anyway;
+   a *capture-loop* flush can't systematically move it. A 3× sample is enough for
+   a stable metric (Kit AMF ~0.5) but too thin for a wide-variance one.
+
 ## Detail — deliberately skipped
 
 ### cacheEncodedFrame gating (finding 2)
@@ -96,8 +126,9 @@ Re-evaluate only if a profiler ever shows it.
 - **F1 capture pacing:** encoder is no longer the bottleneck anywhere; ~48–50
   delivered fps points at DXGI/AcquireNextFrame or display pacing.
 - **Validation debt:** live bursty-loss validation of #6 (needs a network
-  shaper); tearing can only be judged by a human in the real viewer (done once,
-  2026-07-01, clean).
+  shaper); tearing can only be judged by a human in the real viewer (checked
+  clean on 2026-07-01, and again on the #8 binary / Kit-AMD 2026-07-02 — the
+  path most exposed to the flush removal).
 - **From PR #2145 review (deferred):** session metrics don't distinguish
   "encoder buffering" from "frame dropped for backpressure" — the nil-output
   path hits neither `RecordSkip` nor `RecordDrop`, so async-pipeline absorption

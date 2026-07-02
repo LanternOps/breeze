@@ -536,9 +536,18 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 		texture,
 	)
 
-	// Flush ensures CopyResource reaches the GPU before downstream reads
-	// (e.g., VideoProcessorBlt in the encoder pipeline).
-	syscall.SyscallN(comVtblFn(c.context, d3d11CtxFlush), c.context)
+	// No explicit Flush here (Change #8, finding T5). This CopyResource and every
+	// downstream reader of c.gpuTexture run on the SAME D3D11 device: the MFT
+	// zero-copy path's VideoProcessorBlt executes on this very immediate context
+	// (gpu_convert_windows.go QIs c.context for its ID3D11VideoContext), so
+	// within-context submission order already guarantees the copy precedes the
+	// read; AMF/NVENC wrap this texture on the same device (InitDX11 /
+	// OpenEncodeSessionEx take the capture device — no OpenSharedResource, no
+	// second device anywhere in the package), so the driver's same-device
+	// cross-engine hazard tracking orders the VCE/NVENC read after the copy. A
+	// per-frame Flush was therefore redundant work that only defeated driver
+	// command batching. (There is no shared-handle/keyed-mutex path that would
+	// require an explicit submit; verified before removal.)
 
 	comRelease(texture)
 

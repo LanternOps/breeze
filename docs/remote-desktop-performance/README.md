@@ -502,6 +502,64 @@ exist are fixed. Verifying true 60fps delivery needs a motion source that
 refresh rate; a native fullscreen renderer (or browser tuning) is a future
 rig upgrade, tracked in the plan below.
 
+### Change #8 — remove redundant per-frame Flush in CaptureTexture (T5) ✅ KEEP
+`dxgi_capture_windows.go` (`CaptureTexture`, removed the post-`CopyResource`
+`Flush` on the immediate context). Branch
+`ToddHebebrand/rd-perf-change8-remove-capture-flush` (stacked on #7).
+
+**Problem:** after `CopyResource(gpuTexture, acquired)` into the capture's
+DEFAULT texture, `CaptureTexture` flushed the **immediate** D3D11 context every
+frame "so CopyResource reaches the GPU before downstream reads." That flush is
+redundant: it only controls *when* the batch is submitted, not the *ordering*
+of dependent ops, and it defeats driver command batching.
+
+**Pre-check (no cross-device/shared-handle consumer — verified before removal):**
+every downstream reader of `c.gpuTexture` binds to the **same** D3D11 device
+(`GetD3D11Device`/`GetD3D11Context` are wired into each encoder via
+`SetD3D11Device`). No `OpenSharedResource` / `CreateSharedHandle` /
+`D3D11_RESOURCE_MISC_SHARED` / keyed-mutex / second `D3D11CreateDevice` / deferred
+context anywhere in the package. So:
+- **MFT/VideoProcessor path (Intel):** the encoder's `VideoProcessorBlt` runs on
+  this very immediate context (`gpu_convert_windows.go` QIs `c.context` for its
+  `ID3D11VideoContext`) — within-context submission order already guarantees the
+  copy precedes the read. Flush unambiguously redundant.
+- **AMF (Kit) / NVENC:** wrap `c.gpuTexture` on the same device via
+  `InitDX11(e.d3d11Device)` / `OpenEncodeSessionEx(device)` — no copy, no shared
+  handle — so the driver's **same-device cross-engine hazard tracking** orders the
+  VCE/NVENC read after the copy regardless of flush timing (the standard D3D11
+  implicit-sync contract).
+
+**Result (constant video motion, agent-side `encodeMs`/skip/drop is truth):**
+
+| | Baseline (#7) | Change #8 |
+|---|---|---|
+| **Kit / AMF** encodeMs (3×) | 0.5 / 0.0 / 0.5 | 0.8 / 0.3 / 0.9 |
+| Kit skipped / dropped / freeze | 0 / 0 / 0 | 0 / 0 / 0 |
+| **Intel / MFT** encodeMs | 1.1 / 1.0 / 1.3 | 1.9 / 3.5 / 2.6 / 3.4 / **1.1 / 1.1** (6×) |
+| Intel skipped / dropped | 0 / 0 | 0 / 0 (all 6 runs) |
+
+`encodeMs` is the **encoder** timer, not the capture loop, so removing a
+capture-loop flush is not expected to move it — and it doesn't systematically:
+the MFT zero-copy path swings 1.1–3.5 ms run-to-run (the documented #7 range is
+1.1–2.5), and #8 lands on 1.1 twice, so the tight 1.0–1.3 baseline just sampled
+the low end. One Intel run showed 3 **client-side** freezes (p5Fps 9.5) with
+**agent-side skip/drop 0** — a TURN-relay artifact, not agent frame loss (same
+pattern flagged for Changes #4/#5); the other 5 Intel runs and all 3 Kit runs
+were freeze-clean. No skips, no drops, no fps change on either backend.
+
+The win — one fewer `Flush` syscall per frame plus restored driver command
+batching — lives in the capture loop, which the harness has no timer for, so it
+is below harness visibility by design (a Change-#5-style "strictly less work,
+measured no harm" result). Kept.
+
+**Caveat / ship gate — CLEARED:** the node-peer has no decoder, so it cannot see
+tearing. Removing the flush on **AMF/NVENC** rests on driver same-device
+cross-engine sync (not immediate-context submission order), so if any coherency
+issue existed it would surface as tearing, invisible to the harness. The
+freeze/skip/drop=0 metrics + the NV12 texture ring were the automated evidence;
+the **human visual pass in the real viewer on the #8 binary confirmed no tearing
+(Kit/AMD, 2026-07-02)** — the residual risk this change carried is retired.
+
 ---
 
 ## Finding — Intel UHD 630 MFT stalls → software fallback ✅ FIXED (Change #3)
@@ -516,13 +574,13 @@ Files: `comutil_windows.go`, `mft_windows.go`, `mft_encode_windows.go`.
 
 ## Legs & status
 - **Kit — Radeon RX 590 (AMF), display 2560×1440 @ 144Hz:** enrolled, live, on
-  the **Change #7 binary**. Motion supply ceiling ~46.6–47 presents/s (Edge
+  the **Change #8 binary** (`dev-1782964448`). Motion supply ceiling ~46.6–47 presents/s (Edge
   compositing — see Change #7); agent delivers the full supply, skip/drop 0/0,
   encodeMs ~0.5. RDMotion on `motion-video.html` (constant). ⚠️ Gotcha:
   PowerShell `Set-ScheduledTask` argument strings with `\"` get truncated —
   use a single-quoted PS string with inner double quotes.
 - **Intel — dell70601 / UHD 630 (MFT), display 1920×1080 @ 59Hz:** enrolled,
-  live, on the **Change #7 binary**. QuickSync end-to-end with **zero-copy
+  live, on the **Change #8 binary** (`dev-1782964448`). QuickSync end-to-end with **zero-copy
   DXGI input** (encodeMs ~1–2.5ms, 0 downgrades, 0 software-swaps), ~53 fps
   (59Hz panel minus compositor losses).
 - **VM .55 (Hyper-V):** GDI + software OpenH264 only. Not enrolled.
@@ -542,14 +600,13 @@ the old sleep-pad's real defects (target undershoot + present-coalescing loss)
 were fixed by the absolute-schedule `framePacer`. Rig follow-up: a motion
 source that presents ≥60/s (browser tops out ~47/s on Kit).
 
-### Change #8 — remove per-frame Flush in CaptureTexture (T5)
-`dxgi_capture_windows.go:539-541` flushes the **immediate** D3D11 context every
-frame "so CopyResource reaches the GPU before downstream reads" — but the
-encoder's `VideoProcessorBlt`/`CopyResource`/`Map` run on the *same* immediate
-context (`gpu_convert_windows.go:40-64`), which serializes in submission order.
-The flush is redundant and defeats driver command batching. Pre-check before
-removing: confirm no cross-device/shared-handle consumer on any path. Expect a
-no-harm result like Change #5 (win below harness noise by design).
+### Change #8 — remove per-frame Flush in CaptureTexture (T5) ✅ DONE
+Implemented and measured — see the Change #8 entry in the change log above.
+Pre-check confirmed no cross-device/shared-handle/deferred-context consumer;
+removed the flush. Result was the expected Change-#5-style "strictly less work,
+no measured harm": Kit (AMF) and Intel (MFT) both freeze/skip/drop-clean across
+3× / 6× runs, encodeMs distributions overlapping baseline. AMF-tearing risk is
+invisible to the node-peer and is folded into the end-of-phase visual-pass gate.
 
 ### Change #9 — input off the SCTP goroutine (T4)
 `OnMessage` → `handleInputMessage` (`session_control.go:114-150`) does JSON
@@ -589,21 +646,26 @@ hardware encoding instead of stalling to software.
 
 ## RESUME — session state (checkpoint 2026-07-02, updated)
 
-**Branches:** Changes #1–#6 merged to `main` via PR #2145 (squash). Current
-work: `ToddHebebrand/rd-perf-change7-capture-pacing` — Change #7 (framePacer)
-+ harness additions (RD_ACCESS_TOKEN, delayed RD_DRIVE send, spin.html).
+**Branches:** Changes #1–#6 merged to `main` via PR #2145 (squash). Stacked
+change branches (each stacked on the previous):
+`ToddHebebrand/rd-perf-change7-capture-pacing` (Change #7 framePacer + harness
+additions) → `ToddHebebrand/rd-perf-change8-remove-capture-flush` (Change #8,
+current).
 
-**Latest:** Change #7 measured and kept (see change log): F1 root cause
-revised — the ~48fps cap is the **motion-source present rate** (Edge
-composites ~46.6–47/s on Kit's 144Hz display; Intel's 59Hz panel ~53), proven
-with a no-pacing diagnostic build. The pacer fixes what was real: exact-target
-delivery (`set_fps` 47 → 47.0 vs 46.1–46.3 old) and +~1.5fps present-
-coalescing recovery at the default target on both boxes. **Both boxes are on
-the Change #7 binary**, video motion restored, skip/drop 0/0, encodeMs
-unchanged. Next per the plan: Change #8 (remove per-frame Flush), Change #9
-(input off SCTP goroutine), rig follow-up (≥60fps-presenting motion source).
-Outstanding: human visual pass in the real viewer on the #7 binary, live
-bursty-loss validation of Change #6 when a network shaper is available.
+**Latest:** Change #8 measured and kept (see change log): removed the redundant
+per-frame `Flush` in `CaptureTexture` after a pre-check that confirmed no
+cross-device/shared-handle/deferred-context consumer of `c.gpuTexture` (all
+readers on the same D3D11 device). Kit (AMF) and Intel (MFT) both
+freeze/skip/drop-clean (Kit 3×, Intel 6×); encodeMs distributions overlap the #7
+baseline (Intel swings 1.1–3.5 ms run-to-run, hit 1.1 twice). Win is a
+capture-loop syscall the harness can't time → below visibility by design. **Both
+boxes are now on the Change #8 binary** (`dev-1782964448`), constant video
+motion, skip/drop 0/0. Next per the plan: Change #9 (input off SCTP goroutine),
+rig follow-up (≥60fps-presenting motion source). Human visual pass on the #8
+binary is **done — no tearing on Kit/AMD (2026-07-02)**, so #8's residual risk is
+cleared. Outstanding: end-of-phase visual pass on the *final* squashed binary
+before shipping; live bursty-loss validation of Change #6 when a network shaper
+is available.
 
 **To bring the rig back up next session:**
 1. **Stack:** `pnpm wt-stack up` in the worktree. Ports are ephemeral — read
