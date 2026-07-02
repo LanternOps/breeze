@@ -42,7 +42,9 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../../db/schema', () => ({
-  alertRules: {}, alertTemplates: {}, alerts: {}, devices: {},
+  alertRules: { id: 'id', orgId: 'orgId', partnerId: 'partnerId', isActive: 'isActive', createdAt: 'createdAt', templateId: 'templateId' },
+  alertTemplates: {}, alerts: {}, devices: {},
+  organizations: { id: 'id', partnerId: 'partnerId' },
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('./helpers', () => ({
@@ -55,6 +57,7 @@ vi.mock('./helpers', () => ({
 }));
 
 import { rulesRoutes } from './rules';
+import * as helpers from './helpers';
 
 function makeApp() {
   const app = new Hono();
@@ -127,5 +130,94 @@ describe('alert rules authz (Finding #6)', () => {
     grantedRef.current.add(ALERTS_WRITE);
     const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, { method: 'DELETE' });
     expect(res.status).not.toBe(403);
+  });
+});
+
+// ============================================================
+// Partner-wide alert rules (#2128, epic #2135)
+// ============================================================
+
+describe('partner-wide alert rules (#2128)', () => {
+  const PARTNER_ID = '99999999-9999-4999-8999-999999999999';
+
+  function setPartnerAuth(partnerOrgAccess?: 'all' | 'selected' | 'none') {
+    grantedRef.current = new Set<string>([ALERTS_WRITE]);
+    authRef.current = {
+      scope: 'partner',
+      user: { id: 'u-1', name: 'Partner Admin', email: 'admin@msp.example' },
+      partnerId: PARTNER_ID,
+      partnerOrgAccess,
+      orgId: null,
+      accessibleOrgIds: ['org-1'],
+      canAccessOrg: () => true,
+    } as typeof authRef.current;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('denies partner-wide create without full partner org access (orgAccess selected)', async () => {
+    setPartnerAuth('selected');
+    const res = await makeApp().request('/alerts/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet CPU rule', severity: 'high', conditions: { type: 'metric' } }),
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as any).error).toMatch(/full partner org access/);
+  });
+
+  it('rejects a non-"all" target on partner-wide create', async () => {
+    setPartnerAuth('all');
+    const res = await makeApp().request('/alerts/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerScope: 'partner', name: 'Fleet rule', severity: 'high', conditions: { type: 'metric' }, targetType: 'site', targetId: '5d4c3b2a-1111-4222-8333-444455556666' }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toMatch(/only support the "all" target/);
+  });
+
+  it('rejects org-scoped notification bindings on partner-wide create', async () => {
+    setPartnerAuth('all');
+    const res = await makeApp().request('/alerts/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ownerScope: 'partner',
+        name: 'Fleet rule',
+        severity: 'high',
+        conditions: { type: 'metric' },
+        notificationChannelIds: ['5d4c3b2a-1111-4222-8333-444455556666'],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toMatch(/notification channels/i);
+  });
+
+  it('denies DELETE of a partner-wide rule without the partner-wide capability', async () => {
+    setPartnerAuth('selected');
+    vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
+      id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet rule', overrideSettings: null,
+    } as never);
+
+    const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as any).error).toMatch(/full partner org access/);
+  });
+
+  it('denies PUT of a partner-wide rule without the partner-wide capability', async () => {
+    setPartnerAuth('none');
+    vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
+      id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet rule', overrideSettings: null,
+    } as never);
+
+    const res = await makeApp().request(`/alerts/rules/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hijacked' }),
+    });
+    expect(res.status).toBe(403);
   });
 });

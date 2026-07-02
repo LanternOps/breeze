@@ -185,8 +185,45 @@ function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, no
 async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
   assignmentTargetId: string,
-  policyOrgId: string
+  // null for partner-wide policies (#1724) — they have no owning org and can
+  // only carry a partner-level assignment, resolved across all the partner's orgs.
+  policyOrgId: string | null
 ): Promise<string[]> {
+  if (assignmentLevel === 'partner') {
+    // A partner-wide policy (policyOrgId null, #1724) resolves EVERY device
+    // under the assigned partner. A legacy org-owned policy at partner level
+    // (now rejected at assign time) still clamps to its own org as a backstop.
+    //
+    // NOTE: this deliberately does NOT filter organizations by billing status,
+    // unlike the auth-layer visibility scope (computeAccessibleOrgIds, which
+    // limits to active/trial). Scheduling patches for a device is a security
+    // action we want to keep running even for orgs in a lapsed billing state,
+    // so the scheduling scope is intentionally broader than the visibility
+    // scope. If product decides suspended orgs should stop receiving patches,
+    // add the organizations.status filter here.
+    const conditions = [eq(organizations.partnerId, assignmentTargetId)];
+    if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
+    const partnerDevices = await db
+      .select({ id: devices.id })
+      .from(devices)
+      .innerJoin(organizations, eq(devices.orgId, organizations.id))
+      .where(and(...conditions));
+    return partnerDevices.map((d) => d.id);
+  }
+
+  // Every remaining level is org-scoped and clamps to the policy's owning org.
+  // A partner-wide policy never carries one (validateAssignmentTarget rejects),
+  // so a null policyOrgId here should be unreachable — but if a future path
+  // bypasses assignment validation, silently scheduling ZERO patch jobs is a
+  // patch-compliance hole, so make the no-op loud.
+  if (!policyOrgId) {
+    console.warn(
+      `[PatchScheduler] ${assignmentLevel}-level assignment on a policy with no owning org — resolving no devices`,
+      { assignmentLevel, assignmentTargetId }
+    );
+    return [];
+  }
+
   switch (assignmentLevel) {
     case 'device': {
       const [device] = await db
@@ -224,20 +261,6 @@ async function resolveDeviceIdsForAssignment(
         .from(devices)
         .where(and(eq(devices.orgId, assignmentTargetId), eq(devices.orgId, policyOrgId)));
       return orgDevices.map((d) => d.id);
-    }
-
-    case 'partner': {
-      const partnerDevices = await db
-        .select({ id: devices.id })
-        .from(devices)
-        .innerJoin(organizations, eq(devices.orgId, organizations.id))
-        .where(
-          and(
-            eq(organizations.partnerId, assignmentTargetId),
-            eq(devices.orgId, policyOrgId)
-          )
-        );
-      return partnerDevices.map((d) => d.id);
     }
 
     default:
@@ -360,13 +383,11 @@ async function scanAndCreateJobs(): Promise<{
 
   for (const row of patchPoliciesWithSchedules) {
     try {
-      // Partner-owned policies (org_id NULL, #1724) cannot carry a patch
-      // feature link — the feature-link route rejects 'patch' on partner-wide
-      // policies (ORG_SCOPED_ONLY_FEATURES), so this query never returns one.
-      // The guard is a defensive backstop; it never skips real work.
-      if (row.policyOrgId === null) continue;
-      // Bind the non-null org id locally: the post-guard narrowing of
-      // `row.policyOrgId` does not survive into the closures below.
+      // Partner-wide policies (org_id NULL, #1724) DO carry patch feature links —
+      // rings are partner-axis and the scheduler groups jobs by each device's own
+      // org, so a partner-wide policy schedules across every org under the partner.
+      // policyOrgId is null for those; resolveDeviceIdsForAssignment resolves the
+      // partner-level assignment across all the partner's devices.
       const policyOrgId = row.policyOrgId;
 
       const policyLocal = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(row.configPolicyId));
@@ -698,4 +719,5 @@ export const __testOnly = {
   loadDeviceSchedulingContexts,
   enqueueScanResults,
   scanAndCreateJobs,
+  resolveDeviceIdsForAssignment,
 };

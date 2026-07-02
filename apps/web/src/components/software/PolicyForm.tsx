@@ -15,6 +15,11 @@ const policyFormSchema = z.object({
   name: z.string().min(1, 'Policy name is required').max(200),
   description: z.string().max(4000).optional().or(z.literal('')),
   mode: z.enum(['allowlist', 'blocklist', 'audit']),
+  // Ownership axis (#2126, mirrors config policies #1724): 'partner' =
+  // partner-wide / all-orgs template. Only surfaced on create for
+  // partner-scope users (showOwnerScope); the server derives the partner
+  // from the caller's own token.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   software: z.array(softwareRuleSchema).min(1, 'At least one software rule is required'),
   allowUnknown: z.boolean().optional(),
   enforceMode: z.boolean(),
@@ -30,6 +35,8 @@ type PolicyFormProps = {
   defaultValues?: Partial<PolicyFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  /** Show the ownership-scope selector (create-only, partner-scope users). */
+  showOwnerScope?: boolean;
 };
 
 export default function PolicyForm({
@@ -38,6 +45,7 @@ export default function PolicyForm({
   defaultValues,
   submitLabel = 'Save Policy',
   loading,
+  showOwnerScope = false,
 }: PolicyFormProps) {
   const {
     register,
@@ -77,6 +85,31 @@ export default function PolicyForm({
       })}
       className="space-y-4"
     >
+      {/* Ownership scope — partner-scope creators only (#2126) */}
+      {showOwnerScope && (
+        <fieldset className="space-y-2 rounded-md border p-4" data-testid="software-policy-owner">
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="partner"
+              {...register('ownerScope')}
+              data-testid="software-policy-owner-partner"
+            />
+            All organizations <span className="text-muted-foreground">(partner-wide template)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="organization"
+              {...register('ownerScope')}
+              data-testid="software-policy-owner-org"
+            />
+            This organization only
+          </label>
+        </fieldset>
+      )}
+
       {/* Basic Info */}
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">

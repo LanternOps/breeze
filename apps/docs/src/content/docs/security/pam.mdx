@@ -128,6 +128,23 @@ A rule must carry at least one identifying criterion; a rule scoped only by time
 
 ---
 
+## Signer trust: CN matching vs. thumbprint pinning
+
+Executable rules and signer groups can trust a binary by its Authenticode signer in two tiers of strength:
+
+- **CN matching (weak, legacy).** A rule's `matchSigner` field -- or a bare-string entry in a signer group -- compares the candidate's certificate **Common Name** (e.g. "Microsoft Corporation") case-insensitively. The CN is a self-asserted display string on the certificate, not a cryptographic identity: an attacker who obtains or crafts a code-signing certificate whose CN matches or mimics a trusted vendor's name can get a malicious binary auto-approved by a rule or group keyed on CN alone. This class of attack was tracked as **issue #1776**.
+- **Thumbprint pinning (strong).** A rule's `matchSignerThumbprint` field -- or a thumbprint-bearing entry in a signer group -- pins the certificate's **SHA-256 leaf-cert thumbprint**, a 64-character lowercase hex digest unique to the exact signing certificate. A look-alike certificate with a spoofed CN has a different key pair and therefore a different thumbprint; it cannot satisfy a thumbprint-pinned rule no matter how convincingly its display name is forged. `matchSigner` and `matchSignerThumbprint` AND together when both are set on a rule (maximum strength: exact certificate AND expected name); a signer-group entry may likewise pin a CN, a thumbprint, or both.
+
+<Aside type="caution">
+  Thumbprint pinning closes the CN look-alike gap, but it is opt-in per rule and per signer-group entry. A rule or group entry that carries only `matchSigner` / a bare CN string remains at the weak tier by the operator's own configuration -- Breeze does not retroactively upgrade existing CN-only rules. Security teams evaluating PAM should audit signer-based rules and prefer thumbprint pins for any rule carrying an auto-approve verdict.
+</Aside>
+
+**Fail-closed guarantee.** A criterion is only ever satisfied when the candidate's data is present; absent data never satisfies a criterion, even when the rule negates it (see [Decisioning chain and fail-safe behavior](#decisioning-chain-and-fail-safe-behavior)). This applies to the thumbprint criterion without exception: if a binary's signer thumbprint cannot be determined -- because it is unsigned, or because the reporting agent predates thumbprint collection -- a rule or signer-group entry pinned to a thumbprint **never matches**. There is no silent fallback to CN-only matching in that case: a thumbprint-pinned rule that can't see a thumbprint fails closed rather than degrading to the weaker check.
+
+**Constant-time comparison.** The thumbprint match is not a plain string comparison. The engine normalizes both the pinned and candidate thumbprints to lowercase, validates them as 64-character hex, and compares them with Node's `crypto.timingSafeEqual` -- a fixed-time byte comparison that does not short-circuit on the first mismatching byte. This closes the theoretical timing side-channel where an attacker able to submit binaries and measure decision latency might otherwise recover a valid thumbprint one byte at a time.
+
+---
+
 ## Offline rule enforcement and staleness
 
 The agent caches the PAM ruleset locally so it can keep enforcing while disconnected from the API. The cache is an **HMAC-SHA256-authenticated JSON envelope**:
@@ -171,6 +188,7 @@ The **Audit** tab of the Privileged Access console renders this ledger -- filter
 - **Credential exposure.** The elevation credential is minted, used, and destroyed on the endpoint and never transits the network or lands in a config file.
 - **Automation self-grant.** AI tool actions and unmatched UAC prompts default to **pending** and wait on a human, so automation can never approve the action it proposed. (Note: human requester-vs-approver separation is *not* yet system-enforced -- see [Separation of duties](#separation-of-duties).)
 - **Replay of an approval.** Single-use actuation makes an approved request non-replayable.
+- **CN look-alike signer spoofing.** Thumbprint-pinned rules and signer-group entries match the exact SHA-256 Authenticode certificate thumbprint rather than the self-asserted Common Name, so a forged or purchased certificate with a trusted-sounding CN cannot satisfy a thumbprint-pinned rule (#1776); the match fails closed rather than falling back to CN. See [Signer trust: CN matching vs. thumbprint pinning](#signer-trust-cn-matching-vs-thumbprint-pinning).
 - **Tenant cross-contamination.** Forced row-level security plus a composite-FK audit tie keep every request, rule, and audit entry inside its own organization.
 - **Silent failure of the decision engine.** Evaluator errors fail safe to pending, never to auto-approve.
 - **Enforcing dangerously old rules offline.** Cached rules alert at 24 hours and refuse past 7 days.

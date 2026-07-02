@@ -13,7 +13,17 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-import { addFeatureLink, updateFeatureLink, listFeatureLinks, pamInlineSettingsSchema, validateFeaturePolicyExists } from './configurationPolicy';
+import {
+  addFeatureLink,
+  updateFeatureLink,
+  listFeatureLinks,
+  pamInlineSettingsSchema,
+  validateFeaturePolicyExists,
+  canManagePartnerWidePolicies,
+  updateConfigPolicy,
+  deleteConfigPolicy,
+  PartnerWideWriteDeniedError,
+} from './configurationPolicy';
 import { db } from '../db';
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
@@ -602,12 +612,162 @@ describe('updateFeatureLink — vulnerability inlineSettings service-layer valid
 
 describe('validateFeaturePolicyExists — vulnerability is inline-only', () => {
   it('rejects a featurePolicyId (vulnerability has no standalone policy table)', async () => {
-    const result = await validateFeaturePolicyExists('vulnerability', 'some-uuid', 'org-1');
+    const result = await validateFeaturePolicyExists('vulnerability', 'some-uuid', { orgId: 'org-1', partnerId: null });
     expect(result.valid).toBe(false);
   });
 
   it('accepts inline-only (no featurePolicyId)', async () => {
-    const result = await validateFeaturePolicyExists('vulnerability', null, 'org-1');
+    const result = await validateFeaturePolicyExists('vulnerability', null, { orgId: 'org-1', partnerId: null });
     expect(result.valid).toBe(true);
+  });
+});
+
+// ============================================================
+// Partner-wide administration capability (single source of truth)
+// ============================================================
+
+describe('canManagePartnerWidePolicies', () => {
+  it.each([
+    // [scope, partnerOrgAccess, expected]
+    ['system', undefined, true],
+    ['system', 'none', true], // system short-circuits regardless of flag
+    ['partner', 'all', true],
+    ['partner', 'selected', false],
+    ['partner', 'none', false],
+    ['partner', undefined, false], // membership-less / MCP-key contexts fail closed
+    ['organization', undefined, false],
+    ['organization', 'all', false], // org scope never administers partner-wide state
+  ] as const)('scope=%s partnerOrgAccess=%s → %s', (scope, partnerOrgAccess, expected) => {
+    expect(canManagePartnerWidePolicies({ scope, partnerOrgAccess } as never)).toBe(expected);
+  });
+});
+
+describe('updateConfigPolicy / deleteConfigPolicy — partner-wide administration gate', () => {
+  // policyAccessCondition treats an undefined orgCondition as "no app-layer
+  // filter" — irrelevant here since db is fully mocked; only the fetched row's
+  // orgId and the auth capability drive the gate under test.
+  const partnerAuth = (partnerOrgAccess?: 'all' | 'selected' | 'none'): never =>
+    ({
+      scope: 'partner',
+      partnerId: 'partner-1',
+      orgId: null,
+      partnerOrgAccess,
+      orgCondition: () => undefined,
+      user: { id: 'user-1' },
+    }) as never;
+
+  const PARTNER_WIDE_ROW = { id: 'policy-1', orgId: null, partnerId: 'partner-1', name: 'Wide', status: 'active' };
+
+  function mockSelectExisting(row: Record<string, unknown> | null) {
+    vi.mocked(db.select).mockReturnValue(selectLimitRows(row ? [row] : []) as never);
+  }
+
+  function mockUpdateReturning(row: Record<string, unknown>) {
+    const chain: any = {};
+    chain.set = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.returning = vi.fn(() => Promise.resolve([row]));
+    vi.mocked(db.update).mockReturnValue(chain);
+  }
+
+  function mockDeleteReturning(row: Record<string, unknown>) {
+    const chain: any = {};
+    chain.where = vi.fn(() => chain);
+    chain.returning = vi.fn(() => Promise.resolve([row]));
+    vi.mocked(db.delete).mockReturnValue(chain);
+  }
+
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.delete).mockReset();
+  });
+
+  it('updateConfigPolicy throws PartnerWideWriteDeniedError for a partner-wide policy without orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    await expect(
+      updateConfigPolicy('policy-1', { name: 'Renamed' }, partnerAuth('selected'))
+    ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('deleteConfigPolicy throws PartnerWideWriteDeniedError for a partner-wide policy without orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    await expect(deleteConfigPolicy('policy-1', partnerAuth('none'))).rejects.toBeInstanceOf(
+      PartnerWideWriteDeniedError
+    );
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('updateConfigPolicy proceeds for a partner-wide policy with orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    mockUpdateReturning({ ...PARTNER_WIDE_ROW, name: 'Renamed' });
+    const updated = await updateConfigPolicy('policy-1', { name: 'Renamed' }, partnerAuth('all'));
+    expect(updated?.name).toBe('Renamed');
+  });
+
+  it('deleteConfigPolicy proceeds for a partner-wide policy with orgAccess=all', async () => {
+    mockSelectExisting(PARTNER_WIDE_ROW);
+    mockDeleteReturning(PARTNER_WIDE_ROW);
+    const deleted = await deleteConfigPolicy('policy-1', partnerAuth('all'));
+    expect(deleted?.id).toBe('policy-1');
+  });
+
+  it('org-owned policies are NOT gated (a selected-access partner user may still edit them)', async () => {
+    mockSelectExisting({ ...PARTNER_WIDE_ROW, orgId: 'org-1', partnerId: null });
+    mockUpdateReturning({ ...PARTNER_WIDE_ROW, orgId: 'org-1', partnerId: null, name: 'Renamed' });
+    const updated = await updateConfigPolicy('policy-1', { name: 'Renamed' }, partnerAuth('selected'));
+    expect(updated?.name).toBe('Renamed');
+  });
+});
+
+// ============================================================
+// validateFeaturePolicyExists — software_policy dual-axis (#2126)
+// ============================================================
+
+describe('validateFeaturePolicyExists — software_policy dual-axis linking (#2126)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  function mockLookupReturns(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValue(selectLimitRows(rows) as never);
+  }
+
+  it('accepts inline-only (no featurePolicyId)', async () => {
+    const result = await validateFeaturePolicyExists('software_policy', null, { orgId: 'org-1', partnerId: null });
+    expect(result.valid).toBe(true);
+  });
+
+  it('a PARTNER-WIDE config policy can link a partner-owned software template', async () => {
+    mockLookupReturns([{ id: 'sw-1' }]);
+    const result = await validateFeaturePolicyExists('software_policy', 'sw-1', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(true);
+  });
+
+  it('an ORG-owned config policy can link a software policy (own org or its partner template)', async () => {
+    mockLookupReturns([{ id: 'sw-1' }]);
+    const result = await validateFeaturePolicyExists('software_policy', 'sw-1', { orgId: 'org-1', partnerId: null });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a software policy id that resolves to neither axis', async () => {
+    mockLookupReturns([]);
+    const result = await validateFeaturePolicyExists('software_policy', 'missing', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/not found/i);
+  });
+
+  it('a PARTNER-WIDE config policy can link a partner-owned SECURITY policy (#2127)', async () => {
+    mockLookupReturns([{ id: 'sec-1' }]);
+    const result = await validateFeaturePolicyExists('security', 'sec-1', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a security policy id that resolves to neither axis', async () => {
+    mockLookupReturns([]);
+    const result = await validateFeaturePolicyExists('security', 'missing', { orgId: 'org-1', partnerId: null });
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/Security policy .* not found/i);
   });
 });

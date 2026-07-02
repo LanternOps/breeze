@@ -16,6 +16,7 @@ import {
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 
@@ -90,6 +91,12 @@ const listPoliciesQuerySchema = z.object({
 
 const createPolicySchema = z.object({
   orgId: z.string().guid().optional(),
+  // Ownership axis (#2126, mirroring config policies #1724). 'organization'
+  // (default) = classic org-scoped policy. 'partner' = partner-wide / all-orgs
+  // template; the server derives the partner from the caller's own token —
+  // a client-supplied partner id is NEVER trusted. orgId is ignored when
+  // ownerScope is 'partner'.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(200),
   description: z.string().max(4000).optional(),
   mode: z.enum(['allowlist', 'blocklist', 'audit']),
@@ -150,10 +157,29 @@ export function resolveOrgIdForWrite(
   return { error: 'orgId is required for this scope' };
 }
 
+// Dual-axis access condition (#2126): org-owned rows the caller can reach OR
+// partner-wide rows (org_id NULL) owned by the caller's own partner. This
+// app-layer condition keeps partner-owned templates visible to reads that
+// filter by auth.orgCondition (which would otherwise exclude org_id IS NULL
+// rows). RLS is STRICTER, not identical: breeze_has_partner_access only passes
+// for partner-scope callers, so org-scope tokens (which also carry a
+// partnerId) never see partner-wide rows regardless of the app condition —
+// proven by softwarePoliciesPartnerRls.integration.test.ts. Gate the branch on
+// partner scope so app and DB agree.
+function softwarePolicyAccessCondition(auth: AuthContext): SQL | undefined {
+  const orgCond = auth.orgCondition(softwarePolicies.orgId);
+  // System scope: no filter on either axis.
+  if (!orgCond) return undefined;
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${orgCond} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return orgCond;
+}
+
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(softwarePolicies.id, policyId)];
-  const orgCondition = auth.orgCondition(softwarePolicies.orgId);
-  if (orgCondition) conditions.push(orgCondition);
+  const accessCondition = softwarePolicyAccessCondition(auth);
+  if (accessCondition) conditions.push(accessCondition);
 
   const [policy] = await db
     .select()
@@ -193,8 +219,8 @@ softwarePoliciesRoutes.get(
     const query = c.req.valid('query');
 
     const conditions: SQL[] = [];
-    const orgCondition = auth.orgCondition(softwarePolicies.orgId);
-    if (orgCondition) conditions.push(orgCondition);
+    const accessCondition = softwarePolicyAccessCondition(auth);
+    if (accessCondition) conditions.push(accessCondition);
     if (query.mode) conditions.push(eq(softwarePolicies.mode, query.mode));
     conditions.push(eq(softwarePolicies.isActive, query.isActive === undefined ? true : query.isActive === 'true'));
 
@@ -235,16 +261,32 @@ softwarePoliciesRoutes.post(
     const auth = c.get('auth');
     const payload = c.req.valid('json');
 
-    // The frontend always sends ?orgId=<currentOrgId> on partner-scope POSTs,
-    // not in the JSON body. Reading only from payload.orgId left partner-scope
-    // users with no resolvable org (#808: "orgId is required for this scope"
-    // after the underlying 500 from #807 was fixed).
-    const resolvedOrg = resolveOrgIdForWrite(
-      auth,
-      payload.orgId ?? c.req.query('orgId') ?? undefined
-    );
-    if (!resolvedOrg.orgId) {
-      return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
+    // Ownership axis (#2126). Partner-wide templates push rules to devices in
+    // ALL orgs under the partner (including orgs created later), so creation is
+    // gated on the partner-wide capability — same gate as configuration
+    // policies. The partner is ALWAYS derived from the caller's own token.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (payload.ownerScope === 'partner') {
+      if (!auth.partnerId) {
+        return c.json({ error: 'Partner-wide software policies require partner scope' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: 'Partner-wide software policies require full partner org access (orgAccess must be "all")' }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      // The frontend always sends ?orgId=<currentOrgId> on partner-scope POSTs,
+      // not in the JSON body. Reading only from payload.orgId left partner-scope
+      // users with no resolvable org (#808: "orgId is required for this scope"
+      // after the underlying 500 from #807 was fixed).
+      const resolvedOrg = resolveOrgIdForWrite(
+        auth,
+        payload.orgId ?? c.req.query('orgId') ?? undefined
+      );
+      if (!resolvedOrg.orgId) {
+        return c.json({ error: resolvedOrg.error ?? 'Organization resolution failed' }, 400);
+      }
+      owner = { orgId: resolvedOrg.orgId, partnerId: null };
     }
 
     const rules = normalizeSoftwarePolicyRules(payload.rules);
@@ -255,7 +297,8 @@ softwarePoliciesRoutes.post(
     const [policy] = await db
       .insert(softwarePolicies)
       .values({
-        orgId: resolvedOrg.orgId,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         name: payload.name,
         description: payload.description ?? null,
         mode: payload.mode,
@@ -280,6 +323,7 @@ softwarePoliciesRoutes.post(
 
     recordSoftwarePolicyAudit({
       orgId: policy.orgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       action: 'policy_created',
       actor: 'user',
@@ -440,6 +484,13 @@ softwarePoliciesRoutes.patch(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
+    // Partner-wide templates are READABLE by any member of the partner but
+    // administrable only with the partner-wide capability — editing rules
+    // changes enforcement across every org under the partner.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const updates: Partial<typeof softwarePolicies.$inferInsert> = {
       updatedAt: new Date(),
     };
@@ -476,6 +527,7 @@ softwarePoliciesRoutes.patch(
 
     recordSoftwarePolicyAudit({
       orgId: policy.orgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       action: 'policy_updated',
       actor: 'user',
@@ -518,6 +570,12 @@ softwarePoliciesRoutes.delete(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
+    // Same partner-wide administration gate as PATCH: deleting a partner-wide
+    // template strips enforcement from every org under the partner.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     try {
       await db.transaction(async (tx) => {
         await tx
@@ -536,6 +594,7 @@ softwarePoliciesRoutes.delete(
 
     recordSoftwarePolicyAudit({
       orgId: policy.orgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       action: 'policy_deleted',
       actor: 'user',
@@ -593,6 +652,7 @@ softwarePoliciesRoutes.post(
 
     recordSoftwarePolicyAudit({
       orgId: policy.orgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       action: 'compliance_check_requested',
       actor: 'user',
@@ -651,8 +711,13 @@ softwarePoliciesRoutes.post(
     // their allowlist — whether named explicitly via body.deviceIds or
     // selected implicitly from the policy's violations. `allowedSiteIds` is
     // only ever set for org-scope users, so `policy.orgId` is the relevant org.
+    // A partner-wide policy (orgId NULL, #2126) is RLS-invisible to org-scope
+    // callers, so a site-restricted caller can't normally reach this branch —
+    // if one somehow does, fail closed (empty allowlist = no devices).
     const perms = c.get('permissions') as UserPermissions | undefined;
-    const siteAllowedDeviceIds = await resolveSiteAllowedDeviceIds(policy.orgId, perms);
+    const siteAllowedDeviceIds = policy.orgId
+      ? await resolveSiteAllowedDeviceIds(policy.orgId, perms)
+      : (perms?.allowedSiteIds ? [] : null);
 
     if (targetDeviceIds.length > 0) {
       // Deny the whole batch (matching sentinelOne.ts hasDeniedDeviceSite) if
@@ -730,6 +795,7 @@ softwarePoliciesRoutes.post(
 
     recordSoftwarePolicyAudit({
       orgId: policy.orgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       action: 'remediation_requested',
       actor: 'user',

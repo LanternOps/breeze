@@ -81,6 +81,7 @@ The agent normalizes detected AV products to one of the following provider ident
 | Provider ID | Display Name | Vendor |
 |-------------|-------------|--------|
 | `windows_defender` | Microsoft Defender | Microsoft |
+| `elastic_defend` | Elastic Defend | Elastic |
 | `bitdefender` | Bitdefender | Bitdefender |
 | `sophos` | Sophos | Sophos |
 | `sentinelone` | SentinelOne Singularity | SentinelOne |
@@ -91,7 +92,7 @@ The agent normalizes detected AV products to one of the following provider ident
 | `other` | Other | Other |
 
 <Aside type="tip">
-  On Windows workstations, the agent queries `root/SecurityCenter2` which returns all registered AV products. The product with active real-time protection is selected as the primary provider. On Windows Server (where Security Center is unavailable), the agent falls back to querying Microsoft Defender directly via `Get-MpComputerStatus`.
+  On Windows workstations, the agent queries `root/SecurityCenter2` which returns all registered AV products. The product with active real-time protection is selected as the primary provider. On Windows Server (where Security Center is unavailable), the agent falls back to querying Microsoft Defender directly via `Get-MpComputerStatus`. Provider name matching is order-sensitive: Elastic Defend (registered as Elastic Agent / Elastic Endpoint Security) is matched before the generic Microsoft Defender pattern, since its registered product name can otherwise be misread as Microsoft Defender.
 </Aside>
 
 ---

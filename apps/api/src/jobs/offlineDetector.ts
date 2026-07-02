@@ -11,7 +11,7 @@ import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
 import { eq, and, lt, gt, asc, inArray, or } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
-import { createAlert, evaluateDeviceAlertsFromPolicy } from '../services/alertService';
+import { createAlert, evaluateDeviceAlertsFromPolicy, alertRuleOwnershipConditionForOrg } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
 import { resolveReevalHorizonMinutes } from '../services/alertConditions/offlineDuration';
 import { isReusableState } from '../services/bullmqUtils';
@@ -361,13 +361,15 @@ export async function triggerOfflineAlerts(
   // Find legacy standalone alert rules that have offline conditions
   // We need to find rules where the template conditions include type: 'offline'
 
-  // Get all active rules for this device's org
+  // Get all active rules for this device's org, plus its partner's
+  // partner-wide rules (#2128).
+  const ownershipCondition = await alertRuleOwnershipConditionForOrg(device.orgId);
   const rules = await db
     .select()
     .from(alertRules)
     .where(
       and(
-        eq(alertRules.orgId, device.orgId),
+        ownershipCondition,
         eq(alertRules.isActive, true),
         or(
           eq(alertRules.targetType, 'all'),

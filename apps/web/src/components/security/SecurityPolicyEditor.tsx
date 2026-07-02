@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CalendarClock, Loader2, Plus, Save, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 
 type ToggleRowProps = {
   label: string;
@@ -89,6 +91,18 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
   const [exclusions, setExclusions] = useState<string[]>([]);
   const [newExclusion, setNewExclusion] = useState('');
 
+  // Ownership axis (#2127, mirrors software/config policies): partner-scope
+  // creators may own the baseline partner-wide ("all orgs"). Gate on the JWT
+  // scope; default to partner-wide when viewing All orgs. Create-only —
+  // ownership is immutable after create.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>(
+    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'
+  );
+
   const fetchPolicy = useCallback(async () => {
     if (!policyId) return;
 
@@ -133,6 +147,8 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
 
     const payload = {
       name: policyName,
+      // Create-only intent; the server derives the partner from the token.
+      ...(policyId ? {} : { ownerScope: isPartnerScope ? ownerScope : undefined }),
       description,
       scanSchedule,
       realTimeProtection: realTimeEnabled,
@@ -188,6 +204,33 @@ export default function SecurityPolicyEditor({ policyId, onSave }: SecurityPolic
       </div>
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
+        {!policyId && isPartnerScope && (
+          <fieldset className="mb-4 space-y-2 rounded-md border p-4" data-testid="security-policy-owner">
+            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="securityPolicyOwnerScope"
+                value="partner"
+                checked={ownerScope === 'partner'}
+                onChange={() => setOwnerScope('partner')}
+                data-testid="security-policy-owner-partner"
+              />
+              All organizations <span className="text-muted-foreground">(partner-wide template)</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="securityPolicyOwnerScope"
+                value="organization"
+                checked={ownerScope === 'organization'}
+                onChange={() => setOwnerScope('organization')}
+                data-testid="security-policy-owner-org"
+              />
+              This organization only
+            </label>
+          </fieldset>
+        )}
         <div className="grid gap-4 md:grid-cols-2">
           <div>
             <label className="text-xs uppercase text-muted-foreground">Policy name</label>

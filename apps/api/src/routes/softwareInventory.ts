@@ -124,9 +124,23 @@ function resolveOrgReadScope(auth: AuthContext, requestedOrgId?: string): OrgRea
 
 type PolicyStatus = 'allowed' | 'blocked' | 'audit' | 'no_policy';
 
-async function getPolicyStatusMap(orgFilter: SQL | undefined): Promise<Map<string, PolicyStatus>> {
+async function getPolicyStatusMap(
+  auth: AuthContext,
+  orgFilter: SQL | undefined
+): Promise<Map<string, PolicyStatus>> {
   const conditions: SQL[] = [eq(softwarePolicies.isActive, true)];
-  if (orgFilter) conditions.push(orgFilter);
+  // Dual-axis (#2126): software policies can be partner-wide templates
+  // (org_id NULL). Those govern every org under the partner, so the badge
+  // must include them — otherwise titles blocked by a partner-wide blocklist
+  // render as no_policy. Partner-scope callers only; RLS hides partner rows
+  // from org-scope tokens regardless.
+  if (orgFilter) {
+    conditions.push(
+      auth.scope === 'partner' && auth.partnerId
+        ? (sql`(${orgFilter} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))` as SQL)
+        : orgFilter
+    );
+  }
   const policies = await db
     .select({
       mode: softwarePolicies.mode,
@@ -302,7 +316,7 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
   `);
 
   // Build policy status map
-  const policyStatusMap = await getPolicyStatusMap(orgScope.applyTo(softwarePolicies.orgId));
+  const policyStatusMap = await getPolicyStatusMap(auth, orgScope.applyTo(softwarePolicies.orgId));
 
   // Process results
   const data = (rows as unknown as Array<{

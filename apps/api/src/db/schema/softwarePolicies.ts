@@ -11,7 +11,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 
@@ -74,9 +74,15 @@ export type RemediationError = {
   message: string;
 };
 
+// A software policy is owned by EITHER an org (orgId set, partnerId NULL — the
+// original shape) OR a partner (partnerId set, orgId NULL — "partner-wide /
+// all orgs" template, epic #2135 / #2126). Exactly one axis is set per row;
+// the CHECK constraint `software_policies_one_owner_chk` (migration
+// 2026-07-01) enforces it. Mirrors configuration_policies (#1724).
 export const softwarePolicies = pgTable('software_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 200 }).notNull(),
   description: text('description'),
   mode: softwarePolicyModeEnum('mode').notNull(),
@@ -92,6 +98,7 @@ export const softwarePolicies = pgTable('software_policies', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   orgIdIdx: index('software_policies_org_id_idx').on(table.orgId),
+  partnerIdIdx: index('software_policies_partner_id_idx').on(table.partnerId),
   targetTypeIdx: index('software_policies_target_type_idx').on(table.targetType),
   activePriorityIdx: index('software_policies_active_priority_idx').on(table.isActive, table.priority),
 }));
@@ -113,9 +120,15 @@ export const softwareComplianceStatus = pgTable('software_compliance_status', {
   devicePolicyUnique: uniqueIndex('software_compliance_device_policy_unique').on(table.deviceId, table.policyId),
 }));
 
+// Audit rows are dual-owned but NOT XOR (unlike the policy table): an event for
+// a partner-wide policy acting on a device carries BOTH the device's org_id
+// (so the org admin sees it) and the policy's partner_id (so the partner admin
+// sees it). Policy-level events with no device carry whichever axis owns the
+// policy. CHECK `software_policy_audit_owner_chk` requires at least one axis.
 export const softwarePolicyAudit = pgTable('software_policy_audit', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   policyId: uuid('policy_id').references(() => softwarePolicies.id, { onDelete: 'set null' }),
   deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
   action: varchar('action', { length: 50 }).notNull(),
@@ -125,6 +138,7 @@ export const softwarePolicyAudit = pgTable('software_policy_audit', {
   timestamp: timestamp('timestamp').defaultNow().notNull(),
 }, (table) => ({
   orgIdIdx: index('software_policy_audit_org_id_idx').on(table.orgId),
+  partnerIdIdx: index('software_policy_audit_partner_id_idx').on(table.partnerId),
   policyIdIdx: index('software_policy_audit_policy_id_idx').on(table.policyId),
   deviceIdIdx: index('software_policy_audit_device_id_idx').on(table.deviceId),
   timestampIdx: index('software_policy_audit_timestamp_idx').on(table.timestamp),

@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { db } from '../../db';
-import { alertRules, alertTemplates } from '../../db/schema';
-import { eq, and, like, or, desc } from 'drizzle-orm';
+import { alertRules, alertTemplates, organizations } from '../../db/schema';
+import { eq, and, like, or, desc, isNull, type SQL } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { listRulesSchema, createRuleSchema, updateRuleSchema, toggleRuleSchema } from './schemas';
@@ -13,6 +13,28 @@ import { PERMISSIONS } from '../../services/permissions';
 export const ruleRoutes = new Hono();
 
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
+// Dual-axis rule condition for this legacy org-pinned route (#2128): the org's
+// own rules PLUS the partner-wide rules (org_id NULL) of the org's partner —
+// those govern this org's devices too, so hiding them here would misrepresent
+// what alerting applies. Partner-wide rules are read-only on this route; they
+// are managed via /alerts/rules at partner scope.
+async function ruleOwnershipConditionForOrg(orgId: string): Promise<SQL> {
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const partnerId = orgRow?.partnerId ?? null;
+  if (!partnerId) return eq(alertRules.orgId, orgId) as unknown as SQL;
+  return or(
+    eq(alertRules.orgId, orgId),
+    and(isNull(alertRules.orgId), eq(alertRules.partnerId, partnerId))
+  ) as SQL;
+}
+
+const PARTNER_WIDE_RULE_READONLY_HERE =
+  'This is a partner-wide alert rule; manage it via /alerts/rules at partner scope';
 
 ruleRoutes.get(
   '/rules',
@@ -31,7 +53,7 @@ ruleRoutes.get(
         return c.json({ error: 'Forbidden' }, 403);
       }
 
-      const conditions: ReturnType<typeof eq>[] = [eq(alertRules.orgId, orgId)];
+      const conditions: SQL[] = [await ruleOwnershipConditionForOrg(orgId)];
 
       const enabled = parseBoolean(query.enabled);
       if (enabled !== undefined) {
@@ -86,7 +108,8 @@ ruleRoutes.get(
         limit,
         total: filtered.length
       });
-    } catch {
+    } catch (err) {
+      console.error('[alertTemplates/rules] list failed:', err);
       return c.json({ error: 'Failed to list rules' }, 500);
     }
   }
@@ -182,7 +205,8 @@ ruleRoutes.post(
         },
       });
       return c.json({ data: { ...rule, templateName: template.name, enabled: rule.isActive } }, 201);
-    } catch {
+    } catch (err) {
+      console.error('[alertTemplates/rules] create failed:', err);
       return c.json({ error: 'Failed to create rule' }, 500);
     }
   }
@@ -204,7 +228,7 @@ ruleRoutes.get(
         .select({ rule: alertRules, templateName: alertTemplates.name })
         .from(alertRules)
         .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
-        .where(and(eq(alertRules.id, ruleId), eq(alertRules.orgId, orgId)))
+        .where(and(eq(alertRules.id, ruleId), await ruleOwnershipConditionForOrg(orgId)))
         .limit(1);
 
       if (!row) {
@@ -212,7 +236,8 @@ ruleRoutes.get(
       }
 
       return c.json({ data: { ...row.rule, templateName: row.templateName, enabled: row.rule.isActive } });
-    } catch {
+    } catch (err) {
+      console.error('[alertTemplates/rules] fetch failed:', err);
       return c.json({ error: 'Failed to fetch rule' }, 500);
     }
   }
@@ -238,11 +263,15 @@ ruleRoutes.patch(
       const [existing] = await db
         .select()
         .from(alertRules)
-        .where(and(eq(alertRules.id, ruleId), eq(alertRules.orgId, orgId)))
+        .where(and(eq(alertRules.id, ruleId), await ruleOwnershipConditionForOrg(orgId)))
         .limit(1);
 
       if (!existing) {
         return c.json({ error: 'Rule not found' }, 404);
+      }
+
+      if (existing.orgId === null) {
+        return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
       }
 
       if (Object.keys(updates).length === 0) {
@@ -276,7 +305,8 @@ ruleRoutes.patch(
         details: { updatedFields: Object.keys(updates) },
       });
       return c.json({ data: { ...updated, enabled: updated?.isActive } });
-    } catch {
+    } catch (err) {
+      console.error('[alertTemplates/rules] update failed:', err);
       return c.json({ error: 'Failed to update rule' }, 500);
     }
   }
@@ -299,11 +329,15 @@ ruleRoutes.delete(
       const [existing] = await db
         .select()
         .from(alertRules)
-        .where(and(eq(alertRules.id, ruleId), eq(alertRules.orgId, orgId)))
+        .where(and(eq(alertRules.id, ruleId), await ruleOwnershipConditionForOrg(orgId)))
         .limit(1);
 
       if (!existing) {
         return c.json({ error: 'Rule not found' }, 404);
+      }
+
+      if (existing.orgId === null) {
+        return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
       }
 
       await db.delete(alertRules).where(eq(alertRules.id, ruleId));
@@ -316,7 +350,8 @@ ruleRoutes.delete(
         resourceName: existing.name,
       });
       return c.json({ data: { id: ruleId, deleted: true } });
-    } catch {
+    } catch (err) {
+      console.error('[alertTemplates/rules] delete failed:', err);
       return c.json({ error: 'Failed to delete rule' }, 500);
     }
   }
@@ -342,11 +377,15 @@ ruleRoutes.post(
       const [existing] = await db
         .select()
         .from(alertRules)
-        .where(and(eq(alertRules.id, ruleId), eq(alertRules.orgId, orgId)))
+        .where(and(eq(alertRules.id, ruleId), await ruleOwnershipConditionForOrg(orgId)))
         .limit(1);
 
       if (!existing) {
         return c.json({ error: 'Rule not found' }, 404);
+      }
+
+      if (existing.orgId === null) {
+        return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
       }
 
       const [updated] = await db
@@ -364,7 +403,8 @@ ruleRoutes.post(
         details: { enabled },
       });
       return c.json({ data: { ...updated, enabled: updated?.isActive } });
-    } catch {
+    } catch (err) {
+      console.error('[alertTemplates/rules] toggle failed:', err);
       return c.json({ error: 'Failed to toggle rule' }, 500);
     }
   }

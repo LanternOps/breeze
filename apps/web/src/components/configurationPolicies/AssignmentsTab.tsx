@@ -344,7 +344,7 @@ export default function AssignmentsTab({ policyId, orgId, partnerId }: Props) {
     <div>
       <label className="text-sm font-medium">
         Priority
-        <HelpTooltip text="Higher values override lower ones when multiple policies target the same device at the same level." />
+        <HelpTooltip text="Lower values override higher ones when multiple policies target the same device at the same level." />
       </label>
       <input
         type="number"

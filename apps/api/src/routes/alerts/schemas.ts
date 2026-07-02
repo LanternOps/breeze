@@ -12,6 +12,10 @@ export const listAlertRulesSchema = z.object({
 
 export const createAlertRuleSchema = z.object({
   orgId: z.string().guid().optional(),
+  // Ownership axis (#2128, mirrors software/security policies). 'organization'
+  // (default) = classic org-scoped rule. 'partner' = partner-wide / all-orgs;
+  // the server derives the partner from the caller's own token. Create-only.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   templateId: z.string().guid().optional(),
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(2000).optional(),

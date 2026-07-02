@@ -604,7 +604,15 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
         })
         .from(alertRules)
         .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
-        .where(and(eq(alertRules.orgId, options.orgId), inArray(alertRules.id, ruleIds)))
+        .where(
+        and(
+          // ruleIds come from THIS org's own alerts, so a NULL-org row here can
+          // only be a partner-wide rule that legitimately fired for this org
+          // (#2128) — include it so the RCA narrative keeps the rule name.
+          or(eq(alertRules.orgId, options.orgId), isNull(alertRules.orgId)),
+          inArray(alertRules.id, ruleIds)
+        )
+      )
     : [];
   const ruleSources = new Map(ruleSourceRows.map((row) => [row.ruleId, row]));
   const configPolicyAlertRuleIds = [

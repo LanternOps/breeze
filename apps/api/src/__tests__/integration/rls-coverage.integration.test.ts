@@ -236,6 +236,32 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // branch; this entry asserts the breeze_has_partner_access (built-in) branch.
   // A CHECK constraint (software_catalog_one_owner_chk) enforces exactly one axis.
   'software_catalog',
+  // software_policies (#2126, epic #2135): a policy is org-scoped (org_id set,
+  // partner_id NULL) OR a partner-wide template (partner_id set, org_id NULL —
+  // "all orgs"). Converted from org-only to dual-axis in
+  // 2026-07-01-software-policies-partner-ownership. Same auto-discovery
+  // blindspot as configuration_policies: this entry asserts the
+  // breeze_has_partner_access branch. CHECK software_policies_one_owner_chk
+  // enforces exactly one axis. Functional cross-partner forge proof:
+  // softwarePoliciesPartnerRls.integration.test.ts.
+  'software_policies',
+  // software_policy_audit (#2126): dual-owned but NOT XOR — a device-level
+  // event under a partner-wide policy carries BOTH the device's org_id and the
+  // policy's partner_id so both admins can see it; CHECK
+  // software_policy_audit_owner_chk requires at least one axis.
+  'software_policy_audit',
+  // security_policies (#2127, epic #2135): org-scoped OR partner-wide AV/EDR
+  // baseline template. Converted from org-only to dual-axis in
+  // 2026-07-01-security-policies-partner-ownership. CHECK
+  // security_policies_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: securityPoliciesPartnerRls.integration.test.ts.
+  'security_policies',
+  // alert_rules (#2128, epic #2135): org-scoped OR partner-wide standalone
+  // alert rule (fired alerts always carry the DEVICE's org — alerts stays
+  // org-only). Converted in 2026-07-01-alert-rules-partner-ownership. CHECK
+  // alert_rules_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: alertRulesPartnerRls.integration.test.ts.
+  'alert_rules',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

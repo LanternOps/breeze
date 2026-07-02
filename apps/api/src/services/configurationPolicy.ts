@@ -29,7 +29,8 @@ import {
   sensitiveDataPolicies,
   peripheralPolicies,
 } from '../db/schema';
-import { and, eq, desc, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { and, eq, desc, or, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
@@ -134,24 +135,37 @@ export interface EffectiveConfiguration {
  * access (the original shape) OR owned by their own partner (partner-wide /
  * all-orgs policies, org_id NULL). System scope returns undefined (no filter).
  *
- * RLS already enforces this at the DB layer; this app-layer condition keeps
- * partner-owned policies visible to org/partner-scoped reads that filter by
- * `auth.orgCondition` (which would otherwise exclude org_id IS NULL rows).
+ * This app-layer condition keeps partner-owned policies visible to
+ * partner-scoped reads that filter by `auth.orgCondition` (which would
+ * otherwise exclude org_id IS NULL rows). RLS is STRICTER, not identical:
+ * breeze_has_partner_access only passes for partner-scope callers, so
+ * org-scope tokens (which also carry a partnerId) never see partner-wide
+ * rows — see configurationPoliciesPartnerRls.integration.test.ts. The branch
+ * is therefore gated on partner scope so app and DB agree.
  */
 function policyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(configurationPolicies.orgId);
   // System scope: no filter on either axis.
   if (!orgCond) return undefined;
-  // Org-owned rows the caller can reach, OR partner-owned rows for the caller's
-  // own partner. partner-scope callers have a partnerId; org-scope callers do
-  // not own partner-wide policies, so the partner branch is a no-op for them.
-  if (auth.partnerId) {
+  if (auth.scope === 'partner' && auth.partnerId) {
     return and(
       sql`(${orgCond} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${auth.partnerId}))`
     );
   }
   return orgCond;
 }
+
+// The partner-wide capability gate lives in the dependency-free leaf module
+// services/partnerWideAccess.ts (so routes/workers/AI tools can import it
+// without this service's schema graph). Re-exported here for back-compat:
+// HTTP routes gate with it directly, and updateConfigPolicy/deleteConfigPolicy
+// enforce it via PartnerWideWriteDeniedError so non-route callers (AI tools)
+// are covered too.
+export {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PartnerWideWriteDeniedError,
+} from './partnerWideAccess';
 
 export async function createConfigPolicy(
   owner: { orgId: string; partnerId?: null } | { orgId?: null; partnerId: string },
@@ -201,7 +215,27 @@ export async function listConfigPolicies(
   if (accessCond) conditions.push(accessCond);
 
   if (filters.orgId) {
-    conditions.push(eq(configurationPolicies.orgId, filters.orgId));
+    // Include the partner-wide policies (org_id NULL) that govern the filtered
+    // org alongside its org-owned ones — a partner-wide policy applies to EVERY
+    // org under its partner, so an org-filtered list that hid them would
+    // misrepresent which policies actually apply (and the UI has no separate
+    // surface for them). The NULL branch is scoped to THE FILTERED ORG'S OWN
+    // partner, not merely the caller's visibility: for a system-scope caller
+    // policyAccessCondition is no filter at all, and a bare `OR org_id IS NULL`
+    // would return every partner's partner-wide policies platform-wide. If the
+    // org row is missing (or RLS-invisible to the caller), fall back to the
+    // plain org filter — fail-closed, never fail-open. (#1724 follow-up)
+    const [orgRow] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, filters.orgId))
+      .limit(1);
+    const orgPartnerId = orgRow?.partnerId ?? null;
+    conditions.push(
+      orgPartnerId
+        ? sql`(${configurationPolicies.orgId} = ${filters.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${orgPartnerId}))`
+        : eq(configurationPolicies.orgId, filters.orgId)
+    );
   }
   if (filters.status) {
     conditions.push(eq(configurationPolicies.status, filters.status as 'active' | 'inactive' | 'archived'));
@@ -245,6 +279,14 @@ export async function updateConfigPolicy(
   const [existing] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
   if (!existing) return null;
 
+  // Partner-wide policies are READABLE by any member of the partner but
+  // administrable only with orgAccess='all' — same blast-radius rationale as
+  // the create-time guard. Enforced here (not just in routes) so every caller,
+  // including AI tool handlers, hits the same gate.
+  if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+    throw new PartnerWideWriteDeniedError();
+  }
+
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (data.name !== undefined) updates.name = data.name;
   if (data.description !== undefined) updates.description = data.description;
@@ -264,6 +306,18 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
   const accessCond = policyAccessCondition(auth);
   if (accessCond) conditions.push(accessCond);
+
+  // Pre-fetch to apply the partner-wide administration gate (see
+  // updateConfigPolicy) before the destructive statement.
+  const [existing] = await db
+    .select({ orgId: configurationPolicies.orgId })
+    .from(configurationPolicies)
+    .where(and(...conditions))
+    .limit(1);
+  if (!existing) return null;
+  if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+    throw new PartnerWideWriteDeniedError();
+  }
 
   const [deleted] = await db
     .delete(configurationPolicies)
@@ -1483,29 +1537,45 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch is handled separately in validateFeaturePolicyExists (partner-scoped, not org-scoped)
-  alert_rule: { table: alertRules, orgIdCol: alertRules.orgId },
+  // patch, software_policy, security, and alert_rule are handled separately in
+  // validateFeaturePolicyExists: rings are pure partner-axis, and software /
+  // security / alert-rule policies are dual-ownership (org XOR partner,
+  // #2126/#2127/#2128) — none fits the org-only lookup below.
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
-  security: { table: securityPolicies, orgIdCol: securityPolicies.orgId },
   compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
-  software_policy: { table: softwarePolicies, orgIdCol: softwarePolicies.orgId },
   sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
   peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
 };
 
+/**
+ * Feature types whose LINKED standalone table supports partner ownership, and
+ * may therefore carry a featurePolicyId on a PARTNER-WIDE config policy:
+ * update rings are pure partner-axis; software policies are dual-ownership
+ * (#2126). Grows as more template tables migrate to dual-axis (epic #2135).
+ * The featureLinks routes consult this set instead of hardcoding 'patch'.
+ */
+export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set([
+  'patch',
+  'software_policy',
+  'security',
+  'alert_rule',
+]);
+
 export async function validateFeaturePolicyExists(
   featureType: ConfigFeatureType,
   featurePolicyId: string | undefined | null,
-  orgId: string
+  owner: { orgId: string | null; partnerId: string | null }
 ): Promise<{ valid: boolean; error?: string }> {
   if (featureType === 'patch') {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
-    // Rings are partner-scoped: derive the partner from the config policy's org.
-    const partnerId = await resolvePartnerIdForOrg(orgId);
+    // Rings are partner-axis. A partner-wide policy (#1724) carries partnerId
+    // directly (orgId null); an org-scoped policy derives it from its org.
+    const partnerId =
+      owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
     if (!partnerId) {
       return { valid: false, error: `Update ring "${featurePolicyId}" not found — organization has no partner` };
     }
@@ -1529,6 +1599,52 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
+  if (featureType === 'software_policy' || featureType === 'security' || featureType === 'alert_rule') {
+    if (!featurePolicyId) {
+      return { valid: true };
+    }
+
+    // Software (#2126), security (#2127), and alert-rule (#2128) policies are
+    // dual-ownership. A config policy may link:
+    //  - an org-owned policy belonging to the config policy's own org
+    //  - a partner-owned ("all orgs") template belonging to the config
+    //    policy's partner (derived from its org for org-owned config policies)
+    // A partner-wide config policy (orgId null) can only link partner-owned
+    // templates — there is no owning org to anchor an org-owned one.
+    const dualAxis = featureType === 'software_policy'
+      ? { table: softwarePolicies, label: 'Software policy' }
+      : featureType === 'security'
+        ? { table: securityPolicies, label: 'Security policy' }
+        : { table: alertRules, label: 'Alert rule' };
+    const partnerId =
+      owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
+
+    const ownershipConditions: SQL[] = [];
+    if (owner.orgId) {
+      ownershipConditions.push(eq(dualAxis.table.orgId, owner.orgId));
+    }
+    if (partnerId) {
+      ownershipConditions.push(
+        sql`(${dualAxis.table.orgId} IS NULL AND ${dualAxis.table.partnerId} = ${partnerId})`
+      );
+    }
+    if (ownershipConditions.length === 0) {
+      return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found — no owning organization or partner` };
+    }
+
+    const [row] = await db
+      .select({ id: dualAxis.table.id })
+      .from(dualAxis.table)
+      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions)))
+      .limit(1);
+
+    if (!row) {
+      return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found for this organization or partner` };
+    }
+
+    return { valid: true };
+  }
+
   if (
     featureType === 'monitoring' ||
     featureType === 'event_log' ||
@@ -1547,6 +1663,18 @@ export async function validateFeaturePolicyExists(
 
   if (!featurePolicyId) {
     return { valid: true }; // inline-only is allowed; schema ensures inlineSettings is present
+  }
+
+  // Every remaining feature type references an org-scoped policy table. A
+  // partner-wide policy (orgId null, #1724) cannot link one — patch (rings,
+  // partner-axis) is the only linked feature valid partner-wide and returned
+  // above. The route blocks this upstream; guard here as defense-in-depth.
+  const orgId = owner.orgId;
+  if (!orgId) {
+    return {
+      valid: false,
+      error: `The "${featureType}" feature policy is organization-scoped and cannot be linked to a partner-wide configuration policy`,
+    };
   }
 
   // Check if it's a reference to another Configuration Policy (whole-policy linking)

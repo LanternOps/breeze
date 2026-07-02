@@ -24,7 +24,7 @@ Breeze supports three categories of integrations, each served by a dedicated set
 | **Monitoring** | External monitoring endpoints | Forward device telemetry and health data to third-party observability platforms |
 | **Accounting** | QuickBooks Online | Connect your accounting platform (see [Accounting](#accounting-integrations)) |
 | **Distributors** | Pax8, TD SYNNEX | Sync licenses and pull live distributor pricing into your [Product Catalog](/features/product-catalog/) |
-| **Network** | UniFi (Ubiquiti Site Manager) | Discover UniFi fleet inventory and WAN health, with optional agent-collected deep telemetry (see [UniFi Network](#unifi-network)) |
+| **Network** | UniFi (Ubiquiti Site Manager cloud, or a self-hosted controller) | Discover UniFi fleet inventory and WAN health via the cloud, or connect a self-hosted controller directly through a Breeze agent -- with optional agent-collected deep telemetry either way (see [UniFi Network](#unifi-network)) |
 
 <Aside>
   Communication and monitoring integrations are configured through the `/integrations` routes. PSA connections use the dedicated `/psa` routes, which provide full CRUD, credential encryption, ticket mapping, and sync management.
@@ -356,10 +356,12 @@ TD SYNNEX provides live product price and availability you can import straight i
 
 ## UniFi Network
 
-The UniFi integration discovers your Ubiquiti network fleet across every customer site and reconciles it into Breeze's unified network view -- so gateways, switches, and access points show up alongside your agent-discovered assets without duplicating them. It's a **partner-level** integration set up once for your practice, and it's strictly read-only: Breeze never changes your UniFi configuration. It has two layers -- a cloud connection that works everywhere, and optional on-site deep telemetry for richer detail.
+The UniFi integration discovers your Ubiquiti network fleet across every customer site and reconciles it into Breeze's unified network view -- so gateways, switches, and access points show up alongside your agent-discovered assets without duplicating them. It's a **partner-level** integration set up once for your practice, and it's strictly read-only: Breeze never changes your UniFi configuration.
+
+There are two ways to connect it: through Ubiquiti's cloud (**Site Manager**), optionally paired with on-site deep telemetry agents for richer per-port and per-client detail, or fully **self-hosted** with no Ubiquiti cloud account at all, where a Breeze agent talks directly to your on-prem controller and is the only path Breeze uses to reach it.
 
 <Aside type="note">
-  UniFi is configured on the **UniFi** tab of the Integrations page and is available to partner accounts only. Connecting, mapping sites, and managing collectors are MFA-gated actions.
+  UniFi is configured on the **UniFi** tab of the Integrations page and is available to partner accounts only. Connecting, mapping sites, registering controllers, and managing collectors are MFA-gated actions.
 </Aside>
 
 ### Cloud connection (Site Manager)
@@ -394,6 +396,27 @@ The collector's status badge shows reachability (pending, connected, unreachable
 
 <Aside>
   UniFi devices and connected clients flow into Breeze's [Network Intelligence](/features/network-intelligence/) discovered-assets view, matched by MAC (then IP), enriching existing assets rather than creating duplicates.
+</Aside>
+
+### Self-hosted controllers (no cloud account)
+
+If you'd rather not create a Ubiquiti cloud account at all, connect UniFi in **self-hosted mode** instead. In this mode there's no Site Manager API key anywhere -- a Breeze agent that already has network access to your on-prem UniFi Network controller polls it directly over the same read-only local **Network Integration API** used for deep telemetry (controller firmware **9.3 or newer**). The agent is the primary, and only, path Breeze uses to reach the controller.
+
+<Steps>
+
+1. Open **Integrations → UniFi**. On the not-yet-connected screen, choose **Self-hosted controller** instead of **Cloud (Site Manager API key)**, optionally give it an **account label** (for example, "Acme HQ controllers"), and click **Connect**. This just creates the self-hosted integration -- there's nothing to validate yet since no controller has been registered.
+2. In the **Controllers** card, register each controller: pick the **Breeze site** it primarily serves, a **collector agent** (an existing enrolled agent at that site that can reach the controller over the LAN), the **Controller URL** (for example `https://192.168.1.1`), and the controller's **local API key**, then click **Register controller**. The local key is encrypted before storage and pushed to the chosen agent.
+3. Once the assigned agent reaches the controller (within about a minute), the controller's own local sites are discovered automatically and appear in the **Site mapping** card. Map each discovered site to whichever **Breeze site** it corresponds to, then save.
+4. Devices and clients polled from each mapped site are reconciled into that site's discovered assets, with the same per-port PoE, throughput, uptime, and connected-client detail as agent-collected deep telemetry above -- self-hosted controllers use the same telemetry pipeline.
+
+</Steps>
+
+Because sites are mapped individually rather than the whole controller, **one self-hosted controller can feed many UniFi sites across several different Breeze organizations** -- for example, an MSP running a single controller that manages several clients' networks only needs one collector agent and one controller registration; each of the controller's discovered local sites is then mapped to whichever organization it actually belongs to.
+
+Breeze polls the controller on an interval you can tune via the API (`pollIntervalSeconds`, roughly 15–3600 seconds); the default is about once a minute, matching the deep telemetry cadence.
+
+<Aside type="note">
+  In self-hosted mode the collector agent isn't an optional enhancement -- it's the only way Breeze reaches your controller. If the assigned agent goes offline, polling for that controller stops until it reconnects or you point the registration at a different agent.
 </Aside>
 
 ---

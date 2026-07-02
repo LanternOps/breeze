@@ -82,6 +82,7 @@ The `config_policy_maintenance_settings` table stores:
 | `suppressPatching` | `boolean` | Default: `false` |
 | `suppressAutomations` | `boolean` | Default: `false` |
 | `suppressScripts` | `boolean` | Default: `false` |
+| `rebootIfPending` | `boolean` | Reboot devices that already have a reboot outstanding once the window opens. Default: `false`. See [Rebooting Devices with a Pending Reboot](#rebooting-devices-with-a-pending-reboot) below. |
 | `notifyBeforeMinutes` | `integer` | Minutes before the window opens to send a notification. Default: `15`. |
 | `notifyOnStart` | `boolean` | Send a notification when the window becomes active. Default: `true`. |
 | `notifyOnEnd` | `boolean` | Send a notification when the window closes. Default: `true`. |
@@ -212,6 +213,48 @@ The maintenance check follows a **fail-closed** policy: if the maintenance statu
 ### Patching
 
 The patch job service checks `checkDeviceMaintenanceWindow()` before creating a patch job for a device. If the device is in an active maintenance window with `suppressPatching: true`, the function returns `null` and no patch job is created.
+
+---
+
+## Rebooting Devices with a Pending Reboot
+
+Some changes -- a patch install, an application update, an OS feature update -- leave a device with a reboot outstanding until someone (or something) restarts it. Maintenance windows can close that gap automatically: enable **Reboot if a reboot is pending** on a configuration policy's Maintenance settings (under **Actions During Window**), and Breeze reboots any qualifying device that's sitting with a pending reboot once its window opens.
+
+<Aside type="note">
+This is a **configuration policy** feature only -- the underlying `rebootIfPending` setting lives on `config_policy_maintenance_settings`. It has no equivalent on legacy standalone maintenance windows.
+</Aside>
+
+### How it works
+
+A periodic check runs every 10 minutes, independent of any individual window's start time. On each pass it looks for devices that are:
+
+- Reporting a **pending reboot** -- the device already needs a restart, regardless of what caused it (a patch, an app install, a policy change, etc.), and
+- Currently **online**, and
+- Inside a maintenance window whose configuration policy has **Reboot if a reboot is pending** enabled
+
+Matching devices are rebooted right away -- Breeze doesn't wait for the window to close first.
+
+### Platform behavior
+
+<Tabs>
+<TabItem label="Windows">
+Breeze issues a scheduled reboot with a 15-minute grace period. The signed-in user gets a "save your work" warning about 5 minutes before the reboot fires.
+</TabItem>
+<TabItem label="Linux">
+Breeze schedules the reboot 15 minutes out (equivalent to running `shutdown -r +15`), which also warns any logged-in users.
+</TabItem>
+<TabItem label="macOS">
+Not supported. Breeze cannot detect a pending-reboot state on macOS, so macOS devices are never rebooted by this feature -- reboot them manually or through a script instead.
+</TabItem>
+</Tabs>
+
+### Avoiding repeat reboots
+
+Once a reboot has been issued to a device, that device is skipped for **60 minutes**, even if it still shows a pending reboot on a later check. This keeps a single outstanding reboot from being re-triggered several times in a row while the device works through it or while the window remains open.
+
+<Aside type="caution">
+**Don't confuse this with the `rebootPolicy` patch setting.** [`rebootPolicy`](/features/patch-management/#patch-settings-fields) (under patch management) controls whether a device reboots *immediately after a patch job installs updates* -- `never`, `if_required`, `always`, or `maintenance_window`. **Reboot if a reboot is pending** is a separate, ongoing check that isn't tied to patch jobs at all: it periodically looks for devices that already have a reboot outstanding, from any source, and clears it during the window. The two settings are independent and can be used on their own or together -- for example, set `rebootPolicy: never` so patching never reboots a device on its own, and rely on **Reboot if a reboot is pending** to clear any outstanding reboots the next time a maintenance window opens.
+</Aside>
 
 ---
 
@@ -421,3 +464,12 @@ All routes are mounted under `/maintenance` and require authentication. Scope re
 ### Invalid timezone fallback
 
 If the `timezone` field contains an invalid IANA timezone string, the system logs a warning (`Invalid timezone "...", falling back to UTC`) and evaluates the window in UTC. Correct the timezone in the maintenance settings to restore intended behavior.
+
+### Device with a pending reboot isn't rebooting during the window
+
+- Confirm **Reboot if a reboot is pending** is enabled on the configuration policy's Maintenance settings -- it defaults to off.
+- This feature only applies to configuration-policy maintenance windows. Legacy standalone maintenance windows don't support it.
+- The device must be **online** and reporting a pending reboot at the time of a check. Checks run roughly every 10 minutes, so allow a few minutes after the window opens.
+- macOS devices are never rebooted by this feature -- see [Rebooting Devices with a Pending Reboot](#rebooting-devices-with-a-pending-reboot).
+- If a reboot was already issued to the device in the last 60 minutes, it's skipped to avoid re-triggering -- check the device's command history for a recent reboot command before assuming the feature isn't working.
+- This is unrelated to the patch management `rebootPolicy` setting -- see the callout above for how the two differ.

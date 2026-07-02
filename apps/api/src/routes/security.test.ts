@@ -79,6 +79,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
 import { queueCommand } from '../services/commandQueue';
 import {
   getLatestSecurityPostureForDevice,
@@ -909,5 +910,162 @@ describe('security routes', () => {
       expect(body.data.status).toBe('completed');
       expect(db.insert).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// ============================================================
+// Partner-wide security policies (#2127, epic #2135)
+// ============================================================
+
+describe('partner-wide security policies (#2127)', () => {
+  const PARTNER_ID = '99999999-9999-4999-8999-999999999999';
+  const POLICY_ID = '9b0ce8f4-21c0-4f65-8b0a-0b9f8bbf9a11';
+
+  let app: Hono;
+
+  function setPartnerAuth(partnerOrgAccess?: 'all' | 'selected' | 'none') {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        partnerOrgAccess,
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+        user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+        orgCondition: () => undefined,
+        canAccessOrg: () => true,
+      });
+      return next();
+    });
+  }
+
+  const CREATE_BODY = {
+    ownerScope: 'partner',
+    name: 'Fleet security baseline',
+    scanSchedule: 'daily',
+    realTimeProtection: true,
+    autoQuarantine: true,
+    severityThreshold: 'high',
+    exclusions: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (globalThis as any).__denyPermission = false;
+    app = new Hono();
+    app.route('/security', securityRoutes);
+  });
+
+  it('creates a partner-wide policy (org NULL, partner from token) for a full partner admin', async () => {
+    setPartnerAuth('all');
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet security baseline', settings: {}, createdAt: new Date() },
+      ]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request('/security/policies', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREATE_BODY),
+    });
+
+    expect(res.status).toBe(201);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: null, partnerId: PARTNER_ID })
+    );
+  });
+
+  it('denies partner-wide create without full partner org access (orgAccess selected)', async () => {
+    setPartnerAuth('selected');
+
+    const res = await app.request('/security/policies', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREATE_BODY),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/full partner org access/);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('denies PUT on a partner-wide policy without the partner-wide capability', async () => {
+    setPartnerAuth('selected');
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet baseline', settings: {}, createdAt: new Date() },
+          ]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/security/policies/${POLICY_ID}`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hijacked' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/full partner org access/);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('allows PUT on a partner-wide policy for a full partner admin', async () => {
+    setPartnerAuth('all');
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet baseline', settings: {}, createdAt: new Date() },
+          ]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Renamed', settings: {}, createdAt: new Date() },
+          ]),
+        }),
+      }),
+    } as any);
+
+    const res = await app.request(`/security/policies/${POLICY_ID}`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it('denies partner-wide create for an org-scope caller (no partner)', async () => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: '11111111-1111-1111-1111-111111111111',
+        partnerId: null,
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+        user: { id: 'user-1' },
+        orgCondition: () => undefined,
+        canAccessOrg: () => true,
+      });
+      return next();
+    });
+
+    const res = await app.request('/security/policies', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREATE_BODY),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });

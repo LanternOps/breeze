@@ -378,6 +378,7 @@ Content-Type: application/json
 | `scheduleDayOfWeek` | string | For weekly schedules: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
 | `scheduleDayOfMonth` | integer | For monthly schedules: day 1–28 |
 | `rebootPolicy` | string | Post-patch reboot behavior: `never`, `if_required`, `always`, or `maintenance_window` |
+| `exclusiveWindowsUpdate` | boolean | **Manage Windows Update exclusively through Breeze.** When enabled, Breeze disables the device's native Windows Update automatic-install channel, so updates on that device only arrive through Breeze's approval rings and schedule — no unexpected OS-initiated installs or reboots outside your policy. Turning it back off restores Windows' native update behavior. **Windows-only** — has no effect on macOS or Linux devices. Default: `false` |
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
 
@@ -394,6 +395,10 @@ Each patch policy must declare which **patch sources** it manages, and at least 
 | `custom` | Internally published updates distributed through Breeze's custom patch channel |
 | `firmware` | Firmware updates |
 | `drivers` | Device driver updates |
+
+<Aside type="caution">
+`firmware` and `drivers` have no dedicated scan provider yet — driver and firmware approval is instead governed by [update ring](/features/update-rings/) categories. A policy whose `sources` list is made up **only** of `firmware` and/or `drivers` is rejected when you save it, since it would otherwise approve nothing. Include at least one of `os`, `third_party`, or `custom` alongside them.
+</Aside>
 
 #### Application Rules
 
@@ -459,7 +464,7 @@ The response includes the IDs of all created jobs, total device counts, and skip
 | **DELETE** | `/third-party-catalog/:id` | Delete a catalog entry — platform admin |
 | **POST** | `/third-party-catalog/:id/test` | Queue a smoke test for a Breeze-tested entry (body `{ "version": "..." }`) — platform admin |
 
-The `GET /patches` response includes `source` (`microsoft`, `apple`, `linux`, `third_party`, `custom`), and for third-party patches also `version`, `vendor`, and a `cveIds` array populated by OSV enrichment. Filter to a single source with `?source=third_party`.
+The `GET /patches` response includes `source` (`microsoft`, `apple`, `linux`, `third_party`, `custom`), `releaseDate` (the date the patch was published by its source, when available), and for third-party patches also `version`, `vendor`, and a `cveIds` array populated by OSV enrichment. Filter to a single source with `?source=third_party`.
 
 ---
 

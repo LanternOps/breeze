@@ -168,6 +168,13 @@ export const listPoliciesQuerySchema = z.object({
 
 export const createPolicySchema = z.object({
   name: z.string().min(1).max(255),
+  // Ownership axis (#2127, mirrors software/config policies). 'organization'
+  // (default) = classic org-scoped policy. 'partner' = partner-wide / all-orgs
+  // template; the server derives the partner from the caller's own token — a
+  // client-supplied partner id is NEVER trusted. Create-only: ownership is
+  // immutable, so updatePolicySchema omits it (which also keeps it out of the
+  // settings JSONB the PUT handler spreads the payload into).
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   description: z.string().optional(),
   providerId: z.string().optional(),
   scanSchedule: z.enum(['daily', 'weekly', 'monthly', 'manual']).default('weekly'),
@@ -181,7 +188,8 @@ export const createPolicySchema = z.object({
 // v3), which would silently reset protection settings (realTimeProtection,
 // autoQuarantine, …) whenever a client patches an unrelated field. Strip the
 // create-time defaults from the defaulted fields so omitted keys stay absent.
-export const updatePolicySchema = createPolicySchema.partial().extend({
+// ownerScope is omitted: ownership is create-only (see createPolicySchema).
+export const updatePolicySchema = createPolicySchema.omit({ ownerScope: true }).partial().extend({
   scanSchedule: createPolicySchema.shape.scanSchedule.removeDefault().optional(),
   realTimeProtection: createPolicySchema.shape.realTimeProtection.removeDefault().optional(),
   autoQuarantine: createPolicySchema.shape.autoQuarantine.removeDefault().optional(),

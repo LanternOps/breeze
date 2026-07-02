@@ -45,6 +45,31 @@ Incidents progress through five statuses with enforced transitions:
 
 ---
 
+## Unified Incident Feed
+
+The Incidents view shows a single feed that mixes two kinds of rows:
+
+- **Tracked incidents** — full incident records created and managed inside Breeze, following the lifecycle described above.
+- **EDR findings** — raw detections surfaced read-only from a connected EDR provider (Huntress or SentinelOne). These aren't Breeze incidents yet — they're detections your EDR reported that haven't been brought into Breeze's incident workflow.
+
+Both row types are sorted together by severity and detection time. Each EDR finding shows which provider it came from and **links out to the originating console** — clicking a Huntress finding opens that detection in Huntress; clicking a SentinelOne finding opens it in the SentinelOne console.
+
+### Promoting a finding to a tracked incident
+
+Findings are read-only until you decide one is worth tracking. Click **Promote to Incident** on a finding row to create a real tracked incident from it — the new incident references the originating finding (via `sourceType` / `sourceRef`, see [Creating an Incident](#creating-an-incident)) so Breeze knows it's already been handled.
+
+Promoting the same finding a second time is blocked — Breeze returns a conflict ("This finding has already been promoted to an incident") instead of creating a duplicate. If you see this, look for the existing tracked incident in the feed rather than retrying.
+
+### Who sees what
+
+- **Tracked incidents** are visible to anyone with permission to view alerts.
+- **EDR findings** additionally require permission to view devices, because a finding exposes the device that triggered it. A user with alerts access but not device access sees only tracked incidents — no Huntress or SentinelOne rows. This is expected: it's normal for two users to see different row counts in the same feed.
+- EDR findings are also scoped to sites. If your account is restricted to specific sites, you'll only see findings for devices in sites you have access to. Findings that aren't tied to a specific device remain visible regardless of site restrictions.
+
+You can filter the feed by row type or provider (`?kind=tracked`, `?kind=finding`, `?source=huntress`, `?source=s1`) via `GET /incidents/feed`.
+
+---
+
 ## Creating an Incident
 
 ```bash
@@ -72,8 +97,12 @@ Authorization: Bearer <token>
 | `relatedAlerts` | UUID[] | No | Related alert IDs |
 | `affectedDevices` | UUID[] | No | Affected device IDs |
 | `assignedTo` | UUID | No | User to assign |
+| `sourceType` | string | No | `huntress_incident` or `s1_threat` — set when promoting an EDR finding into a tracked incident |
+| `sourceRef` | string | No | The originating finding's ID from the EDR provider — set together with `sourceType` when promoting |
 
 The incident is created with status `detected` and an initial timeline entry.
+
+Setting `sourceType` and `sourceRef` together is how a finding is promoted into a tracked incident — it's what the **Promote to Incident** button in the feed does under the hood. Breeze only lets a given finding be promoted once: submitting the same `sourceType`/`sourceRef` pair again returns `409 Conflict` rather than creating a second incident for the same finding.
 
 ---
 
@@ -228,8 +257,9 @@ The AI can also trigger playbooks as part of incident response. Ask the AI to ru
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/incidents` | Create a new incident |
+| POST | `/incidents` | Create a new incident (or promote a finding, via `sourceType`/`sourceRef`) |
 | GET | `/incidents` | List incidents (`?status=&severity=&classification=&assignedTo=&startDate=&endDate=&page=&limit=`) |
+| GET | `/incidents/feed` | Unified feed of tracked incidents and EDR findings (`?kind=&source=&orgId=&page=&limit=`) |
 | GET | `/incidents/:id` | Get incident with timeline, actions, and evidence |
 | POST | `/incidents/:id/close` | Close an incident |
 | GET | `/incidents/:id/report` | Generate incident report |
@@ -253,3 +283,9 @@ Only incidents in `contained` or `recovering` status can be closed. Progress the
 
 **AI containment not executing.**
 `execute_containment` is Tier 3 and requires human approval. Check **Monitoring → AI Risk Engine → Approval History** for pending requests.
+
+**Promoting a finding fails with "already promoted".**
+This is expected, not a bug — the finding has already been promoted to a tracked incident (by you or a teammate). Look for the existing tracked incident in the feed instead of promoting again.
+
+**Some users don't see Huntress/SentinelOne findings in the feed.**
+Seeing tracked incidents only requires permission to view alerts. Seeing raw EDR findings additionally requires permission to view devices, and findings are scoped to the sites a user has access to. If a technician is missing device permission or site access, they'll see fewer rows than an admin looking at the same feed — this is expected.

@@ -67,6 +67,31 @@ draft → pending → downloading → installing → completed
 
 When a deployment auto-pauses, it enters a `paused` sub-state between batches. An operator must inspect the failed devices, determine the root cause, and then explicitly resume or cancel the deployment.
 
+### Post-Install Detection (Software Deployments)
+
+For **Software** deployments, Breeze can verify what's actually installed on the device instead of just trusting the installer's exit code. Detection rules are authored **per software version**, in the Deployment Wizard, when you add or edit a version in the App Library — not per deployment.
+
+| Clause Type | UI Label | Checks |
+|-------------|----------|--------|
+| `registry` | **Registry key/value** | A registry key exists, optionally with a specific value name and/or expected value data. Windows only. |
+| `file_exists` | **File or folder exists** | A file or folder is present at an absolute path. Cross-platform. |
+| `msi_product_code` | **MSI product code** | The given MSI product code GUID is registered as installed. Windows only. |
+
+- A software version can have up to **20 detection clauses**.
+- When a version has more than one clause, **all clauses must pass (AND)** for the software to count as "detected" — there's no OR/any-match option.
+- **Registry key/value** and **MSI product code** clauses only work on Windows. If a clause type can't be evaluated on a device's platform (or no detection rules are configured at all), Breeze falls back to the installer's **exit code** to determine success — it never guesses at pass/fail for a clause type it can't check.
+
+With detection rules configured, two things change about how a Software deployment behaves:
+
+- **Idempotent installs** — before running the installer, the agent checks the detection rules first. If the software is already present, the install step is **skipped entirely** for that device (reported as skipped/already-installed) rather than reinstalling every time the deployment runs.
+- **Real verification, not just exit code** — after the installer finishes, the agent re-checks the detection rules. If the installer reports success but the detection rules still don't pass, the device is marked **failed** rather than success — catching installers that exit 0 without actually leaving the software behind.
+
+To reinstall regardless of what's already on the device, enable **Reinstall even if already present** when scheduling the Software deployment. This toggle (`forceReinstall`) bypasses the skip-if-present check for that deployment; the installer runs even if detection rules say the software is already there. It has no effect on versions with no detection rules configured.
+
+<Aside type="tip">
+  **Reboot-pending exit codes are now handled correctly.** Some installers exit with `3010` (`ERROR_SUCCESS_REBOOT_REQUIRED`) or `1641` (`ERROR_SUCCESS_REBOOT_INITIATED`) to report a successful install that needs a reboot to finish. Breeze now treats both codes as **success** for both `.exe` and `.msi` installers. Previously, an `.exe` installer returning `3010`, or an `.msi` installer returning `1641`, was incorrectly reported as a failed deployment.
+</Aside>
+
 ---
 
 ## Creating a Deployment
@@ -86,7 +111,7 @@ When a deployment auto-pauses, it enters a `paused` sub-state between batches. A
 5. Configure the **Payload** for the selected type:
    - **Script**: Choose a script from the library and set parameters.
    - **Patch**: Select patches to install from the patch catalog.
-   - **Software**: Choose a package from the App Library. The agent downloads from a presigned S3 URL, verifies the SHA-256 checksum, and runs the installer silently (MSI/EXE on Windows, DEB on Linux, PKG/DMG on macOS). MSI packages default to `/qn /norestart` silent install arguments.
+   - **Software**: Choose a package from the App Library. The agent downloads from a presigned S3 URL, verifies the SHA-256 checksum, and runs the installer silently (MSI/EXE on Windows, DEB on Linux, PKG/DMG on macOS). MSI packages default to `/qn /norestart` silent install arguments. If the selected version has [detection rules](#post-install-detection-software-deployments) configured, devices where the software is already present are skipped automatically — check **Reinstall even if already present** to override this and force the installer to run anyway.
    - **Policy**: Select a configuration policy to apply.
 
 6. Select the **Target Type** and specify target devices, groups, or a filter expression.

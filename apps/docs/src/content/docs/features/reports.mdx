@@ -206,7 +206,9 @@ The **Security & Compliance Posture** report (`security_compliance_posture`) pac
 It is scoped to a single organization (with an optional site filter) and is honest about gaps: a control that hasn't been assessed is reported as **N/A**, never as a misleading 0% or a falsely favorable score. The PDF renders as a branded scorecard (overall score out of 100 with a STRONG / GOOD / FAIR / AT RISK band and a per-control grid) and carries point-in-time, not-a-certification disclaimers.
 
 <Aside type="note">
-  Today this report is created through the report API -- `POST /reports` with `"type": "security_compliance_posture"` and a `config` object -- rather than from the report builder. Once saved, it generates and downloads exactly like any other report (it appears in your reports list as "Security & Compliance Posture"). Posture-specific `config` options include `sites` (limit to specific sites), `windowDays` (recency window for "current" patch/AV data), `minPasswordLength`, `maxLocalAdmins`, `maxAvDefinitionsAgeDays`, and `includeCis` (add the CIS pass-rate section).
+  You can start this report straight from the report builder: pick the **Security & Compliance Posture (Insurance)** template card, then set the name, date-range preset, schedule, and output format like any other report. Once saved, it generates and downloads exactly like the rest of your reports (it appears in your reports list as "Security & Compliance Posture").
+
+  The template card covers the common case. A set of posture-specific fine-tuning options is **not** yet exposed as form controls in the builder and can only be set by editing the report's `config` through the API -- `POST /reports` / `PUT /reports/:id` / `POST /reports/generate` -- with a `config` object: `sites` (limit to specific sites), `windowDays` (recency window for "current" patch/AV data), `minPasswordLength`, `maxLocalAdmins`, `maxAvDefinitionsAgeDays`, and `includeCis` (add the CIS pass-rate section). If you don't set them, sensible defaults apply (30-day window, 8-character minimum password length, at most 2 local admins, 7-day AV-definition freshness, and CIS section included).
 </Aside>
 
 ---

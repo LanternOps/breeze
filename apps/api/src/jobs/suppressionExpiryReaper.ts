@@ -102,6 +102,7 @@ export async function reapExpiredSuppressions(): Promise<number> {
       });
     } catch (err) {
       console.error('[SuppressionExpiryReaper] Failed to write audit event:', err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
 

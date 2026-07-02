@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, gte, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceCommands, softwareComplianceStatus, softwarePolicies, type RemediationError } from '../db/schema';
+import { deviceCommands, devices, softwareComplianceStatus, softwarePolicies, type RemediationError } from '../db/schema';
 import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
@@ -100,6 +100,7 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
     .select({
       id: softwarePolicies.id,
       orgId: softwarePolicies.orgId,
+      partnerId: softwarePolicies.partnerId,
       name: softwarePolicies.name,
       isActive: softwarePolicies.isActive,
       remediationOptions: softwarePolicies.remediationOptions,
@@ -120,6 +121,16 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
       errors: 0,
     };
   }
+
+  // Dual-owner audit rows (#2126): per-device events under a partner-wide
+  // policy (policy.orgId NULL) must carry the DEVICE's org so the org admin
+  // can see them, alongside the policy's partnerId.
+  const [deviceRow] = await db
+    .select({ orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, data.deviceId))
+    .limit(1);
+  const auditOrgId = policy.orgId ?? deviceRow?.orgId ?? null;
 
   const [compliance] = await db
     .select()
@@ -158,7 +169,8 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
         .where(eq(softwareComplianceStatus.id, compliance.id));
 
       fireAudit({
-        orgId: policy.orgId,
+        orgId: auditOrgId,
+        partnerId: policy.partnerId,
         policyId: policy.id,
         deviceId: data.deviceId,
         action: 'remediation_deferred',
@@ -294,7 +306,8 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
       ? (commandsQueued > 0 ? 'remediation_partial' : 'remediation_failed')
       : (skippedInFlight > 0 && commandsQueued === 0 ? 'remediation_deferred' : 'remediation_queued');
     fireAudit({
-      orgId: policy.orgId,
+      orgId: auditOrgId,
+      partnerId: policy.partnerId,
       policyId: policy.id,
       deviceId: data.deviceId,
       action,

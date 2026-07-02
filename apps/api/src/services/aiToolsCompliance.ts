@@ -23,6 +23,7 @@ import type { AiTool } from './aiTools';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -203,8 +204,16 @@ registerTool({
 
     if (action === 'list') {
       const conditions: SQL[] = [];
+      // Dual-axis (#2126): org-owned rows the caller can reach OR partner-wide
+      // rows (org_id NULL) owned by the caller's own partner.
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
-      if (orgCondition) conditions.push(orgCondition);
+      if (orgCondition) {
+        conditions.push(
+          auth.scope === 'partner' && auth.partnerId
+            ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
+            : orgCondition
+        );
+      }
       if (typeof input.mode === 'string') conditions.push(eq(softwarePolicies.mode, input.mode as 'allowlist' | 'blocklist' | 'audit'));
       if (typeof input.isActive === 'boolean') conditions.push(eq(softwarePolicies.isActive, input.isActive));
 
@@ -222,8 +231,16 @@ registerTool({
     if (action === 'get') {
       if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
       const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
+      // Dual-axis (#2126): org-owned rows the caller can reach OR partner-wide
+      // rows (org_id NULL) owned by the caller's own partner.
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
-      if (orgCondition) conditions.push(orgCondition);
+      if (orgCondition) {
+        conditions.push(
+          auth.scope === 'partner' && auth.partnerId
+            ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
+            : orgCondition
+        );
+      }
 
       const [policy] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
       if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
@@ -278,11 +295,25 @@ registerTool({
       if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
 
       const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
+      // Dual-axis (#2126): org-owned rows the caller can reach OR partner-wide
+      // rows (org_id NULL) owned by the caller's own partner.
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
-      if (orgCondition) conditions.push(orgCondition);
+      if (orgCondition) {
+        conditions.push(
+          auth.scope === 'partner' && auth.partnerId
+            ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
+            : orgCondition
+        );
+      }
 
       const [existing] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
       if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
+
+      // Partner-wide templates are administrable only with the partner-wide
+      // capability (same gate as the HTTP route).
+      if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
+      }
 
       const updates: Partial<typeof softwarePolicies.$inferInsert> = { updatedAt: new Date() };
       if (typeof input.name === 'string') updates.name = input.name;
@@ -328,11 +359,24 @@ registerTool({
       if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
 
       const conditions: SQL[] = [eq(softwarePolicies.id, input.policyId as string)];
+      // Dual-axis (#2126): org-owned rows the caller can reach OR partner-wide
+      // rows (org_id NULL) owned by the caller's own partner.
       const orgCondition = auth.orgCondition(softwarePolicies.orgId);
-      if (orgCondition) conditions.push(orgCondition);
+      if (orgCondition) {
+        conditions.push(
+          auth.scope === 'partner' && auth.partnerId
+            ? sql`(${orgCondition} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`
+            : orgCondition
+        );
+      }
 
       const [existing] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
       if (!existing) return JSON.stringify({ error: 'Policy not found or access denied' });
+
+      // Same partner-wide administration gate as update.
+      if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
+      }
 
       await db.transaction(async (tx) => {
         await tx

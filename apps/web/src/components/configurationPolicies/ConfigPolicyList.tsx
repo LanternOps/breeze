@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight, Pencil, Trash2 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, Pencil, Trash2, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type ConfigPolicyStatus = 'active' | 'inactive' | 'archived';
@@ -9,7 +9,8 @@ export type ConfigPolicy = {
   name: string;
   description?: string;
   status: ConfigPolicyStatus;
-  orgId: string;
+  // null = partner-wide ("All organizations") policy (#1724)
+  orgId: string | null;
   createdAt?: string;
   updatedAt?: string;
   featureLinks?: { id: string; featureType: string }[];
@@ -131,7 +132,21 @@ export default function ConfigPolicyList({
             ) : (
               paginatedPolicies.map((policy) => (
                 <tr key={policy.id} className="text-sm">
-                  <td className="px-4 py-3 font-medium text-foreground">{policy.name}</td>
+                  <td className="px-4 py-3 font-medium text-foreground">
+                    <div className="flex items-center gap-2">
+                      <span>{policy.name}</span>
+                      {policy.orgId === null && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                          title="Partner-wide policy — applies to every organization"
+                          data-testid="partner-wide-badge"
+                        >
+                          <Globe className="h-3 w-3" />
+                          All orgs
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     <span
                       className={cn(

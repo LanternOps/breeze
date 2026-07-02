@@ -48,6 +48,8 @@ vi.mock('../services/redis', () => ({
 vi.mock('../services/eventBus', () => ({ publishEvent: vi.fn() }));
 
 vi.mock('../services/alertService', () => ({
+  // #2128: and() drops undefined, so this stub keeps the mocked rule query unchanged
+  alertRuleOwnershipConditionForOrg: vi.fn(async () => undefined),
   createAlert: vi.fn(),
   evaluateDeviceAlertsFromPolicy: evaluateFromPolicyMock,
 }));

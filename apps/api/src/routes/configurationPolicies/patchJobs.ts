@@ -6,7 +6,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { db } from '../../db';
-import { patchJobs, devices } from '../../db/schema';
+import { patchJobs, devices, organizations } from '../../db/schema';
 import {
   checkDeviceMaintenanceWindow,
   resolvePatchConfigDetailsForDevice,
@@ -138,9 +138,6 @@ patchJobRoutes.post(
     const inaccessibleDeviceIds = targetDevices
       .filter((d) => !auth.canAccessOrg(d.orgId))
       .map((d) => d.id);
-    const crossOrgDeviceIds = accessibleDevices
-      .filter((d) => d.orgId !== policy.orgId)
-      .map((d) => d.id);
 
     if (accessibleDevices.length === 0) {
       return c.json({
@@ -149,9 +146,34 @@ patchJobRoutes.post(
       }, 404);
     }
 
+    // Scope guard: an org-owned policy can only patch devices in its own org. A
+    // partner-wide policy (org_id NULL, #1724) may patch devices across every
+    // org under its partner, but never another partner's — so each device's org
+    // must resolve to policy.partnerId. This is the partner-axis equivalent of
+    // the org check, layered on top of auth.canAccessOrg + RLS above.
+    let crossOrgDeviceIds: string[];
+    if (policy.orgId === null) {
+      const uniqueOrgIds = [...new Set(accessibleDevices.map((d) => d.orgId))];
+      const orgRows = await db
+        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(inArray(organizations.id, uniqueOrgIds));
+      const orgPartner = new Map(orgRows.map((r) => [r.id, r.partnerId]));
+      crossOrgDeviceIds = accessibleDevices
+        .filter((d) => orgPartner.get(d.orgId) !== policy.partnerId)
+        .map((d) => d.id);
+    } else {
+      crossOrgDeviceIds = accessibleDevices
+        .filter((d) => d.orgId !== policy.orgId)
+        .map((d) => d.id);
+    }
+
     if (crossOrgDeviceIds.length > 0) {
       return c.json({
-        error: 'Configuration policy patch jobs can only target devices in the policy organization',
+        error:
+          policy.orgId === null
+            ? 'Configuration policy patch jobs can only target devices belonging to the policy partner'
+            : 'Configuration policy patch jobs can only target devices in the policy organization',
         skipped: { missingDeviceIds, inaccessibleDeviceIds, crossOrgDeviceIds },
       }, 403);
     }

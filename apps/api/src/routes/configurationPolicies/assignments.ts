@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   getConfigPolicy,
@@ -12,6 +12,8 @@ import {
   listAssignments,
   listAssignmentsForTarget,
   validateAssignmentTarget,
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import {
@@ -79,10 +81,9 @@ assignmentRoutes.post(
       // of orgs — permitting a partner-level assignment would silently propagate
       // config (remote_access, PAM, monitoring, patch) to orgs they cannot access.
       // Only orgAccess='all' partner users (and system scope) may assign at
-      // partner level. requireConfigPolicyWrite (requirePermission) already
-      // populated c.get('permissions') with the caller's orgAccess.
-      const userPerms = c.get('permissions') as UserPermissions | undefined;
-      if (auth.scope !== 'system' && userPerms?.orgAccess !== 'all') {
+      // partner level — the same capability that gates partner-wide policy
+      // create/update/delete and feature-link writes.
+      if (!canManagePartnerWidePolicies(auth)) {
         return c.json({ error: 'Partner-level assignments require full partner org access (orgAccess must be "all")' }, 403);
       }
     }
@@ -144,6 +145,13 @@ assignmentRoutes.delete(
 
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+
+    // Unassigning a partner-wide policy strips config from ALL orgs under the
+    // partner (its only assignment is the partner-level one) — the same blast
+    // radius as assigning, so the same capability gate applies.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
 
     const deleted = await unassignPolicy(aid, id);
     if (!deleted) return c.json({ error: 'Assignment not found' }, 404);

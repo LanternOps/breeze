@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  Globe,
   Pencil,
   Plus,
   ShieldCheck,
@@ -9,6 +10,8 @@ import {
   X,
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import { showToast } from '../shared/Toast';
 import PolicyForm, { type PolicyFormValues } from './PolicyForm';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -17,6 +20,10 @@ type Policy = {
   id: string;
   name: string;
   description?: string;
+  // null = partner-wide ("All organizations") template (#2126). Optional
+  // because client-side prefill drafts (not yet server rows) omit it.
+  orgId?: string | null;
+  partnerId?: string | null;
   mode: 'allowlist' | 'blocklist' | 'audit';
   rules?: {
     software: Array<{
@@ -83,6 +90,16 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Ownership axis (#2126, mirrors ConfigPolicyCreatePage #1724): partner-scope
+  // creators may own a policy partner-wide ("all orgs"). Gate on the JWT scope,
+  // not useOrgStore().partners; default to partner-wide when viewing All orgs.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const defaultOwnerScope: PolicyFormValues['ownerScope'] =
+    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization';
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -189,6 +206,9 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
         name: values.name,
         description: values.description || undefined,
         mode: values.mode,
+        // Ownership is immutable after create — only send the intent on create.
+        // The server derives the partner from the caller's own token (#2126).
+        ownerScope: modalMode === 'create' ? values.ownerScope : undefined,
         rules: {
           software: values.software.map((s) => ({
             name: s.name,
@@ -394,7 +414,21 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
             <tbody>
               {policies.map((policy) => (
                 <tr key={policy.id} className="border-t">
-                  <td className="px-4 py-3 font-medium">{policy.name}</td>
+                  <td className="px-4 py-3 font-medium">
+                    <div className="flex items-center gap-2">
+                      <span>{policy.name}</span>
+                      {policy.orgId === null && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                          title="Partner-wide template — applies to every organization"
+                          data-testid="software-policy-partner-wide-badge"
+                        >
+                          <Globe className="h-3 w-3" />
+                          All orgs
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 capitalize">{policy.mode}</td>
                   <td className="px-4 py-3">
                     <span
@@ -514,10 +548,11 @@ export default function ComplianceDashboard({ prefill }: ComplianceDashboardProp
                 defaultValues={
                   modalMode === 'edit' && selectedPolicy
                     ? policyToFormDefaults(selectedPolicy)
-                    : undefined
+                    : { ownerScope: defaultOwnerScope }
                 }
                 submitLabel={modalMode === 'create' ? 'Create Policy' : 'Update Policy'}
                 loading={submitting}
+                showOwnerScope={modalMode === 'create' && isPartnerScope}
               />
             </div>
           </div>
