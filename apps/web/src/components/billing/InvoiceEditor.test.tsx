@@ -153,6 +153,100 @@ describe('InvoiceEditor', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-unapproved-warning')).toBeInTheDocument());
   });
 
+  // ── Save-grammar parity backport (Task 6): scoped pending, commit guards,
+  //    dirty/saved cues, resync guard — ported from QuoteEditor. ─────────────
+
+  const patchCalls = (lineId: string) =>
+    fetchMock.mock.calls.filter(
+      (c) => c[0] === `/invoices/inv-1/lines/${lineId}` && (c[1] as RequestInit)?.method === 'PATCH',
+    );
+
+  it('qty blur with a non-numeric value does not PATCH and surfaces an error', async () => {
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const qty = screen.getByTestId('invoice-line-qty-line-1');
+    fireEvent.change(qty, { target: { value: 'abc' } });
+    fireEvent.blur(qty);
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+    expect(patchCalls('line-1')).toHaveLength(0);
+  });
+
+  it('qty blur with a non-positive value is rejected without a PATCH', async () => {
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const qty = screen.getByTestId('invoice-line-qty-line-1');
+    fireEvent.change(qty, { target: { value: '-1' } });
+    fireEvent.blur(qty);
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('greater than 0') }),
+      ),
+    );
+    expect(patchCalls('line-1')).toHaveLength(0);
+  });
+
+  it('re-typing the same price in a different format ("3.00" over "3") fires no PATCH', async () => {
+    const priced = { ...manualLine, unitPrice: '3.00', lineTotal: '6.00' };
+    render(<InvoiceEditor detail={draft([priced])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const price = screen.getByTestId('invoice-line-price-line-1');
+    fireEvent.change(price, { target: { value: '3' } }); // numerically identical to 3.00
+    fireEvent.blur(price);
+
+    // Give any (erroneous) async PATCH a chance to fire before asserting none did.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(patchCalls('line-1')).toHaveLength(0);
+  });
+
+  it('an in-flight PATCH on one line does not disable another line', async () => {
+    const l1 = { ...manualLine, id: 'line-1' };
+    const l2 = { ...manualLine, id: 'line-2', description: 'Other' };
+    // Hold the PATCH open so line-1's save stays in flight while we inspect line-2.
+    let releasePatch: (v: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1/lines/line-1' && opts?.method === 'PATCH') {
+        return new Promise<Response>((resolve) => { releasePatch = resolve; });
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([l1, l2])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const qty1 = screen.getByTestId('invoice-line-qty-line-1');
+    fireEvent.change(qty1, { target: { value: '9' } });
+    fireEvent.blur(qty1);
+
+    // line-1's save is in flight; line-2's inputs must remain usable.
+    await waitFor(() => expect(patchCalls('line-1')).toHaveLength(1));
+    expect(screen.getByTestId('invoice-line-qty-line-2')).not.toBeDisabled();
+    expect(screen.getByTestId('invoice-line-price-line-2')).not.toBeDisabled();
+
+    releasePatch(json({ data: {} }));
+  });
+
+  it('a background refresh does not clobber a qty field being edited', async () => {
+    const { rerender } = render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const qty = screen.getByTestId('invoice-line-qty-line-1');
+    fireEvent.change(qty, { target: { value: '9' } }); // mid-edit, not yet blurred
+
+    // A background poll re-supplies the invoice prop with a different server qty.
+    const serverEcho = { ...manualLine, quantity: '5.00', lineTotal: '250.00' };
+    rerender(<InvoiceEditor detail={draft([serverEcho])} onChanged={vi.fn()} />);
+
+    // The user's in-progress "9" survives the resync.
+    expect(screen.getByTestId('invoice-line-qty-line-1')).toHaveValue(9);
+  });
+
   it('editing the T&C textarea and blurring issues PATCH /invoices/:id with { termsAndConditions }', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
