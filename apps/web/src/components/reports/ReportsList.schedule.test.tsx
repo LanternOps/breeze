@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -57,7 +57,7 @@ describe('ReportsList schedule cell', () => {
 
     await waitFor(() => expect(screen.getByText('Monthly Inventory')).toBeInTheDocument());
     expect(screen.getByText(/^Next: .+/)).toBeInTheDocument();
-    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(within(screen.getByTitle('Email recipients')).getByText('2')).toBeInTheDocument();
   });
 
   it('renders no next-run line for a one-time report', async () => {

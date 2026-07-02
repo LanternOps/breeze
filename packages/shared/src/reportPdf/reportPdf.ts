@@ -1195,7 +1195,11 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
   const doc = new jsPDF({ orientation: 'landscape' });
   const records = rows as Record<string, unknown>[];
 
-  if (opts.reportType === 'security_compliance_posture' && opts.summary) {
+  // SAFE guard is intentionally asymmetric: a summary carrying an exec shape
+  // ('devices' key) must not enter the posture cover, but we don't require any
+  // posture-specific key here because legacy posture snapshots are all-optional
+  // and must keep rendering.
+  if (opts.reportType === 'security_compliance_posture' && opts.summary && !('devices' in (opts.summary as object))) {
     // Aggregate the per-device rows for the scorecard right-rail risk stats.
     const agg: PostureAggregates = records.reduce<PostureAggregates>(
       (acc, r) => {

@@ -700,6 +700,57 @@ describe('reports routes', () => {
     expect(body.status).toBe('completed');
   });
 
+  it('stores the previous baseline on the run when previousBaselineFor finds a prior completed run', async () => {
+    const setArgs: any[] = [];
+    vi.mocked(db.update).mockReturnValue({
+      set: (v: any) => { setArgs.push(v); return { where: () => Promise.resolve() }; }
+    } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{
+        id: 'report-1',
+        orgId: ORG_ID,
+        name: 'Device Inventory',
+        type: 'device_inventory',
+        config: {},
+        schedule: 'daily',
+        format: 'csv'
+      }]))
+      .mockReturnValueOnce(selectChain([])) // generator query (device_inventory rows)
+      .mockReturnValueOnce(selectChain([{
+        summary: { postureScore: 74 },
+        generatedAt: '2026-06-01T09:00:00.000Z',
+        completedAt: new Date('2026-06-01T09:00:00Z')
+      }])); // previousBaselineFor: prior completed run
+
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: 'run-1',
+          reportId: 'report-1',
+          status: 'pending'
+        }])
+      })
+    } as any);
+
+    const res = await app.request('/reports/report-1/generate', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.runId).toBe('run-1');
+    expect(body.status).toBe('completed');
+
+    const completedSet = setArgs.find((a) => a.status === 'completed');
+    expect(completedSet).toBeDefined();
+    expect(completedSet.result.previous).toEqual({
+      generatedAt: '2026-06-01T09:00:00.000Z',
+      summary: { postureScore: 74 }
+    });
+  });
+
   it('should update a report schedule', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({

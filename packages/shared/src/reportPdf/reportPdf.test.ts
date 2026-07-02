@@ -77,7 +77,7 @@ describe('buildReportPdf in Node (no DOM)', () => {
       summary: postureSummary,
     });
 
-    // The delta chip ("▲ +5 since Jun 1") is extra drawn content, so the
+    // The delta chip ("+5 since Jun 1") is extra drawn content, so the
     // trended render is strictly larger than the baseline-less one.
     expect(Buffer.from(withTrend.output('arraybuffer')).byteLength).toBeGreaterThan(
       Buffer.from(withoutTrend.output('arraybuffer')).byteLength,

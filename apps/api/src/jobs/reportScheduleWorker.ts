@@ -12,9 +12,10 @@
  *   when `lastGeneratedAt` predates that occurrence.
  * - `run-scheduled-report` mirrors the on-demand POST /reports/:id/generate
  *   path: insert a report_runs row, generateReport, store the snapshot. When
- *   `config.emailRecipients` is set, recipients get an email with a CSV
- *   attachment (tabular formats) or a link into the app (PDF renders
- *   client-side).
+ *   `config.emailRecipients` is set, recipients get an email with the branded
+ *   PDF attached for PDF-format reports (rendered server-side via
+ *   @breeze/shared/reportPdf) or a CSV attachment for tabular formats — either
+ *   way, plus an in-app link.
  * - Without Redis the check falls back to inline processing, matching the
  *   other queue workers.
  */

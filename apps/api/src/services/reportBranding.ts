@@ -36,6 +36,9 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
   const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string } };
   const logoUrl = settings.branding?.logoUrl ?? null;
   const aspect = logoUrl ? pngAspectFromDataUrl(logoUrl) : null;
+  if (logoUrl && aspect == null) {
+    console.warn('[reportBranding] Partner logo is not an embeddable PNG data URL; sending name-only branding', { orgId });
+  }
   return {
     name: row.partnerName,
     logoDataUrl: aspect != null ? logoUrl : null,

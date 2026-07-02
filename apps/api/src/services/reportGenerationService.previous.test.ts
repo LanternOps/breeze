@@ -96,7 +96,11 @@ describe('previousBaselineFor', () => {
     const previous = await previousBaselineFor(REPORT_ID);
 
     expect(previous).toBeUndefined();
-    expect(consoleError).toHaveBeenCalledWith('[reports] previous-baseline lookup failed', expect.any(Error));
+    expect(consoleError).toHaveBeenCalledWith(
+      '[reports] previous-baseline lookup failed',
+      { reportId: REPORT_ID },
+      expect.any(Error),
+    );
     consoleError.mockRestore();
   });
 });

@@ -61,7 +61,7 @@ export async function previousBaselineFor(reportId: string): Promise<ReportResul
       summary: prior.summary,
     };
   } catch (err) {
-    console.error('[reports] previous-baseline lookup failed', err);
+    console.error('[reports] previous-baseline lookup failed', { reportId }, err);
     return undefined;
   }
 }
