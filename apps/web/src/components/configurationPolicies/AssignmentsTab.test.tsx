@@ -114,22 +114,17 @@ describe('AssignmentsTab — org-owned policy', () => {
     expect(optionValues).not.toContain('partner');
   });
 
-  it('POSTs an organization-level assignment with the selected targetId', async () => {
-    // Route by URL: assignments list is empty, the organization target list has one org.
-    fetchWithAuth.mockImplementation((url: string) => {
-      if (String(url).includes('/orgs/organizations')) {
-        return Promise.resolve(jsonResponse({ data: [{ id: ORG_ID, name: 'Acme Inc' }] }));
-      }
-      return Promise.resolve(jsonResponse({ data: [] }));
-    });
+  it('locks the organization-level target to the owning org and POSTs it without a picker', async () => {
+    render(<AssignmentsTab policyId={POLICY_ID} orgId={ORG_ID} orgName="Acme Inc" partnerId={null} />);
 
-    render(<AssignmentsTab policyId={POLICY_ID} orgId={ORG_ID} partnerId={null} />);
-
-    // Open the target dropdown and pick the org once it has loaded.
-    await waitFor(() => expect(screen.getByText(/Select a target/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByText(/Select a target/i));
-    await waitFor(() => expect(screen.getByText('Acme Inc')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('Acme Inc'));
+    // The target is pre-filled and locked to the owning org — no dropdown.
+    await waitFor(() =>
+      expect(screen.getByTestId('locked-org-target')).toHaveTextContent('Acme Inc')
+    );
+    expect(screen.queryByText(/Select a target/i)).not.toBeInTheDocument();
+    // The all-orgs list must never be fetched — the target is fixed.
+    const urls = fetchWithAuth.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('/orgs/organizations'))).toBe(false);
 
     fetchWithAuth.mockResolvedValueOnce(jsonResponse({ id: 'a1', level: 'organization' }, 201));
     fireEvent.click(screen.getByRole('button', { name: /^Assign$/i }));
@@ -140,6 +135,25 @@ describe('AssignmentsTab — org-owned policy', () => {
       const body = JSON.parse(String((post![1] as RequestInit).body));
       expect(body.level).toBe('organization');
       expect(body.targetId).toBe(ORG_ID);
+    });
+  });
+
+  it('falls back to the org id in the locked target when no orgName is provided', async () => {
+    render(<AssignmentsTab policyId={POLICY_ID} orgId={ORG_ID} partnerId={null} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('locked-org-target')).toHaveTextContent(ORG_ID)
+    );
+  });
+
+  it('scopes device-level target options to the owning org', async () => {
+    render(<AssignmentsTab policyId={POLICY_ID} orgId={ORG_ID} orgName="Acme Inc" partnerId={null} />);
+    await waitFor(() => expect(screen.getByDisplayValue('Organization')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByDisplayValue('Organization'), { target: { value: 'device' } });
+
+    await waitFor(() => {
+      const urls = fetchWithAuth.mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.includes(`/devices?orgId=${ORG_ID}`))).toBe(true);
     });
   });
 });
