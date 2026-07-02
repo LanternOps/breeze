@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ContractEditor from './ContractEditor';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import * as api from '../../lib/api/contracts';
 import type { ContractDetail } from '../../lib/api/contracts';
 
@@ -214,6 +215,93 @@ describe('ContractEditor — blur autosave (existing contract)', () => {
 
     expect(await screen.findByTestId('contract-interval-error')).toHaveTextContent('Enter the number of months');
     expect(api.updateContract).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContractEditor — failed PATCH rolls optimistic controls back', () => {
+  // Immediate-commit controls (selects/checkboxes) have no amber dirty ring, so
+  // a rejected save must revert the optimistic local flip AND toast the error —
+  // never keep displaying unpersisted state.
+  beforeEach(() => {
+    (api.updateContract as any).mockResolvedValue(resp({ error: 'nope' }, false));
+  });
+
+  it('reverts the auto-issue checkbox and toasts on failure', async () => {
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    const box = await screen.findByTestId('contract-form-auto-issue');
+    fireEvent.click(box);
+    expect(box).toBeChecked(); // optimistic
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    await waitFor(() => expect(box).not.toBeChecked());
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('reverts the billing-timing select on failure', async () => {
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    const sel = await screen.findByTestId('contract-form-timing');
+    fireEvent.change(sel, { target: { value: 'arrears' } });
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    await waitFor(() => expect(sel).toHaveValue('advance'));
+  });
+
+  it('reverts the cadence preset select on failure', async () => {
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    const sel = await screen.findByTestId('contract-form-interval');
+    fireEvent.change(sel, { target: { value: '3' } });
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    await waitFor(() => expect(sel).toHaveValue('1'));
+  });
+
+  it('reverts the auto-renew checkbox when unchecking fails', async () => {
+    const renewing: ContractDetail = {
+      ...draftDetail,
+      contract: { ...draftDetail.contract, endDate: '2027-06-01', autoRenew: true, renewalTermMonths: 12 },
+    };
+    render(<ContractEditor detail={renewing} onChanged={vi.fn()} />);
+    const box = (await screen.findByTestId('contract-auto-renew-toggle')).querySelector('input')!;
+    fireEvent.click(box);
+    expect(box).not.toBeChecked(); // optimistic
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    await waitFor(() => expect(box).toBeChecked());
+  });
+
+  it('reverts the deferred auto-renew flip when the term commit fails', async () => {
+    const withEnd: ContractDetail = {
+      ...draftDetail,
+      contract: { ...draftDetail.contract, endDate: '2027-06-01' },
+    };
+    render(<ContractEditor detail={withEnd} onChanged={vi.fn()} />);
+    const box = (await screen.findByTestId('contract-auto-renew-toggle')).querySelector('input')!;
+    fireEvent.click(box); // reveals fields, no PATCH yet
+    const term = await screen.findByTestId('contract-renewal-term');
+    fireEvent.change(term, { target: { value: '12' } });
+    fireEvent.blur(term);
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    // The combined { autoRenew: true, renewalTermMonths } PATCH failed — the
+    // toggle must not keep showing "on" for a contract the server left "off".
+    await waitFor(() => expect(box).not.toBeChecked());
+  });
+
+  it('resyncs the cascaded auto-renew flip when clearing the end date fails', async () => {
+    const renewing: ContractDetail = {
+      ...draftDetail,
+      contract: { ...draftDetail.contract, endDate: '2027-06-01', autoRenew: true, renewalTermMonths: 12 },
+    };
+    render(<ContractEditor detail={renewing} onChanged={vi.fn()} />);
+    const endInput = await screen.findByTestId('contract-form-end');
+    const box = screen.getByTestId('contract-auto-renew-toggle').querySelector('input')!;
+    fireEvent.change(endInput, { target: { value: '' } });
+    expect(box).not.toBeChecked(); // cascaded optimistic flip
+    fireEvent.blur(endInput);
+
+    await waitFor(() => expect(api.updateContract).toHaveBeenCalled());
+    // endDate keeps its amber ring for retry; the ringless checkbox resyncs.
+    await waitFor(() => expect(box).toBeChecked());
   });
 });
 

@@ -405,8 +405,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   // "Saved" announcement are the feedback; failures fall through to
   // handleActionError. Selects/checkboxes commit on change; text/date/number
   // fields on blur (with the same guards the create/commit paths use).
-  const savePatch = useCallback(async (patch: Record<string, unknown>, key: string) => {
-    if (!contract) return;
+  // Returns whether the PATCH landed so immediate-commit controls (selects /
+  // checkboxes, which have no dirty ring) can roll their optimistic local state
+  // back on failure — a rejected save must never leave a control displaying
+  // unpersisted state.
+  const savePatch = useCallback(async (patch: Record<string, unknown>, key: string): Promise<boolean> => {
+    if (!contract) return false;
     const ok = await runScoped(key, async () => {
       await runAction({
         request: () => updateContract(contract.id, patch),
@@ -416,6 +420,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       refresh();
     }, 'Could not save the contract.');
     if (ok) flashSaved(key);
+    return ok;
   }, [contract, runScoped, refresh, flashSaved]);
 
   // Per-field dirty cues compare the live value against the persisted contract so
@@ -454,16 +459,21 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     const norm = endDate || null;
     if (norm === (contract?.endDate ?? null)) return;
     // Clearing the end date also disables auto-renew (which requires an end date).
-    void savePatch(norm === null ? { endDate: null, autoRenew: false } : { endDate: norm }, 'endDate');
+    // On failure the date field keeps its amber ring (retry by re-blurring), but
+    // the cascaded auto-renew flip has no ring — resync it to server truth.
+    void savePatch(norm === null ? { endDate: null, autoRenew: false } : { endDate: norm }, 'endDate')
+      .then((ok) => { if (!ok) setAutoRenew(contract?.autoRenew ?? false); });
   }, [canWrite, isCreate, endDate, contract, savePatch]);
 
   const commitInterval = useCallback(() => {
     if (!canWrite || isCreate || !scheduleEditable) return;
     if (!intervalValid) return; // inline error already tells the operator why
     if (effectiveMonths === (contract?.intervalMonths ?? 0)) return;
+    const prevMonths = intervalMonths;
     setIntervalMonths(effectiveMonths);
-    void savePatch({ intervalMonths: effectiveMonths }, 'interval');
-  }, [canWrite, isCreate, scheduleEditable, intervalValid, effectiveMonths, contract, savePatch]);
+    void savePatch({ intervalMonths: effectiveMonths }, 'interval')
+      .then((ok) => { if (!ok) setIntervalMonths(prevMonths); }); // custom input keeps its amber ring
+  }, [canWrite, isCreate, scheduleEditable, intervalValid, effectiveMonths, intervalMonths, contract, savePatch]);
 
   const commitRenewalTerm = useCallback(() => {
     if (!canWrite || isCreate) return;
@@ -478,7 +488,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
       return;
     }
     if (autoRenewPending && n === null) return; // still waiting for a term
-    void savePatch(autoRenewPending ? { autoRenew: true, renewalTermMonths: n } : { renewalTermMonths: n }, 'renewalTerm');
+    void savePatch(autoRenewPending ? { autoRenew: true, renewalTermMonths: n } : { renewalTermMonths: n }, 'renewalTerm')
+      .then((ok) => {
+        // The ridden-along auto-renew toggle has no dirty ring — on failure it
+        // must not keep showing "on" for a contract the server left "off". (The
+        // typed term survives in state; re-checking the box restores the fields.)
+        if (!ok && autoRenewPending) setAutoRenew(false);
+      });
   }, [canWrite, isCreate, autoRenew, contract, renewalTermMonths, persistedTerm, savePatch]);
 
   const commitRenewalNotice = useCallback(() => {
@@ -641,8 +657,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     disabled={!canWrite || !scheduleEditable}
                     onChange={(e) => {
                       const v = e.target.value as ContractBillingTiming;
+                      const prev = billingTiming;
                       setBillingTiming(v);
-                      if (!isCreate) void savePatch({ billingTiming: v }, 'timing');
+                      if (!isCreate) void savePatch({ billingTiming: v }, 'timing')
+                        .then((ok) => { if (!ok) setBillingTiming(prev); });
                     }}
                     data-testid="contract-form-timing"
                     className={`${baseInput} ${fieldRing(false, isSaved('timing'))}`}
@@ -658,10 +676,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     disabled={!canWrite || !scheduleEditable}
                     onChange={(e) => {
                       if (e.target.value === 'custom') { setIntervalCustom(true); setCustomMonths(String(intervalMonths)); return; }
+                      const prevMonths = intervalMonths;
+                      const prevCustom = intervalCustom;
                       setIntervalCustom(false);
                       const n = Number(e.target.value);
                       setIntervalMonths(n);
-                      if (!isCreate) void savePatch({ intervalMonths: n }, 'interval');
+                      if (!isCreate) void savePatch({ intervalMonths: n }, 'interval')
+                        .then((ok) => { if (!ok) { setIntervalMonths(prevMonths); setIntervalCustom(prevCustom); } });
                     }}
                     data-testid="contract-form-interval"
                     className={`${baseInput} ${fieldRing(false, isSaved('interval'))}`}
@@ -716,7 +737,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                 <label className="flex items-center gap-2 text-sm sm:col-span-2">
                   <input
                     type="checkbox" checked={autoIssue} disabled={!canWrite}
-                    onChange={(e) => { setAutoIssue(e.target.checked); if (!isCreate) void savePatch({ autoIssue: e.target.checked }, 'autoIssue'); }}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setAutoIssue(next);
+                      if (!isCreate) void savePatch({ autoIssue: next }, 'autoIssue')
+                        .then((ok) => { if (!ok) setAutoIssue(!next); });
+                    }}
                     data-testid="contract-form-auto-issue"
                   />
                   Auto-issue generated invoices (otherwise they land as drafts)
@@ -729,7 +755,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                         const checked = e.target.checked;
                         setAutoRenew(checked);
                         if (isCreate) return;
-                        if (!checked) { void savePatch({ autoRenew: false }, 'autoRenew'); return; }
+                        // A checkbox has no dirty ring, so a failed PATCH rolls the
+                        // optimistic flip back rather than showing unpersisted state.
+                        const revert = (ok: boolean) => { if (!ok) setAutoRenew(!checked); };
+                        if (!checked) { void savePatch({ autoRenew: false }, 'autoRenew').then(revert); return; }
                         // The server requires a renewal term alongside autoRenew:true.
                         // With a term already entered, save both now; otherwise just
                         // reveal the fields — commitRenewalTerm carries autoRenew:true
@@ -740,7 +769,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                             autoRenew: true,
                             renewalTermMonths: term,
                             renewalNoticeDays: renewalNoticeDays === '' ? null : Number(renewalNoticeDays),
-                          }, 'autoRenew');
+                          }, 'autoRenew').then(revert);
                         }
                       }}
                     />
