@@ -6,7 +6,6 @@ export { default as ReportsPage } from './ReportsPage';
 export { default as ReportBuilderPage } from './ReportBuilderPage';
 export { default as ReportEditPage } from './ReportEditPage';
 export { default as ReportTemplates } from './ReportTemplates';
-export { default as ScheduledReports } from './ScheduledReports';
 
 export type {
   Report,
