@@ -8,6 +8,7 @@
 
 import { db } from '../db';
 import {
+  organizations,
   peripheralEvents,
   peripheralPolicies,
   peripheralDeviceClassEnum,
@@ -20,6 +21,7 @@ import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
+import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
@@ -224,14 +226,40 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
       const fetchPolicy = async () => {
         if (!policyId) return null;
         const conditions: SQL[] = [eq(peripheralPolicies.id, policyId)];
+        // Dual-axis (#2131): org-owned rows the caller can reach OR
+        // partner-wide rows (org_id NULL) owned by the caller's own partner.
         const orgCondition = auth.orgCondition(peripheralPolicies.orgId);
-        if (orgCondition) conditions.push(orgCondition);
+        if (orgCondition) {
+          conditions.push(
+            auth.scope === 'partner' && auth.partnerId
+              ? sql`(${orgCondition} OR (${peripheralPolicies.orgId} IS NULL AND ${peripheralPolicies.partnerId} = ${auth.partnerId}))`
+              : orgCondition
+          );
+        }
         const [policy] = await db
           .select()
           .from(peripheralPolicies)
           .where(and(...conditions))
           .limit(1);
         return policy ?? null;
+      };
+
+      // Partner-wide templates are administrable only with the partner-wide
+      // capability (same gate as the HTTP route, #2131).
+      const partnerWideDenied = (policy: { orgId: string | null }): boolean =>
+        policy.orgId === null && !canManagePartnerWidePolicies(auth);
+
+      // Distribution jobs and change events are org-keyed: an org-owned
+      // policy targets its own org; a partner-wide policy fans out to every
+      // org under the owning partner.
+      const policyTargetOrgIds = async (policy: { orgId: string | null; partnerId: string | null }): Promise<string[]> => {
+        if (policy.orgId) return [policy.orgId];
+        if (!policy.partnerId) return [];
+        const rows = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, policy.partnerId));
+        return rows.map((row) => row.id);
       };
 
       if (action === 'create') {
@@ -279,7 +307,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
 
         let warning: string | undefined;
         try {
-          await schedulePeripheralPolicyDistribution(created.orgId, [created.id], 'ai-tool-create');
+          // AI-tool creates are always org-owned (resolveWritableToolOrgId).
+          await schedulePeripheralPolicyDistribution(orgResolved.orgId, [created.id], 'ai-tool-create');
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
@@ -289,7 +318,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         try {
           await publishEvent(
             'peripheral.policy_changed',
-            created.orgId,
+            orgResolved.orgId,
             { policyId: created.id, action: 'created', changedBy: auth.user.id },
             'ai-tools',
             { userId: auth.user.id }
@@ -307,6 +336,9 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         const policy = await fetchPolicy();
         if (!policy) {
           return JSON.stringify({ error: 'Policy not found or access denied' });
+        }
+        if (partnerWideDenied(policy)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
         }
 
         const [updated] = await db
@@ -337,9 +369,13 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Failed to update policy' });
         }
 
+        const updateTargetOrgIds = await policyTargetOrgIds(updated);
+
         let warning: string | undefined;
         try {
-          await schedulePeripheralPolicyDistribution(updated.orgId, [updated.id], 'ai-tool-update');
+          for (const targetOrgId of updateTargetOrgIds) {
+            await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'ai-tool-update');
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
@@ -347,13 +383,15 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         try {
-          await publishEvent(
-            'peripheral.policy_changed',
-            updated.orgId,
-            { policyId: updated.id, action: 'updated', changedBy: auth.user.id },
-            'ai-tools',
-            { userId: auth.user.id }
-          );
+          for (const targetOrgId of updateTargetOrgIds) {
+            await publishEvent(
+              'peripheral.policy_changed',
+              targetOrgId,
+              { policyId: updated.id, action: 'updated', changedBy: auth.user.id },
+              'ai-tools',
+              { userId: auth.user.id }
+            );
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `event publish failed: ${message}`);
@@ -368,6 +406,9 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         if (!policy) {
           return JSON.stringify({ error: 'Policy not found or access denied' });
         }
+        if (partnerWideDenied(policy)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
+        }
 
         const [disabled] = await db
           .update(peripheralPolicies)
@@ -379,9 +420,13 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Failed to disable policy' });
         }
 
+        const disableTargetOrgIds = await policyTargetOrgIds(disabled);
+
         let warning: string | undefined;
         try {
-          await schedulePeripheralPolicyDistribution(disabled.orgId, [disabled.id], 'ai-tool-disable');
+          for (const targetOrgId of disableTargetOrgIds) {
+            await schedulePeripheralPolicyDistribution(targetOrgId, [disabled.id], 'ai-tool-disable');
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
@@ -389,13 +434,15 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         try {
-          await publishEvent(
-            'peripheral.policy_changed',
-            policy.orgId,
-            { policyId: policy.id, action: 'disabled', changedBy: auth.user.id },
-            'ai-tools',
-            { userId: auth.user.id }
-          );
+          for (const targetOrgId of disableTargetOrgIds) {
+            await publishEvent(
+              'peripheral.policy_changed',
+              targetOrgId,
+              { policyId: policy.id, action: 'disabled', changedBy: auth.user.id },
+              'ai-tools',
+              { userId: auth.user.id }
+            );
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `event publish failed: ${message}`);
@@ -409,6 +456,9 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         const policy = await fetchPolicy();
         if (!policy) {
           return JSON.stringify({ error: 'Policy not found or access denied' });
+        }
+        if (partnerWideDenied(policy)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
         }
 
         const existingExceptions = Array.isArray(policy.exceptions)
@@ -465,9 +515,13 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Failed to update policy exceptions' });
         }
 
+        const exceptionTargetOrgIds = await policyTargetOrgIds(policy);
+
         let warning: string | undefined;
         try {
-          await schedulePeripheralPolicyDistribution(policy.orgId, [policy.id], `ai-tool-${action}`);
+          for (const targetOrgId of exceptionTargetOrgIds) {
+            await schedulePeripheralPolicyDistribution(targetOrgId, [policy.id], `ai-tool-${action}`);
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
@@ -475,13 +529,15 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         try {
-          await publishEvent(
-            'peripheral.policy_changed',
-            policy.orgId,
-            { policyId: policy.id, action, changedBy: auth.user.id, changed },
-            'ai-tools',
-            { userId: auth.user.id }
-          );
+          for (const targetOrgId of exceptionTargetOrgIds) {
+            await publishEvent(
+              'peripheral.policy_changed',
+              targetOrgId,
+              { policyId: policy.id, action, changedBy: auth.user.id, changed },
+              'ai-tools',
+              { userId: auth.user.id }
+            );
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `event publish failed: ${message}`);

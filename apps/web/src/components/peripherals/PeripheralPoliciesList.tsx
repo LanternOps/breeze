@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, RefreshCw } from 'lucide-react';
+import { Plus, RefreshCw, Globe } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import PeripheralPolicyForm from './PeripheralPolicyForm';
 
 type PeripheralPolicy = {
   id: string;
+  // null = partner-wide ("All organizations") policy (#2131)
+  orgId?: string | null;
   name: string;
   deviceClass: string;
   action: string;
@@ -163,7 +165,21 @@ export default function PeripheralPoliciesList() {
                     className="cursor-pointer text-sm hover:bg-muted/30 transition"
                     onClick={() => handleRowClick(policy)}
                   >
-                    <td className="px-4 py-3 font-medium">{policy.name}</td>
+                    <td className="px-4 py-3 font-medium">
+                      <div className="flex items-center gap-2">
+                        <span>{policy.name}</span>
+                        {policy.orgId === null && (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            title="Partner-wide policy — enforced on devices in every organization"
+                            data-testid="peripheral-policy-partner-wide-badge"
+                          >
+                            <Globe className="h-3 w-3" />
+                            All orgs
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${deviceClassBadge[policy.deviceClass] ?? 'bg-muted text-muted-foreground'}`}>
                         {policy.deviceClass.replace('_', ' ')}

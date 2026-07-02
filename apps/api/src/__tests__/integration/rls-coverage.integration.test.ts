@@ -279,6 +279,13 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // Functional cross-partner forge + scheduler fan-out proof:
   // sensitiveDataPoliciesPartnerRls.integration.test.ts.
   'sensitive_data_policies',
+  // peripheral_policies (#2131, epic #2135): org-scoped OR partner-wide
+  // USB/peripheral policy. peripheral_events stay org-owned by the reporting
+  // DEVICE's org. Converted in 2026-07-01-peripheral-policies-partner-
+  // ownership. CHECK peripheral_policies_one_owner_chk enforces exactly one
+  // axis. Functional cross-partner forge + distribution fan-out proof:
+  // peripheralPoliciesPartnerRls.integration.test.ts.
+  'peripheral_policies',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

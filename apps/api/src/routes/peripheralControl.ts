@@ -4,6 +4,7 @@ import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
+  organizations,
   peripheralDeviceClassEnum,
   peripheralEventTypeEnum,
   peripheralEvents,
@@ -15,6 +16,10 @@ import {
   type PeripheralPolicyTargetIds
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
@@ -29,6 +34,11 @@ peripheralControlRoutes.use('*', requireScope('organization', 'partner', 'system
 const policySchema = z.object({
   id: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
+  // 'partner' creates a partner-wide ("all orgs") policy: orgId NULL,
+  // partnerId = caller's partner (#2131). Honored on CREATE only — this
+  // schema doubles as the update body (id set), and updates never move a
+  // policy between ownership axes.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1).max(200),
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues),
   action: z.enum(peripheralPolicyActionEnum.enumValues),
@@ -210,10 +220,23 @@ function sanitizeTargetIds(targetIds: z.infer<typeof policySchema>['targetIds'])
   };
 }
 
+// Dual-axis access condition (#2131): org-owned rows the caller can reach OR
+// partner-wide rows (org_id NULL) owned by the caller's own partner. Gated on
+// partner scope — org tokens carry a partnerId but never pass
+// breeze_has_partner_access, so RLS is stricter than this app condition.
+function peripheralPolicyAccessCondition(auth: AuthContext): SQL | undefined {
+  const orgCond = auth.orgCondition(peripheralPolicies.orgId);
+  if (!orgCond) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${orgCond} OR (${peripheralPolicies.orgId} IS NULL AND ${peripheralPolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return orgCond;
+}
+
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(peripheralPolicies.id, policyId)];
-  const orgCondition = auth.orgCondition(peripheralPolicies.orgId);
-  if (orgCondition) conditions.push(orgCondition);
+  const accessCondition = peripheralPolicyAccessCondition(auth);
+  if (accessCondition) conditions.push(accessCondition);
 
   const [policy] = await db
     .select()
@@ -222,6 +245,21 @@ async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
     .limit(1);
 
   return policy ?? null;
+}
+
+/**
+ * The org(s) whose devices a policy applies to (#2131): its own org, or —
+ * for a partner-wide policy — every org under the owning partner. Used to
+ * fan out the org-keyed distribution jobs and change events.
+ */
+async function resolvePolicyTargetOrgIds(policy: { orgId: string | null; partnerId: string | null }): Promise<string[]> {
+  if (policy.orgId) return [policy.orgId];
+  if (!policy.partnerId) return [];
+  const rows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, policy.partnerId));
+  return rows.map((row) => row.id);
 }
 
 async function emitPolicyChanged(
@@ -413,6 +451,12 @@ peripheralControlRoutes.post(
         return c.json({ error: 'Policy not found' }, 404);
       }
 
+      // Partner-wide templates are administrable only with the partner-wide
+      // capability (#2131).
+      if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
       const [updated] = await db
         .update(peripheralPolicies)
         .set({
@@ -432,9 +476,13 @@ peripheralControlRoutes.post(
         return c.json({ error: 'Failed to update policy' }, 500);
       }
 
+      const updateTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
+
       let distributionWarning: string | undefined;
       try {
-        await schedulePeripheralPolicyDistribution(updated.orgId, [updated.id], 'policy-updated');
+        for (const targetOrgId of updateTargetOrgIds) {
+          await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'policy-updated');
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
@@ -442,11 +490,13 @@ peripheralControlRoutes.post(
       }
 
       try {
-        await emitPolicyChanged(updated.orgId, {
-          policyId: updated.id,
-          action: 'updated',
-          changedBy: auth.user.id
-        });
+        for (const targetOrgId of updateTargetOrgIds) {
+          await emitPolicyChanged(targetOrgId, {
+            policyId: updated.id,
+            action: 'updated',
+            changedBy: auth.user.id
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
@@ -474,15 +524,27 @@ peripheralControlRoutes.post(
       return c.json({ data: updated, warning: distributionWarning });
     }
 
-    const orgResolution = resolveOrgIdForWrite(auth, payload.orgId);
-    if (!orgResolution.orgId) {
-      return c.json({ error: orgResolution.error ?? 'Organization resolution failed' }, orgResolution.status ?? 400);
+    // Resolve the ownership axis (#2131): partner-wide creation requires the
+    // partner-wide capability; the default path stays org-owned.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (payload.ownerScope === 'partner') {
+      if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgResolution = resolveOrgIdForWrite(auth, payload.orgId);
+      if (!orgResolution.orgId) {
+        return c.json({ error: orgResolution.error ?? 'Organization resolution failed' }, orgResolution.status ?? 400);
+      }
+      owner = { orgId: orgResolution.orgId, partnerId: null };
     }
 
     const [created] = await db
       .insert(peripheralPolicies)
       .values({
-        orgId: orgResolution.orgId,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         name: payload.name,
         deviceClass: payload.deviceClass,
         action: payload.action,
@@ -498,9 +560,13 @@ peripheralControlRoutes.post(
       return c.json({ error: 'Failed to create policy' }, 500);
     }
 
+    const createTargetOrgIds = await resolvePolicyTargetOrgIds(created);
+
     let distributionWarning: string | undefined;
     try {
-      await schedulePeripheralPolicyDistribution(created.orgId, [created.id], 'policy-created');
+      for (const targetOrgId of createTargetOrgIds) {
+        await schedulePeripheralPolicyDistribution(targetOrgId, [created.id], 'policy-created');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
@@ -508,11 +574,13 @@ peripheralControlRoutes.post(
     }
 
     try {
-      await emitPolicyChanged(created.orgId, {
-        policyId: created.id,
-        action: 'created',
-        changedBy: auth.user.id
-      });
+      for (const targetOrgId of createTargetOrgIds) {
+        await emitPolicyChanged(targetOrgId, {
+          policyId: created.id,
+          action: 'created',
+          changedBy: auth.user.id
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
@@ -555,6 +623,12 @@ peripheralControlRoutes.post(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
+    // Partner-wide templates are administrable only with the partner-wide
+    // capability (#2131).
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const [updated] = await db
       .update(peripheralPolicies)
       .set({
@@ -568,9 +642,13 @@ peripheralControlRoutes.post(
       return c.json({ error: 'Failed to disable policy' }, 500);
     }
 
+    const disableTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
+
     let distributionWarning: string | undefined;
     try {
-      await schedulePeripheralPolicyDistribution(updated.orgId, [updated.id], 'policy-disabled');
+      for (const targetOrgId of disableTargetOrgIds) {
+        await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'policy-disabled');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
@@ -578,11 +656,13 @@ peripheralControlRoutes.post(
     }
 
     try {
-      await emitPolicyChanged(updated.orgId, {
-        policyId: updated.id,
-        action: 'disabled',
-        changedBy: auth.user.id
-      });
+      for (const targetOrgId of disableTargetOrgIds) {
+        await emitPolicyChanged(targetOrgId, {
+          policyId: updated.id,
+          action: 'disabled',
+          changedBy: auth.user.id
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);
@@ -620,6 +700,12 @@ peripheralControlRoutes.post(
     const policy = await getPolicyWithAccess(payload.policyId, auth);
     if (!policy) {
       return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    // Partner-wide templates are administrable only with the partner-wide
+    // capability (#2131).
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     const currentExceptions = Array.isArray(policy.exceptions)
@@ -665,9 +751,13 @@ peripheralControlRoutes.post(
       return c.json({ error: 'Failed to update policy exceptions' }, 500);
     }
 
+    const exceptionsTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
+
     let distributionWarning: string | undefined;
     try {
-      await schedulePeripheralPolicyDistribution(updated.orgId, [updated.id], 'policy-exceptions-updated');
+      for (const targetOrgId of exceptionsTargetOrgIds) {
+        await schedulePeripheralPolicyDistribution(targetOrgId, [updated.id], 'policy-exceptions-updated');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       distributionWarning = combineWarning(distributionWarning, `distribution scheduling failed: ${message}`);
@@ -675,13 +765,15 @@ peripheralControlRoutes.post(
     }
 
     try {
-      await emitPolicyChanged(updated.orgId, {
-        policyId: updated.id,
-        action: 'exceptions_updated',
-        changedBy: auth.user.id,
-        operation: payload.operation,
-        changed
-      });
+      for (const targetOrgId of exceptionsTargetOrgIds) {
+        await emitPolicyChanged(targetOrgId, {
+          policyId: updated.id,
+          action: 'exceptions_updated',
+          changedBy: auth.user.id,
+          operation: payload.operation,
+          changed
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       distributionWarning = combineWarning(distributionWarning, `event publish failed: ${message}`);

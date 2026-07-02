@@ -23,7 +23,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { devices } from './devices';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 
 export const peripheralDeviceClassEnum = pgEnum('peripheral_device_class', [
@@ -76,9 +76,15 @@ export interface PeripheralExceptionRule {
   expiresAt?: string;
 }
 
+// A peripheral policy is owned by EITHER an org (orgId set, partnerId NULL —
+// the original shape) OR a partner (partnerId set, orgId NULL — "partner-wide
+// / all orgs", epic #2135 / #2131). Exactly one axis is set per row; CHECK
+// `peripheral_policies_one_owner_chk` (migration 2026-07-01) enforces it.
+// peripheral_events stay owned by the reporting DEVICE's org.
 export const peripheralPolicies = pgTable('peripheral_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 200 }).notNull(),
   deviceClass: peripheralDeviceClassEnum('device_class').notNull(),
   action: peripheralPolicyActionEnum('action').notNull(),
@@ -92,6 +98,7 @@ export const peripheralPolicies = pgTable('peripheral_policies', {
 }, (table) => ({
   orgActiveIdx: index('peripheral_policy_org_active_idx').on(table.orgId, table.isActive),
   orgClassIdx: index('peripheral_policy_org_class_idx').on(table.orgId, table.deviceClass),
+  partnerIdx: index('peripheral_policy_partner_idx').on(table.partnerId),
 }));
 
 export const peripheralEvents = pgTable('peripheral_events', {

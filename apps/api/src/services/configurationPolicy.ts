@@ -1537,14 +1537,13 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch, software_policy, security, alert_rule, compliance, and
-  // sensitive_data are handled separately in validateFeaturePolicyExists:
-  // rings are pure partner-axis, and the rest are dual-ownership (org XOR
-  // partner, #2126/#2127/#2128/#2129/#2131) — none fits the org-only lookup
-  // below.
+  // patch, software_policy, security, alert_rule, compliance, sensitive_data,
+  // and peripheral_control are handled separately in
+  // validateFeaturePolicyExists: rings are pure partner-axis, and the rest
+  // are dual-ownership (org XOR partner, #2126/#2127/#2128/#2129/#2131) —
+  // none fits the org-only lookup below.
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
   maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
-  peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
 };
 
 /**
@@ -1561,6 +1560,7 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'alert_rule',
   'compliance',
   'sensitive_data',
+  'peripheral_control',
 ]);
 
 export async function validateFeaturePolicyExists(
@@ -1605,15 +1605,16 @@ export async function validateFeaturePolicyExists(
     featureType === 'security' ||
     featureType === 'alert_rule' ||
     featureType === 'compliance' ||
-    featureType === 'sensitive_data'
+    featureType === 'sensitive_data' ||
+    featureType === 'peripheral_control'
   ) {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
     // Software (#2126), security (#2127), alert-rule (#2128), compliance
-    // (#2129, automation_policies), and sensitive-data (#2131) policies are
-    // dual-ownership. A config policy may link:
+    // (#2129, automation_policies), sensitive-data, and peripheral-control
+    // (#2131) policies are dual-ownership. A config policy may link:
     //  - an org-owned policy belonging to the config policy's own org
     //  - a partner-owned ("all orgs") template belonging to the config
     //    policy's partner (derived from its org for org-owned config policies)
@@ -1627,7 +1628,9 @@ export async function validateFeaturePolicyExists(
           ? { table: alertRules, label: 'Alert rule' }
           : featureType === 'compliance'
             ? { table: automationPolicies, label: 'Compliance policy' }
-            : { table: sensitiveDataPolicies, label: 'Sensitive data policy' };
+            : featureType === 'sensitive_data'
+              ? { table: sensitiveDataPolicies, label: 'Sensitive data policy' }
+              : { table: peripheralPolicies, label: 'Peripheral policy' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 

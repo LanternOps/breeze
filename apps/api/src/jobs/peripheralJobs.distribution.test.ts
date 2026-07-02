@@ -18,6 +18,9 @@ function selectBuilder() {
     orderBy() {
       return builder;
     },
+    limit() {
+      return builder;
+    },
     then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
       return Promise.resolve(rows).then(resolve, reject);
     }
@@ -50,8 +53,9 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   devices: { __table: 'devices' },
+  organizations: { __table: 'organizations', id: 'id', partnerId: 'partnerId' },
   peripheralEvents: { __table: 'peripheral_events' },
-  peripheralPolicies: { __table: 'peripheral_policies' }
+  peripheralPolicies: { __table: 'peripheral_policies', orgId: 'orgId', partnerId: 'partnerId' }
 }));
 
 vi.mock('../services/eventBus', () => ({ publishEvent: vi.fn() }));
