@@ -203,6 +203,10 @@ vi.mock('../services/commandDispatch', () => ({
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import {
+  devices as devicesTable,
+  automationPolicies as automationPoliciesTable,
+} from '../db/schema';
 import { saveFilesystemSnapshot } from '../services/filesystemAnalysis';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { processBackupVerificationResult } from './backup/verificationService';
@@ -796,37 +800,59 @@ describe('agent routes', () => {
     });
 
     it('returns deduplicated policy probe config updates', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: 'device-123',
-                agentId: 'agent-123',
-                orgId: 'org-123'
-              }])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([
-              {
-                rules: [
-                  { type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Policies\\Zeta', registryValueName: 'Enabled' },
-                  { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' },
-                  { type: 'config_check', configFilePath: '/etc/breeze/agent.yaml', configKey: 'auth_token' }
-                ]
-              },
-              {
-                rules: [
-                  { type: 'registry_check', registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', registry_value_name: 'Flag' },
-                  { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' }
-                ]
-              }
-            ])
-          })
-        } as any);
+      // The probe config build (#2129/#2131) now runs AFTER the heartbeat's
+      // org-scoped block, so a positional once-mock queue is order-fragile.
+      // Dispatch by table identity instead: devices → the device row,
+      // organizations → the org-partner lookup, automation_policies → the
+      // probe rules; everything else keeps the tolerant default chain.
+      // Rows-per-table dispatch matching the default chain's shape exactly
+      // (where() is BOTH awaitable and .limit/.orderBy chainable — several
+      // resolvers await it directly).
+      const rowsChain = (rows: unknown[]) => ({
+        where: vi.fn(() => Object.assign(Promise.resolve(rows), {
+          limit: vi.fn(() => Promise.resolve(rows)),
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve(rows))
+          }))
+        }))
+      });
+      const probePolicyRows = [
+        {
+          rules: [
+            { type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Policies\\Zeta', registryValueName: 'Enabled' },
+            { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' },
+            { type: 'config_check', configFilePath: '/etc/breeze/agent.yaml', configKey: 'auth_token' }
+          ]
+        },
+        {
+          rules: [
+            { type: 'registry_check', registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', registry_value_name: 'Flag' },
+            { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin' }
+          ]
+        }
+      ];
+      // The probe config build (#2129/#2131) now runs AFTER the heartbeat's
+      // org-scoped block, so a positional once-mock queue is order-fragile.
+      // organizations intentionally falls through to the default chain ([]):
+      // the probe build's org-partner lookup then resolves no partner
+      // (org-only condition) and the org-settings resolvers keep emitting
+      // their defaults, as before.
+      // Only the handler's own device lookup (the FIRST devices select) gets
+      // the device row — later resolver-internal devices reads must keep
+      // seeing [] so they early-exit to their defaults, as they always did.
+      let deviceLookupServed = false;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn((table: unknown) => {
+          if (table === devicesTable && !deviceLookupServed) {
+            deviceLookupServed = true;
+            return rowsChain([{ id: 'device-123', agentId: 'agent-123', orgId: 'org-123' }]);
+          }
+          if (table === automationPoliciesTable) {
+            return rowsChain(probePolicyRows);
+          }
+          return defaultSelectChain().from(table);
+        })
+      }) as any);
 
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
