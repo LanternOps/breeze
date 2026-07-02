@@ -39,9 +39,13 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+type PreviousBaseline = { generatedAt: string | null; summary?: Record<string, unknown> } | undefined;
+
 const generateReportMock = vi.fn();
+const previousBaselineForMock = vi.fn<() => Promise<PreviousBaseline>>(async () => undefined);
 vi.mock('../services/reportGenerationService', () => ({
   generateReport: (...args: unknown[]) => generateReportMock(...(args as [])),
+  previousBaselineFor: (...args: unknown[]) => previousBaselineForMock(...(args as [])),
 }));
 
 const sendEmailMock = vi.fn();
@@ -124,6 +128,7 @@ function updateChain() {
 beforeEach(() => {
   vi.clearAllMocks();
   pdfRender.shouldThrow = false;
+  previousBaselineForMock.mockResolvedValue(undefined);
 });
 
 // ─── Occurrence math (pure) ──────────────────────────────────────────────────
@@ -328,6 +333,44 @@ describe('processRunScheduledReport', () => {
 
     expect(insertMock).not.toHaveBeenCalled();
     expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
+  it('includes a trend line in the email when a previous baseline exists', async () => {
+    const postureReport = {
+      ...report,
+      type: 'security_compliance_posture',
+      config: { emailRecipients: ['ops@example.com'] },
+    };
+    selectMock.mockReturnValueOnce(selectChain([postureReport]));
+    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    const updates = [updateChain(), updateChain()];
+    updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockResolvedValueOnce({
+      rows: [{ hostname: 'PC-1' }],
+      rowCount: 1,
+      summary: { postureScore: 79 },
+    });
+    previousBaselineForMock.mockResolvedValueOnce({
+      generatedAt: '2026-06-01T09:00:00Z',
+      summary: { postureScore: 74 },
+    });
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(previousBaselineForMock).toHaveBeenCalledWith(REPORT_ID);
+    // The stored snapshot carries the baseline forward so the download path
+    // (and any future re-render) reflects the same trend as this email.
+    expect(updates[1]!.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          previous: { generatedAt: '2026-06-01T09:00:00Z', summary: { postureScore: 74 } },
+        }),
+      }),
+    );
+    const mail = sendEmailMock.mock.calls[0]![0] as { html: string; text: string };
+    expect(mail.html).toContain('up from 74');
+    expect(mail.text).toContain('up from 74');
   });
 
   it('attaches a real branded PDF for pdf-format reports (end-to-end Node render, not mocked)', async () => {

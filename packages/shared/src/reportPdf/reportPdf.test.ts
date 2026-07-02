@@ -61,4 +61,70 @@ describe('buildReportPdf in Node (no DOM)', () => {
     const doc = buildReportPdf([], { ...opts, reportType: 'compliance', branding: { name: 'Olive MSP', logoDataUrl: null, logoAspect: null } });
     expect(Buffer.from(doc.output('arraybuffer')).byteLength).toBeGreaterThan(500);
   });
+
+  it('renders a scorecard trend chip when a previous baseline is supplied', () => {
+    const withTrend = buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary: postureSummary,
+      previous: { generatedAt: '2026-06-01T00:00:00Z', summary: { postureScore: 74 } },
+    });
+    expect(withTrend.getNumberOfPages()).toBeGreaterThanOrEqual(2);
+
+    const withoutTrend = buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary: postureSummary,
+    });
+
+    // The delta chip ("▲ +5 since Jun 1") is extra drawn content, so the
+    // trended render is strictly larger than the baseline-less one.
+    expect(Buffer.from(withTrend.output('arraybuffer')).byteLength).toBeGreaterThan(
+      Buffer.from(withoutTrend.output('arraybuffer')).byteLength,
+    );
+  });
+
+  it('renders an executive-summary trend chip from previous.summary.devices.healthPercentage', () => {
+    const withTrend = buildReportPdf([], {
+      ...opts,
+      reportType: 'executive_summary',
+      summary: execSummary,
+      previous: { generatedAt: '2026-06-01T00:00:00Z', summary: { devices: { healthPercentage: 88 } } },
+    });
+    const withoutTrend = buildReportPdf([], { ...opts, reportType: 'executive_summary', summary: execSummary });
+
+    expect(Buffer.from(withTrend.output('arraybuffer')).byteLength).toBeGreaterThan(
+      Buffer.from(withoutTrend.output('arraybuffer')).byteLength,
+    );
+  });
+
+  it('omits the trend chip when the delta is zero or the previous summary lacks the metric', () => {
+    // Same score as current: no chip drawn (delta === 0 is filtered out), so
+    // byte size matches the no-previous render exactly.
+    const sameScore = buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary: postureSummary,
+      previous: { generatedAt: '2026-06-01T00:00:00Z', summary: { postureScore: 79 } },
+    });
+    const noPrevious = buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary: postureSummary,
+    });
+    expect(Buffer.from(sameScore.output('arraybuffer')).byteLength).toBe(
+      Buffer.from(noPrevious.output('arraybuffer')).byteLength,
+    );
+
+    // Previous run captured a summary, but not this metric — no crash, no chip.
+    const missingMetric = buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary: postureSummary,
+      previous: { generatedAt: '2026-06-01T00:00:00Z', summary: { unrelated: true } },
+    });
+    expect(Buffer.from(missingMetric.output('arraybuffer')).byteLength).toBe(
+      Buffer.from(noPrevious.output('arraybuffer')).byteLength,
+    );
+  });
 });

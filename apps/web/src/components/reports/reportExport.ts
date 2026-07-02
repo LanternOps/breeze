@@ -61,11 +61,14 @@ export async function exportReport(
     reportType: string;
     timezone: string;
     summary?: PostureSummary;
+    /** Slim baseline from the previous completed run (report_runs.result.previous),
+     * used to draw the scorecard trend chip; ignored by non-cover report types. */
+    previous?: { generatedAt?: string | null; summary?: unknown };
     /** Pre-resolved partner branding; loaded automatically for PDFs when omitted. */
     branding?: ReportBranding;
   }
 ): Promise<void> {
-  const { format, reportType, timezone, summary } = opts;
+  const { format, reportType, timezone, summary, previous } = opts;
   const dateStr = new Date().toISOString().split('T')[0];
   const baseFilename = `${reportType}-report-${dateStr}`;
 
@@ -106,7 +109,7 @@ export async function exportReport(
     timeStyle: 'short',
   });
   const branding = opts.branding ?? (await loadPartnerBranding());
-  const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, branding });
+  const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, previous, branding });
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
 }
 

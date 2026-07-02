@@ -24,7 +24,7 @@ import { Job, Queue, Worker } from 'bullmq';
 
 import * as dbModule from '../db';
 import { reports, reportRuns, organizations, partners } from '../db/schema';
-import { generateReport } from '../services/reportGenerationService';
+import { generateReport, previousBaselineFor, type ReportResult } from '../services/reportGenerationService';
 import { getEmailService } from '../services/email';
 import { renderLayout, renderButton, renderParagraph, escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
@@ -272,6 +272,31 @@ function recipientsOf(config: Record<string, unknown>): string[] {
     .filter((r) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r));
 }
 
+/** One-line trend summary for the email body — "Posture score 79 — up from
+ * 74 last run." — built from the same `result.summary`/`result.previous`
+ * snapshot the PDF scorecard reads, so the two never disagree. */
+function trendLineOf(result: ReportResult): string | null {
+  const s = result.summary as Record<string, unknown> | undefined;
+  const prev = result.previous?.summary as Record<string, unknown> | undefined;
+  const score = typeof s?.postureScore === 'number' ? (s.postureScore as number) : null;
+  if (score != null) {
+    const prevScore = typeof prev?.postureScore === 'number' ? (prev.postureScore as number) : null;
+    if (prevScore != null && prevScore !== score) {
+      return `Posture score ${score} — ${score > prevScore ? 'up' : 'down'} from ${prevScore} last run.`;
+    }
+    return `Posture score ${score}.`;
+  }
+  const health = (s?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+  if (typeof health === 'number') {
+    const prevHealth = (prev?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+    if (typeof prevHealth === 'number' && prevHealth !== health) {
+      return `Fleet health ${health}% — ${health > prevHealth ? 'up' : 'down'} from ${prevHealth}% last run.`;
+    }
+    return `Fleet health ${health}%.`;
+  }
+  return null;
+}
+
 async function emailReportRun(opts: {
   reportName: string;
   reportType: string;
@@ -279,6 +304,8 @@ async function emailReportRun(opts: {
   recipients: string[];
   rows: unknown[];
   summary?: Record<string, unknown>;
+  previous?: ReportResult['previous'];
+  trendLine?: string | null;
   timezone: string;
   branding: ReportBranding;
 }): Promise<void> {
@@ -304,6 +331,7 @@ async function emailReportRun(opts: {
         generatedAt,
         timezone: opts.timezone,
         summary: opts.summary as never,
+        previous: opts.previous,
         branding: opts.branding,
       });
       const content = Buffer.from(doc.output('arraybuffer'));
@@ -333,20 +361,23 @@ async function emailReportRun(opts: {
         ? 'The formatted report is attached as a PDF.'
         : 'The data is attached as CSV; open Breeze for the fully formatted report.';
 
+  const trendLine = opts.trendLine;
+
   await email.sendEmail({
     to: opts.recipients,
     subject: `Scheduled report ready: ${opts.reportName}`,
     html: renderLayout({
       title: 'Scheduled report',
-      preheader: bodyText,
+      preheader: trendLine ?? bodyText,
       heading: 'Scheduled report ready',
       body: [
         renderParagraph(escapeHtml(bodyText)),
+        ...(trendLine ? [renderParagraph(escapeHtml(trendLine))] : []),
         renderParagraph(escapeHtml(attachmentNote), { muted: true }),
         renderButton('View in Breeze', link),
       ].join(''),
     }),
-    text: `${bodyText}\n${attachmentNote}\n${link}`,
+    text: `${bodyText}${trendLine ? `\n${trendLine}` : ''}\n${attachmentNote}\n${link}`,
     attachments,
   });
 }
@@ -386,6 +417,8 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
     // System context: scheduled runs execute with full org scope (no user
     // site-permission filter — parity with a report owner generating it).
     const result = await generateReport(report.type, report.orgId, config, undefined);
+    const previous = await previousBaselineFor(report.id);
+    if (previous) result.previous = previous;
     const rows = Array.isArray(result.rows) ? result.rows : [];
     const rowCount = result.rowCount ?? rows.length;
     await db
@@ -409,6 +442,8 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
           recipients,
           rows,
           summary: result.summary,
+          previous: result.previous,
+          trendLine: trendLineOf(result),
           timezone: timeZone,
           branding: await loadReportBrandingForOrg(report.orgId),
         });

@@ -676,7 +676,8 @@ describe('reports routes', () => {
         schedule: 'daily',
         format: 'csv'
       }]))
-      .mockReturnValueOnce(selectChain([]));
+      .mockReturnValueOnce(selectChain([])) // generator query (device_inventory rows)
+      .mockReturnValueOnce(selectChain([])); // previousBaselineFor: no prior completed run
 
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({

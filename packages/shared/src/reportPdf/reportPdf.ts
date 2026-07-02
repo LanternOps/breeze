@@ -53,6 +53,10 @@ export type BuildOpts = {
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
   summary?: PostureSummary | ExecutiveSummary;
+  /** Slim baseline from the previous completed run, when the caller supplied
+   * one (report_runs.result.previous) — drives the scorecard trend chip and
+   * its "since <date>" label. */
+  previous?: { generatedAt?: string | null; summary?: unknown };
   branding?: ReportBranding;
 };
 
@@ -249,6 +253,7 @@ function drawScorecard(
   caption: string,
   stats: ScoreStat[],
   top: number,
+  trend?: { delta: number; sinceLabel: string } | null,
 ): number {
   const x = PAGE.mx;
   const w = PAGE.w - PAGE.mx * 2; // full content width — no dead right half
@@ -279,6 +284,25 @@ function drawScorecard(
   doc.roundedRect(x + 10, top + 24.5, chipW, 4.8, 2.4, 2.4, 'F');
   set.text(doc, C.white);
   doc.text(chipLabel, x + 10 + chipW / 2, top + 27.8, { align: 'center' });
+
+  // Trend vs the previous run: "+5 since Jun 1" — the line that makes a
+  // recurring report feel alive. Muted date; signed delta carries the colour.
+  // Plain +/- text, not a ▲/▼ glyph: jsPDF's built-in helvetica doesn't carry
+  // those glyphs, so they rendered as garbage with a miscalculated width that
+  // overlapped the "since" label (visually confirmed via the PNG harness).
+  if (trend && trend.delta !== 0) {
+    const up = trend.delta > 0;
+    set.text(doc, up ? C.success : C.danger);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    const deltaStr = `${up ? '+' : ''}${trend.delta}`;
+    const chipRight = x + 10 + chipW;
+    doc.text(deltaStr, chipRight + 4, top + 27.8);
+    set.text(doc, C.muted);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.text(trend.sinceLabel, chipRight + 4 + doc.getTextWidth(deltaStr) + 2, top + 27.8);
+  }
 
   // Meter: caption above, track + filled portion, 0/50/100 ticks below.
   const meterX = x + 74;
@@ -330,6 +354,27 @@ function drawScorecard(
   }
 
   return top + h + 6;
+}
+
+/** Delta + "since <date>" label for the scorecard trend chip, derived from
+ * `opts.previous` — the slim baseline copied onto the run snapshot at
+ * generation time. Returns null when there's nothing to compare (no prior
+ * run, or the prior summary didn't capture this metric). */
+function trendFor(opts: BuildOpts, current: number | null | undefined, pick: (s: Record<string, unknown>) => unknown): { delta: number; sinceLabel: string } | null {
+  const prevSummary = opts.previous?.summary;
+  if (current == null || !prevSummary || typeof prevSummary !== 'object') return null;
+  const prevRaw = pick(prevSummary as Record<string, unknown>);
+  const prev = typeof prevRaw === 'number' ? prevRaw : null;
+  if (prev == null) return null;
+  let since = 'vs previous run';
+  const iso = opts.previous?.generatedAt;
+  if (iso) {
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) {
+      since = `since ${new Intl.DateTimeFormat('en-US', { timeZone: opts.timezone, month: 'short', day: 'numeric' }).format(d)}`;
+    }
+  }
+  return { delta: current - prev, sinceLabel: since };
 }
 
 function drawSectionHeading(doc: jsPDF, text: string, y: number): number {
@@ -483,7 +528,14 @@ function renderPostureCover(
       { label: 'Critical patches/vulns', value: String(agg.criticalCount), tone: agg.criticalCount > 0 ? C.danger : C.success },
       { label: 'Unprotected', value: String(unprotected), tone: unprotected > 0 ? C.danger : C.success },
     ];
-    y = drawScorecard(doc, summary.postureScore, caption, stats, y);
+    y = drawScorecard(
+      doc,
+      summary.postureScore,
+      caption,
+      stats,
+      y,
+      trendFor(opts, summary.postureScore, (s) => (s as { postureScore?: unknown }).postureScore),
+    );
     // Methodology in one muted line, so "79 — GOOD" is auditable rather than oracular.
     set.text(doc, C.faint);
     doc.setFont('helvetica', 'normal');
@@ -742,7 +794,14 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
       { label: 'Critical alerts', value: String(a.critical ?? 0), tone: (a.critical ?? 0) > 0 ? C.danger : C.success },
       { label: 'Alerts resolved', value: a.resolutionRate == null ? 'N/A' : `${a.resolutionRate}%`, tone: (a.resolutionRate ?? 100) >= 80 ? C.success : C.warning },
     ];
-    y = drawScorecard(doc, d.healthPercentage, 'Fleet health — share of managed devices online', stats, y);
+    y = drawScorecard(
+      doc,
+      d.healthPercentage,
+      'Fleet health — share of managed devices online',
+      stats,
+      y,
+      trendFor(opts, d.healthPercentage, (s) => ((s as { devices?: { healthPercentage?: unknown } }).devices ?? {}).healthPercentage),
+    );
     set.text(doc, C.faint);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);

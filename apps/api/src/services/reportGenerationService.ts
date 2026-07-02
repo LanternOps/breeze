@@ -8,7 +8,8 @@ import {
   alerts,
   alertRules,
   sites,
-  organizations
+  organizations,
+  reportRuns
 } from '../db/schema';
 import { canAccessSite, type UserPermissions } from './permissions';
 import type { ExecutiveSummary } from '@breeze/shared';
@@ -27,7 +28,29 @@ export type ReportResult = {
   rowCount?: number;
   summary?: Record<string, unknown>;
   generatedAt?: string;
+  /** Slim baseline from the previous completed run of the same report, copied
+   * into the snapshot at generation time so trend deltas ("79, up from 74")
+   * render from the stored result alone. Only `summary` is copied — never
+   * `previous` — so baselines don't chain. */
+  previous?: { generatedAt: string | null; summary?: Record<string, unknown> };
 };
+
+/** Baseline from the most recent completed run of this report, if it captured
+ * a summary. Call BEFORE marking the new run completed. */
+export async function previousBaselineFor(reportId: string): Promise<ReportResult['previous']> {
+  const [prior] = await db
+    .select({ result: reportRuns.result, completedAt: reportRuns.completedAt })
+    .from(reportRuns)
+    .where(and(eq(reportRuns.reportId, reportId), eq(reportRuns.status, 'completed')))
+    .orderBy(desc(reportRuns.completedAt))
+    .limit(1);
+  const priorResult = prior?.result as ReportResult | null | undefined;
+  if (!priorResult?.summary || typeof priorResult.summary !== 'object') return undefined;
+  return {
+    generatedAt: priorResult.generatedAt ?? prior?.completedAt?.toISOString() ?? null,
+    summary: priorResult.summary,
+  };
+}
 
 export async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
   if (!perms?.allowedSiteIds) return null;
