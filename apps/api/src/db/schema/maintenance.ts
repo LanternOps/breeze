@@ -7,9 +7,10 @@ import {
   boolean,
   jsonb,
   pgEnum,
-  integer
+  integer,
+  index
 } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alertSeverityEnum } from './alerts';
 
@@ -28,9 +29,15 @@ export const maintenanceRecurrenceEnum = pgEnum('maintenance_recurrence', [
   'custom'
 ]);
 
+// A maintenance window is owned by EITHER an org (orgId set, partnerId NULL —
+// the original shape) OR a partner (partnerId set, orgId NULL — "partner-wide
+// / all orgs", epic #2135 / #2131). Exactly one axis is set per row; CHECK
+// `maintenance_windows_one_owner_chk` (migration 2026-07-01) enforces it.
+// maintenance_occurrences reach tenancy through the window join.
 export const maintenanceWindows = pgTable('maintenance_windows', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   startTime: timestamp('start_time').notNull(),
@@ -56,7 +63,9 @@ export const maintenanceWindows = pgTable('maintenance_windows', {
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  partnerIdx: index('maintenance_windows_partner_id_idx').on(table.partnerId),
+}));
 
 export const maintenanceOccurrences = pgTable('maintenance_occurrences', {
   id: uuid('id').primaryKey().defaultRandom(),

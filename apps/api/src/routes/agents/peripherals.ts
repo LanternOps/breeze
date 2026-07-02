@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   devices,
+  organizations,
   peripheralEventTypeEnum,
   peripheralEvents,
   peripheralPolicies
@@ -76,21 +77,44 @@ peripheralRoutes.put('/:id/peripherals/events', zValidator('json', submitPeriphe
   ));
 
   if (policyIds.length > 0) {
-    const validPolicies = await db
-      .select({ id: peripheralPolicies.id })
-      .from(peripheralPolicies)
-      .where(
-        and(
-          eq(peripheralPolicies.orgId, device.orgId),
-          inArray(peripheralPolicies.id, policyIds)
-        )
-      );
+    // A reported policy id is valid if the policy is owned by the device's
+    // org OR is a partner-wide policy (org_id NULL, #2131) owned by that
+    // org's partner. Partner-wide rows are invisible to this request's
+    // org-scoped RLS context, so the check runs in a short system-context
+    // block (anchored to the authenticated device's own org — no tenant
+    // pivot), mirroring the commands.ts pattern.
+    const validPolicies = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [orgRow] = await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, device.orgId))
+          .limit(1);
+
+        const ownershipCondition = orgRow?.partnerId
+          ? or(
+              eq(peripheralPolicies.orgId, device.orgId),
+              and(isNull(peripheralPolicies.orgId), eq(peripheralPolicies.partnerId, orgRow.partnerId))
+            )
+          : eq(peripheralPolicies.orgId, device.orgId);
+
+        return db
+          .select({ id: peripheralPolicies.id })
+          .from(peripheralPolicies)
+          .where(
+            and(
+              ownershipCondition,
+              inArray(peripheralPolicies.id, policyIds)
+            )
+          );
+      })
+    );
 
     const validIds = new Set(validPolicies.map((row) => row.id));
     const invalidPolicyIds = policyIds.filter((id) => !validIds.has(id));
     if (invalidPolicyIds.length > 0) {
       return c.json({
-        error: 'One or more policy IDs do not belong to this device organization',
+        error: 'One or more policy IDs do not belong to this device organization or its partner',
         invalidPolicyIds
       }, 400);
     }

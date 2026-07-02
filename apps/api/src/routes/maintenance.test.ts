@@ -34,7 +34,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema/maintenance', () => ({
-  maintenanceWindows: {},
+  maintenanceWindows: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
   maintenanceOccurrences: {}
 }));
 
@@ -60,12 +60,27 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+
+const PARTNER_ID = 'partner-1';
 
 describe('maintenance routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        partnerId: null,
+        orgId: 'org-123',
+        token: { sub: 'user-123' },
+        canAccessOrg: (orgId: string) => orgId === 'org-123'
+      });
+      return next();
+    });
     app = new Hono();
     app.route('/maintenance', maintenanceRoutes);
   });
@@ -488,5 +503,157 @@ describe('maintenance routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.data[0].window.id).toBe('win-1');
+  });
+
+  // ----------------------------------------------------------------
+  // Partner-wide dual-ownership gate (#2131): a maintenance window with
+  // orgId null + partnerId set is only mutable by a caller with
+  // canManagePartnerWidePolicies(auth) === true (system scope, or partner
+  // scope with partnerOrgAccess === 'all'). PR review flagged these 403s as
+  // unit-untested — only real-DB integration suites (not run in the
+  // required CI job) covered them.
+  // ----------------------------------------------------------------
+  describe('partner-wide dual-ownership gate', () => {
+    it('should return 403 patching a partner-wide window when the partner caller lacks partnerOrgAccess=all', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess: 'selected',
+          token: { sub: 'user-partner' },
+          canAccessOrg: () => true
+        });
+        return next();
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'win-1',
+              orgId: null,
+              partnerId: PARTNER_ID,
+              name: 'Partner-wide Window'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/maintenance/windows/win-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'New Name' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('should return 403 creating a partner-wide window without the partner-wide capability', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess: 'selected',
+          token: { sub: 'user-partner' },
+          canAccessOrg: () => true
+        });
+        return next();
+      });
+
+      const res = await app.request('/maintenance/windows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner-wide Maintenance',
+          startTime: '2024-01-01T10:00:00.000Z',
+          endTime: '2024-01-01T12:00:00.000Z',
+          timezone: 'UTC',
+          recurrence: 'once',
+          targetType: 'all',
+          suppressAlerts: true,
+          suppressPatches: true,
+          suppressAutomations: false,
+          notifyOnStart: false,
+          notifyOnEnd: false
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('should create a partner-wide window with orgId null and partnerId set when the caller has partnerOrgAccess=all', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess: 'all',
+          token: { sub: 'user-partner' },
+          canAccessOrg: () => true
+        });
+        return next();
+      });
+
+      const createdWindow = {
+        id: 'win-1',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        name: 'Partner-wide Maintenance',
+        status: 'scheduled'
+      };
+      const occurrencesValues = vi.fn().mockResolvedValue(undefined);
+      const windowValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([createdWindow])
+      });
+
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({ values: windowValues } as any)
+        .mockReturnValueOnce({ values: occurrencesValues } as any);
+
+      const res = await app.request('/maintenance/windows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner-wide Maintenance',
+          startTime: '2024-01-01T10:00:00.000Z',
+          endTime: '2024-01-01T12:00:00.000Z',
+          timezone: 'UTC',
+          recurrence: 'once',
+          targetType: 'all',
+          suppressAlerts: true,
+          suppressPatches: true,
+          suppressAutomations: false,
+          notifyOnStart: false,
+          notifyOnEnd: false
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.id).toBe('win-1');
+
+      const insertCall = windowValues.mock.calls[0];
+      expect(insertCall).toBeDefined();
+      if (!insertCall) {
+        throw new Error('Expected window insert call');
+      }
+      expect(insertCall[0]).toMatchObject({
+        orgId: null,
+        partnerId: PARTNER_ID
+      });
+    });
   });
 });

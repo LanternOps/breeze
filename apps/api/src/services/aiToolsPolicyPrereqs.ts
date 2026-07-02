@@ -63,6 +63,18 @@ function partnerWhere(auth: AuthContext, partnerIdCol: any): SQL | undefined {
   return sql`false`;
 }
 
+// Dual-axis access for peripheral_policies (#2131): same shape as
+// softwarePolicyWhere — org-owned rows the caller can reach OR partner-wide
+// rows (org_id NULL) owned by the caller's own partner.
+function peripheralPolicyWhere(auth: AuthContext): SQL | undefined {
+  const oc = orgWhere(auth, peripheralPolicies.orgId);
+  if (!oc) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${oc} OR (${peripheralPolicies.orgId} IS NULL AND ${peripheralPolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
+}
+
 // Dual-axis access for software_policies (#2126): org-owned rows the caller can
 // reach OR partner-wide rows (org_id NULL) owned by the caller's own partner.
 // Mirrors softwarePolicyAccessCondition in routes/softwarePolicies.ts.
@@ -432,7 +444,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, peripheralPolicies.orgId);
+        const oc = peripheralPolicyWhere(auth);
         if (oc) conditions.push(oc);
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
@@ -459,7 +471,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
         const conditions: SQL[] = [eq(peripheralPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, peripheralPolicies.orgId);
+        const oc = peripheralPolicyWhere(auth);
         if (oc) conditions.push(oc);
 
         const [policy] = await db.select().from(peripheralPolicies).where(and(...conditions)).limit(1);
@@ -498,11 +510,17 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
         const conditions: SQL[] = [eq(peripheralPolicies.id, input.policyId as string)];
-        const oc = orgWhere(auth, peripheralPolicies.orgId);
+        const oc = peripheralPolicyWhere(auth);
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(peripheralPolicies).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Peripheral policy not found or access denied' });
+
+        // Partner-wide templates are administrable only with the partner-wide
+        // capability (same gate as the HTTP route, #2131).
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;

@@ -112,7 +112,7 @@ vi.mock('../db/schema/maintenance', async (importOriginal) => {
   const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
-    maintenanceWindows: { orgId: 'orgId', id: 'id' },
+    maintenanceWindows: { orgId: 'orgId', partnerId: 'partnerId', id: 'id' },
     maintenanceOccurrences: { windowId: 'windowId' },
   };
 });
@@ -253,6 +253,48 @@ describe('registerFleetTools', () => {
 // ============================================
 // Handler-level tests for new actions
 // ============================================
+
+describe('manage_maintenance_windows handler', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_maintenance_windows')!;
+
+  // Regression guard for the #2131 scripted-edit self-recursion bug:
+  // maintenanceWindowWhere once called ITSELF instead of orgWhere, so every
+  // invocation blew the stack and safeHandler masked it as a JSON error.
+  // These tests INVOKE the handler (registration-only checks can't catch it).
+  it('list succeeds for an org-scope caller (no error, returns windows)', async () => {
+    const orgAuth = {
+      user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+      orgId: 'org-1',
+      scope: 'organization',
+      partnerId: null,
+      accessibleOrgIds: ['org-1'],
+      canAccessOrg: () => true,
+      orgCondition: () => ({ mockCondition: 'org' }),
+    } as any;
+
+    const result = JSON.parse(await tool.handler({ action: 'list' }, orgAuth));
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.windows)).toBe(true);
+  });
+
+  it('list succeeds for a partner-scope caller (dual-axis branch, #2131)', async () => {
+    const partnerAuth = {
+      user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+      orgId: null,
+      scope: 'partner',
+      partnerId: 'partner-1',
+      accessibleOrgIds: ['org-1', 'org-2'],
+      canAccessOrg: () => true,
+      orgCondition: () => ({ mockCondition: 'orgs' }),
+    } as any;
+
+    const result = JSON.parse(await tool.handler({ action: 'list' }, partnerAuth));
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.windows)).toBe(true);
+  });
+});
 
 describe('manage_alert_rules handler', () => {
   const toolMap = new Map<string, AiTool>();

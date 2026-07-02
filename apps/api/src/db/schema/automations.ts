@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { scripts } from './scripts';
 import { users } from './users';
@@ -44,9 +44,16 @@ export const automationRuns = pgTable('automation_runs', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 
+// An automation policy (the config-policy "compliance" feature's rule-set
+// table) is owned by EITHER an org (orgId set, partnerId NULL — the original
+// shape) OR a partner (partnerId set, orgId NULL — "partner-wide / all orgs",
+// epic #2135 / #2129). Exactly one axis is set per row; the CHECK constraint
+// `automation_policies_one_owner_chk` (migration 2026-07-01) enforces it.
+// Mirrors software_policies (#2126).
 export const automationPolicies = pgTable('automation_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),
@@ -59,7 +66,9 @@ export const automationPolicies = pgTable('automation_policies', {
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  partnerIdIdx: index('automation_policies_partner_id_idx').on(table.partnerId),
+}));
 
 export const automationPolicyCompliance = pgTable('automation_policy_compliance', {
   id: uuid('id').primaryKey().defaultRandom(),

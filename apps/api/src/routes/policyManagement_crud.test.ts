@@ -50,6 +50,7 @@ vi.mock('../db/schema', () => ({
   automationPolicies: {
     id: 'id',
     orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     description: 'description',
     enabled: 'enabled',
@@ -260,7 +261,10 @@ describe('policyManagement routes', () => {
       expect(res.status).toBe(403);
     });
 
-    it('should return empty for partner with no accessible orgs', async () => {
+    it('still queries partner-wide templates for a partner with no accessible orgs (#2129)', async () => {
+      // A partner member with zero accessible orgs still holds the partner
+      // axis, so the list no longer short-circuits — it queries for
+      // partner-wide templates (org_id NULL) owned by their partner.
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
@@ -273,6 +277,26 @@ describe('policyManagement routes', () => {
         return next();
       });
 
+      vi.mocked(db.select)
+        // count query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }])
+          })
+        } as any)
+        // policies list
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([])
+                })
+              })
+            })
+          })
+        } as any);
+
       const res = await app.request('/policies', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
@@ -281,6 +305,61 @@ describe('policyManagement routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toEqual([]);
+    });
+
+    it('lists a partner-wide policy (org_id NULL) in the partner "all orgs" view (#2129)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        return next();
+      });
+
+      const partnerWide = makePolicy({ id: POLICY_ID_2, name: 'Partner-wide baseline', orgId: null, partnerId: PARTNER_ID });
+      vi.mocked(db.select)
+        // count query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 2 }])
+          })
+        } as any)
+        // policies list
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([makePolicy(), partnerWide])
+                })
+              })
+            })
+          })
+        } as any)
+        // getPolicyComplianceMap
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/policies', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(2);
+      const partnerRow = body.data.find((p: { id: string }) => p.id === POLICY_ID_2);
+      expect(partnerRow.orgId).toBeNull();
+      expect(partnerRow.partnerId).toBe(PARTNER_ID);
     });
   });
 

@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { alerts, alertRules, alertTemplates, automationPolicies } from '../db/schema';
+import { alerts, alertRules, alertTemplates, automationPolicies, organizations } from '../db/schema';
 import { createAlert, resolveAlert } from './alertService';
 import { getEventBus } from './eventBus';
 
@@ -141,7 +141,10 @@ async function resolvePolicyAlertsForDevice(ruleId: string, deviceId: string): P
   }
 }
 
-async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload): Promise<void> {
+// Exported for unit testing (dual-axis partner-wide policy check, #2149) — not
+// used outside this module otherwise; subscribeToPolicyEvents wires it to the
+// event bus.
+export async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload): Promise<void> {
   if (!payload.policyId || !payload.deviceId) {
     return;
   }
@@ -149,19 +152,45 @@ async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload)
   const policyName = payload.policyName ?? 'Policy';
   const hostname = payload.hostname ?? payload.deviceId;
 
+  // The event's orgId is the DEVICE's org. The policy is either owned by that
+  // org, or partner-wide (org_id NULL, #2129) and owned by that org's partner.
   const [policy] = await db
-    .select({ id: automationPolicies.id })
+    .select({ id: automationPolicies.id, orgId: automationPolicies.orgId, partnerId: automationPolicies.partnerId })
     .from(automationPolicies)
-    .where(
-      and(
-        eq(automationPolicies.id, payload.policyId),
-        eq(automationPolicies.orgId, orgId)
-      )
-    )
+    .where(eq(automationPolicies.id, payload.policyId))
     .limit(1);
 
   if (!policy) {
     return;
+  }
+
+  if (policy.orgId !== null) {
+    if (policy.orgId !== orgId) {
+      // Should never happen — an org-owned policy only evaluates its own
+      // org's devices. Leave a trace: silently dropping means an alert that
+      // should have fired never does.
+      console.warn(
+        `[policyAlertBridge] dropping policy.violation for policy ${payload.policyId}: `
+        + `policy org ${policy.orgId} does not match event org ${orgId}`
+      );
+      return;
+    }
+  } else {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+
+    if (!org || !policy.partnerId || org.partnerId !== policy.partnerId) {
+      // Race (policy deleted / org re-parented mid-evaluation) — log rather
+      // than silently swallowing the violation.
+      console.warn(
+        `[policyAlertBridge] dropping policy.violation for partner-wide policy ${payload.policyId}: `
+        + `event org ${orgId} is not under owning partner ${policy.partnerId ?? 'NULL'}`
+      );
+      return;
+    }
   }
 
   const ruleId = await ensureRule(orgId, payload.policyId, policyName, payload.enforcement);

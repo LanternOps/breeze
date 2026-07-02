@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, gte, ne, sql } from 'drizzle-orm';
+import { and, eq, gte, isNull, ne, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { devices, peripheralEvents, peripheralPolicies } from '../db/schema';
+import { devices, organizations, peripheralEvents, peripheralPolicies } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
 import { CommandTypes, queueCommand, queueCommandForExecution } from '../services/commandQueue';
 import { getBullMQConnection } from '../services/redis';
@@ -171,11 +171,27 @@ export async function processPolicyDistribution(
   // policy id missing here means the producer txn hasn't committed yet — and
   // (b) build the payload from the *current* active subset (re-read each run so
   // coalesced bursts always send the latest state).
+  // The org's applicable policy set is dual-axis (#2131): its own org-owned
+  // rows PLUS partner-wide rows (org_id NULL) owned by the org's partner —
+  // the worker runs under system context, so both axes are visible.
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, data.orgId))
+    .limit(1);
+
+  const policyOwnershipCondition = orgRow?.partnerId
+    ? or(
+        eq(peripheralPolicies.orgId, data.orgId),
+        and(isNull(peripheralPolicies.orgId), eq(peripheralPolicies.partnerId, orgRow.partnerId))
+      )
+    : eq(peripheralPolicies.orgId, data.orgId);
+
   const [orgPolicies, orgDevices] = await Promise.all([
     db
       .select()
       .from(peripheralPolicies)
-      .where(eq(peripheralPolicies.orgId, data.orgId))
+      .where(policyOwnershipCondition)
       .orderBy(peripheralPolicies.updatedAt),
     db
       .select({

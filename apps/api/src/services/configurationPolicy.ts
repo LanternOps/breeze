@@ -1537,15 +1537,14 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // patch, software_policy, security, and alert_rule are handled separately in
+  // Every other linked feature type is handled separately in
   // validateFeaturePolicyExists: rings are pure partner-axis, and software /
-  // security / alert-rule policies are dual-ownership (org XOR partner,
-  // #2126/#2127/#2128) — none fits the org-only lookup below.
+  // security / alert-rule / compliance / sensitive-data / peripheral /
+  // maintenance are dual-ownership (org XOR partner,
+  // #2126/#2127/#2128/#2129/#2131). backup stays org-only deliberately —
+  // backup configs carry org-owned storage credentials (see the
+  // partner-wide-first rule in CLAUDE.md; #2132 tracks its template design).
   backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
-  compliance: { table: automationPolicies, orgIdCol: automationPolicies.orgId },
-  maintenance: { table: maintenanceWindows, orgIdCol: maintenanceWindows.orgId },
-  sensitive_data: { table: sensitiveDataPolicies, orgIdCol: sensitiveDataPolicies.orgId },
-  peripheral_control: { table: peripheralPolicies, orgIdCol: peripheralPolicies.orgId },
 };
 
 /**
@@ -1560,6 +1559,10 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'software_policy',
   'security',
   'alert_rule',
+  'compliance',
+  'sensitive_data',
+  'peripheral_control',
+  'maintenance',
 ]);
 
 export async function validateFeaturePolicyExists(
@@ -1599,13 +1602,22 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  if (featureType === 'software_policy' || featureType === 'security' || featureType === 'alert_rule') {
+  if (
+    featureType === 'software_policy' ||
+    featureType === 'security' ||
+    featureType === 'alert_rule' ||
+    featureType === 'compliance' ||
+    featureType === 'sensitive_data' ||
+    featureType === 'peripheral_control' ||
+    featureType === 'maintenance'
+  ) {
     if (!featurePolicyId) {
       return { valid: true };
     }
 
-    // Software (#2126), security (#2127), and alert-rule (#2128) policies are
-    // dual-ownership. A config policy may link:
+    // Software (#2126), security (#2127), alert-rule (#2128), compliance
+    // (#2129, automation_policies), sensitive-data, and peripheral-control
+    // (#2131) policies are dual-ownership. A config policy may link:
     //  - an org-owned policy belonging to the config policy's own org
     //  - a partner-owned ("all orgs") template belonging to the config
     //    policy's partner (derived from its org for org-owned config policies)
@@ -1615,7 +1627,15 @@ export async function validateFeaturePolicyExists(
       ? { table: softwarePolicies, label: 'Software policy' }
       : featureType === 'security'
         ? { table: securityPolicies, label: 'Security policy' }
-        : { table: alertRules, label: 'Alert rule' };
+        : featureType === 'alert_rule'
+          ? { table: alertRules, label: 'Alert rule' }
+          : featureType === 'compliance'
+            ? { table: automationPolicies, label: 'Compliance policy' }
+            : featureType === 'sensitive_data'
+              ? { table: sensitiveDataPolicies, label: 'Sensitive data policy' }
+              : featureType === 'peripheral_control'
+                ? { table: peripheralPolicies, label: 'Peripheral policy' }
+                : { table: maintenanceWindows, label: 'Maintenance window' };
     const partnerId =
       owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
 
@@ -1639,6 +1659,31 @@ export async function validateFeaturePolicyExists(
       .limit(1);
 
     if (!row) {
+      // sensitive_data historically also accepts a featurePolicyId that
+      // references another Configuration Policy (whole-policy linking) — the
+      // generic fallback below used to allow it. Preserve that with the same
+      // dual-axis ownership conditions (config policies are dual-owned).
+      if (featureType === 'sensitive_data') {
+        const cpConditions: SQL[] = [];
+        if (owner.orgId) {
+          cpConditions.push(eq(configurationPolicies.orgId, owner.orgId));
+        }
+        if (partnerId) {
+          cpConditions.push(
+            sql`(${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${partnerId})`
+          );
+        }
+        if (cpConditions.length > 0) {
+          const [configPolicy] = await db
+            .select({ id: configurationPolicies.id })
+            .from(configurationPolicies)
+            .where(and(eq(configurationPolicies.id, featurePolicyId), or(...cpConditions)))
+            .limit(1);
+          if (configPolicy) {
+            return { valid: true };
+          }
+        }
+      }
       return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found for this organization or partner` };
     }
 
@@ -1658,8 +1703,8 @@ export async function validateFeaturePolicyExists(
     return { valid: true };
   }
 
-  // sensitive_data supports both linked policy and inline settings
-  // If featurePolicyId is provided, it can reference a sensitiveDataPolicies record or a config policy
+  // (sensitive_data is handled in the dual-axis branch above, including its
+  // legacy config-policy-reference fallback.)
 
   if (!featurePolicyId) {
     return { valid: true }; // inline-only is allowed; schema ensures inlineSettings is present

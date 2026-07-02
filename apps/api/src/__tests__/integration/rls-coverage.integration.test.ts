@@ -262,6 +262,38 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // alert_rules_one_owner_chk enforces exactly one axis. Functional
   // cross-partner forge proof: alertRulesPartnerRls.integration.test.ts.
   'alert_rules',
+  // automation_policies (#2129, epic #2135): org-scoped OR partner-wide
+  // compliance rule set (the config-policy "compliance" feature). Per-device
+  // results (automation_policy_compliance) stay device-join — each result row
+  // belongs to the device's own org. Converted in
+  // 2026-07-01-automation-policies-partner-ownership. CHECK
+  // automation_policies_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge + evaluation fan-out proof:
+  // automationPoliciesPartnerRls.integration.test.ts.
+  'automation_policies',
+  // sensitive_data_policies (#2131, epic #2135): org-scoped OR partner-wide
+  // data-discovery policy. Scans/findings stay org-owned by the scanned
+  // DEVICE's org (the scheduler sources scan org_id from the device).
+  // Converted in 2026-07-01-sensitive-data-policies-partner-ownership. CHECK
+  // sensitive_data_policies_one_owner_chk enforces exactly one axis.
+  // Functional cross-partner forge + scheduler fan-out proof:
+  // sensitiveDataPoliciesPartnerRls.integration.test.ts.
+  'sensitive_data_policies',
+  // peripheral_policies (#2131, epic #2135): org-scoped OR partner-wide
+  // USB/peripheral policy. peripheral_events stay org-owned by the reporting
+  // DEVICE's org. Converted in 2026-07-01-peripheral-policies-partner-
+  // ownership. CHECK peripheral_policies_one_owner_chk enforces exactly one
+  // axis. Functional cross-partner forge + distribution fan-out proof:
+  // peripheralPoliciesPartnerRls.integration.test.ts.
+  'peripheral_policies',
+  // maintenance_windows (#2131, epic #2135): org-scoped OR partner-wide
+  // maintenance window. maintenance_occurrences stay window-join (their
+  // EXISTS policies gained the partner branch in the same migration).
+  // Converted in 2026-07-01-maintenance-windows-partner-ownership. CHECK
+  // maintenance_windows_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge + enforcement fan-out proof:
+  // maintenanceWindowsPartnerRls.integration.test.ts.
+  'maintenance_windows',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

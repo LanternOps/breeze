@@ -18,30 +18,42 @@ vi.mock('../db/schema', () => ({
   devices: {},
   sensitiveDataScans: {},
   sensitiveDataFindings: {},
-  sensitiveDataPolicies: {}
+  sensitiveDataPolicies: {
+    id: 'id',
+    orgId: 'orgId',
+    partnerId: 'partnerId',
+    name: 'name',
+    scope: 'scope',
+    detectionClasses: 'detectionClasses',
+    schedule: 'schedule',
+    isActive: 'isActive',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
+  }
 }));
 
+// authMiddleware is a vi.fn() so individual tests can override the auth
+// context (scope/partnerId/partnerOrgAccess) via mockImplementation — needed
+// to exercise the partner-wide write gate (#2131). requireScope is a plain
+// passthrough: it must NOT re-set 'auth' (it used to, clobbering whatever
+// authMiddleware — or a per-test override — set for every route below it in
+// the chain, since every /policies route applies requireScope after
+// authMiddleware).
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: async (c: any, next: any) => {
+  authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+      scope: 'organization',
       orgId: '11111111-1111-1111-1111-111111111111',
-      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
-      orgCondition: () => undefined,
-      canAccessOrg: () => true
-    });
-    return next();
-  },
-  requireScope: vi.fn(() => async (c: any, next: any) => {
-    c.set('auth', {
-      user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-      orgId: '11111111-1111-1111-1111-111111111111',
+      partnerId: null,
+      partnerOrgAccess: null,
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       orgCondition: () => undefined,
       canAccessOrg: () => true
     });
     return next();
   }),
+  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     // Mirror the real middleware: populate permissions.allowedSiteIds when the
     // caller is site-restricted (signalled here via the x-restrict-site header).
@@ -76,8 +88,10 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
 import { queueCommand } from '../services/commandQueue';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { sensitiveDataRoutes } from './sensitiveData';
 
 function mockDeviceLookup(rows: any[]) {
@@ -150,6 +164,19 @@ describe('sensitive data routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        orgId: '11111111-1111-1111-1111-111111111111',
+        partnerId: null,
+        partnerOrgAccess: null,
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+        orgCondition: () => undefined,
+        canAccessOrg: () => true
+      });
+      return next();
+    });
     app = new Hono();
     app.route('/sensitive-data', sensitiveDataRoutes);
   });
@@ -614,5 +641,141 @@ describe('sensitive data routes', () => {
         resourceId: policyId
       })
     );
+  });
+
+  // --- Partner-wide policy write gate (#2131) ---
+  //
+  // A policy row with orgId NULL + partnerId set is "partner-wide" and is
+  // only mutable by a caller for whom canManagePartnerWidePolicies(auth) is
+  // true (system scope, or partner scope with partnerOrgAccess === 'all').
+  // These 403 gates in sensitiveData.ts (PUT/DELETE/POST) previously had zero
+  // unit coverage — only real-DB integration suites (not run in the required
+  // CI job) exercised them.
+  describe('partner-wide policy write gate (#2131)', () => {
+    const partnerId = '77777777-7777-7777-7777-777777777777';
+
+    function partnerAuth(overrides: Record<string, unknown> = {}) {
+      return {
+        user: { id: 'user-partner', email: 'partner@example.com', name: 'Partner User' },
+        scope: 'partner',
+        orgId: null,
+        partnerId,
+        partnerOrgAccess: 'selected',
+        accessibleOrgIds: [],
+        orgCondition: () => undefined,
+        canAccessOrg: () => true,
+        ...overrides
+      };
+    }
+
+    it('denies PUT on a partner-wide policy when the caller lacks partnerOrgAccess=all (403, no update)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', partnerAuth());
+        return next();
+      });
+
+      mockSelectFromWhereLimit([
+        {
+          id: policyId,
+          orgId: null,
+          partnerId,
+          name: 'Partner Policy',
+          scope: {},
+          detectionClasses: ['credential'],
+          schedule: null,
+          isActive: true
+        }
+      ]);
+
+      const res = await app.request(`/sensitive-data/policies/${policyId}`, {
+        method: 'PUT',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New Name' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denies DELETE on a partner-wide policy when the caller lacks partnerOrgAccess=all (403, no delete)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', partnerAuth());
+        return next();
+      });
+
+      mockSelectFromWhereLimit([
+        { id: policyId, name: 'Partner Policy', orgId: null, partnerId }
+      ]);
+
+      const res = await app.request(`/sensitive-data/policies/${policyId}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('denies POST /policies with ownerScope=partner when the caller lacks the capability (403, no insert)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', partnerAuth());
+        return next();
+      });
+
+      const res = await app.request('/sensitive-data/policies', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Partner Wide Policy',
+          detectionClasses: ['credential'],
+          ownerScope: 'partner'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('creates a partner-wide policy (orgId null, partnerId set) when the caller has partnerOrgAccess=all', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', partnerAuth({ partnerOrgAccess: 'all' }));
+        return next();
+      });
+
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: policyId,
+            orgId: null,
+            partnerId,
+            name: 'Partner Wide Policy',
+            createdAt: new Date(),
+            updatedAt: new Date()
+          }
+        ])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/sensitive-data/policies', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Partner Wide Policy',
+          detectionClasses: ['credential'],
+          ownerScope: 'partner'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: null, partnerId })
+      );
+    });
   });
 });

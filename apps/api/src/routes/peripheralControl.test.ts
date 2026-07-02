@@ -40,6 +40,7 @@ vi.mock('../db/schema', () => ({
   peripheralPolicies: {
     id: 'id',
     orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     deviceClass: 'deviceClass',
     action: 'action',
@@ -51,6 +52,10 @@ vi.mock('../db/schema', () => ({
     id: 'id',
     orgId: 'orgId',
     siteId: 'siteId'
+  },
+  organizations: {
+    id: 'id',
+    partnerId: 'partnerId'
   }
 }));
 
@@ -106,10 +111,13 @@ vi.mock('../services/permissions', () => ({
 import { db } from '../db';
 import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
 import { publishEvent } from '../services/eventBus';
+import { authMiddleware } from '../middleware/auth';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { peripheralControlRoutes } from './peripheralControl';
 
 const orgId = '11111111-1111-1111-1111-111111111111';
 const policyId = '22222222-2222-2222-2222-222222222222';
+const partnerId = '66666666-6666-6666-6666-666666666666';
 
 const basePolicy = {
   id: policyId,
@@ -422,7 +430,7 @@ describe('peripheralControl routes', () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.warning).toContain('distribution scheduling failed');
-    expect(body.warning).toContain('Redis connection lost');
+    expect(body.warning).toContain(orgId);
   });
 
   it('includes both error messages when distribution and event publish fail', async () => {
@@ -454,8 +462,8 @@ describe('peripheralControl routes', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.warning).toContain('distribution scheduling failed: Redis down');
-    expect(body.warning).toContain('event publish failed: Event bus unavailable');
+    expect(body.warning).toContain(`distribution scheduling failed for 1/1 org(s): ${orgId}`);
+    expect(body.warning).toContain(`event publish failed for 1/1 org(s): ${orgId}`);
     expect(body.warning).toContain(';');
   });
 
@@ -747,6 +755,142 @@ describe('peripheralControl routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.id).toBe(policyId);
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // Partner-wide dual-ownership gate (#2131): a policy with orgId null +
+  // partnerId set is only mutable by a caller with
+  // canManagePartnerWidePolicies(auth) === true (system scope, or partner
+  // scope with partnerOrgAccess 'all'). PR review flagged the 403 gates in
+  // this route as unit-untested — only real-DB integration suites (which
+  // don't run in the required CI job) covered them.
+  // ----------------------------------------------------------------
+  describe('partner-wide ownership gate (#2131)', () => {
+    function setPartnerAuth(partnerOrgAccess: 'all' | 'selected') {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          orgId: null,
+          partnerId,
+          partnerOrgAccess,
+          accessibleOrgIds: [orgId],
+          canAccessOrg: (id: string) => id === orgId,
+          orgCondition: () => undefined,
+          user: { id: 'user-partner', email: 'partner@example.com' }
+        });
+        return next();
+      });
+    }
+
+    it('returns 403 updating a partner-wide policy when the partner caller lacks partnerOrgAccess=all', async () => {
+      setPartnerAuth('selected');
+
+      const existingPartnerWidePolicy = { ...basePolicy, orgId: null, partnerId };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([existingPartnerWidePolicy])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: policyId,
+          name: 'Updated name',
+          deviceClass: 'storage',
+          action: 'block',
+          targetType: 'organization'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 creating a partner-wide policy when the partner caller lacks partnerOrgAccess=all', async () => {
+      setPartnerAuth('selected');
+
+      const res = await app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner-wide block',
+          deviceClass: 'storage',
+          action: 'block',
+          targetType: 'organization'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('creates a partner-wide policy (orgId null, partnerId set) when the partner caller has partnerOrgAccess=all', async () => {
+      setPartnerAuth('all');
+
+      const createdPartnerWidePolicy = { ...basePolicy, orgId: null, partnerId };
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([createdPartnerWidePolicy])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      // resolvePolicyTargetOrgIds: db.select({id}).from(organizations).where(...)
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: orgId }])
+        })
+      } as any);
+
+      const res = await app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner-wide block',
+          deviceClass: 'storage',
+          action: 'block',
+          targetType: 'organization'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.orgId).toBeNull();
+      expect(body.data.partnerId).toBe(partnerId);
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: null, partnerId })
+      );
+    });
+
+    it('returns 403 disabling a partner-wide policy when the partner caller lacks partnerOrgAccess=all', async () => {
+      setPartnerAuth('selected');
+
+      const existingPartnerWidePolicy = { ...basePolicy, orgId: null, partnerId };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([existingPartnerWidePolicy])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/peripherals/policies/${policyId}/disable`, {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 });

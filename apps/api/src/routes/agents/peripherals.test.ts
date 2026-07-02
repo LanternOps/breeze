@@ -13,9 +13,10 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../db/schema', () => ({
   devices: { id: 'id', orgId: 'orgId', hostname: 'hostname', agentId: 'agentId' },
+  organizations: { id: 'id', partnerId: 'partnerId' },
   peripheralEventTypeEnum: { enumValues: ['connected', 'disconnected', 'blocked', 'mounted_read_only', 'policy_override'] },
   peripheralEvents: { id: 'id' },
-  peripheralPolicies: { id: 'id', orgId: 'orgId' }
+  peripheralPolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' }
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -51,7 +52,16 @@ function mockDeviceNotFound() {
   } as any);
 }
 
-function mockPolicyLookup(validPolicies: { id: string }[]) {
+// The policy-id validation (#2131) first resolves the device org's partner
+// (select ... limit 1), then runs the dual-axis policy lookup.
+function mockPolicyLookup(validPolicies: { id: string }[], partnerId: string | null = 'partner-1') {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ partnerId }])
+      })
+    })
+  } as any);
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(validPolicies)
@@ -94,12 +104,7 @@ describe('agent peripheral ingest', () => {
 
   it('rejects policy IDs outside device org scope', async () => {
     mockDeviceLookup({ id: 'device-1', orgId: 'org-1', hostname: 'host-1' });
-
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([])
-      })
-    } as any);
+    mockPolicyLookup([]);
 
     const res = await app.request('/agents/agent-1/peripherals/events', {
       method: 'PUT',
@@ -125,12 +130,7 @@ describe('agent peripheral ingest', () => {
 
   it('reports deduplicated count when onConflictDoNothing skips duplicates', async () => {
     mockDeviceLookup({ id: 'device-1', orgId: 'org-1', hostname: 'host-1' });
-
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ id: '11111111-1111-1111-1111-111111111111' }])
-      })
-    } as any);
+    mockPolicyLookup([{ id: '11111111-1111-1111-1111-111111111111' }]);
 
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, eq, ilike, inArray, or } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '../../../db';
 import {
   deviceGroups,
@@ -7,6 +7,7 @@ import {
   alertTemplates,
   alertRules,
   partners,
+  organizations,
 } from '../../../db/schema';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../../../services/auditEvents';
 import { encryptColumnValueForWrite } from '../../../services/encryptedColumnRegistry';
@@ -83,6 +84,17 @@ export async function applyStandardAlertPolicy(
   orgId: string,
   _framework: 'standard' | 'cis',
 ): Promise<StepResult> {
+  // Resolve the org's partner so the dedupe check below can recognize
+  // partner-wide rules (org_id NULL, partner_id set) as existing coverage —
+  // otherwise this step would create a redundant org-level duplicate of a
+  // rule the partner already applies to every org under it.
+  const [orgRow] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const orgPartnerId = orgRow?.partnerId ?? null;
+
   // Only look at built-in templates (org-agnostic) — deployments without
   // seeded templates will legitimately skip this step.
   const builtIns = await db
@@ -103,17 +115,24 @@ export async function applyStandardAlertPolicy(
     return { created: false, skipped_reason: 'no built-in alert templates found' };
   }
 
-  // Which of these already have a rule on this org?
+  // Which of these already have a rule covering this org — either an
+  // org-owned rule, or a partner-wide rule (org_id NULL) owned by the org's
+  // resolved partner? Without a resolvable partner (orphaned/deleted
+  // partner edge case), fall back to the org-only check.
   const templateIds = builtIns.map((t) => t.id);
+  const dedupeCondition = orgPartnerId
+    ? and(
+        inArray(alertRules.templateId, templateIds),
+        or(
+          eq(alertRules.orgId, orgId),
+          and(isNull(alertRules.orgId), eq(alertRules.partnerId, orgPartnerId)),
+        ),
+      )
+    : and(eq(alertRules.orgId, orgId), inArray(alertRules.templateId, templateIds));
   const existing = await db
     .select({ templateId: alertRules.templateId })
     .from(alertRules)
-    .where(
-      and(
-        eq(alertRules.orgId, orgId),
-        inArray(alertRules.templateId, templateIds),
-      ),
-    );
+    .where(dedupeCondition);
   const existingSet = new Set(existing.map((r) => r.templateId));
 
   let createdCount = 0;

@@ -445,22 +445,23 @@ describe('featureLinks routes', () => {
       );
     });
 
-    it('still rejects linking an org-scoped feature policy (compliance) on a partner-owned policy → 400', async () => {
-      // TODO(#2129): compliance links automationPolicies, which is still
-      // org-only — when #2129 migrates it, switch this test to another
-      // org-only linked type. security graduated to PARTNER_LINKABLE in #2127.
+    it('still rejects linking an org-scoped feature policy (backup) on a partner-owned policy → 400', async () => {
+      // backup is the deliberate org-locked exception (org-owned storage
+      // credentials; #2132 tracks its template/binding design). compliance
+      // graduated to PARTNER_LINKABLE in #2129, sensitive_data / peripheral /
+      // maintenance in #2131 — backup is the last org-only linked type.
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          featureType: 'compliance',
+          featureType: 'backup',
           featurePolicyId: '44444444-4444-4444-4444-444444444444',
         }),
       });
 
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(String(body.error)).toContain('partner-owned');
+      expect(String(body.error)).toContain('not supported on partner-wide policies');
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { X, Plus, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import { extractApiError } from '@/lib/apiError';
 
 type ExceptionRule = {
@@ -39,6 +41,17 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
   const isEdit = !!policy?.id;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+
+  // Ownership axis (#2131, mirrors software PolicyForm #2126): partner-scope
+  // creators may own the policy partner-wide ("all orgs"). Gate on the JWT
+  // scope; default to partner-wide when viewing All orgs. Create-only.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>(
+    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'
+  );
 
   const [name, setName] = useState(policy?.name ?? '');
   const [deviceClass, setDeviceClass] = useState(policy?.deviceClass ?? 'storage');
@@ -80,7 +93,12 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
         })),
     };
 
-    if (isEdit) body.id = policy!.id;
+    if (isEdit) {
+      body.id = policy!.id;
+    } else if (isPartnerScope) {
+      // Create-only: updates never move a policy between ownership axes.
+      body.ownerScope = ownerScope;
+    }
 
     try {
       const response = await fetchWithAuth('/peripherals/policies', {
@@ -128,6 +146,31 @@ export default function PeripheralPolicyForm({ policy, onClose }: PeripheralPoli
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
             </div>
+          )}
+
+          {/* Ownership scope — partner-scope creators only, create-only (#2131) */}
+          {!isEdit && isPartnerScope && (
+            <fieldset className="space-y-2 rounded-md border p-4" data-testid="peripheral-policy-owner">
+              <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  checked={ownerScope === 'partner'}
+                  onChange={() => setOwnerScope('partner')}
+                  data-testid="peripheral-policy-owner-partner"
+                />
+                All organizations <span className="text-muted-foreground">(partner-wide policy)</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  checked={ownerScope === 'organization'}
+                  onChange={() => setOwnerScope('organization')}
+                  data-testid="peripheral-policy-owner-org"
+                />
+                This organization only
+              </label>
+            </fieldset>
           )}
 
           <div>

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { db } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -404,12 +404,29 @@ export async function buildPolicyProbeConfigUpdate(orgId: string | null | undefi
     return null;
   }
 
+  // Dual-ownership (#2129): the device's probe list must also cover
+  // partner-wide compliance policies (org_id NULL) owned by this org's
+  // partner — the evaluation worker fans those out to this device, so the
+  // agent has to collect their registry/config state too.
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  const ownershipCondition = org?.partnerId
+    ? or(
+        eq(automationPolicies.orgId, orgId),
+        and(isNull(automationPolicies.orgId), eq(automationPolicies.partnerId, org.partnerId))
+      )
+    : eq(automationPolicies.orgId, orgId);
+
   const policyRows = await db
     .select({ rules: automationPolicies.rules })
     .from(automationPolicies)
     .where(
       and(
-        eq(automationPolicies.orgId, orgId),
+        ownershipCondition,
         eq(automationPolicies.enabled, true)
       )
     );
