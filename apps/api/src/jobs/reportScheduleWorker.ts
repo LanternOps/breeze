@@ -29,6 +29,8 @@ import { getEmailService } from '../services/email';
 import { renderLayout, renderButton, renderParagraph, escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { resolveEffectiveTimezone, canonicalizeTimezone, rowsToCsv } from '@breeze/shared';
+import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
+import { loadReportBrandingForOrg } from '../services/reportBranding';
 import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
@@ -276,6 +278,9 @@ async function emailReportRun(opts: {
   format: string;
   recipients: string[];
   rows: unknown[];
+  summary?: Record<string, unknown>;
+  timezone: string;
+  branding: ReportBranding;
 }): Promise<void> {
   const email = getEmailService();
   if (!email) {
@@ -284,18 +289,36 @@ async function emailReportRun(opts: {
   }
   const base = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
   const link = `${base}/reports`;
+  const dateStr = new Date().toISOString().split('T')[0];
 
   const attachments = [] as Array<{ filename: string; content: Buffer; contentType?: string }>;
-  if (opts.rows.length > 0 && opts.format !== 'pdf') {
+  if (opts.format === 'pdf') {
+    // The branded PDF is the deliverable an MSP wants landing in the client's
+    // inbox — render it here exactly as the web does (same shared renderer).
+    try {
+      const generatedAt = new Intl.DateTimeFormat('en-US', {
+        timeZone: opts.timezone, dateStyle: 'medium', timeStyle: 'short',
+      }).format(new Date());
+      const doc = buildReportPdf(opts.rows, {
+        reportType: opts.reportType,
+        generatedAt,
+        timezone: opts.timezone,
+        summary: opts.summary as never,
+        branding: opts.branding,
+      });
+      const content = Buffer.from(doc.output('arraybuffer'));
+      if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
+        attachments.push({ filename: `${opts.reportType}-report-${dateStr}.pdf`, content, contentType: 'application/pdf' });
+      }
+    } catch (err) {
+      // A render failure must not block delivery — fall back to the link-only email.
+      console.error('[ReportScheduleWorker] PDF render failed; sending link-only email:', err);
+    }
+  } else if (opts.rows.length > 0) {
     const csv = rowsToCsv(opts.rows);
     const content = Buffer.from(csv, 'utf8');
     if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
-      const dateStr = new Date().toISOString().split('T')[0];
-      attachments.push({
-        filename: `${opts.reportType}-report-${dateStr}.csv`,
-        content,
-        contentType: 'text/csv',
-      });
+      attachments.push({ filename: `${opts.reportType}-report-${dateStr}.csv`, content, contentType: 'text/csv' });
     }
   }
 
@@ -304,9 +327,11 @@ async function emailReportRun(opts: {
       ? `Your scheduled report "${opts.reportName}" has been generated with ${opts.rows.length} record${opts.rows.length === 1 ? '' : 's'}.`
       : `Your scheduled report "${opts.reportName}" has been generated.`;
   const attachmentNote =
-    attachments.length > 0
-      ? 'The data is attached as CSV; open Breeze for the fully formatted report.'
-      : 'Open Breeze to view and download the formatted report.';
+    attachments.length === 0
+      ? 'Open Breeze to view and download the formatted report.'
+      : attachments[0]!.contentType === 'application/pdf'
+        ? 'The formatted report is attached as a PDF.'
+        : 'The data is attached as CSV; open Breeze for the fully formatted report.';
 
   await email.sendEmail({
     to: opts.recipients,
@@ -335,6 +360,14 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
   if (!report) return; // deleted or switched to one_time since enqueue
 
   const config = (report.config ?? {}) as Record<string, unknown>;
+
+  const [tzRow] = await db
+    .select({ orgSettings: organizations.settings, partnerTimezone: partners.timezone, partnerSettings: partners.settings })
+    .from(organizations)
+    .leftJoin(partners, eq(organizations.partnerId, partners.id))
+    .where(eq(organizations.id, report.orgId))
+    .limit(1);
+  const timeZone = timezoneFor(tzRow?.orgSettings ?? null, tzRow?.partnerTimezone ?? null, tzRow?.partnerSettings ?? null);
 
   const [run] = await db
     .insert(reportRuns)
@@ -375,6 +408,9 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
           format: report.format,
           recipients,
           rows,
+          summary: result.summary,
+          timezone: timeZone,
+          branding: await loadReportBrandingForOrg(report.orgId),
         });
       } catch (err) {
         // Delivery failure must not fail the (already stored) run.

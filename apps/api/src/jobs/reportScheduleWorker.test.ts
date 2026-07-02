@@ -49,6 +49,15 @@ vi.mock('../services/email', () => ({
   getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock })),
 }));
 
+const loadReportBrandingForOrgMock = vi.fn(async () => ({
+  name: 'Olive MSP',
+  logoDataUrl: null,
+  logoAspect: null,
+}));
+vi.mock('../services/reportBranding', () => ({
+  loadReportBrandingForOrg: (...args: unknown[]) => loadReportBrandingForOrgMock(...(args as [])),
+}));
+
 vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false),
   getBullMQConnection: vi.fn(() => ({})),
@@ -250,6 +259,7 @@ describe('processRunScheduledReport', () => {
 
   it('stores a completed run, stamps lastGeneratedAt, and emails valid recipients with a CSV', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
+    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
     const runInsert = insertChain([{ id: RUN_ID }]);
     insertMock.mockReturnValueOnce(runInsert);
     const updates = [updateChain(), updateChain()];
@@ -278,6 +288,7 @@ describe('processRunScheduledReport', () => {
 
   it('marks the run failed (and still stamps lastGeneratedAt) when generation throws', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
+    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     const updates = [updateChain(), updateChain()];
     updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
@@ -302,15 +313,43 @@ describe('processRunScheduledReport', () => {
     expect(generateReportMock).not.toHaveBeenCalled();
   });
 
-  it('does not attach a CSV for pdf-format reports (link-only email)', async () => {
-    selectMock.mockReturnValueOnce(selectChain([{ ...report, format: 'pdf' }]));
+  it('attaches a real branded PDF for pdf-format reports (end-to-end Node render, not mocked)', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+
+    await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+
+    expect(loadReportBrandingForOrgMock).toHaveBeenCalledWith(ORG_ID);
+    const mail = sendEmailMock.mock.calls[0]![0] as {
+      attachments: Array<{ filename: string; content: Buffer; contentType?: string }>;
+    };
+    expect(mail.attachments).toHaveLength(1);
+    const attachment = mail.attachments[0]!;
+    expect(attachment.filename).toMatch(/device_inventory-report-.*\.pdf$/);
+    expect(attachment.contentType).toBe('application/pdf');
+    expect(Buffer.isBuffer(attachment.content)).toBe(true);
+    expect(attachment.content.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('does not query branding when there are no valid recipients', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['not-an-email'] } }]),
+    );
+    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
     generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'pc-1' }], rowCount: 1 });
 
     await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
 
-    const mail = sendEmailMock.mock.calls[0]![0] as { attachments: unknown[] };
-    expect(mail.attachments).toHaveLength(0);
+    expect(loadReportBrandingForOrgMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 });
