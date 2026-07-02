@@ -40,6 +40,11 @@ type Session struct {
 	videoTrack      *webrtc.TrackLocalStaticSample
 	dataChannel     *webrtc.DataChannel
 	inputHandler    InputHandler
+	// inputQ decouples input injection from pion's SCTP read goroutine: the
+	// OnMessage callback parses + enqueues (never blocks), and a single worker
+	// (inputWorkerLoop) drains it and calls the blocking HandleEvent. See
+	// finding T4 / Change #9.
+	inputQ          *inputEventQueue
 	capturer        ScreenCapturer
 	encoder         atomic.Pointer[VideoEncoder]
 	encoderPF       PixelFormat // cached encoder input format for CPU Encode() path
@@ -440,6 +445,12 @@ func (s *Session) Stop() {
 
 func (s *Session) doCleanup() {
 	s.cleanupOnce.Do(func() {
+		// Stop accepting input and discard any pending events. The worker has
+		// already exited (Stop waits on wg before doCleanup); this just prevents
+		// a late SCTP push from buffering into a dead queue.
+		if s.inputQ != nil {
+			s.inputQ.close()
+		}
 		if s.audioCapturer != nil {
 			s.audioCapturer.Stop()
 		}

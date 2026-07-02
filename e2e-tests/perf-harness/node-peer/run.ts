@@ -115,6 +115,12 @@ async function main(): Promise<void> {
   const label = env('RD_LABEL', 'node-peer');
   const machine = env('RD_MACHINE', os.hostname());
   const durationSec = Number(env('RD_DURATION_SEC', '30'));
+  // RD_INPUT_HZ: if >0, flood the input data channel with mouse_move events at
+  // this rate (plus periodic key/click bursts) for the run. Load generator to
+  // validate Change #9 — input injection off the SCTP goroutine must not stall
+  // video (skip/drop stays 0). Not a correctness check (right char typed still
+  // needs a human in the viewer); it proves the worker accepts input under load.
+  const inputHz = Number(env('RD_INPUT_HZ', '0'));
   const timestamp = new Date().toISOString();
   const outPath = env(
     'RD_OUTPUT',
@@ -188,6 +194,34 @@ async function main(): Promise<void> {
     setTimeout(sendDriveCmds, 7000);
   };
 
+  // Optional input load generator (Change #9 validation). Sends mouse_move at
+  // inputHz plus a key press + a click every second, in bursts, so the agent's
+  // input worker is exercised concurrently with video capture/encode.
+  let inputSent = 0;
+  if (inputHz > 0) {
+    inputChannel.onopen = () => {
+      const period = Math.max(5, Math.round(1000 / inputHz));
+      let tick = 0;
+      const iv = setInterval(() => {
+        // Sweep the cursor in a small box to force many distinct positions.
+        const x = 200 + (tick % 400);
+        const y = 200 + ((tick * 7) % 300);
+        inputChannel.send(Buffer.from(JSON.stringify({ type: 'mouse_move', x, y })));
+        inputSent++;
+        // Once per ~second, a harmless key tap (shift, no side effects) + a
+        // right-click-free scroll to exercise the never-coalesce path.
+        if (tick % inputHz === 0) {
+          inputChannel.send(Buffer.from(JSON.stringify({ type: 'key_down', key: 'shift' })));
+          inputChannel.send(Buffer.from(JSON.stringify({ type: 'key_up', key: 'shift' })));
+          inputChannel.send(Buffer.from(JSON.stringify({ type: 'mouse_scroll', x, y, delta: 40 })));
+          inputSent += 3;
+        }
+        tick++;
+      }, period);
+      setTimeout(() => clearInterval(iv), durationSec * 1000);
+    };
+  }
+
   // ── Offer / ICE gather / answer (steps 5-7) ──────────────────────────────
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
@@ -248,6 +282,7 @@ async function main(): Promise<void> {
   writeFileSync(outPath, JSON.stringify(result, null, 2));
 
   console.log('\n[node-peer] summary:', JSON.stringify(result.summary, null, 2));
+  if (inputHz > 0) console.log(`[node-peer] input events sent: ${inputSent}`);
   console.log(`[node-peer] wrote ${outPath}`);
 
   // Non-zero exit if the plumbing worked but no frames arrived, so CI/A-B

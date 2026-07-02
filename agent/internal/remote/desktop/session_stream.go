@@ -70,6 +70,12 @@ func (s *Session) startStreaming() {
 			defer observability.Recoverer("desktop.adaptiveLoop")
 			s.adaptiveLoop()
 		}()
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			defer observability.Recoverer("desktop.inputWorkerLoop")
+			s.inputWorkerLoop()
+		}()
 		if s.cursorDC != nil {
 			if cp, ok := s.capturer.(CursorProvider); ok {
 				s.wg.Add(1)

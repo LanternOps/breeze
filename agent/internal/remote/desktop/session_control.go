@@ -132,6 +132,8 @@ func (s *Session) handleInputMessage(data []byte) {
 
 	// Signal the capture loop that the user is active so it exits idle mode
 	// and polls at full speed. This covers mouse_move, key_down, scroll, etc.
+	// Done here on the SCTP goroutine (not the input worker) so the capture loop
+	// wakes immediately regardless of any injection backlog.
 	s.inputActive.Store(true)
 
 	// On mouse down, signal the capture loop to flush the encoder pipeline so
@@ -144,8 +146,38 @@ func (s *Session) handleInputMessage(data []byte) {
 	// 	s.clickFlush.Store(true)
 	// }
 
-	if err := s.inputHandler.HandleEvent(event); err != nil {
-		slog.Warn("Failed to handle input event", "session", s.id, "error", err.Error())
+	// Hand the event to the input worker instead of injecting inline. HandleEvent
+	// does ensureInputDesktop() + blocking SendInput; running it here would stall
+	// pion's SCTP read goroutine (and thus every data channel) whenever an
+	// injection is slow, e.g. during a Winlogon/UAC secure-desktop switch
+	// (finding T4). push() never blocks.
+	if s.inputQ != nil {
+		s.inputQ.push(event)
+	}
+}
+
+// inputWorkerLoop is the single consumer of the input queue. It runs off pion's
+// SCTP read goroutine so a slow HandleEvent (secure-desktop switch, blocking
+// SendInput) can't stall the datachannel read loop. A single worker preserves
+// event ordering. It exits when the session's done channel closes.
+func (s *Session) inputWorkerLoop() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-s.inputQ.notify:
+		}
+		// Drain everything queued before waiting for the next signal — one
+		// wakeup can represent many coalesced pushes.
+		for {
+			ev, ok := s.inputQ.pop()
+			if !ok {
+				break
+			}
+			if err := s.inputHandler.HandleEvent(ev); err != nil {
+				slog.Warn("Failed to handle input event", "session", s.id, "error", err.Error())
+			}
+		}
 	}
 }
 

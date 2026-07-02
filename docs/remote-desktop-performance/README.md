@@ -560,6 +560,71 @@ freeze/skip/drop=0 metrics + the NV12 texture ring were the automated evidence;
 the **human visual pass in the real viewer on the #8 binary confirmed no tearing
 (Kit/AMD, 2026-07-02)** — the residual risk this change carried is retired.
 
+### Change #9 — input injection off the SCTP goroutine (T4) ✅ KEEP
+`input_queue.go` (new `inputEventQueue` + unit tests in `input_queue_test.go`),
+`session_control.go` (`handleInputMessage` enqueues; new `inputWorkerLoop`),
+`session.go` (`inputQ` field, close on cleanup), `session_webrtc.go` (construct
+queue), `session_stream.go` (start worker). Branch
+`ToddHebebrand/rd-perf-change9-input-worker` (stacked on #8).
+
+**Problem:** pion delivers viewer data-channel messages on its **SCTP read
+goroutine**. For the `input` channel that ran `handleInputMessage` inline —
+JSON parse + `ensureInputDesktop()` (desktop syscalls) + **blocking `SendInput`**
+(`input_windows.go`) — all on that goroutine. A slow injection (a Winlogon/UAC
+secure-desktop switch, or `SendInput` blocking) stalls the SCTP read loop, which
+backs up **every** data channel (control, cursor, input) for that peer.
+
+**Fix:** the SCTP callback now does only the cheap, non-blocking work — parse,
+size-check, `inputActive.Store(true)` (so the capture loop still wakes
+immediately, independent of any injection backlog) — then hands the typed event
+to a queue. A **single dedicated worker goroutine** drains the queue and calls
+the blocking `HandleEvent`, so injection latency never touches the SCTP loop. One
+worker preserves event ordering; it's started in `startStreaming` (in `wg`, with
+`observability.Recoverer`) and exits on `s.done`.
+
+**Queue design (why not a plain channel):** a Go channel is FIFO-opaque and can't
+*coalesce*. The queue is a mutex-guarded slice + a cap-1 notify channel:
+- **Coalesce consecutive `mouse_move`s** — a newer absolute position replaces the
+  trailing queued move (a slow injector can't build a backlog of stale cursor
+  positions). Moves separated by a click/key do **not** coalesce (a drag depends
+  on the move that precedes its `mouse_down`).
+- **Never drop keys/clicks/scroll** — those carry irreplaceable intent. A safety
+  cap (1024) only ever drops the *oldest move*; in practice the queue stays
+  near-empty (worker drains in µs).
+- **`push` never blocks the producer**; the worker wakes on the cap-1 signal and
+  drains everything queued per wakeup.
+Unit tests cover FIFO order, coalescing, move-across-click non-coalescing,
+keys/clicks/scroll never coalescing, the safety valve dropping only moves, close
+semantics, notify, and a concurrent producer/consumer run under `-race` (no lost
+keys).
+
+**Measurement.** No harness input-latency metric exists (as the plan flagged), so
+validation is (a) **no video regression** and (b) input still injected. Added an
+`RD_INPUT_HZ` load generator to the node-peer (floods the input channel with
+mouse_move + periodic key/scroll bursts) to exercise the worker concurrently with
+video.
+
+| | Baseline (#8) | Change #9 (no flood) |
+|---|---|---|
+| **Kit / AMF** encodeMs / skip / drop / freeze | ~0.5 / 0 / 0 / 0 | 0.5–1.4 / **0 / 0 / 0** |
+| **Intel / MFT** encodeMs / skip / drop / freeze | ~1–2 / 0 / 0 / 0 | 1.8–2.2 / **0 / 0 / 0**, fps 57 |
+
+Under a 60Hz input flood, **`dropped=0` on both boxes** (no video frames dropped
+for backpressure while injecting concurrently) and the flood had an *observable
+effect on the target* — Kit's bandwidth rose (injected cursor motion changed
+screen content); on Intel the flood moving the cursor/scrolling over the Edge
+kiosk made the motion page static, which shows up as `AcquireNextFrame`
+no-new-frame **skips** (a test-methodology artifact of browser motion, not a
+pipeline regression — the same run with no flood is skip=0). That the target
+visibly reacted is direct evidence the worker injects input end-to-end.
+
+**Outstanding — manual interactive pass:** the automated harness can prove input
+is *accepted and injected without stalling video*, but not that a keystroke types
+the *right* character or that a drag tracks correctly. That correctness check is a
+human interactive pass in the real viewer on both boxes (mouse drag, typing,
+clicks, scroll, Ctrl+Alt+Del) — the analogue of #8's visual pass, folded into the
+end-of-phase ship gate.
+
 ---
 
 ## Finding — Intel UHD 630 MFT stalls → software fallback ✅ FIXED (Change #3)
@@ -574,13 +639,13 @@ Files: `comutil_windows.go`, `mft_windows.go`, `mft_encode_windows.go`.
 
 ## Legs & status
 - **Kit — Radeon RX 590 (AMF), display 2560×1440 @ 144Hz:** enrolled, live, on
-  the **Change #8 binary** (`dev-1782964448`). Motion supply ceiling ~46.6–47 presents/s (Edge
+  the **Change #9 binary** (`dev-1782967071`). Motion supply ceiling ~46.6–47 presents/s (Edge
   compositing — see Change #7); agent delivers the full supply, skip/drop 0/0,
   encodeMs ~0.5. RDMotion on `motion-video.html` (constant). ⚠️ Gotcha:
   PowerShell `Set-ScheduledTask` argument strings with `\"` get truncated —
   use a single-quoted PS string with inner double quotes.
 - **Intel — dell70601 / UHD 630 (MFT), display 1920×1080 @ 59Hz:** enrolled,
-  live, on the **Change #8 binary** (`dev-1782964448`). QuickSync end-to-end with **zero-copy
+  live, on the **Change #9 binary** (`dev-1782967071`). QuickSync end-to-end with **zero-copy
   DXGI input** (encodeMs ~1–2.5ms, 0 downgrades, 0 software-swaps), ~53 fps
   (59Hz panel minus compositor losses).
 - **VM .55 (Hyper-V):** GDI + software OpenH264 only. Not enrolled.
@@ -608,16 +673,14 @@ no measured harm": Kit (AMF) and Intel (MFT) both freeze/skip/drop-clean across
 3× / 6× runs, encodeMs distributions overlapping baseline. AMF-tearing risk is
 invisible to the node-peer and is folded into the end-of-phase visual-pass gate.
 
-### Change #9 — input off the SCTP goroutine (T4)
-`OnMessage` → `handleInputMessage` (`session_control.go:114-150`) does JSON
-parse + `ensureInputDesktop` (desktop syscalls) + blocking `SendInput` user32
-calls (`input_windows.go:530-560`) inline on pion's SCTP read goroutine — a slow
-`SendInput`/secure-desktop switch stalls the datachannel read loop. **Fix:** one
-dedicated input-worker goroutine fed by a bounded channel (single worker
-preserves event ordering). On overflow: coalesce consecutive mousemoves, never
-drop key/click events. **Measurement gap:** harness has no input-latency metric —
-validate via correctness (manual interactive pass on both boxes) + no video
-regression; add an input-echo timestamp to the harness only if cheap.
+### Change #9 — input off the SCTP goroutine (T4) ✅ DONE
+Implemented and measured — see the Change #9 entry in the change log above. One
+dedicated input-worker goroutine drains a mutex-guarded coalescing queue (Go
+channels can't tail-coalesce), fed by the SCTP callback which now only parses +
+enqueues. Coalesces consecutive mouse_moves, never drops keys/clicks/scroll.
+No video regression on either box (skip/drop 0, encodeMs unchanged); `dropped=0`
+under a 60Hz input flood. Outstanding: the human interactive-correctness pass
+(right char typed, drag tracks), folded into the end-of-phase ship gate.
 
 ### Change #10 (optional) — pool encoder output buffers (T2)
 All three backends allocate per output frame (`encoder_amf_windows.go:582`,
@@ -649,23 +712,24 @@ hardware encoding instead of stalling to software.
 **Branches:** Changes #1–#6 merged to `main` via PR #2145 (squash). Stacked
 change branches (each stacked on the previous):
 `ToddHebebrand/rd-perf-change7-capture-pacing` (Change #7 framePacer + harness
-additions) → `ToddHebebrand/rd-perf-change8-remove-capture-flush` (Change #8,
-current).
+additions) → `ToddHebebrand/rd-perf-change8-remove-capture-flush` (Change #8) →
+`ToddHebebrand/rd-perf-change9-input-worker` (Change #9, current).
 
-**Latest:** Change #8 measured and kept (see change log): removed the redundant
-per-frame `Flush` in `CaptureTexture` after a pre-check that confirmed no
-cross-device/shared-handle/deferred-context consumer of `c.gpuTexture` (all
-readers on the same D3D11 device). Kit (AMF) and Intel (MFT) both
-freeze/skip/drop-clean (Kit 3×, Intel 6×); encodeMs distributions overlap the #7
-baseline (Intel swings 1.1–3.5 ms run-to-run, hit 1.1 twice). Win is a
-capture-loop syscall the harness can't time → below visibility by design. **Both
-boxes are now on the Change #8 binary** (`dev-1782964448`), constant video
-motion, skip/drop 0/0. Next per the plan: Change #9 (input off SCTP goroutine),
-rig follow-up (≥60fps-presenting motion source). Human visual pass on the #8
-binary is **done — no tearing on Kit/AMD (2026-07-02)**, so #8's residual risk is
-cleared. Outstanding: end-of-phase visual pass on the *final* squashed binary
-before shipping; live bursty-loss validation of Change #6 when a network shaper
-is available.
+**Latest:** Change #9 measured and kept (see change log): input injection moved
+off pion's SCTP read goroutine onto a single dedicated worker fed by a
+mutex-guarded coalescing queue (coalesces consecutive mouse_moves, never drops
+keys/clicks/scroll, single worker preserves order). Unit-tested (incl. concurrent
+`-race`); no video regression on either box (skip/drop 0, encodeMs unchanged);
+`dropped=0` under a 60Hz input flood, which also observably moved the target
+(proof injection works end-to-end). **Both boxes are now on the Change #9 binary**
+(`dev-1782967071`). #8's AMD-tearing gate was already cleared (visual pass
+2026-07-02). Next per the plan: Change #10 (optional — pool encoder output
+buffers, attempt only with a clean ownership story), rig expansion (VM .55
+GDI/software leg unblocks T3), rig follow-up (>=60fps-presenting motion source).
+Outstanding gates: **human interactive-correctness pass for #9** (right char
+typed, drag tracks, Ctrl+Alt+Del — analogue of #8's visual pass); end-of-phase
+visual pass on the final squashed binary; live bursty-loss validation of Change
+#6 when a network shaper is available.
 
 **To bring the rig back up next session:**
 1. **Stack:** `pnpm wt-stack up` in the worktree. Ports are ephemeral — read

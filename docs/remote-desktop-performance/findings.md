@@ -16,7 +16,7 @@ with final disposition. Ordered by original ranking.
 | T1 | AMF blocks ~16–20ms/frame in sleep-poll under encoder mutex | 2 | ✅ Fixed | #1 |
 | T2 | Per-frame encoder output allocation | 2 | ⬜ Open | planned #10 (optional) |
 | T3 | CRC32 IEEE→Castagnoli on GDI/software path | 2 | ⬜ Open | planned (after VM leg enrolled) |
-| T4 | Input handled inline on the SCTP goroutine | 2 | ⬜ Open | planned #9 |
+| T4 | Input handled inline on the SCTP goroutine | 2 | ✅ Fixed | #9 |
 | T5 | Redundant per-frame `Flush` in `CaptureTexture` | 2 | ✅ Fixed | #8 |
 | F1 | Delivered fps caps at ~48–50, not 60 (capture/display pacing, exposed by #1) | Follow-up | ✅ Resolved (root cause revised) | #7 — cap is the motion-source present rate, not the loop; #7 fixes the loop's real defects (exact-target pacing, coalescing recovery) |
 
@@ -105,6 +105,36 @@ Two distinctions worth remembering:
    3-run baseline sampled the low end. `encodeMs` is the *encoder* timer anyway;
    a *capture-loop* flush can't systematically move it. A 3× sample is enough for
    a stable metric (Kit AMF ~0.5) but too thin for a wide-variance one.
+
+### Input off the SCTP goroutine (Change #9) — decouple, coalesce, never lose intent
+
+pion delivers datachannel messages on its SCTP read goroutine; the `input`
+channel ran `handleInputMessage` (JSON parse + `ensureInputDesktop` +
+**blocking `SendInput`**) inline there, so a slow injection (secure-desktop
+switch) stalled the read loop and every channel behind it. Fix: SCTP callback
+parses + enqueues (non-blocking) and sets `inputActive` for the capture loop; a
+single worker goroutine drains the queue and does the blocking inject.
+
+Design notes worth keeping:
+- **A plain Go channel can't coalesce.** To collapse a run of `mouse_move`s to
+  the latest position you must be able to inspect/replace the tail — so the queue
+  is a mutex-guarded slice + a cap-1 notify channel, not `chan InputEvent`.
+  "Bounded" is a safety cap that only ever drops the *oldest move*.
+- **Coalesce moves, never keys/clicks/scroll.** Moves are absolute-position, so a
+  newer one supersedes an older queued one — but only if they're *adjacent*; a
+  move before a `mouse_down` must survive (drag correctness). Keys/clicks/scroll
+  carry irreplaceable intent and are never merged or dropped.
+- **Single worker preserves ordering** (a second worker could inject a `key_up`
+  before its `key_down`).
+- **`inputActive` stays on the SCTP side**, not the worker — the capture loop
+  must wake immediately even if injection is backlogged.
+
+Validation lesson: there's no input-latency metric, so an `RD_INPUT_HZ` flood was
+added to prove (a) no video regression and (b) input is injected. The flood
+*disturbing the browser motion source* (cursor over the Edge kiosk → static page
+→ `AcquireNextFrame` skips) is a harness artifact, not a regression — but it
+doubles as proof the injection reached the target. Interactive *correctness*
+(right char, drag tracks) still needs a human in the viewer.
 
 ## Detail — deliberately skipped
 
