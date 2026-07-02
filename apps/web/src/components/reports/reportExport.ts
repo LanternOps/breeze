@@ -1,4 +1,4 @@
-import type { PostureSummary } from '@breeze/shared';
+import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
@@ -60,7 +60,7 @@ export async function exportReport(
     format: 'csv' | 'pdf' | 'excel';
     reportType: string;
     timezone: string;
-    summary?: PostureSummary;
+    summary?: PostureSummary | ExecutiveSummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */
     previous?: { generatedAt?: string | null; summary?: unknown };

@@ -24,7 +24,8 @@ describe('previousBaselineFor', () => {
     m.mockReturnValueOnce(
       selectChain([
         {
-          result: { summary: { postureScore: 74 }, generatedAt: '2026-06-01T09:00:00Z' },
+          summary: { postureScore: 74 },
+          generatedAt: '2026-06-01T09:00:00Z',
           completedAt: new Date('2026-06-01T09:05:00Z'),
         },
       ]),
@@ -40,7 +41,8 @@ describe('previousBaselineFor', () => {
     m.mockReturnValueOnce(
       selectChain([
         {
-          result: { summary: { postureScore: 74 } },
+          summary: { postureScore: 74 },
+          generatedAt: null,
           completedAt: new Date('2026-06-01T09:05:00Z'),
         },
       ]),
@@ -64,7 +66,7 @@ describe('previousBaselineFor', () => {
     const m = vi.mocked(db.select);
     m.mockReturnValueOnce(
       selectChain([
-        { result: { rows: [{ hostname: 'PC-1' }] }, completedAt: new Date('2026-06-01T09:05:00Z') },
+        { summary: null, generatedAt: null, completedAt: new Date('2026-06-01T09:05:00Z') },
       ]),
     );
 
@@ -75,10 +77,26 @@ describe('previousBaselineFor', () => {
 
   it('returns undefined when the prior run has no result at all', async () => {
     const m = vi.mocked(db.select);
-    m.mockReturnValueOnce(selectChain([{ result: null, completedAt: new Date('2026-06-01T09:05:00Z') }]));
+    m.mockReturnValueOnce(
+      selectChain([{ summary: null, generatedAt: null, completedAt: new Date('2026-06-01T09:05:00Z') }]),
+    );
 
     const previous = await previousBaselineFor(REPORT_ID);
 
     expect(previous).toBeUndefined();
+  });
+
+  it('returns undefined (not a throw) when the select fails', async () => {
+    const m = vi.mocked(db.select);
+    m.mockImplementationOnce(() => {
+      throw new Error('connection reset');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const previous = await previousBaselineFor(REPORT_ID);
+
+    expect(previous).toBeUndefined();
+    expect(consoleError).toHaveBeenCalledWith('[reports] previous-baseline lookup failed', expect.any(Error));
+    consoleError.mockRestore();
   });
 });

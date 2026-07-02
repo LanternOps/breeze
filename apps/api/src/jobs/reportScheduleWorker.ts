@@ -38,6 +38,7 @@ import {
   type ScheduleConfig,
 } from '@breeze/shared';
 import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
+import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { loadReportBrandingForOrg } from '../services/reportBranding';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -220,13 +221,18 @@ async function emailReportRun(opts: {
         reportType: opts.reportType,
         generatedAt,
         timezone: opts.timezone,
-        summary: opts.summary as never,
+        summary: opts.summary as PostureSummary | ExecutiveSummary | undefined,
         previous: opts.previous,
         branding: opts.branding,
       });
       const content = Buffer.from(doc.output('arraybuffer'));
       if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
         attachments.push({ filename: `${opts.reportType}-report-${dateStr}.pdf`, content, contentType: 'application/pdf' });
+      } else {
+        console.warn('[ReportScheduleWorker] Attachment exceeds 5MB; sending link-only', {
+          reportName: opts.reportName,
+          bytes: content.byteLength,
+        });
       }
     } catch (err) {
       // A render failure must not block delivery — fall back to the link-only email.
@@ -237,6 +243,11 @@ async function emailReportRun(opts: {
     const content = Buffer.from(csv, 'utf8');
     if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
       attachments.push({ filename: `${opts.reportType}-report-${dateStr}.csv`, content, contentType: 'text/csv' });
+    } else {
+      console.warn('[ReportScheduleWorker] Attachment exceeds 5MB; sending link-only', {
+        reportName: opts.reportName,
+        bytes: content.byteLength,
+      });
     }
   }
 
@@ -282,14 +293,6 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
 
   const config = (report.config ?? {}) as Record<string, unknown>;
 
-  const [tzRow] = await db
-    .select({ orgSettings: organizations.settings, partnerTimezone: partners.timezone, partnerSettings: partners.settings })
-    .from(organizations)
-    .leftJoin(partners, eq(organizations.partnerId, partners.id))
-    .where(eq(organizations.id, report.orgId))
-    .limit(1);
-  const timeZone = timezoneFor(tzRow?.orgSettings ?? null, tzRow?.partnerTimezone ?? null, tzRow?.partnerSettings ?? null);
-
   const [run] = await db
     .insert(reportRuns)
     .values({ reportId: report.id, status: 'running', startedAt: new Date() })
@@ -325,6 +328,23 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
     const recipients = recipientsOf(config);
     if (recipients.length > 0) {
       try {
+        // Timezone + branding are only needed to build the email — deferred
+        // here (rather than fetched unconditionally for every run) so a
+        // transient failure in either lookup can't sink a no-recipient run's
+        // occurrence-keyed job (a failed job blocks re-enqueue of that
+        // occurrence, and by this point the run row is already stored).
+        const [tzRow] = await db
+          .select({ orgSettings: organizations.settings, partnerTimezone: partners.timezone, partnerSettings: partners.settings })
+          .from(organizations)
+          .leftJoin(partners, eq(organizations.partnerId, partners.id))
+          .where(eq(organizations.id, report.orgId))
+          .limit(1);
+        const timeZone = timezoneFor(tzRow?.orgSettings ?? null, tzRow?.partnerTimezone ?? null, tzRow?.partnerSettings ?? null);
+        const branding = await loadReportBrandingForOrg(report.orgId).catch((err) => {
+          console.error('[ReportScheduleWorker] Branding load failed; sending unbranded:', err);
+          return { name: null, logoDataUrl: null, logoAspect: null };
+        });
+
         await emailReportRun({
           reportName: report.name,
           reportType: report.type,
@@ -335,7 +355,7 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
           previous: result.previous,
           trendLine: trendLineOf(result),
           timezone: timeZone,
-          branding: await loadReportBrandingForOrg(report.orgId),
+          branding,
         });
       } catch (err) {
         // Delivery failure must not fail the (already stored) run.

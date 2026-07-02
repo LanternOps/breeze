@@ -37,9 +37,25 @@ describe('report config schema', () => {
     expect(() =>
       createReportSchema.parse({
         name: 'x', type: 'compliance',
+        config: { emailRecipients: ['a@b'] },
+      })
+    ).toThrow();
+    expect(() =>
+      createReportSchema.parse({
+        name: 'x', type: 'compliance',
         config: { schedule: { time: '25:99' } },
       })
     ).toThrow();
+  });
+
+  // Same loose chip regex as ReportBuilder/recipientsOf — persistence must
+  // never reject what the builder already accepted as a chip.
+  it('accepts a unicode-local-part address, matching the builder chip validator', () => {
+    const parsed = createReportSchema.parse({
+      name: 'x', type: 'compliance',
+      config: { emailRecipients: ['jörg@example.com'] },
+    });
+    expect(parsed.config.emailRecipients).toEqual(['jörg@example.com']);
   });
 
   it('validates config on update too (was z.any())', () => {
@@ -48,5 +64,16 @@ describe('report config schema', () => {
     ).toThrow();
     const ok = updateReportSchema.parse({ config: builderConfig });
     expect(ok.config?.emailRecipients).toHaveLength(2);
+  });
+
+  it('coerces a legacy numeric schedule.date to string on both create and update', () => {
+    const created = createReportSchema.parse({
+      name: 'x', type: 'compliance',
+      config: { schedule: { date: 1 } },
+    });
+    expect(created.config.schedule).toEqual({ date: '1' });
+
+    const updated = updateReportSchema.parse({ config: { schedule: { date: 1 } } });
+    expect(updated.config?.schedule).toEqual({ date: '1' });
   });
 });

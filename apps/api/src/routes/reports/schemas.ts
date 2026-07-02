@@ -48,8 +48,10 @@ const reportScheduleDetailSchema = z.object({
   time: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(),
   // weekday name; the worker lowercases, so accept any case
   day: z.string().max(16).optional(),
-  // day-of-month "1".."31" as string (builder sends strings)
-  date: z.string().regex(/^([1-9]|[12]\d|3[01])$/).optional()
+  // day-of-month "1".."31" as string (builder sends strings). z.coerce
+  // tolerates legacy rows written while update used z.any() — some were
+  // persisted with a numeric `date` — so editing them doesn't 400.
+  date: z.coerce.string().regex(/^([1-9]|[12]\d|3[01])$/).optional()
 });
 
 const reportConfigFields = {
@@ -70,7 +72,12 @@ const reportConfigFields = {
   sortBy: z.string().optional(),
   sortOrder: z.enum(['asc', 'desc']).optional(),
   schedule: reportScheduleDetailSchema.optional(),
-  emailRecipients: z.array(z.string().email().max(254)).max(50).optional(),
+  // Deliberately the SAME loose regex as ReportBuilder's chip-validation
+  // (apps/web/src/components/reports/ReportBuilder.tsx) and the worker's
+  // recipientsOf (apps/api/src/jobs/reportScheduleWorker.ts) — z.string().email()
+  // is stricter than both, so persistence must never reject what the builder
+  // already accepted as a chip.
+  emailRecipients: z.array(z.string().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).max(254)).max(50).optional(),
   ...securityCompliancePostureConfigFields
 };
 

@@ -310,7 +310,8 @@ describe('processRunScheduledReport', () => {
 
   it('marks the run failed (and still stamps lastGeneratedAt) when generation throws', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
-    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
+    // No org/partner timezone select here: generateReport throws before the
+    // recipients branch (where the tz lookup now lives) is ever reached.
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     const updates = [updateChain(), updateChain()];
     updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
@@ -438,7 +439,9 @@ describe('processRunScheduledReport', () => {
     selectMock.mockReturnValueOnce(
       selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['not-an-email'] } }]),
     );
-    selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
+    // No org/partner timezone select here either: with zero valid recipients
+    // the recipients branch (where both the tz lookup and branding load now
+    // live) never runs.
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
     generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'pc-1' }], rowCount: 1 });
@@ -447,5 +450,64 @@ describe('processRunScheduledReport', () => {
 
     expect(loadReportBrandingForOrgMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('still emails (unbranded) when the branding load throws', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+    loadReportBrandingForOrgMock.mockRejectedValueOnce(new Error('branding query failed'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Branding load failed; sending unbranded'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    // A branding lookup failure must not drop the whole email — it still
+    // goes out (unbranded), same as a PDF render failure degrading to link-only.
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const mail = sendEmailMock.mock.calls[0]![0] as { attachments: Array<{ filename: string }> };
+    expect(mail.attachments).toHaveLength(1);
+    expect(mail.attachments[0]!.filename).toMatch(/device_inventory-report-.*\.csv/);
+  });
+
+  it('warns when an attachment exceeds 5MB and sends link-only', async () => {
+    const bigHostname = 'x'.repeat(6 * 1024 * 1024);
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: bigHostname }], rowCount: 1 });
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('Attachment exceeds 5MB; sending link-only'),
+        expect.objectContaining({ reportName: report.name, bytes: expect.any(Number) }),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const mail = sendEmailMock.mock.calls[0]![0] as { attachments: unknown[] };
+    expect(mail.attachments).toHaveLength(0);
   });
 });

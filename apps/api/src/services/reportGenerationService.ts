@@ -36,20 +36,34 @@ export type ReportResult = {
 };
 
 /** Baseline from the most recent completed run of this report, if it captured
- * a summary. Call BEFORE marking the new run completed. */
+ * a summary. Call BEFORE marking the new run completed.
+ *
+ * Projects only `result->summary` / `result->>generatedAt` instead of the full
+ * `result` JSONB (which can be many MB — it includes every row) and never
+ * throws: this sits in the success path of both generation call sites, so a
+ * lookup failure must degrade to "no baseline" rather than fail an otherwise
+ * good run. */
 export async function previousBaselineFor(reportId: string): Promise<ReportResult['previous']> {
-  const [prior] = await db
-    .select({ result: reportRuns.result, completedAt: reportRuns.completedAt })
-    .from(reportRuns)
-    .where(and(eq(reportRuns.reportId, reportId), eq(reportRuns.status, 'completed')))
-    .orderBy(desc(reportRuns.completedAt))
-    .limit(1);
-  const priorResult = prior?.result as ReportResult | null | undefined;
-  if (!priorResult?.summary || typeof priorResult.summary !== 'object') return undefined;
-  return {
-    generatedAt: priorResult.generatedAt ?? prior?.completedAt?.toISOString() ?? null,
-    summary: priorResult.summary,
-  };
+  try {
+    const [prior] = await db
+      .select({
+        summary: sql<Record<string, unknown> | null>`${reportRuns.result}->'summary'`,
+        generatedAt: sql<string | null>`${reportRuns.result}->>'generatedAt'`,
+        completedAt: reportRuns.completedAt,
+      })
+      .from(reportRuns)
+      .where(and(eq(reportRuns.reportId, reportId), eq(reportRuns.status, 'completed')))
+      .orderBy(desc(reportRuns.completedAt))
+      .limit(1);
+    if (!prior?.summary || typeof prior.summary !== 'object') return undefined;
+    return {
+      generatedAt: prior.generatedAt ?? prior.completedAt?.toISOString() ?? null,
+      summary: prior.summary,
+    };
+  } catch (err) {
+    console.error('[reports] previous-baseline lookup failed', err);
+    return undefined;
+  }
 }
 
 export async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {

@@ -18,7 +18,13 @@ import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { nextOccurrence, formatNextOccurrence, type ScheduleCadence, type ScheduleConfig } from '@breeze/shared';
+import {
+  nextOccurrence,
+  formatNextOccurrence,
+  type ScheduleCadence,
+  type ScheduleConfig,
+  type ExecutiveSummary
+} from '@breeze/shared';
 
 export type ReportType =
   | 'device_inventory'
@@ -245,7 +251,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           timezone: effectiveTimezone,
           // The posture and executive-summary covers consume this snapshot to
           // render their designed cover pages; ignored by other report types.
-          summary: data?.summary as PostureSummary | undefined,
+          summary: data?.summary as PostureSummary | ExecutiveSummary | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.
           previous: data?.previous,

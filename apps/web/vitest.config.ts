@@ -8,9 +8,13 @@ export default defineConfig({
       // Mirrors the `@breeze/shared` path in apps/web/tsconfig.json so vitest
       // can resolve workspace imports without a build step. Required for
       // testing any component that imports from `@breeze/shared`.
-      // Subpath exports (e.g. `/reportPdf`) need their own alias entry —
-      // Vite's object-form `resolve.alias` only does exact-string matching,
-      // it does not prefix-match `@breeze/shared` onto `@breeze/shared/*`.
+      // Subpath exports (e.g. `/reportPdf`) need their own alias entry, listed
+      // BEFORE the bare `@breeze/shared` entry below. Vite's object-form
+      // `resolve.alias` does prefix-match (it checks whether the import path
+      // starts with `key + '/'`), so alias order matters: if the bare
+      // `@breeze/shared` entry came first, it would win the prefix match on
+      // `@breeze/shared/reportPdf` and resolve it to the package root instead
+      // of the reportPdf subpath — the more specific alias must be listed first.
       '@breeze/shared/reportPdf': fileURLToPath(
         new URL('../../packages/shared/src/reportPdf/index.ts', import.meta.url)
       ),
