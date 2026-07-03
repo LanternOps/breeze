@@ -42,16 +42,30 @@ export default function SsoProvidersPage() {
       setLoading(true);
       setError(undefined);
 
+      // Track fetch failures separately from rows: a partial failure must still
+      // render whatever loaded AND surface the error — never silently swallow it.
+      let hadError = false;
+
       const response = await fetchWithAuth('/sso/providers');
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
         return;
       }
-      const orgProviders: SsoProvider[] = response.ok ? (await response.json()).data ?? [] : [];
+      let orgProviders: SsoProvider[] = [];
+      if (response.ok) {
+        orgProviders = (await response.json()).data ?? [];
+      } else if (isPartnerScope && response.status === 400) {
+        // Expected: a partner viewer with no single-org context can't resolve an
+        // org for the org-scoped list (API returns 400 "Organization ID
+        // required"). Their partner-wide providers still load below — not an
+        // error worth surfacing. Any OTHER non-ok status is a real failure.
+      } else {
+        hadError = true;
+      }
 
       // Also pull partner-wide providers for partner-scope viewers and merge
       // them in (deduped by id). Additive: a failure here must not wipe the
-      // org list, and vice-versa.
+      // org list, and vice-versa — but it MUST surface, not vanish.
       let partnerProviders: SsoProvider[] = [];
       if (isPartnerScope) {
         const partnerRes = await fetchWithAuth('/sso/providers?scope=partner');
@@ -61,16 +75,18 @@ export default function SsoProvidersPage() {
         }
         if (partnerRes.ok) {
           partnerProviders = (await partnerRes.json()).data ?? [];
+        } else {
+          hadError = true;
         }
-      }
-
-      if (!response.ok && partnerProviders.length === 0) {
-        throw new Error('Failed to fetch SSO providers');
       }
 
       const byId = new Map<string, SsoProvider>();
       for (const p of [...orgProviders, ...partnerProviders]) byId.set(p.id, p);
       setProviders(Array.from(byId.values()));
+
+      if (hadError) {
+        setError('Failed to fetch SSO providers');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
