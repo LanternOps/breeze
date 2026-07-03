@@ -6,8 +6,10 @@
 -- install "succeeded" but the device never appeared in the portal. The CLI path
 -- was unaffected because it mints a genuinely multi-use enrollment key.
 --
--- max_usage already existed on the token but was never consulted. Add an
--- explicit consumed_count so redemption can allow up to max_usage redemptions
+-- max_usage already existed on the token but was only ever copied onto the
+-- minted child key (governing that one key's fan-out), never consulted to gate
+-- how many times the token itself could be redeemed. Add an explicit
+-- consumed_count so redemption can allow up to max_usage redemptions
 -- (one fresh single-use child enrollment key minted per redemption). A token
 -- with max_usage = 1 keeps its exact prior single-use behavior.
 ALTER TABLE installer_bootstrap_tokens

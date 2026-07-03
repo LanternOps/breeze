@@ -10,15 +10,19 @@ import { organizations, sites, enrollmentKeys } from "./orgs";
 import { users } from "./users";
 
 /**
- * Single-use, short-TTL token issued at installer-download time. The token
- * is delivered inside the macOS installer zip payload and exchanged for
- * enrollment values on first launch via POST `/api/v1/installer/bootstrap`.
- * Legacy raw enrollment-key query tokens are not accepted by public installer
- * downloads; callers must use the short-lived handle flow.
+ * Short-TTL token issued at installer-download time, redeemable up to
+ * max_usage times (once per device that installs the same downloaded
+ * installer — see consumed_count). The token is delivered inside the platform
+ * installer (macOS zip payload, or embedded in the Windows MSI download
+ * filename) and exchanged for enrollment values on first launch via POST
+ * `/api/v1/installer/bootstrap`. Legacy raw enrollment-key query tokens are
+ * not accepted by public installer downloads; callers must use the
+ * short-lived handle flow.
  *
  * Stored as plain text (not hashed) intentionally: tokens are ephemeral
- * (24h max), single-use, and hashing adds ceremony without a meaningful
- * security win for this lifetime. Compare by equality.
+ * (24h max) and hashing adds ceremony without a meaningful security win for
+ * this lifetime. Compare by equality. Note a leaked token is worth up to
+ * max_usage enrollments, so keep the TTL short and the max_usage bounded.
  */
 export const installerBootstrapTokens = pgTable(
   "installer_bootstrap_tokens",

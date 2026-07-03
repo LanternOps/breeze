@@ -241,6 +241,78 @@ describe("POST /api/v1/installer/bootstrap", () => {
     ).toBe(1);
   });
 
+  it("lost race / exhausted-on-consume: deletes the pre-inserted child key and 404s", async () => {
+    // Token passes the pre-read guard (consumed_count < max_usage) and expiry,
+    // so redemption reaches the atomic consume UPDATE — but that UPDATE returns
+    // no row (a concurrent redemption took the last slot first). The child key
+    // inserted just before must be cleaned up, and the response must be 404.
+    const tokenRow = {
+      id: "t9",
+      token: "GGGGGGGGGG",
+      orgId: "o1",
+      parentEnrollmentKeyId: "pk1",
+      siteId: "s1",
+      maxUsage: 2,
+      consumedCount: 1,
+      createdBy: "u1",
+      consumedAt: new Date(Date.now() - 5_000),
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    const parentKey = {
+      id: "pk1",
+      name: "Acme parent",
+      orgId: "o1",
+      siteId: "s1",
+      keySecretHash: "parent-secret-hash",
+      expiresAt: new Date(Date.now() + 60_000 * 60),
+    };
+
+    // Select order: (1) token row, (2) parent key. Org select is never reached.
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([tokenRow]) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+        }),
+      } as any);
+
+    // INSERT child key returns an id we expect to see deleted.
+    vi.mocked(db.insert).mockReturnValue({
+      values: () => ({
+        returning: () =>
+          Promise.resolve([{ id: "ck9", orgId: "o1", siteId: "s1" }]),
+      }),
+    } as any);
+
+    // Atomic consume UPDATE loses the race → returns no row.
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({
+        where: () => ({ returning: () => Promise.resolve([]) }),
+      }),
+    } as any);
+
+    // Capture the compensating DELETE.
+    let deleteCalled = false;
+    vi.mocked(db.delete).mockReturnValue({
+      where: () => {
+        deleteCalled = true;
+        return Promise.resolve([]);
+      },
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": "GGGGGGGGGG" },
+    });
+    expect(res.status).toBe(404);
+    expect(deleteCalled).toBe(true);
+  });
+
   it("propagates installer_platform from token to child enrollment key", async () => {
     process.env.PUBLIC_API_URL = "https://us.2breeze.app";
     process.env.AGENT_ENROLLMENT_SECRET = "shared-secret-test";

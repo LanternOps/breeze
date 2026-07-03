@@ -37,7 +37,8 @@ function generateChildEnrollmentKey(): string {
 
 /**
  * Returns a short SHA-256 hash of a sensitive token for log correlation.
- * Never log raw bootstrap tokens — they grant single-use enrollment.
+ * Never log raw bootstrap tokens — they grant device enrollment up to the
+ * token's max_usage times, so a leaked token is worth that many enrollments.
  */
 function hashTokenForLog(token: string): string {
   return createHash("sha256").update(token).digest("hex").slice(0, 16);
@@ -157,7 +158,7 @@ async function redeemBootstrapToken(c: Context, token: string) {
       return null;
     }
 
-    // ── 3. INSERT child key BEFORE consuming the token (C1 reorder) ──
+    // ── 3. INSERT child key BEFORE recording the redemption (C1 reorder) ──
     // If the consume UPDATE loses a race, we'll DELETE this row below.
     const rawChildKey = generateChildEnrollmentKey();
     const childKeyHash = hashEnrollmentKey(rawChildKey);
@@ -214,12 +215,29 @@ async function redeemBootstrapToken(c: Context, token: string) {
         ip,
       });
       if (childKey) {
+        // Safe to leave unchecked ONLY because this DELETE shares the redeem
+        // transaction with the INSERT above: a throw rolls both back (no
+        // orphan), and a 0-row delete is impossible (we just inserted the id).
+        // If the child INSERT is ever moved to its own transaction, this must
+        // become a checked/logged delete or it silently leaks enrollment keys.
         await db
           .delete(enrollmentKeys)
           .where(eq(enrollmentKeys.id, childKey.id));
       }
       return null;
     }
+
+    // Success audit: consumed_at/consumed_from_ip on the token row only retain
+    // the LAST redeemer, so record each redemption's IP + running count here —
+    // this is the only per-device forensic trail for a multi-use token.
+    console.log("[installer] bootstrap redeemed", {
+      reason: "redeemed",
+      tokenId: row.id,
+      consumedCount: updated.consumedCount,
+      maxUsage: row.maxUsage,
+      childKeyId: childKey?.id,
+      ip,
+    });
 
     // ── 5. Fetch org name for response ────────────────────────────────
     const [org] = await db
