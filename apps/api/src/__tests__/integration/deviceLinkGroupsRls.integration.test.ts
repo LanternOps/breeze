@@ -189,6 +189,50 @@ describe('device link-group dissolution', () => {
     expect(survivor[0]?.linkGroupId).toBeNull();
   });
 
+  runDb('org flip on a linked device requires unlinking first, then dissolves the orphan (move-org contract)', async () => {
+    const { orgA, orgB, deviceA1, deviceA2 } = await seed();
+
+    const groupId = await withSystemDbAccessContext(async () => {
+      const [group] = await db
+        .insert(deviceLinkGroups)
+        .values({ orgId: orgA.id, name: 'move-org-test' })
+        .returning({ id: deviceLinkGroups.id });
+      await db.update(devices).set({ linkGroupId: group!.id }).where(eq(devices.id, deviceA1.id));
+      await db.update(devices).set({ linkGroupId: group!.id }).where(eq(devices.id, deviceA2.id));
+      return group!.id;
+    });
+
+    // Flipping org_id while still linked violates the composite FK — this is
+    // exactly why moveOrg nulls link_group_id in the same UPDATE.
+    let caught: unknown;
+    try {
+      await withSystemDbAccessContext(() =>
+        db.update(devices).set({ orgId: orgB.id }).where(eq(devices.id, deviceA1.id)),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { cause?: { code?: string } } | undefined)?.cause?.code).toBe('23503');
+
+    // Unlink + flip in one shot (as moveOrg does), then dissolve the orphan.
+    await withSystemDbAccessContext(async () => {
+      await db
+        .update(devices)
+        .set({ orgId: orgB.id, linkGroupId: null })
+        .where(eq(devices.id, deviceA1.id));
+      await dissolveLinkGroupIfBelowMinimum(db, groupId);
+    });
+
+    const group = await withSystemDbAccessContext(() =>
+      db.select({ id: deviceLinkGroups.id }).from(deviceLinkGroups).where(eq(deviceLinkGroups.id, groupId)),
+    );
+    expect(group).toHaveLength(0);
+    const survivor = await withSystemDbAccessContext(() =>
+      db.select({ linkGroupId: devices.linkGroupId }).from(devices).where(eq(devices.id, deviceA2.id)),
+    );
+    expect(survivor[0]?.linkGroupId).toBeNull();
+  });
+
   runDb('deleteLinkGroup unlinks every member and removes the group row', async () => {
     const { orgA, deviceA1, deviceA2 } = await seed();
 

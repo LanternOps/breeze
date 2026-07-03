@@ -50,6 +50,15 @@ describe('DeviceLinkedProfilesTab', () => {
     expect(screen.queryByTestId('linked-profiles-conflict')).not.toBeInTheDocument();
   });
 
+  it('shows an access-denied state (no Retry) on a 403', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      { ok: false, status: 403, json: vi.fn().mockResolvedValue({}) } as unknown as Response,
+    );
+    render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
+    await waitFor(() => expect(screen.getByTestId('linked-profiles-denied')).toBeInTheDocument());
+    expect(screen.queryByText('Retry')).not.toBeInTheDocument();
+  });
+
   it('flags a conflict when more than one profile is online', async () => {
     fetchWithAuthMock.mockResolvedValue(
       jsonResponse({

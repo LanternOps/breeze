@@ -35,18 +35,31 @@ function formatLastSeen(iso: string | null): string {
 export default function DeviceLinkedProfilesTab({ deviceId }: { deviceId: string }) {
   const [data, setData] = useState<LinkGroupResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  // 'none' = ok, 'denied' = 403 (a Retry can never succeed), 'other' = a
+  // transient/5xx failure worth retrying.
+  const [errorKind, setErrorKind] = useState<'none' | 'denied' | 'other'>('none');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError(false);
+    setErrorKind('none');
     try {
       const res = await fetchWithAuth(`/devices/${deviceId}/link-group`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (res.status === 403) {
+        setErrorKind('denied');
+        return;
+      }
+      if (!res.ok) {
+        // Observability: a persistent 5xx on this panel should be visible in
+        // the console rather than collapsing into a silent boolean.
+        console.error(`Failed to load linked profiles for ${deviceId}: HTTP ${res.status}`);
+        setErrorKind('other');
+        return;
+      }
       setData((await res.json()) as LinkGroupResponse);
-    } catch {
-      setError(true);
+    } catch (err) {
+      console.error(`Failed to load linked profiles for ${deviceId}:`, err);
+      setErrorKind('other');
     } finally {
       setLoading(false);
     }
@@ -104,7 +117,17 @@ export default function DeviceLinkedProfilesTab({ deviceId }: { deviceId: string
     return <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">Loading linked profiles…</div>;
   }
 
-  if (error) {
+  if (errorKind === 'denied') {
+    return (
+      <div className="rounded-lg border bg-card p-6" data-testid="linked-profiles-denied">
+        <p className="text-sm text-muted-foreground">
+          You don&apos;t have access to this device&apos;s linked profiles.
+        </p>
+      </div>
+    );
+  }
+
+  if (errorKind === 'other') {
     return (
       <div className="rounded-lg border bg-card p-6" data-testid="linked-profiles-error">
         <p className="text-sm text-destructive">Could not load linked profiles.</p>
