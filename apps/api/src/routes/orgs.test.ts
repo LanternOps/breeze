@@ -94,7 +94,9 @@ vi.mock('../db/schema', () => ({
   // inArray was called against the sites.id column specifically.
   sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
   // GET /orgs/sites enriches each site with a grouped device count (#1790).
-  devices: { siteId: { __column: 'devices.siteId' } }
+  devices: { siteId: { __column: 'devices.siteId' } },
+  // Agent version pins (issue #2124) validate against this table at save time.
+  agentVersions: { id: {}, component: {}, version: {} }
 }));
 
 // Spy on inArray so the site-allowlist test can assert the GET /orgs/sites
@@ -1393,6 +1395,137 @@ describe('org routes', () => {
       expect(db.update).toHaveBeenCalled();
     });
 
+    // issue #2124: an agent/watchdog version pin must reference a registered
+    // agent_versions row. The default db.select mock resolves [] (no matching
+    // version), so an unknown pin is rejected before any DB write.
+    it('rejects an unknown agent version pin with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // A clean select chain resolving [] (no matching registered version). Set
+      // explicitly so a prior test's leaked db.select mock can't perturb this.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { agentVersionPins: { agent: '9.9.9' } } } })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('9.9.9');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-object agentVersionPins with 400 (z.any() settings blob has no structural guard)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // A string reaches the handler because org `settings` is z.any(); the
+      // explicit validator must reject it rather than iterate a non-object.
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { agentVersionPins: 'latest' } } })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/agentVersionPins must be an object/i);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the SECOND component is unknown even though the first is valid', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // agent '0.88.0' resolves (row found), watchdog '9.9.9' does not ([]) — the
+      // loop must reject the second, not stop at the first valid one.
+      const limit = vi.fn().mockResolvedValueOnce([{ id: 'ver-1' }]).mockResolvedValue([]);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit }) })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { agentVersionPins: { agent: '0.88.0', watchdog: '9.9.9' } } } })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('9.9.9');
+      expect(body.error).toMatch(/watchdog/i);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // A single select mock that serves BOTH seams the accept path hits:
+    //  - validateAgentVersionPins uses `.where().limit()` → `pinRows`
+    //  - assertNotLocked uses `.where().then(rows => rows[0])` → an org row that
+    //    carries partnerId + settings (one row satisfies its org & partner reads)
+    function primeAcceptSelect(pinRows: unknown[], partnerSettings: Record<string, unknown> = {}) {
+      const whereRet: any = Promise.resolve([{ partnerId: 'partner-123', settings: partnerSettings }]);
+      whereRet.limit = vi.fn().mockResolvedValue(pinRows);
+      whereRet.orderBy = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(whereRet) })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }])
+          })
+        })
+      } as any);
+    }
+
+    it('accepts a registered agent version pin (200)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([{ id: 'ver-1' }]); // agentVersions lookup finds the pin
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { agentVersionPins: { agent: '0.88.0' } } } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('accepts the "latest" sentinel pin without a registry lookup (200)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // pinRows is irrelevant: 'latest' normalizes to null so no lookup happens.
+      primeAcceptSelect([]);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { agentVersionPins: { agent: 'latest', watchdog: 'latest' } } } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('lets an org override a partner-set pin — agentVersionPins is exempt from assertNotLocked (200)', async () => {
+      // Partner has pinned agent for all its orgs. Under a lock model this org
+      // PATCH would 403; under inherit-with-override the org may still pin its
+      // OWN version, so assertNotLocked must NOT block agentVersionPins.
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([{ id: 'ver-1' }], { defaults: { agentVersionPins: { agent: '0.87.0' } } });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { agentVersionPins: { agent: '0.88.0' } } } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
     it('should allow system scope updates without partnerId context', async () => {
       setAuthContext({ scope: 'system', partnerId: null });
       vi.mocked(db.update).mockReturnValue({
@@ -2265,6 +2398,25 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    // issue #2124: a partner-locked pin can freeze every child org's fleet, so an
+    // unknown version is rejected at save time (before the partner row is even
+    // fetched). Default db.select resolves [] → no matching agent_versions row.
+    it('rejects an unknown watchdog version pin on the partner defaults with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: { defaults: { agentVersionPins: { watchdog: '9.9.9' } } }
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('9.9.9');
+      expect(db.update).not.toHaveBeenCalled();
     });
 
     it('accepts a valid branding update within size limits', async () => {

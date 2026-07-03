@@ -31,6 +31,7 @@ import {
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
   pamOrgConfig,
+  agentVersions,
 } from '../../db/schema';
 import { getRedis } from '../../services/redis';
 import { publishEvent } from '../../services/eventBus';
@@ -61,7 +62,7 @@ import {
   normalizeAgentUpdatePolicy,
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
-import { isAlwaysMaintenanceWindow, parseMaintenanceWindow } from '@breeze/shared';
+import { isAlwaysMaintenanceWindow, parseMaintenanceWindow, normalizeVersionPin } from '@breeze/shared';
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
@@ -2024,9 +2025,16 @@ export function generateApiKey(): string {
 // org would emit one warn per device per heartbeat. Cleared by tests.
 const warnedMalformedWindowOrgs = new Set<string>();
 
-/** Test-only: reset the malformed-window warn dedup so cases stay isolated. */
+// Same rationale for the "pinned build missing for platform/arch" fail-closed
+// path (issue #2124): a persistent misconfig would otherwise fire per device per
+// heartbeat. Deduped per (component, platform, arch, version) so Sentry sees the
+// freeze ONCE per process rather than a flood. Cleared by tests.
+const warnedMissingPinBuilds = new Set<string>();
+
+/** Test-only: reset the malformed-window + missing-pin warn dedup between cases. */
 export function __resetMalformedWindowWarnCache(): void {
   warnedMalformedWindowOrgs.clear();
+  warnedMissingPinBuilds.clear();
 }
 
 /** Pull the `defaults` sub-object out of a settings JSONB blob (safe for null). */
@@ -2036,17 +2044,46 @@ function extractSettingsDefaults(settings: unknown): Record<string, unknown> {
 }
 
 /**
- * Resolve the EFFECTIVE agent update policy for an org (Org > General), applying
- * partner defaults exactly as the settings UI and `getEffectiveOrgSettings`
- * (`services/effectiveSettings.ts`) do: for each field a partner-set value wins
- * and locks; the org-local value only applies where the partner has NOT set that
- * field. Fields are merged independently — a partner may lock `agentUpdatePolicy`
- * while leaving `maintenanceWindow` to the org, or vice versa.
+ * Effective per-component update version pins (issue #2124). `null` means "no
+ * pin" → track the globally promoted latest version (historical behaviour).
+ */
+export interface AgentVersionPins {
+  agent: string | null;
+  watchdog: string | null;
+}
+
+/**
+ * The full effective agent-update config for an org: the update-policy gate
+ * inputs PLUS the version pins. Both are resolved from the SAME single org⋈
+ * partner join (see getOrgAgentUpdateConfig) so the heartbeat hot path pays one
+ * round trip for everything it needs.
+ */
+export interface AgentUpdateConfig {
+  settings: AgentUpdateSettings;
+  pins: AgentVersionPins;
+}
+
+/**
+ * Resolve the EFFECTIVE agent update config for an org (Org > General). The
+ * update-POLICY fields (`agentUpdatePolicy`, `maintenanceWindow`) use the same
+ * partner-locks precedence as the settings UI / `getEffectiveOrgSettings`: a
+ * partner-set field wins and locks; the org value applies only where the partner
+ * has not set it (merged independently per field).
  *
- * Returns a normalized policy plus the raw maintenance-window string; the gating
- * decision lives in `shouldSendAgentUpgrade`. Orgs (and partners) that never
- * configured the field resolve to a permissive default (staged + no window =
- * upgrade anytime), preserving historical behaviour.
+ * `agentVersionPins` deliberately uses DIFFERENT, weaker precedence —
+ * INHERIT-WITH-OVERRIDE (issue #2124, per maintainer): a partner pin is an
+ * inherited DEFAULT, but an org-set pin WINS for that org, per component and by
+ * presence (so an org may pin 'latest' to override a partner pin back to global
+ * latest). Pins are intentionally exempt from the partner lock model in v1 — this
+ * is what lets a partner pilot a new version on one org without unsetting the
+ * fleet-wide default. See the assertNotLocked exemption in routes/orgs.ts.
+ *
+ * Returns a normalized policy + raw maintenance-window string (the gating
+ * decision lives in `shouldSendAgentUpgrade`) AND the normalized version pins
+ * (the heartbeat turns these into concrete upgrade targets, fail-closed when a
+ * pinned version has no build for the device's platform/arch). Orgs (and
+ * partners) that never configured a field resolve to permissive/no-pin defaults,
+ * preserving historical behaviour.
  *
  * Hot path: this runs once per device per heartbeat, so org + partner settings
  * are fetched in a single joined round trip rather than two queries. A thrown
@@ -2057,9 +2094,10 @@ function extractSettingsDefaults(settings: unknown): Record<string, unknown> {
  * Issue #2123: before this, the gate read org-local `settings.defaults` only, so
  * a partner-locked policy (e.g. Manual) had zero runtime effect and unconfigured
  * child orgs fell back to the permissive default despite the partner lock.
- * (Future version-pin work is expected to build on this effective plumbing.)
+ * Issue #2124 rides version pins on top of the exact same join and precedence so
+ * there is one resolver, not two.
  */
-export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdateSettings> {
+export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdateConfig> {
   // LEFT JOIN so a missing partner (shouldn't happen) still returns the org row
   // and falls back to org-local settings rather than dropping the whole lookup.
   const [row] = await db
@@ -2084,6 +2122,20 @@ export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdat
     'maintenanceWindow' in partnerDefaults
       ? partnerDefaults.maintenanceWindow
       : orgDefaults.maintenanceWindow;
+  // Version pins: inherit-with-override, per component (issue #2124). An org-set
+  // component wins for that org; where the org has NOT set a component the partner
+  // default is inherited; unset at both levels → global promoted latest. Keyed by
+  // PRESENCE ('agent' in orgPins), NOT truthiness, so an org can store 'latest' to
+  // deliberately override a partner pin back to the global latest. Agent and
+  // watchdog are independent.
+  const orgPins = isObject(orgDefaults.agentVersionPins) ? orgDefaults.agentVersionPins : {};
+  const partnerPins = isObject(partnerDefaults.agentVersionPins)
+    ? partnerDefaults.agentVersionPins
+    : {};
+  const pins: AgentVersionPins = {
+    agent: normalizeVersionPin('agent' in orgPins ? orgPins.agent : partnerPins.agent),
+    watchdog: normalizeVersionPin('watchdog' in orgPins ? orgPins.watchdog : partnerPins.watchdog),
+  };
 
   const policy = normalizeAgentUpdatePolicy(effectivePolicy);
   const rawWindow = typeof effectiveWindow === 'string' ? effectiveWindow.trim() : '';
@@ -2107,7 +2159,101 @@ export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdat
       `agent updates are NOT time-restricted (failing open). value=${JSON.stringify(maintenanceWindow)}`,
     );
   }
-  return { policy, maintenanceWindow };
+  return { settings: { policy, maintenanceWindow }, pins };
+}
+
+/**
+ * Back-compat thin wrapper: resolve only the update-policy gate settings.
+ * Retained so existing callers/tests that only need the gate keep their surface;
+ * the heartbeat resolves the full config (settings + pins) via
+ * getOrgAgentUpdateConfig in a single round trip.
+ */
+export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdateSettings> {
+  return (await getOrgAgentUpdateConfig(orgId)).settings;
+}
+
+/**
+ * Resolve the candidate upgrade-target version for a component on a device's
+ * platform/arch, honoring an effective version pin (issue #2124).
+ *
+ *  - `pin === null` → the globally promoted latest build (`is_latest = true`),
+ *    or `null` if none is registered. This is byte-for-byte the pre-#2124
+ *    behaviour, so unpinned tenants are unaffected.
+ *  - `pin === '<version>'` → that EXACT version, but only if a build is
+ *    registered for (component, platform, arch). If not, returns `null` and
+ *    logs — a pin whose build is missing for this platform/arch **fails closed**
+ *    (withholds the upgrade) rather than silently falling back to latest, which
+ *    would defeat the holdback/rollback intent of the pin.
+ *
+ * Returns only the candidate version string. The caller keeps the existing
+ * decision to actually send it (dev-build guard, update-policy gate, version
+ * comparison) so heartbeat semantics are otherwise unchanged. `agentVersions`
+ * is a global (non-tenant) table, so this is safe to call in any DB context.
+ */
+export async function resolvePinnedUpgradeTarget(args: {
+  component: string;
+  platform: string;
+  architecture: string;
+  pin: string | null;
+  agentId?: string;
+}): Promise<string | null> {
+  const { component, platform, architecture, pin, agentId } = args;
+
+  if (pin === null) {
+    const [latest] = await db
+      .select({ version: agentVersions.version })
+      .from(agentVersions)
+      .where(
+        and(
+          eq(agentVersions.platform, platform),
+          eq(agentVersions.architecture, architecture),
+          eq(agentVersions.component, component),
+          eq(agentVersions.isLatest, true),
+        ),
+      )
+      .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
+      .limit(1);
+    return latest?.version ?? null;
+  }
+
+  const [pinned] = await db
+    .select({ version: agentVersions.version })
+    .from(agentVersions)
+    .where(
+      and(
+        eq(agentVersions.platform, platform),
+        eq(agentVersions.architecture, architecture),
+        eq(agentVersions.component, component),
+        eq(agentVersions.version, pin),
+      ),
+    )
+    .limit(1);
+
+  if (!pinned) {
+    // Fail-closed, but loudly: an operator pinned a version with no build for
+    // this platform/arch (typo, or a build that was never published). Withhold
+    // the upgrade AND surface it. Per-heartbeat stdout alone is not enough — this
+    // is the same class of invisible, fleet-wide freeze the #2125 gate catch
+    // routes to Sentry, so match that bar. Deduped per (component/platform/arch/
+    // version) so a persistent misconfig captures ONCE per process, not per beat.
+    console.warn(
+      `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
+        `"${pin}" has no registered build for ${platform}/${architecture} (fail closed)`,
+    );
+    const key = `${component}:${platform}:${architecture}:${pin}`;
+    if (!warnedMissingPinBuilds.has(key)) {
+      warnedMissingPinBuilds.add(key);
+      captureException(
+        new Error(
+          `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
+            `registered build for ${platform}/${architecture}; fleet freeze until a build ` +
+            `is published or the pin is corrected.`,
+        ),
+      );
+    }
+    return null;
+  }
+  return pinned.version;
 }
 
 export async function getOrgHelperSettings(orgId: string): Promise<{ enabled: boolean }> {

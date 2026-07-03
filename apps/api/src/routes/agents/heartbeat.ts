@@ -25,7 +25,9 @@ import {
   buildPamConfigUpdate,
   buildOnedriveHelperConfigUpdate,
   buildPatchSourceConfigUpdate,
-  getOrgAgentUpdatePolicy,
+  getOrgAgentUpdateConfig,
+  resolvePinnedUpgradeTarget,
+  type AgentVersionPins,
   type OnedriveConfigUpdate,
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
@@ -128,12 +130,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // successful policy evaluation; a lookup failure withholds version-to-version
   // targets rather than bypass Manual mode / a maintenance window. Bootstrap
   // installs (a component not yet present) are NOT gated inside the block below.
+  //
+  // The SAME resolver also returns the effective per-component version pins
+  // (issue #2124), so this one system-context round trip yields both the gate
+  // decision and the pins. `versionPins` defaults to no-pin (track global
+  // latest). `pinsResolved` gates the UNGATED pin-dependent paths (watchdog
+  // bootstrap install + the watchdog-role recovery branch): on a resolver
+  // failure we cannot prove the tenant isn't holding a version back, so those
+  // paths must withhold rather than fall back to global latest — otherwise a
+  // brand-new device would silently install the very build the pin holds back.
+  // (The gated version-to-version paths are already withheld via updateGateAllows.)
   let updateGateAllows = false;
+  let pinsResolved = false;
+  let versionPins: AgentVersionPins = { agent: null, watchdog: null };
   try {
-    const updateSettings = await withSystemDbAccessContext(() =>
-      getOrgAgentUpdatePolicy(agent.orgId),
+    const updateConfig = await withSystemDbAccessContext(() =>
+      getOrgAgentUpdateConfig(agent.orgId),
     );
-    const gate = shouldSendAgentUpgrade(updateSettings, new Date());
+    versionPins = updateConfig.pins;
+    pinsResolved = true;
+    const gate = shouldSendAgentUpgrade(updateConfig.settings, new Date());
     updateGateAllows = gate.allow;
     if (!gate.allow) {
       console.log(
@@ -276,30 +292,29 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery)
     const watchdogCommands = await claimPendingCommandsForDevice(device.id, 10, 'watchdog');
 
-    // Check for watchdog upgrade
+    // Check for watchdog upgrade. Honors the tenant's watchdog pin (issue
+    // #2124) via the same resolver as the main path; fail-closed to no upgrade
+    // when the pinned version has no build for this platform/arch.
     let watchdogUpgradeTo: string | undefined;
     const normalizedArch = normalizeAgentArchitecture(device.architecture);
-    if (normalizedArch) {
+    // `pinsResolved` guard: this recovery path is NOT gated by the update policy,
+    // so on a pin-resolution failure it must withhold rather than fall back to
+    // global latest (which would defeat a holdback pin). Self-heals next heartbeat.
+    if (normalizedArch && pinsResolved) {
       try {
-        const [latestWatchdog] = await db
-          .select({ version: agentVersions.version })
-          .from(agentVersions)
-          .where(
-            and(
-              eq(agentVersions.platform, device.osType),
-              eq(agentVersions.architecture, normalizedArch),
-              eq(agentVersions.component, 'watchdog'),
-              eq(agentVersions.isLatest, true)
-            )
-          )
-          .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
-          .limit(1);
+        const targetWatchdog = await resolvePinnedUpgradeTarget({
+          component: 'watchdog',
+          platform: device.osType,
+          architecture: normalizedArch,
+          pin: versionPins.watchdog,
+          agentId,
+        });
 
-        if (latestWatchdog) {
+        if (targetWatchdog) {
           if (!data.agentVersion.startsWith('dev-')) {
-            const cmp = compareAgentVersions(latestWatchdog.version, data.agentVersion);
+            const cmp = compareAgentVersions(targetWatchdog, data.agentVersion);
             if (cmp > 0) {
-              watchdogUpgradeTo = latestWatchdog.version;
+              watchdogUpgradeTo = targetWatchdog;
             }
           }
         }
@@ -321,26 +336,24 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     if (
       mainAgentSilent &&
       normalizedArch &&
+      pinsResolved &&
       device.agentVersion &&
       !device.agentVersion.startsWith('dev-')
     ) {
       try {
-        const [latestAgent] = await db
-          .select({ version: agentVersions.version })
-          .from(agentVersions)
-          .where(
-            and(
-              eq(agentVersions.platform, device.osType),
-              eq(agentVersions.architecture, normalizedArch),
-              eq(agentVersions.component, 'agent'),
-              eq(agentVersions.isLatest, true)
-            )
-          )
-          .orderBy(desc(agentVersions.createdAt))
-          .limit(1);
+        // Recovery honors the tenant's agent pin (issue #2124): a wedged agent
+        // is recovered TO the pinned version, not blindly to latest. Fail-closed
+        // to no recovery if the pin has no build for this platform/arch.
+        const targetAgent = await resolvePinnedUpgradeTarget({
+          component: 'agent',
+          platform: device.osType,
+          architecture: normalizedArch,
+          pin: versionPins.agent,
+          agentId,
+        });
 
-        if (latestAgent && compareAgentVersions(latestAgent.version, device.agentVersion) > 0) {
-          agentUpgradeTo = latestAgent.version;
+        if (targetAgent && compareAgentVersions(targetAgent, device.agentVersion) > 0) {
+          agentUpgradeTo = targetAgent;
         }
       } catch (err) {
         console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);
@@ -594,30 +607,30 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   const normalizedArch = normalizeAgentArchitecture(device.architecture);
   if (normalizedArch) {
     try {
-      const [latestVersion] = await db
-        .select({ version: agentVersions.version })
-        .from(agentVersions)
-        .where(
-          and(
-            eq(agentVersions.platform, device.osType),
-            eq(agentVersions.architecture, normalizedArch),
-            eq(agentVersions.component, 'agent'),
-            eq(agentVersions.isLatest, true)
-          )
-        )
-        .orderBy(desc(agentVersions.createdAt))
-        .limit(1);
+      // Resolve the effective target: the tenant's agent pin (issue #2124) when
+      // set, else the globally promoted latest. Fails closed if the pinned
+      // version has no build for this platform/arch (returns null → no upgrade).
+      const targetVersion = await resolvePinnedUpgradeTarget({
+        component: 'agent',
+        platform: device.osType,
+        architecture: normalizedArch,
+        pin: versionPins.agent,
+        agentId,
+      });
 
-      if (latestVersion) {
+      if (targetVersion) {
         // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
         // them back to a release version. The dev-push flow disables auto_update
         // on the agent side; the server also refrains from sending upgradeTo.
         if (data.agentVersion.startsWith('dev-')) {
           // no-op: leave upgradeTo null so agent stays on the dev build
         } else if (updateGateAllows) {
-          const cmp = compareAgentVersions(latestVersion.version, data.agentVersion);
+          // Upgrade-only: a pin names the target but never triggers an auto
+          // DOWNGRADE through this channel (cmp > 0). Holdback works by keeping
+          // devices already on/below the pin from jumping to a newer latest.
+          const cmp = compareAgentVersions(targetVersion, data.agentVersion);
           if (cmp > 0) {
-            upgradeTo = latestVersion.version;
+            upgradeTo = targetVersion;
           }
         }
       }
@@ -663,19 +676,15 @@ if (latestHelper) {
   let watchdogUpgradeTo: string | null = null;
   if (normalizedArch) {
     try {
-      const [latestWatchdog] = await db
-        .select({ version: agentVersions.version })
-        .from(agentVersions)
-        .where(
-          and(
-            eq(agentVersions.platform, device.osType),
-            eq(agentVersions.architecture, normalizedArch),
-            eq(agentVersions.component, 'watchdog'),
-            eq(agentVersions.isLatest, true)
-          )
-        )
-        .orderBy(desc(agentVersions.createdAt))
-        .limit(1);
+      // Effective watchdog target: the tenant's watchdog pin (issue #2124) when
+      // set, else the globally promoted latest. Independent of the agent pin.
+      const targetWatchdog = await resolvePinnedUpgradeTarget({
+        component: 'watchdog',
+        platform: device.osType,
+        architecture: normalizedArch,
+        pin: versionPins.watchdog,
+        agentId,
+      });
 
       // Prefer the version the agent just reported over the stored column so a
       // successful swap stops the re-send on the VERY NEXT heartbeat (#1802),
@@ -683,18 +692,29 @@ if (latestHelper) {
       // so fall back to the stored value to preserve existing behavior.
       const installedWatchdogVersion = data.watchdogVersion ?? device.watchdogVersion;
 
-      if (latestWatchdog && installedWatchdogVersion) {
+      if (targetWatchdog && installedWatchdogVersion) {
         // Version-to-version upgrade is subject to the org update policy.
         if (updateGateAllows && !installedWatchdogVersion.startsWith('dev-')) {
-          const cmp = compareAgentVersions(latestWatchdog.version, installedWatchdogVersion);
+          const cmp = compareAgentVersions(targetWatchdog, installedWatchdogVersion);
           if (cmp > 0) {
-            watchdogUpgradeTo = latestWatchdog.version;
+            watchdogUpgradeTo = targetWatchdog;
           }
         }
-      } else if (latestWatchdog && !installedWatchdogVersion) {
+      } else if (targetWatchdog && !installedWatchdogVersion && pinsResolved) {
         // Watchdog not yet installed — signal to agent to install it. Bootstrap
-        // installs are NOT gated by the org update policy.
-        watchdogUpgradeTo = latestWatchdog.version;
+        // installs are NOT gated by the org update policy. When a pin is set,
+        // targetWatchdog is that pinned build (fail-closed to null if it has no
+        // build for this platform/arch), so a first install still honors the pin
+        // rather than jumping straight to latest. `pinsResolved` guards the case
+        // where the pin lookup FAILED: without it we'd install global latest and
+        // silently defeat a holdback pin on exactly the new devices most likely
+        // to hit it. Withheld installs self-heal on the next successful heartbeat.
+        watchdogUpgradeTo = targetWatchdog;
+      } else if (targetWatchdog && !installedWatchdogVersion && !pinsResolved) {
+        console.warn(
+          `[agents] watchdog bootstrap withheld for ${agentId}: version pins unresolved ` +
+            `this heartbeat (fail closed; retries next heartbeat)`,
+        );
       }
     } catch (err) {
       console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);

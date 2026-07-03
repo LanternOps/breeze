@@ -109,9 +109,17 @@ vi.mock('./helpers', () => ({
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
   buildPatchSourceConfigUpdate: vi.fn(async () => ({ exclusiveWindowsUpdate: false })),
-  // Permissive default (staged + no window = upgrade anytime) so the upgrade
-  // gating is transparent to tests that don't care about the org policy.
-  getOrgAgentUpdatePolicy: vi.fn(async () => ({ policy: 'staged', maintenanceWindow: null })),
+  // Permissive default (staged + no window = upgrade anytime) and no version
+  // pins (issue #2124), so the upgrade gating is transparent to tests that don't
+  // care about the org policy. The heartbeat resolves BOTH from this one call.
+  getOrgAgentUpdateConfig: vi.fn(async () => ({
+    settings: { policy: 'staged', maintenanceWindow: null },
+    pins: { agent: null, watchdog: null },
+  })),
+  // Default target mirrors the `selectMock` '0.66.0' convention used across the
+  // upgrade tests: the resolver returns the candidate target version, and the
+  // gate + compareAgentVersions (default 0 = no newer) decide whether to send it.
+  resolvePinnedUpgradeTarget: vi.fn(async () => '0.66.0'),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -764,6 +772,67 @@ describe('POST /agents/:id/heartbeat — watchdog-branch agent recovery upgradeT
     const body = await resp.json() as { upgradeTo?: string };
     expect(body.upgradeTo).toBeUndefined();
   });
+
+  // #2124 — this recovery path is UNGATED by the update policy, so it carries the
+  // same `pinsResolved` fail-closed guard as the watchdog bootstrap: if the pin
+  // lookup failed we must NOT recover a wedged agent to global latest and thereby
+  // defeat a holdback pin on exactly the devices most likely to hit it.
+  it('resolver failure (pins unresolved) → withholds agent recovery upgradeTo (fail closed)', async () => {
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1); // would upgrade if it got that far
+    vi.mocked(getOrgAgentUpdateConfig).mockRejectedValueOnce(new Error('db down'));
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+        architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+        lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+      },
+      [{ version: '0.66.0' }],
+    );
+
+    const resp = await post();
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { upgradeTo?: string };
+    expect(body.upgradeTo).toBeUndefined();
+  });
+
+  // #2124 — the recovery resolve threads the AGENT pin (versionPins.agent), never
+  // the watchdog pin. A mis-wiring here would recover the agent to the watchdog's
+  // pinned version. Uses component-keyed impl because the watchdog branch resolves
+  // first in this same beat; restored at the end so it does not leak.
+  it('recovery resolve threads the AGENT pin with this device’s platform/arch (no cross-wiring)', async () => {
+    const { compareAgentVersions, getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValueOnce({
+      settings: { policy: 'auto', maintenanceWindow: null },
+      pins: { agent: '0.90.0', watchdog: '0.91.0' },
+    });
+    vi.mocked(resolvePinnedUpgradeTarget).mockImplementation(
+      async ({ component }: { component: string }) => (component === 'agent' ? '0.90.0' : '0.91.0'),
+    );
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+        architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+        lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+      },
+      [{ version: '0.90.0' }],
+    );
+
+    const resp = await post();
+    expect(resp.status).toBe(200);
+
+    const agentCall = vi.mocked(resolvePinnedUpgradeTarget).mock.calls
+      .map((c) => c[0] as any)
+      .find((a) => a.component === 'agent');
+    expect(agentCall).toMatchObject({ component: 'agent', pin: '0.90.0', platform: 'windows', architecture: 'amd64' });
+    expect(agentCall?.pin).not.toBe('0.91.0'); // watchdog pin must not leak in
+    const body = await resp.json() as { upgradeTo?: string };
+    expect(body.upgradeTo).toBe('0.90.0');
+
+    // Restore the suite's default resolver impl (clearAllMocks does not).
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue('0.66.0');
+  });
 });
 
 
@@ -821,9 +890,12 @@ describe('POST /agents/:id/heartbeat — controlled fleet rollout (promotion gat
   }
 
   it('offers upgradeTo for the explicitly-promoted (isLatest=true) version', async () => {
-    const { compareAgentVersions } = await import('./helpers');
+    const { compareAgentVersions, resolvePinnedUpgradeTarget } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1); // promoted > reported
-    prime([{ version: '0.71.0' }]); // a promoted row exists
+    // The resolver returns the promoted version as the candidate target (its
+    // isLatest-query behaviour is unit-tested in helpers.agentUpdatePolicy.test).
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValueOnce('0.71.0');
+    prime([{ version: '0.71.0' }]);
 
     const resp = await beat();
     expect(resp.status).toBe(200);
@@ -832,11 +904,12 @@ describe('POST /agents/:id/heartbeat — controlled fleet rollout (promotion gat
   });
 
   it('does NOT offer upgradeTo when the newer version is merely registered but un-promoted (no isLatest=true row)', async () => {
-    const { compareAgentVersions } = await import('./helpers');
-    // Even if a comparison WOULD say newer, the isLatest=true query returns no
-    // row, so the handler never reaches the comparison for a target.
+    const { compareAgentVersions, resolvePinnedUpgradeTarget } = await import('./helpers');
+    // Even if a comparison WOULD say newer, the resolver returns null (no
+    // isLatest=true row and no pin), so the handler never reaches a target.
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    prime([]); // no promoted row — 0.71.0 is registered with isLatest=false
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValueOnce(null);
+    prime([]);
 
     const resp = await beat();
     expect(resp.status).toBe(200);
@@ -1232,9 +1305,9 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   }
 
   it('manual policy → withholds agent upgradeTo even when a newer version exists', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1); // latest > reported
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'manual', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1245,9 +1318,9 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   });
 
   it('auto policy with no maintenance window → offers agent upgradeTo when newer exists', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1258,12 +1331,12 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   });
 
   it('staged policy outside the maintenance window → withholds agent upgradeTo', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
     // A window on a different UTC day than "now" guarantees we're outside it.
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const otherDay = days[(new Date().getUTCDay() + 3) % 7];
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'staged', maintenanceWindow: `${otherDay} 02:00-04:00` });
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'staged', maintenanceWindow: `${otherDay} 02:00-04:00` }, pins: { agent: null, watchdog: null } });
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1278,10 +1351,10 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   // CLOSED and withhold the version-to-version agent upgradeTo (a fail-open here
   // would silently bypass Manual mode / a maintenance window on a DB hiccup).
   it('fails closed (withholds upgrade) when the policy lookup throws', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     const { captureException } = await import('../../services/sentry');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
+    vi.mocked(getOrgAgentUpdateConfig).mockRejectedValueOnce(new Error('db down'));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1302,8 +1375,8 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   // org block — reintroducing both the RLS bug and the #1105 hazard — would
   // pass every other test in this file.
   it('resolves the update policy in a system context that closes before the org context opens', async () => {
-    const { getOrgAgentUpdatePolicy } = await import('./helpers');
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    const { getOrgAgentUpdateConfig } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
     callOrder.length = 0;
@@ -1327,9 +1400,9 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   // regardless of policy. This pins the precedence of the dev-build short
   // circuit relative to the `updateGateAllows` branch (heartbeat.ts:508-511).
   it('dev- agent build is never upgraded even under auto policy', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1401,8 +1474,8 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
   }
 
   it('manual policy → withholds helper and watchdog version-to-version upgrades', async () => {
-    const { getOrgAgentUpdatePolicy } = await import('./helpers');
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    const { getOrgAgentUpdateConfig } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'manual', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
 
     const resp = await postWithInstalledComponents(deviceWithWatchdog);
     expect(resp.status).toBe(200);
@@ -1412,8 +1485,8 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
   });
 
   it('auto policy → offers helper and watchdog version-to-version upgrades', async () => {
-    const { getOrgAgentUpdatePolicy } = await import('./helpers');
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    const { getOrgAgentUpdateConfig } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
 
     const resp = await postWithInstalledComponents(deviceWithWatchdog);
     expect(resp.status).toBe(200);
@@ -1423,9 +1496,9 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
   });
 
   it('manual policy → STILL bootstraps a missing helper and watchdog (bootstrap is ungated)', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'manual', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'manual', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     selectMock.mockReturnValueOnce(selectChainResolving([deviceNeedingBootstrap]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1448,8 +1521,8 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
   // #2125 — a policy lookup failure must fail closed on the helper and watchdog
   // version-to-version channels too, not just the main agent channel.
   it('policy lookup failure → withholds helper and watchdog version-to-version upgrades (fail closed)', async () => {
-    const { getOrgAgentUpdatePolicy } = await import('./helpers');
-    vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
+    const { getOrgAgentUpdateConfig } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdateConfig).mockRejectedValueOnce(new Error('db down'));
 
     const resp = await postWithInstalledComponents(deviceWithWatchdog);
     expect(resp.status).toBe(200);
@@ -1458,12 +1531,14 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
     expect(body.watchdogUpgradeTo).toBeFalsy();
   });
 
-  // Fail-closed must not strand fresh devices: a missing helper/watchdog still
-  // bootstraps even when the policy lookup itself throws (bootstrap is ungated).
-  it('policy lookup failure → STILL bootstraps a missing helper and watchdog', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+  // Fail-closed must not strand fresh devices on the UNPINNABLE helper channel:
+  // a missing helper still bootstraps even when the policy lookup throws. The
+  // WATCHDOG channel is pinnable (#2124), so its bootstrap is withheld until the
+  // pins resolve — see the next test for why.
+  it('policy lookup failure → STILL bootstraps a missing helper (unpinnable channel)', async () => {
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
-    vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
+    vi.mocked(getOrgAgentUpdateConfig).mockRejectedValueOnce(new Error('db down'));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceNeedingBootstrap]));
     selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
 
@@ -1478,7 +1553,28 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
     };
     expect(body.upgradeTo).toBeFalsy(); // agent version-to-version gated → withheld
     expect(body.helperUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite lookup failure
-    expect(body.watchdogUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite lookup failure
+  });
+
+  // #2124 — the WATCHDOG bootstrap IS withheld when the version-pin lookup fails.
+  // The upgrade channel is upgrade-only (`cmp > 0`), so it can never walk back a
+  // wrong-version bootstrap: if the org pinned an OLDER known-good watchdog and
+  // we bootstrap global latest because we couldn't read the pin, the device is
+  // permanently stranded above the pin. Fail closed and self-heal next heartbeat.
+  it('policy lookup failure → WITHHOLDS the missing-watchdog bootstrap (pin unresolved, fail closed)', async () => {
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(getOrgAgentUpdateConfig).mockRejectedValueOnce(new Error('db down'));
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceNeedingBootstrap]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.65.10', metrics: minimalHeartbeatBody.metrics }),
+    });
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { watchdogUpgradeTo?: string | null };
+    expect(body.watchdogUpgradeTo).toBeFalsy(); // withheld: pin could not be confirmed
   });
 });
 
@@ -1541,10 +1637,10 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
   });
 
   it('uses the reported version (not the stale column) to suppress redundant re-sends', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
     arrange(setSpy);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     vi.mocked(compareAgentVersions).mockImplementation(realishCompare);
 
     // Stale column is '0.65.0' (would trigger an upgrade); the agent now reports
@@ -1557,10 +1653,10 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
   });
 
   it('still upgrades when the reported watchdogVersion is genuinely behind latest', async () => {
-    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { compareAgentVersions, getOrgAgentUpdateConfig } = await import('./helpers');
     const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
     arrange(setSpy);
-    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     vi.mocked(compareAgentVersions).mockImplementation(realishCompare);
 
     const resp = await post({ agentVersion: '0.66.0', watchdogVersion: '0.65.0' });
@@ -1667,4 +1763,88 @@ describe('POST /agents/:id/heartbeat — virtualization attribute (#1387)', () =
   // dropped to undefined by .catch) is asserted against the real schema in
   // schemas.test.ts — this route test mocks zValidator out, so the handler
   // here only ever sees already-validated `data`.
+});
+
+// ---------------------------------------------------------------------
+// #2124 — version-pin threading: the AGENT branch must receive the agent
+// pin and the WATCHDOG branch the watchdog pin. Kept at the end of the file
+// because these tests set resolvePinnedUpgradeTarget's implementation, which
+// vi.clearAllMocks() does NOT restore — a swap-guard regression that would
+// otherwise pass the whole suite (both branches call the same resolver).
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — version-pin threading (#2124)', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    watchdogVersion: '0.65.0', deviceRoleSource: 'auto',
+    lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+  const realishCompare = (a: string, b: string) => (a === b ? 0 : a > b ? 1 : -1);
+
+  function arrange() {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('threads the agent pin to the agent resolve and the watchdog pin to the watchdog resolve (no cross-wiring)', async () => {
+    const { compareAgentVersions, getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget } = await import('./helpers');
+    arrange();
+    vi.mocked(compareAgentVersions).mockImplementation(realishCompare);
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({
+      settings: { policy: 'auto', maintenanceWindow: null },
+      pins: { agent: '0.90.0', watchdog: '0.91.0' },
+    });
+    vi.mocked(resolvePinnedUpgradeTarget).mockImplementation(
+      async ({ component }: { component: string }) => (component === 'agent' ? '0.90.0' : '0.91.0'),
+    );
+
+    const resp = await post({ agentVersion: '0.66.0', watchdogVersion: '0.65.0' });
+    expect(resp.status).toBe(200);
+
+    const calls = vi.mocked(resolvePinnedUpgradeTarget).mock.calls.map((c) => c[0] as any);
+    const agentCall = calls.find((a) => a.component === 'agent');
+    const watchdogCall = calls.find((a) => a.component === 'watchdog');
+
+    // Each branch gets ITS OWN pin + the device's real platform/arch.
+    expect(agentCall).toMatchObject({ component: 'agent', pin: '0.90.0', platform: 'windows', architecture: 'amd64' });
+    expect(watchdogCall).toMatchObject({ component: 'watchdog', pin: '0.91.0', platform: 'windows', architecture: 'amd64' });
+    // Regression guard: a swapped wiring would pass the version comparisons but
+    // hand the agent branch the watchdog pin (and vice-versa).
+    expect(agentCall?.pin).not.toBe('0.91.0');
+    expect(watchdogCall?.pin).not.toBe('0.90.0');
+  });
+
+  it('fails closed: a null pinned target on the watchdog branch withholds watchdogUpgradeTo', async () => {
+    const { compareAgentVersions, getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget } = await import('./helpers');
+    arrange();
+    vi.mocked(compareAgentVersions).mockImplementation(realishCompare);
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({
+      settings: { policy: 'auto', maintenanceWindow: null },
+      pins: { agent: null, watchdog: '0.91.0' },
+    });
+    // The pinned watchdog version has no build for this platform/arch → the
+    // resolver fails closed to null, so no watchdog upgrade is offered even
+    // though the reported 0.65.0 is behind.
+    vi.mocked(resolvePinnedUpgradeTarget).mockImplementation(
+      async ({ component }: { component: string }) => (component === 'watchdog' ? null : '0.66.0'),
+    );
+
+    const resp = await post({ agentVersion: '0.66.0', watchdogVersion: '0.65.0' });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { watchdogUpgradeTo?: string | null };
+    expect(body.watchdogUpgradeTo).toBeFalsy();
+  });
 });

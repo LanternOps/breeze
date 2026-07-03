@@ -661,6 +661,68 @@ agentVersionRoutes.post(
 // This is the operator view used to decide what to promote after a release is
 // registered (with AGENT_AUTO_PROMOTE=false). Returns every registered row,
 // newest-first, with an isLatest flag marking the current upgrade target.
+// GET /agent-versions/pinnable — the registered agent + watchdog versions an
+// org/partner admin may pin as their update target (issue #2124). Distinct from
+// the platform-admin `GET /` (which exposes every component + upload metadata):
+// this is a narrow, read-only picker feed available to any authenticated
+// org/partner/system user configuring settings. agent_versions is a GLOBAL,
+// non-tenant table, so exposing the version STRINGS carries no tenant data.
+agentVersionRoutes.get(
+  "/pinnable",
+  authMiddleware,
+  requireScope("organization", "partner", "system"),
+  async (c) => {
+    const rows = await db
+      .select({
+        version: agentVersions.version,
+        component: agentVersions.component,
+        isLatest: agentVersions.isLatest,
+      })
+      .from(agentVersions)
+      .orderBy(desc(agentVersions.createdAt)); // newest-first drives the dedupe order
+
+    // Only the two operator-facing binaries are pinnable (agent, watchdog).
+    type Bucket = {
+      versions: string[];
+      promoted: string[];
+      seen: Set<string>;
+      promotedSeen: Set<string>;
+    };
+    const newBucket = (): Bucket => ({
+      versions: [],
+      promoted: [],
+      seen: new Set(),
+      promotedSeen: new Set(),
+    });
+    const buckets = { agent: newBucket(), watchdog: newBucket() };
+
+    for (const row of rows) {
+      const bucket =
+        row.component === 'agent'
+          ? buckets.agent
+          : row.component === 'watchdog'
+            ? buckets.watchdog
+            : null; // skip helper/viewer/user-helper — not pinnable
+      if (!bucket) continue;
+      if (!bucket.seen.has(row.version)) {
+        bucket.seen.add(row.version);
+        bucket.versions.push(row.version);
+      }
+      if (row.isLatest && !bucket.promotedSeen.has(row.version)) {
+        bucket.promotedSeen.add(row.version);
+        bucket.promoted.push(row.version);
+      }
+    }
+
+    return c.json({
+      components: {
+        agent: { versions: buckets.agent.versions, promoted: buckets.agent.promoted },
+        watchdog: { versions: buckets.watchdog.versions, promoted: buckets.watchdog.promoted },
+      },
+    });
+  },
+);
+
 agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
   const rows = await db
     .select({

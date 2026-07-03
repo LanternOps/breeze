@@ -23,6 +23,7 @@ export * from './contracts';
 export * from './mlFeedback';
 export * from './quotes';
 export * from './maintenanceWindow';
+export * from './agentVersionPins';
 export * from './softwareDetection';
 
 // ============================================

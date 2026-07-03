@@ -16,6 +16,7 @@ import PartnerSecurityTab, { currentIpCovered } from './PartnerSecurityTab';
 import PartnerNotificationsTab from './PartnerNotificationsTab';
 import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
+import type { PinnableVersions } from './AgentVersionPinSelectors';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
@@ -167,6 +168,8 @@ export default function PartnerSettingsPage() {
   const [brandingData, setBrandingData] = useState<InheritableBrandingSettings>({});
   const [aiBudgetsData, setAiBudgetsData] = useState<InheritableAiBudgetSettings>({});
   const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
+  // Registered agent/watchdog versions for the pin selectors (#2124).
+  const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
 
   const fetchPartner = useCallback(async () => {
     try {
@@ -214,6 +217,13 @@ export default function PartnerSettingsPage() {
         .then(r => (r.ok ? r.json() : Promise.reject(new Error('status fetch failed'))))
         .then((s: IpAllowlistStatus) => { setIpStatus(s); setIpStatusUnavailable(false); })
         .catch(() => { setIpStatus(null); setIpStatusUnavailable(true); });
+
+      // Best-effort: registered versions for the pin selectors (#2124). On
+      // failure the dropdowns simply offer "Latest promoted" only.
+      fetchWithAuth('/agent-versions/pinnable')
+        .then(r => (r.ok ? r.json() : Promise.reject(new Error('pinnable fetch failed'))))
+        .then((p: PinnableVersions) => setPinnableVersions(p))
+        .catch(() => setPinnableVersions(null));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -604,7 +614,7 @@ export default function PartnerSettingsPage() {
 
       {activeTab === 'defaults' && (
         <section className="rounded-lg border bg-card p-6 shadow-xs">
-          <PartnerDefaultsTab data={defaultsData} onChange={setDefaultsData} />
+          <PartnerDefaultsTab data={defaultsData} onChange={setDefaultsData} pinnableVersions={pinnableVersions} />
         </section>
       )}
 
