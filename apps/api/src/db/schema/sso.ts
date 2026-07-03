@@ -96,7 +96,10 @@ export const ssoSessions = pgTable('sso_sessions', {
 
   // Link-mode marker (#2183 Connect SSO): when set, the callback links the
   // verified identity to this user instead of minting login tokens.
-  linkUserId: uuid('link_user_id').references(() => users.id),
+  // ON DELETE CASCADE: an abandoned link session (never completed, so never
+  // deleted by the callback) must not block a hard user delete — sso_sessions
+  // has no partner_id/org_id, so the tenant-cascade sweep never reaches it.
+  linkUserId: uuid('link_user_id').references(() => users.id, { onDelete: 'cascade' }),
 
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()

@@ -525,6 +525,50 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(identity?.userId).toBe(user.id);
     expect(identity?.externalId).toBe('external-sub-org');
   });
+
+  it('sso_sessions.link_user_id ON DELETE CASCADE: an abandoned link session never blocks a hard user delete', async () => {
+    // An abandoned Connect SSO link attempt (user starts POST /sso/link/start
+    // but never completes the callback) leaves an sso_sessions row with
+    // link_user_id set — the callback only deletes CLAIMED sessions, so this
+    // row is never cleaned up on its own. sso_sessions has no partner_id/
+    // org_id, so the tenant-cascade sweep never reaches it either. Without
+    // ON DELETE CASCADE on link_user_id, a hard user delete (account
+    // deletion, tenant-cascade canary purges) would hit FK 23503 and abort.
+    const partner = await createPartner();
+    const provider = await createPartnerAxisProvider(partner.id);
+    const user = await createPasswordlessUser({
+      partnerId: partner.id,
+      email: `abandoned-link-${Date.now()}@example.com`,
+    });
+
+    const db = getTestDb();
+    await db.insert(ssoSessions).values({
+      providerId: provider.id,
+      state: generateState(),
+      nonce: generateNonce(),
+      codeVerifier: null,
+      redirectUrl: '/settings/profile',
+      linkUserId: user.id,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    });
+
+    const [pendingSession] = await db
+      .select()
+      .from(ssoSessions)
+      .where(eq(ssoSessions.linkUserId, user.id))
+      .limit(1);
+    expect(pendingSession).toBeDefined();
+
+    // The hard delete must succeed without an FK violation.
+    await expect(db.delete(users).where(eq(users.id, user.id))).resolves.not.toThrow();
+
+    const [afterDelete] = await db
+      .select()
+      .from(ssoSessions)
+      .where(eq(ssoSessions.linkUserId, user.id))
+      .limit(1);
+    expect(afterDelete).toBeUndefined();
+  });
 });
 
 // ── shared helpers ──────────────────────────────────────────────────────────

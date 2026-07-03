@@ -46,6 +46,20 @@ CREATE INDEX IF NOT EXISTS sso_providers_partner_id_idx
 ALTER TABLE sso_sessions
   ADD COLUMN IF NOT EXISTS link_user_id uuid REFERENCES users(id);
 
+-- ON DELETE CASCADE for link_user_id: an abandoned link session (user starts
+-- Connect SSO, never completes it) is never cleaned up -- the callback only
+-- deletes CLAIMED sessions -- so a lingering row pins the user row. Without
+-- CASCADE, a hard user delete (account deletion, tenant-cascade canary
+-- purges) hits FK 23503 and aborts; sso_sessions has no partner_id/org_id so
+-- the tenant-cascade sweep never reaches it either. Guarded constraint-swap
+-- (not relying on ADD COLUMN IF NOT EXISTS re-run semantics, since the
+-- column above already exists pre-fix on dev DBs): drop the constraint if
+-- present, then re-add it with CASCADE. Idempotent on repeated runs.
+ALTER TABLE sso_sessions DROP CONSTRAINT IF EXISTS sso_sessions_link_user_id_fkey;
+ALTER TABLE sso_sessions
+  ADD CONSTRAINT sso_sessions_link_user_id_fkey
+  FOREIGN KEY (link_user_id) REFERENCES users(id) ON DELETE CASCADE;
+
 -- ============================================
 -- Step 2: sso_providers RLS — dual-axis (org OR partner) + FORCE
 -- ============================================
