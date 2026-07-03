@@ -20,6 +20,7 @@ import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
+import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
@@ -233,6 +234,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   });
   const [orgDetails, setOrgDetails] = useState<OrgDetails | null>(null);
   const [locked, setLocked] = useState<string[]>([]);
+  // Issue #2124: registered versions for the pin selectors + the partner's
+  // effective pins (shown when `defaults.agentVersionPins` is partner-locked).
+  const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
+  const [partnerPins, setPartnerPins] = useState<AgentVersionPinsValue | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [copiedOrgId, setCopiedOrgId] = useState(false);
@@ -270,10 +275,34 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       const effRes = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}/effective-settings`);
       if (effRes.ok) {
         const effData = await effRes.json();
-        setLocked(effData.locked || []);
+        const lockedList: string[] = effData.locked || [];
+        setLocked(lockedList);
+        // Issue #2124: pins are inherit-with-override, NOT enforced-locked (see the
+        // assertNotLocked exemption in the org PATCH). But `locked` still carries
+        // `defaults.agentVersionPins` when the PARTNER set one — we use that purely
+        // as a "partner has a pin" signal so the effective value is the partner's
+        // (not the org's own, which mergeCategory would surface when the partner
+        // hasn't pinned). The org selector is never disabled by this.
+        setPartnerPins(
+          lockedList.includes('defaults.agentVersionPins')
+            ? effData.effective?.defaults?.agentVersionPins
+            : undefined,
+        );
       } else {
         console.warn('[OrgSettingsPage] Failed to fetch effective settings:', effRes.status);
       }
+
+      // Registered agent/watchdog versions for the pin selectors (#2124).
+      // Isolated (own promise chain, not awaited in this try) so a network throw
+      // or JSON-parse failure on this NON-critical picker feed can't blank the
+      // whole settings page — it just leaves the dropdowns with "Latest promoted".
+      fetchWithAuth('/agent-versions/pinnable')
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`))))
+        .then((p: PinnableVersions) => setPinnableVersions(p))
+        .catch((e) => {
+          console.warn('[OrgSettingsPage] Failed to fetch pinnable versions:', e);
+          setPinnableVersions(null);
+        });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -619,6 +648,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               defaults={orgDetails?.settings?.defaults}
               onDirty={handleDirty}
               onSave={(data) => handleSave('defaults', data)}
+              pinnableVersions={pinnableVersions}
+              partnerPins={partnerPins}
             />
           </div>
         );

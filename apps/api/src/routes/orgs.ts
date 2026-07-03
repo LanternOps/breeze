@@ -5,7 +5,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { partners, organizations, sites, devices } from '../db/schema';
+import { partners, organizations, sites, devices, agentVersions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
@@ -20,7 +20,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema } from '@breeze/shared';
 import type { IpAllowlistStatus } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
@@ -48,6 +48,39 @@ const paginationSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional()
 });
+
+/**
+ * Save-time validation for agent/watchdog version pins on a `settings.defaults`
+ * object (issue #2124). A pin of 'latest' / unset is always valid. A concrete
+ * version must reference a registered `agent_versions` row for that component;
+ * an unknown version is rejected so operators get immediate feedback rather than
+ * a silent heartbeat freeze. Per-platform/arch existence is enforced later at
+ * heartbeat resolution (fail-closed) — a version is legitimately registered for
+ * only some platforms, so we don't reject on a per-arch basis here. Returns an
+ * error message to reject with (HTTP 400), or null when the pins are clean.
+ */
+async function validateAgentVersionPins(defaults: unknown): Promise<string | null> {
+  if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) return null;
+  const pinsRaw = (defaults as Record<string, unknown>).agentVersionPins;
+  if (pinsRaw === undefined || pinsRaw === null) return null;
+  if (typeof pinsRaw !== 'object' || Array.isArray(pinsRaw)) {
+    return 'agentVersionPins must be an object with optional agent/watchdog version strings.';
+  }
+  const pins = pinsRaw as Record<string, unknown>;
+  for (const component of PINNABLE_COMPONENTS) {
+    const version = normalizeVersionPin(pins[component]);
+    if (version === null) continue; // unset / 'latest' → tracks global latest
+    const [row] = await db
+      .select({ id: agentVersions.id })
+      .from(agentVersions)
+      .where(and(eq(agentVersions.component, component), eq(agentVersions.version, version)))
+      .limit(1);
+    if (!row) {
+      return `Unknown ${component} version "${version}" — pin a registered version or choose Latest.`;
+    }
+  }
+  return null;
+}
 
 const createPartnerSchema = z.object({
   name: z.string().min(1),
@@ -408,6 +441,10 @@ const partnerSettingsSchema = z.object({
       (v) => v === undefined || isValidMaintenanceWindow(v),
       { message: MAINTENANCE_WINDOW_ERROR_MESSAGE },
     ),
+    // Per-component update version pins (issue #2124). Structural check only;
+    // the "version must be registered" check needs a DB lookup and is done in
+    // the handler via validateAgentVersionPins (same as the org PATCH path).
+    agentVersionPins: agentVersionPinsSchema.optional(),
   }).optional(),
   branding: z.object({
     logoUrl: z.string().max(400_000, 'Logo data exceeds maximum size (400 KB)').optional(),
@@ -548,6 +585,14 @@ orgRoutes.patch(
   async (c) => {
   const auth = c.get('auth');
   const body = c.req.valid('json');
+
+  // Agent/watchdog version pins (issue #2124) — reject unknown versions at save
+  // time so a partner-locked pin can't silently freeze every child org's fleet.
+  // Mirrors the org PATCH path; the zod schema already checked the shape.
+  const pinError = await validateAgentVersionPins(body.settings?.defaults);
+  if (pinError) {
+    return c.json({ error: pinError }, 400);
+  }
 
   // Get current partner to merge settings
   const [current] = await db
@@ -1202,12 +1247,30 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
       if (mw !== undefined && mw !== null && (typeof mw !== 'string' || !isValidMaintenanceWindow(mw))) {
         return c.json({ error: MAINTENANCE_WINDOW_ERROR_MESSAGE }, 400);
       }
+
+      // Agent/watchdog version pins (issue #2124) — reject unknown versions at
+      // save time. Same rationale as the window check: the org `settings` blob
+      // is `z.any()`, so pins are validated explicitly here rather than in the
+      // schema, and this is the path getOrgAgentUpdateConfig reads at heartbeat.
+      const pinError = await validateAgentVersionPins(defaults);
+      if (pinError) {
+        return c.json({ error: pinError }, 400);
+      }
     }
 
-    // Enforce partner locks on settings categories (after auth check)
+    // Enforce partner locks on settings categories (after auth check).
     for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
       if (settingsObj[category] && typeof settingsObj[category] === 'object') {
-        const fields = Object.keys(settingsObj[category] as Record<string, unknown>);
+        let fields = Object.keys(settingsObj[category] as Record<string, unknown>);
+        // Issue #2124: `agentVersionPins` is INHERIT-WITH-OVERRIDE, not partner-
+        // locked — an org may override the partner's pinned version (that's what
+        // lets a partner pilot a new version on one org). So it is deliberately
+        // exempt from the lock model here; a partner pin is only a default, and
+        // getOrgAgentUpdateConfig resolves org-over-partner. Do NOT "fix" this
+        // back to a lock without a per-field enforcement flag.
+        if (category === 'defaults') {
+          fields = fields.filter((f) => f !== 'agentVersionPins');
+        }
         await assertNotLocked(id, category, fields);
       }
     }

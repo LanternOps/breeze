@@ -1,14 +1,16 @@
 import type { InheritableDefaultSettings } from '@breeze/shared';
 import { isValidMaintenanceWindow } from '@breeze/shared';
+import AgentVersionPinSelectors, { type PinnableVersions } from './AgentVersionPinSelectors';
 
 type Props = {
   data: InheritableDefaultSettings;
   onChange: (data: InheritableDefaultSettings) => void;
+  pinnableVersions?: PinnableVersions | null;
 };
 
 const PLACEHOLDER = 'Not set — orgs configure individually';
 
-export default function PartnerDefaultsTab({ data, onChange }: Props) {
+export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }: Props) {
   const set = (patch: Partial<InheritableDefaultSettings>) =>
     onChange({ ...data, ...patch });
 
@@ -60,6 +62,15 @@ export default function PartnerDefaultsTab({ data, onChange }: Props) {
               always-on, or leave empty so orgs configure it individually.
             </p>
           )}
+        </div>
+
+        <div className="space-y-2 sm:col-span-2">
+          <AgentVersionPinSelectors
+            context="partner"
+            value={data.agentVersionPins ?? {}}
+            onChange={(agentVersionPins) => set({ agentVersionPins })}
+            pinnable={pinnableVersions ?? null}
+          />
         </div>
 
         <div className="space-y-2">

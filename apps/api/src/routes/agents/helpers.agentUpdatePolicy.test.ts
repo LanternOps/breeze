@@ -33,6 +33,7 @@ const { dbMock } = vi.hoisted(() => {
       from: vi.fn(() => chain),
       leftJoin: vi.fn(() => chain),
       where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
       limit: vi.fn(() => Promise.resolve(nextResult)),
     };
     chain.then = (resolve: any, reject: any) => Promise.resolve(nextResult).then(resolve, reject);
@@ -88,6 +89,18 @@ vi.mock('../../db/schema', () => ({
   configPolicyMonitoringSettings: {},
   configPolicyMonitoringWatches: {},
   configPolicyEventLogSettings: {},
+  configPolicyOnedriveSettings: {},
+  configPolicyOnedriveLibraries: {},
+  pamOrgConfig: {},
+  agentVersions: {
+    id: 'av.id',
+    version: 'av.version',
+    platform: 'av.platform',
+    architecture: 'av.architecture',
+    component: 'av.component',
+    isLatest: 'av.is_latest',
+    createdAt: 'av.created_at',
+  },
 }));
 
 vi.mock('../../services/redis', () => ({ getRedis: vi.fn() }));
@@ -119,7 +132,12 @@ vi.mock('./policyProbeSafety', () => ({ isAllowedPolicyConfigProbe: vi.fn(() => 
 // ---------------------------------------------------------------------------
 // Import under test — AFTER all mocks are installed.
 // ---------------------------------------------------------------------------
-import { getOrgAgentUpdatePolicy, __resetMalformedWindowWarnCache } from './helpers';
+import {
+  getOrgAgentUpdatePolicy,
+  getOrgAgentUpdateConfig,
+  resolvePinnedUpgradeTarget,
+  __resetMalformedWindowWarnCache,
+} from './helpers';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -313,5 +331,136 @@ describe('getOrgAgentUpdatePolicy — effective partner→org merge (issue #2123
       throw new Error('db down');
     });
     await expect(getOrgAgentUpdatePolicy(ORG_ID)).rejects.toThrow('db down');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOrgAgentUpdateConfig — effective version pins (issue #2124). Same org⋈
+// partner join and partner-locks precedence as the policy, resolved in ONE
+// round trip. `agentVersionPins` is an atomic unit: a partner that sets it locks
+// the whole object for the org; agent and watchdog stay independent knobs.
+// ---------------------------------------------------------------------------
+describe('getOrgAgentUpdateConfig — version pins', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetMalformedWindowWarnCache();
+  });
+
+  it('no pin anywhere → both components track global latest (null)', async () => {
+    seed({ defaults: {} }, null);
+    const { pins } = await getOrgAgentUpdateConfig(ORG_ID);
+    expect(pins).toEqual({ agent: null, watchdog: null });
+  });
+
+  it('org pin only → uses the org pin (no partner pin to inherit)', async () => {
+    seed({ defaults: { agentVersionPins: { agent: '0.88.0' } } }, { defaults: {} });
+    const { pins } = await getOrgAgentUpdateConfig(ORG_ID);
+    expect(pins).toEqual({ agent: '0.88.0', watchdog: null });
+  });
+
+  it('partner pin only → org inherits the partner pin', async () => {
+    seed({ defaults: {} }, { defaults: { agentVersionPins: { watchdog: '0.87.0' } } });
+    const { pins } = await getOrgAgentUpdateConfig(ORG_ID);
+    expect(pins).toEqual({ agent: null, watchdog: '0.87.0' });
+  });
+
+  it('org pin OVERRIDES the partner pin (inherit-with-override, not locks)', async () => {
+    seed(
+      { defaults: { agentVersionPins: { agent: '0.80.0', watchdog: '0.80.0' } } },
+      { defaults: { agentVersionPins: { agent: '0.88.0' } } },
+    );
+    const { pins } = await getOrgAgentUpdateConfig(ORG_ID);
+    // agent: org 0.80.0 overrides partner 0.88.0. watchdog: org 0.80.0 (partner
+    // unset). The partner pin is a default, not a lock — the org wins.
+    expect(pins).toEqual({ agent: '0.80.0', watchdog: '0.80.0' });
+  });
+
+  it('org inherits the partner pin per component where the org has not set it', async () => {
+    seed(
+      { defaults: { agentVersionPins: { watchdog: '0.70.0' } } },
+      { defaults: { agentVersionPins: { agent: '0.88.0' } } },
+    );
+    const { pins } = await getOrgAgentUpdateConfig(ORG_ID);
+    // agent: inherited partner 0.88.0 (org unset); watchdog: org 0.70.0. Agent
+    // and watchdog resolve independently across the two levels.
+    expect(pins).toEqual({ agent: '0.88.0', watchdog: '0.70.0' });
+  });
+
+  it("an org 'latest' deliberately overrides a partner pin back to global latest", async () => {
+    seed(
+      { defaults: { agentVersionPins: { agent: 'latest' } } },
+      { defaults: { agentVersionPins: { agent: '0.88.0' } } },
+    );
+    const { pins } = await getOrgAgentUpdateConfig(ORG_ID);
+    // Presence-keyed merge: the org SET agent ('latest'), so it wins and
+    // normalizes to null (track global latest) despite the partner pin.
+    expect(pins).toEqual({ agent: null, watchdog: null });
+  });
+
+  it("the 'latest' sentinel normalizes to null (no pin)", async () => {
+    seed({ defaults: { agentVersionPins: { agent: 'latest', watchdog: '0.88.0' } } }, null);
+    const { pins } = await getOrgAgentUpdateConfig(ORG_ID);
+    expect(pins).toEqual({ agent: null, watchdog: '0.88.0' });
+  });
+
+  it('resolves settings and pins together from one lookup', async () => {
+    seed(
+      { defaults: { agentUpdatePolicy: 'manual', agentVersionPins: { agent: '0.88.0' } } },
+      null,
+    );
+    const cfg = await getOrgAgentUpdateConfig(ORG_ID);
+    expect(cfg.settings).toEqual({ policy: 'manual', maintenanceWindow: null });
+    expect(cfg.pins).toEqual({ agent: '0.88.0', watchdog: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePinnedUpgradeTarget — turns a pin (or its absence) into a concrete
+// target version, fail-closed when a pinned build is missing for the device's
+// platform/arch (issue #2124).
+// ---------------------------------------------------------------------------
+describe('resolvePinnedUpgradeTarget', () => {
+  const base = { component: 'agent', platform: 'windows', architecture: 'amd64' as const };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Clear the per-(component/platform/arch/version) capture dedup so the
+    // fail-closed Sentry assertion isn't suppressed by a prior test.
+    __resetMalformedWindowWarnCache();
+  });
+
+  it('no pin → returns the globally promoted latest version', async () => {
+    dbMock._setResult([{ version: '0.88.0' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: null })).resolves.toBe('0.88.0');
+  });
+
+  it('no pin and no promoted build → null (unchanged legacy behaviour)', async () => {
+    dbMock._setResult([]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: null })).resolves.toBeNull();
+  });
+
+  it('pin with a registered build for this platform/arch → returns the pinned version', async () => {
+    dbMock._setResult([{ version: '0.85.0' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: '0.85.0' })).resolves.toBe('0.85.0');
+  });
+
+  it('pin with NO build for this platform/arch → null (fail closed, no fallback to latest)', async () => {
+    dbMock._setResult([]);
+    await expect(
+      resolvePinnedUpgradeTarget({ ...base, pin: '0.85.0', agentId: 'device-1' }),
+    ).resolves.toBeNull();
+  });
+
+  it('routes the fail-closed pin-miss to Sentry (observability parity with the #2125 gate)', async () => {
+    const { captureException } = await import('../../services/sentry');
+    dbMock._setResult([]);
+    await resolvePinnedUpgradeTarget({ ...base, pin: '0.85.0', agentId: 'device-1' });
+    expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+
+    // Deduped: a second identical miss must NOT re-capture (avoids per-heartbeat
+    // Sentry spam for a persistent misconfig).
+    dbMock._setResult([]);
+    await resolvePinnedUpgradeTarget({ ...base, pin: '0.85.0', agentId: 'device-2' });
+    expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
   });
 });

@@ -624,6 +624,18 @@ export interface InheritableDefaultSettings {
   };
   agentUpdatePolicy?: string;
   maintenanceWindow?: string;
+  // Per-component update version pins (issue #2124). Each value is a registered
+  // version string or the 'latest' sentinel (= no pin → global promoted latest).
+  // INHERIT-WITH-OVERRIDE (NOT partner-locked, unlike the other fields here): a
+  // partner-set pin is an inherited default; an org may override it (including
+  // back to 'latest'). getOrgAgentUpdateConfig resolves org-over-partner, and
+  // agentVersionPins is deliberately exempt from assertNotLocked — see the note
+  // in apps/api/src/routes/orgs.ts. Do NOT "fix" this into a lock. Agent and
+  // watchdog are independent knobs.
+  agentVersionPins?: {
+    agent?: string;
+    watchdog?: string;
+  };
 }
 
 export interface InheritableBrandingSettings {

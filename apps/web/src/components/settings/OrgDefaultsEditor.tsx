@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Bell, Layers, RefreshCcw, Save, ShieldCheck, Sparkles } from 'lucide-react';
+import AgentVersionPinSelectors, {
+  type PinnableVersions,
+  type AgentVersionPinsValue,
+} from './AgentVersionPinSelectors';
 import {
   MAINTENANCE_WINDOW_ALWAYS,
   MAINTENANCE_DAYS,
@@ -45,6 +49,7 @@ type DefaultsData = {
   };
   agentUpdatePolicy?: string;
   maintenanceWindow?: string;
+  agentVersionPins?: { agent?: string; watchdog?: string };
 };
 
 type OrgDefaultsEditorProps = {
@@ -52,6 +57,11 @@ type OrgDefaultsEditorProps = {
   defaults?: DefaultsData;
   onDirty?: () => void;
   onSave?: (data: DefaultsData) => void;
+  // Issue #2124: the registered versions to offer plus the partner's effective
+  // pins to show as the inherited default. Pins are inherit-with-override, so
+  // there is no lock — an org pin always overrides the partner default.
+  pinnableVersions?: PinnableVersions | null;
+  partnerPins?: AgentVersionPinsValue;
 };
 
 const defaultValues: DefaultsData = {
@@ -93,8 +103,20 @@ const alertThresholds = [
   { value: 'medium', label: 'Medium and above' }
 ];
 
-export default function OrgDefaultsEditor({ organizationName, defaults, onDirty, onSave }: OrgDefaultsEditorProps) {
+export default function OrgDefaultsEditor({
+  organizationName,
+  defaults,
+  onDirty,
+  onSave,
+  pinnableVersions,
+  partnerPins,
+}: OrgDefaultsEditorProps) {
   const initialData = { ...defaultValues, ...defaults };
+  // Version pins are inherit-with-override (issue #2124): the org can always set
+  // its own, which overrides the partner default. No lock.
+  const [agentVersionPins, setAgentVersionPins] = useState<AgentVersionPinsValue>(
+    initialData.agentVersionPins ?? {},
+  );
   const [policyDefaults, setPolicyDefaults] = useState(initialData.policyDefaults || defaultValues.policyDefaults!);
   const [deviceGroup, setDeviceGroup] = useState(initialData.deviceGroup || defaultValues.deviceGroup!);
   const [alertThreshold, setAlertThreshold] = useState(initialData.alertThreshold || defaultValues.alertThreshold!);
@@ -150,7 +172,8 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
       alertThreshold,
       autoEnrollment,
       agentUpdatePolicy,
-      maintenanceWindow: builtWindow
+      maintenanceWindow: builtWindow,
+      agentVersionPins,
     };
     onSave?.(data);
   };
@@ -434,6 +457,17 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
           </div>
         </div>
       </div>
+
+      <AgentVersionPinSelectors
+        context="organization"
+        value={agentVersionPins}
+        onChange={(next) => {
+          setAgentVersionPins(next);
+          markDirty();
+        }}
+        pinnable={pinnableVersions ?? null}
+        inheritedPins={partnerPins}
+      />
     </section>
   );
 }

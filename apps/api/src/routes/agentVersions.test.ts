@@ -209,6 +209,31 @@ describe("agentVersions routes", () => {
     });
   });
 
+  describe("GET /agent-versions/pinnable (#2124)", () => {
+    it("returns distinct agent + watchdog versions and the promoted set, excluding non-pinnable components", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          // newest-first order (createdAt desc) drives dedupe
+          { version: "0.88.0", component: "agent", isLatest: true },
+          { version: "0.88.0", component: "agent", isLatest: true }, // dupe (other arch)
+          { version: "0.87.0", component: "agent", isLatest: false },
+          { version: "0.88.0", component: "watchdog", isLatest: true },
+          { version: "0.50.0", component: "helper", isLatest: true }, // NOT pinnable
+        ]) as any,
+      );
+
+      const res = await app.request("/agent-versions/pinnable");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.components.agent.versions).toEqual(["0.88.0", "0.87.0"]);
+      expect(body.components.agent.promoted).toEqual(["0.88.0"]);
+      expect(body.components.watchdog.versions).toEqual(["0.88.0"]);
+      expect(body.components.watchdog.promoted).toEqual(["0.88.0"]);
+      // helper is not a pinnable component → absent from the response entirely.
+      expect(body.components).not.toHaveProperty("helper");
+    });
+  });
+
   describe("POST /agent-versions/promote", () => {
     // Build a fake transaction whose tx.select/tx.update record calls so we can
     // assert demote-then-promote happened. `priorByTuple` controls what the
