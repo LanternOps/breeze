@@ -22,6 +22,22 @@ function getRegistrationDisabledNotice(): string | undefined {
   }
 }
 
+// Copy for SSO callback `?error=<reason>` bounces that land back on /login.
+// `sso_link_required` (#2183): a password-holding user tried to sign in via SSO
+// and was refused auto-linking — they must connect SSO from an authenticated
+// session instead (Profile → Security → Connect SSO).
+const SSO_LOGIN_ERROR_COPY: Record<string, string> = {
+  sso_link_required:
+    'This account already has a password. Sign in with your password, then connect SSO under Profile → Security.'
+};
+
+function getSsoLoginNotice(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const error = params.get('error');
+  return error ? SSO_LOGIN_ERROR_COPY[error] : undefined;
+}
+
 function shouldSkipCfAccessRedirect(): boolean {
   if (typeof window === 'undefined') return true;
   const params = new URLSearchParams(window.location.search);
@@ -65,6 +81,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const safeNext = getSafeNext(next);
   const [error, setError] = useState<string>();
   const registrationNotice = getRegistrationDisabledNotice();
+  const ssoLoginNotice = getSsoLoginNotice();
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string>();
@@ -250,6 +267,14 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
       {registrationNotice && (
         <div className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200">
           {registrationNotice}
+        </div>
+      )}
+      {ssoLoginNotice && (
+        <div
+          role="alert"
+          className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200"
+        >
+          {ssoLoginNotice}
         </div>
       )}
       <LoginForm

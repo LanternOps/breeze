@@ -6,6 +6,7 @@ export { default as ApiKeyList } from './ApiKeyList';
 export { default as ApiKeysPage } from './ApiKeysPage';
 export { default as BrandingEditor } from './BrandingEditor';
 export { default as ChangePasswordForm } from './ChangePasswordForm';
+export { default as ConnectSsoCard } from './ConnectSsoCard';
 export { default as MFASettings } from './MFASettings';
 export { default as OrgBrandingEditor } from './OrgBrandingEditor';
 export { default as OrgDefaultsEditor } from './OrgDefaultsEditor';

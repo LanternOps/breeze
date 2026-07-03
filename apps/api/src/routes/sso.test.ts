@@ -2074,4 +2074,173 @@ describe('sso routes', () => {
       expect(res.status).toBe(403);
     });
   });
+
+  // ============================================================
+  // Self-service "Connect SSO" identity linking (#2183, Task 6)
+  // ============================================================
+  describe('Connect SSO link flow (#2183)', () => {
+    const OTHER_PARTNER = '00000000-0000-4000-8000-0000000000ff';
+    const sel = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+    // /link/options uses a leftJoin then a where that resolves directly (no limit).
+    const selLeftJoin = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+
+    const ORG_PROVIDER = {
+      id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, status: 'active', type: 'oidc',
+      name: 'Okta', issuer: 'https://issuer.example.com',
+      authorizationUrl: 'https://issuer.example.com/auth', tokenUrl: 'https://issuer.example.com/token',
+      userInfoUrl: 'https://issuer.example.com/userinfo', jwksUrl: 'https://issuer.example.com/jwks',
+      clientId: 'client-id', clientSecret: 'client-secret', scopes: 'openid profile email',
+      attributeMapping: { email: 'email', name: 'name' }, defaultRoleId: null
+    };
+    const PARTNER_PROVIDER = { ...ORG_PROVIDER, orgId: null, partnerId: PARTNER_UUID, name: 'MSP IdP' };
+
+    it('GET /sso/link/options lists org-axis providers with linked flags', async () => {
+      // org user (scope organization, orgId set) → org-axis providers.
+      vi.mocked(db.select).mockReturnValueOnce(selLeftJoin([
+        { id: 'p-1', name: 'Okta', type: 'oidc', linkedId: 'link-1' },
+        { id: 'p-2', name: 'Entra', type: 'oidc', linkedId: null }
+      ]));
+
+      const res = await app.request('/sso/link/options', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([
+        { id: 'p-1', name: 'Okta', type: 'oidc', linked: true },
+        { id: 'p-2', name: 'Entra', type: 'oidc', linked: false }
+      ]);
+    });
+
+    it('GET /sso/link/options lists partner-axis providers for partner staff', async () => {
+      setAuthContext({ scope: 'partner', orgId: null, partnerId: PARTNER_UUID, accessibleOrgIds: [] });
+      vi.mocked(db.select).mockReturnValueOnce(selLeftJoin([
+        { id: 'pp-1', name: 'MSP IdP', type: 'oidc', linkedId: null }
+      ]));
+
+      const res = await app.request('/sso/link/options', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([{ id: 'pp-1', name: 'MSP IdP', type: 'oidc', linked: false }]);
+    });
+
+    it('POST /sso/link/start/:providerId returns authUrl, sets state cookie, and stamps linkUserId', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(sel([ORG_PROVIDER]));
+      const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.authUrl).toMatch(/^https:\/\/idp\.example\.com\/auth/);
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).toContain('breeze_sso_state');
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ linkUserId: USER_UUID }));
+    });
+
+    it('POST /sso/link/start 401s an unauthenticated caller', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any) => c.json({ error: 'Unauthorized' }, 401));
+
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, { method: 'POST' });
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /sso/link/start is blocked without MFA (requireMfa)', async () => {
+      mfaGate.deny = true;
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('POST /sso/link/start 403s a provider outside the user axis pool', async () => {
+      // org user attempting to link a PARTNER-axis provider → 403.
+      vi.mocked(db.select).mockReturnValueOnce(sel([PARTNER_PROVIDER]));
+      const orgRes = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(orgRes.status).toBe(403);
+
+      // partner staff attempting to link ANOTHER partner's provider → 403.
+      setAuthContext({ scope: 'partner', orgId: null, partnerId: OTHER_PARTNER, accessibleOrgIds: [] });
+      vi.mocked(db.select).mockReturnValueOnce(sel([PARTNER_PROVIDER]));
+      const partnerRes = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(partnerRes.status).toBe(403);
+    });
+
+    // ── Callback link-mode branch ──────────────────────────────────────────
+    const primeLinkCallback = (linkUserId: string) => {
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@example.com', name: 'Tech' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@example.com', name: 'Tech' } as any);
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-link', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/settings/profile', linkUserId }]) })
+      } as any);
+    };
+    const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
+
+    it('callback link mode creates the identity for the SESSION user after verification', async () => {
+      primeLinkCallback(USER_UUID);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))                                        // provider by id
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }])) // linking user
+        .mockReturnValueOnce(sel([]));                                                    // (provider, sub) not in use
+      const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinked=1');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        userId: USER_UUID, providerId: PROVIDER_UUID, externalId: 'external-user-1'
+      }));
+    });
+
+    it('callback link mode rejects an email mismatch (no insert)', async () => {
+      primeLinkCallback(USER_UUID);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'someone-else@corp.com', name: 'Other' }]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('ssoLinkError=email_mismatch');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('callback link mode rejects a (provider, sub) already linked to another user (no insert)', async () => {
+      primeLinkCallback(USER_UUID);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-x', userId: '00000000-0000-4000-8000-0000000000aa' }]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('ssoLinkError=identity_in_use');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+  });
 });

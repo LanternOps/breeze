@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
+import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
@@ -764,6 +765,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         successMessage={mfaSuccess}
         loading={mfaLoading}
       />
+
+      {/* Connect SSO (self-service identity linking, #2183) */}
+      <ConnectSsoCard />
 
       {/* Passkeys */}
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">

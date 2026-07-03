@@ -987,6 +987,139 @@ ssoRoutes.delete(
 );
 
 // ============================================
+// Self-service "Connect SSO" — authenticated identity linking (#2183)
+// ============================================
+//
+// Password-holding users are NEVER auto-linked at login (Task 5 refuses to
+// JIT-link an assertion to an account that has a password or another provider
+// link). This is the sanctioned path for those users to adopt SSO: an
+// already-authenticated user connects their own IdP identity, from their own
+// security settings. It works on BOTH axes — an org member links an org-axis
+// provider, partner staff link a partner-axis provider.
+//
+// Axis determinant: the caller's TOKEN scope, not the provider. An
+// organization-scope token means an org member (auth.orgId = their org); a
+// partner-scope token means partner staff (auth.partnerId = their partner).
+// `AuthContext.user` carries no orgId/partnerId, so we key off the token's
+// scope/orgId/partnerId. This is exactly what keeps an org-bound user from ever
+// linking a partner-axis provider (an org-bound user can only ever hold an
+// organization-scope token), preserving the Task-5 mint-gate invariant.
+
+// Providers the current user may link, each with its linked status.
+ssoRoutes.get('/link/options', authMiddleware, async (c) => {
+  const auth = c.get('auth') as AuthContext;
+
+  const axisCondition =
+    auth.scope === 'organization' && auth.orgId
+      ? eq(ssoProviders.orgId, auth.orgId)
+      : auth.scope === 'partner' && auth.partnerId
+        ? eq(ssoProviders.partnerId, auth.partnerId)
+        : null;
+  if (!axisCondition) {
+    return c.json({ data: [] });
+  }
+
+  const providers = await db
+    .select({
+      id: ssoProviders.id,
+      name: ssoProviders.name,
+      type: ssoProviders.type,
+      linkedId: userSsoIdentities.id
+    })
+    .from(ssoProviders)
+    .leftJoin(userSsoIdentities, and(
+      eq(userSsoIdentities.providerId, ssoProviders.id),
+      eq(userSsoIdentities.userId, auth.user.id)
+    ))
+    .where(and(axisCondition, ne(ssoProviders.status, 'inactive')));
+
+  return c.json({
+    data: providers.map((p) => ({ id: p.id, name: p.name, type: p.type, linked: !!p.linkedId }))
+  });
+});
+
+// Start a link-mode IdP round-trip. requireMfa(): connecting an SSO identity
+// adds a login credential, so it is a security-sensitive account change and an
+// unMFA'd session must not be able to bind a new login method.
+ssoRoutes.post(
+  '/link/start/:providerId',
+  authMiddleware,
+  requireMfa(),
+  zValidator('param', z.object({ providerId: z.string().guid() })),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { providerId } = c.req.valid('param');
+
+    const [provider] = await db
+      .select()
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, providerId))
+      .limit(1);
+
+    if (!provider || provider.status === 'inactive') {
+      return c.json({ error: 'Provider not found' }, 404);
+    }
+
+    // Axis-pool check: the provider must be plausible for the linking user.
+    // Org-axis → the caller must be a member of that org (organization-scope
+    // token, matching orgId). Partner-axis → the caller must be staff of that
+    // partner (partner-scope token, matching partnerId). An org-bound user
+    // (organization scope) can therefore NEVER pass the partner branch, so a
+    // link Task-5's resolution would later reject can never be created.
+    const inPool = provider.orgId
+      ? auth.scope === 'organization' && auth.orgId === provider.orgId
+      : auth.scope === 'partner' && auth.partnerId === provider.partnerId;
+    if (!inPool) {
+      return c.json({ error: 'You cannot link this SSO provider' }, 403);
+    }
+
+    if (provider.type !== 'oidc') {
+      return c.json({ error: 'Only OIDC linking is currently supported' }, 400);
+    }
+
+    const config = getOIDCConfig(provider);
+    const pkce = generatePKCEChallenge();
+    const state = generateState();
+    const nonce = generateNonce();
+
+    await db.insert(ssoSessions).values({
+      providerId: provider.id,
+      state,
+      nonce,
+      codeVerifier: pkce.codeVerifier,
+      redirectUrl: '/settings/profile',
+      linkUserId: auth.user.id,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000)
+    });
+
+    const authUrl = buildAuthorizationUrl({
+      config,
+      state,
+      nonce,
+      redirectUri: buildSsoCallbackUri(),
+      pkce
+    });
+
+    const stateCookie = buildSsoStateCookie(state);
+    if (!stateCookie) {
+      return c.json({ error: 'SSO login binding secret is not configured on this instance' }, 500);
+    }
+    c.header('Set-Cookie', stateCookie, { append: true });
+
+    writeRouteAudit(c, {
+      orgId: provider.orgId,
+      action: 'sso.identity.link_started',
+      resourceType: 'sso_provider',
+      resourceId: provider.id,
+      resourceName: provider.name,
+      details: { partnerId: provider.partnerId, userId: auth.user.id }
+    });
+
+    return c.json({ authUrl });
+  }
+);
+
+// ============================================
 // SSO Login Flow (Public)
 // ============================================
 
@@ -1332,6 +1465,75 @@ ssoRoutes.get('/callback', async (c) => {
     if (typeof externalSub !== 'string' || externalSub.length === 0) {
       clearStateCookie();
       return c.redirect('/login?error=sso_no_subject');
+    }
+
+    // ── Link mode (#2183 Connect SSO): this round-trip belongs to an
+    // already-authenticated user connecting their identity — never a login.
+    // Placed AFTER the full id_token signature/nonce verification, the atomic
+    // session claim, the userinfo `sub` binding, and the allowedDomains check,
+    // and BEFORE the login-path user resolution. Link mode NEVER mints tokens,
+    // NEVER creates users, and NEVER touches login's identity resolution.
+    if (session.linkUserId) {
+      const outcome = await withSystemDbAccessContext(async () => {
+        const [linkingUser] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, session.linkUserId!))
+          .limit(1);
+        if (!linkingUser) return { error: 'user_gone' as const };
+
+        // The verified assertion must be for the SAME person: the asserted
+        // email must equal the linking user's email. Without this a user could
+        // bind an arbitrary IdP account (or a phished consent) to their session.
+        if (attrs.email.toLowerCase() !== linkingUser.email.toLowerCase()) {
+          return { error: 'email_mismatch' as const };
+        }
+
+        // (provider, sub) must not already belong to someone else — a link must
+        // never overwrite or hijack another user's identity.
+        const [existing] = await db
+          .select({ id: userSsoIdentities.id, userId: userSsoIdentities.userId })
+          .from(userSsoIdentities)
+          .where(and(
+            eq(userSsoIdentities.providerId, provider.id),
+            eq(userSsoIdentities.externalId, externalSub)
+          ))
+          .limit(1);
+        if (existing && existing.userId !== linkingUser.id) {
+          return { error: 'identity_in_use' as const };
+        }
+
+        if (!existing) {
+          await db.insert(userSsoIdentities).values({
+            userId: linkingUser.id,
+            providerId: provider.id,
+            externalId: externalSub,
+            email: attrs.email,
+            profile: userInfo,
+            accessToken: encryptSecret(tokens.access_token),
+            refreshToken: encryptSecret(tokens.refresh_token),
+            tokenExpiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000)
+              : null,
+            lastLoginAt: null
+          });
+        }
+        return { ok: true as const };
+      });
+
+      clearStateCookie();
+      if ('error' in outcome) {
+        return c.redirect(`/settings/profile?ssoLinkError=${outcome.error}`);
+      }
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.identity.linked',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        details: { partnerId: provider.partnerId, userId: session.linkUserId }
+      });
+      return c.redirect('/settings/profile?ssoLinked=1');
     }
 
     let user = await withSystemDbAccessContext(async () => {
