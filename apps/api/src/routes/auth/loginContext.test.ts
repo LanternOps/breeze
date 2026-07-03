@@ -26,9 +26,14 @@ vi.mock('../../services', () => ({
   getRedis: vi.fn(() => ({})),
 }));
 
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 import { loginContextRoutes } from './loginContext';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { rateLimiter, getRedis } from '../../services';
+import { captureException } from '../../services/sentry';
 
 const PARTNER_UUID = '00000000-0000-4000-8000-000000000030';
 const PARTNER_UUID_2 = '00000000-0000-4000-8000-000000000031';
@@ -140,5 +145,33 @@ describe('GET /auth/login-context (#2183)', () => {
     const res = await getContext();
     expect(res.status).toBe(429);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('calls rateLimiter unconditionally when Redis is unavailable (fail-closed, no skip-the-check guard)', async () => {
+    vi.mocked(getRedis).mockReturnValue(null as any);
+    // rateLimiter itself fails closed on a null redis client in production;
+    // here we assert the route still invokes it (with the null client) and
+    // honors whatever it returns, rather than short-circuiting past it.
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() } as any);
+
+    const res = await getContext();
+    expect(rateLimiter).toHaveBeenCalledWith(null, expect.stringContaining('login-context:'), 30, 60);
+    expect(res.status).toBe(429);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('degrades to the stock page (200, null shape, no-store) when the DB read throws', async () => {
+    vi.mocked(withSystemDbAccessContext).mockRejectedValueOnce(new Error('connection reset'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await getContext();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ branding: null, partnerSso: null });
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), expect.anything());
+
+    consoleErrorSpy.mockRestore();
   });
 });
