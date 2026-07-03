@@ -1329,12 +1329,20 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect('/login?error=session_expired');
   }
 
-  // Get provider
-  const [provider] = await db
-    .select()
-    .from(ssoProviders)
-    .where(eq(ssoProviders.id, session.providerId))
-    .limit(1);
+  // Get provider. System context required: the callback is unauthenticated
+  // (no request scope exists yet), so a bare `db` read here silently 0-rows
+  // under RLS — the same class of bug as the other pre-auth reads in this
+  // handler (session claim, membership resolution, etc), all of which are
+  // already wrapped. Without this wrap the callback 404s to
+  // provider_not_found for EVERY SSO login, org-axis or partner-axis alike
+  // (#2183 real-DB e2e test caught this — see ssoPartnerLogin.integration.test.ts).
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db
+      .select()
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, session.providerId))
+      .limit(1)
+  );
 
   if (!provider) {
     clearStateCookie();
