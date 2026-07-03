@@ -46,6 +46,18 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.data.battery?.chargingState).toBe('charging');
   });
 
+  it('drops the whole battery object when the required present field is missing', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      // `present` is required with no .catch, so the object collapses to
+      // undefined via the outer .catch rather than 400-ing the heartbeat.
+      battery: { percent: 80, chargingState: 'charging' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.battery).toBeUndefined();
+  });
+
   it('drops an unknown chargingState enum value rather than rejecting', () => {
     const result = heartbeatSchema.safeParse({
       ...minimal,

@@ -1021,6 +1021,26 @@ describe('batteryStatus persistence', () => {
     expect(battery).not.toHaveProperty('timeToFullMinutes');
   });
 
+  it('persists a charging snapshot with timeToFullMinutes', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        battery: { present: true, percent: 60, chargingState: 'charging', pluggedIn: true, timeToFullMinutes: 45 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    const battery = updateArg.batteryStatus as Record<string, unknown>;
+    expect(battery).toMatchObject({ present: true, chargingState: 'charging', pluggedIn: true, timeToFullMinutes: 45 });
+    expect(battery).not.toHaveProperty('timeRemainingMinutes');
+  });
+
   it('records a no-battery desktop as { present: false }', async () => {
     const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
     setupMocks(setSpy);

@@ -1,6 +1,10 @@
 package collectors
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func pctOf(b *BatteryInfo) float64 {
 	if b == nil || b.Percent == nil {
@@ -18,7 +22,7 @@ func TestMapWindowsPowerStatus(t *testing.T) {
 		lifeTime      uint32
 		wantPresent   bool
 		wantPercent   float64
-		wantState     string
+		wantState     BatteryChargingState
 		wantPlugged   *bool
 		wantRemaining *int
 	}{
@@ -183,10 +187,112 @@ func TestParsePmsetBatt(t *testing.T) {
 			t.Fatalf("expected no time estimate, got %+v", b)
 		}
 	})
+
+	t.Run("multi-word finishing charge maps to charging + time-to-full", func(t *testing.T) {
+		out := "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4849763)\t98%; finishing charge; 0:05 remaining present: true\n"
+		b := parsePmsetBatt(out)
+		if b == nil || b.ChargingState != batteryStateCharging {
+			t.Fatalf("expected charging, got %+v", b)
+		}
+		if !eqIntPtr(b.TimeToFullMinutes, intPtr(5)) {
+			t.Errorf("timeToFull = %v, want 5", derefInt(b.TimeToFullMinutes))
+		}
+	})
+}
+
+func writeSupply(t *testing.T, root, name string, files map[string]string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range files {
+		if err := os.WriteFile(filepath.Join(dir, k), []byte(v), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCollectBatteryFromSysfs(t *testing.T) {
+	t.Run("missing subsystem is a definitive no-battery desktop", func(t *testing.T) {
+		b := collectBatteryFromSysfs(filepath.Join(t.TempDir(), "does-not-exist"))
+		if b == nil || b.Present {
+			t.Fatalf("expected present=false, got %+v", b)
+		}
+	})
+
+	t.Run("laptop discharging on battery with AC mains offline", func(t *testing.T) {
+		root := t.TempDir()
+		writeSupply(t, root, "AC", map[string]string{"type": "Mains", "online": "0"})
+		writeSupply(t, root, "BAT0", map[string]string{
+			"type": "Battery", "present": "1", "capacity": "64", "status": "Discharging",
+			"energy_now": "32000000", "power_now": "16000000", "energy_full": "64000000",
+		})
+		b := collectBatteryFromSysfs(root)
+		if b == nil || !b.Present {
+			t.Fatalf("expected present battery, got %+v", b)
+		}
+		if pctOf(b) != 64 {
+			t.Errorf("percent = %v, want 64", pctOf(b))
+		}
+		if b.ChargingState != batteryStateDischarging {
+			t.Errorf("state = %q, want discharging", b.ChargingState)
+		}
+		if !eqBoolPtr(b.PluggedIn, boolPtr(false)) {
+			t.Errorf("pluggedIn = %v, want false", derefBool(b.PluggedIn))
+		}
+		// 32 Wh at 16 W → 2h = 120 min.
+		if !eqIntPtr(b.TimeRemainingMinutes, intPtr(120)) {
+			t.Errorf("remaining = %v, want 120", derefInt(b.TimeRemainingMinutes))
+		}
+	})
+
+	t.Run("skips peripheral (scope=Device) and empty bays", func(t *testing.T) {
+		root := t.TempDir()
+		// A wireless mouse battery at 40% must NOT masquerade as the system.
+		writeSupply(t, root, "hidpp_battery_0", map[string]string{
+			"type": "Battery", "scope": "Device", "capacity": "40", "status": "Discharging",
+		})
+		// Empty bay.
+		writeSupply(t, root, "BAT1", map[string]string{"type": "Battery", "present": "0"})
+		// The real system battery.
+		writeSupply(t, root, "BAT0", map[string]string{
+			"type": "Battery", "present": "1", "capacity": "90", "status": "Charging",
+		})
+		b := collectBatteryFromSysfs(root)
+		if b == nil || pctOf(b) != 90 {
+			t.Fatalf("expected system battery at 90%%, got %+v", b)
+		}
+	})
+
+	t.Run("desktop with only AC mains reports no battery, plugged in", func(t *testing.T) {
+		root := t.TempDir()
+		writeSupply(t, root, "AC", map[string]string{"type": "Mains", "online": "1"})
+		b := collectBatteryFromSysfs(root)
+		if b == nil || b.Present {
+			t.Fatalf("expected present=false, got %+v", b)
+		}
+		if !eqBoolPtr(b.PluggedIn, boolPtr(true)) {
+			t.Errorf("pluggedIn = %v, want true", derefBool(b.PluggedIn))
+		}
+	})
+
+	t.Run("unreadable type on the only supply omits rather than clobbers", func(t *testing.T) {
+		root := t.TempDir()
+		// A supply dir with no readable `type` file — we can't tell if it's the
+		// system battery, so we must return nil (omit), not present:false.
+		if err := os.MkdirAll(filepath.Join(root, "BAT0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		b := collectBatteryFromSysfs(root)
+		if b != nil {
+			t.Fatalf("expected nil (couldn't determine), got %+v", b)
+		}
+	})
 }
 
 func TestNormalizeLinuxChargingState(t *testing.T) {
-	cases := map[string]string{
+	cases := map[string]BatteryChargingState{
 		"Charging":     batteryStateCharging,
 		"Discharging":  batteryStateDischarging,
 		"Full":         batteryStateFull,

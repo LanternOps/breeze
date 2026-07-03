@@ -10,6 +10,7 @@ import {
   agentLogs,
   onedriveDeviceState,
 } from '../../db/schema';
+import type { BatteryStatus } from '@breeze/shared';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
 import type { PolicyProbeConfigUpdate } from './schemas';
@@ -398,7 +399,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // "last reported". Only set fields the agent actually sent so a real 0
     // (0% charge, 0 minutes) is distinct from "not reported" (absent). An old
     // agent omits `battery` entirely, so we never clobber the last snapshot.
-    deviceUpdates.batteryStatus = {
+    // Typed literal (deviceUpdates is Record<string, unknown>) so the stored
+    // shape is checked against BatteryStatus at this — the only — write site.
+    const battery: BatteryStatus = {
       present: data.battery.present,
       ...(data.battery.percent !== undefined ? { percent: data.battery.percent } : {}),
       ...(data.battery.chargingState !== undefined ? { chargingState: data.battery.chargingState } : {}),
@@ -407,6 +410,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       ...(data.battery.timeToFullMinutes !== undefined ? { timeToFullMinutes: data.battery.timeToFullMinutes } : {}),
       reportedAt: new Date().toISOString(),
     };
+    deviceUpdates.batteryStatus = battery;
   }
 
   await db

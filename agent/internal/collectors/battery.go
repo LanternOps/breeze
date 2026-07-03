@@ -1,6 +1,9 @@
 package collectors
 
 import (
+	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,36 +22,48 @@ import (
 //     whose OS/agent could not determine battery state. When there is no battery,
 //     we still report Present=false so the server can render a definitive dash
 //     instead of "unknown".
-//   - Every other field is a pointer/omitempty so "the OS did not report this"
-//     is distinct from a real zero (0% charge, 0 minutes remaining).
+//   - The optional pointer/omitempty fields (Percent, PluggedIn, the two time
+//     estimates) make "the OS did not report this" distinct from a real zero
+//     (0% charge, 0 minutes remaining). ChargingState is a string enum that is
+//     omitted when empty; collectors set it to batteryStateUnknown rather than
+//     leaving it blank when a battery is present but its state is indeterminate.
 //   - CollectBattery returns nil when the platform can't report power state at
-//     all (unsupported OS, or the query failed) so the heartbeat omits the field
-//     and the server keeps whatever it last knew rather than clobbering it.
+//     all (unsupported OS, or the query FAILED) so the heartbeat omits the field
+//     and the server keeps whatever it last knew rather than clobbering it. This
+//     is why a read error must NOT be collapsed to Present:false — that would
+//     overwrite a real laptop's last-known snapshot with a bogus "no battery".
 //
 // Battery HEALTH (design/full capacity, cycle count, condition) is intentionally
 // out of scope for v1 — this is operational current state only.
 
-// Charging-state vocabulary. Mirrors the BatteryChargingState union in
-// packages/shared and the Zod enum in the API heartbeat schema — keep the three
-// in sync.
+// BatteryChargingState is the closed charging-state vocabulary. Mirrors the
+// BatteryChargingState union in packages/shared and the Zod enum in the API
+// heartbeat schema — keep the three in sync. Typed (not a bare string) so the
+// constants and the struct field are compile-time linked.
+type BatteryChargingState string
+
 const (
-	batteryStateCharging    = "charging"
-	batteryStateDischarging = "discharging"
-	batteryStateFull        = "full"
-	batteryStateNotCharging = "not_charging"
-	batteryStateUnknown     = "unknown"
+	batteryStateCharging    BatteryChargingState = "charging"
+	batteryStateDischarging BatteryChargingState = "discharging"
+	batteryStateFull        BatteryChargingState = "full"
+	batteryStateNotCharging BatteryChargingState = "not_charging"
+	batteryStateUnknown     BatteryChargingState = "unknown"
 )
 
 // BatteryInfo is the agent-side power snapshot serialized into the heartbeat
 // payload. JSON tags match the API's battery sub-schema exactly.
 type BatteryInfo struct {
-	Present              bool     `json:"present"`
-	Percent              *float64 `json:"percent,omitempty"`
-	ChargingState        string   `json:"chargingState,omitempty"`
-	PluggedIn            *bool    `json:"pluggedIn,omitempty"`
-	TimeRemainingMinutes *int     `json:"timeRemainingMinutes,omitempty"`
-	TimeToFullMinutes    *int     `json:"timeToFullMinutes,omitempty"`
+	Present              bool                 `json:"present"`
+	Percent              *float64             `json:"percent,omitempty"`
+	ChargingState        BatteryChargingState `json:"chargingState,omitempty"`
+	PluggedIn            *bool                `json:"pluggedIn,omitempty"`
+	TimeRemainingMinutes *int                 `json:"timeRemainingMinutes,omitempty"`
+	TimeToFullMinutes    *int                 `json:"timeToFullMinutes,omitempty"`
 }
+
+// powerSupplyRoot is the Linux sysfs power-supply directory. A package-level
+// var (not const) so tests can point collectBatteryFromSysfs at a fixture dir.
+var powerSupplyRoot = "/sys/class/power_supply"
 
 // CollectBattery returns the current power state, or nil when the platform
 // cannot determine it (so the heartbeat omits the field entirely).
@@ -145,7 +160,7 @@ func mapWindowsPowerStatus(acLine, batteryFlag, lifePercent byte, lifeTime uint3
 // normalizeLinuxChargingState maps a /sys/class/power_supply/BAT*/status value
 // ("Charging", "Discharging", "Full", "Not charging", "Unknown") to our
 // vocabulary.
-func normalizeLinuxChargingState(status string) string {
+func normalizeLinuxChargingState(status string) BatteryChargingState {
 	switch normalizeToken(status) {
 	case "charging":
 		return batteryStateCharging
@@ -163,7 +178,7 @@ func normalizeLinuxChargingState(status string) string {
 // normalizeDarwinChargingState maps the state word from `pmset -g batt`
 // ("charging", "discharging", "charged", "finishing charge", "AC attached") to
 // our vocabulary.
-func normalizeDarwinChargingState(state string) string {
+func normalizeDarwinChargingState(state string) BatteryChargingState {
 	switch normalizeToken(state) {
 	case "charging", "finishingcharge":
 		return batteryStateCharging
@@ -258,4 +273,130 @@ func linuxMinutesFromEnergy(reservoir, ratePerHour float64) *int {
 		return nil
 	}
 	return intPtr(minutes)
+}
+
+func readSysTrim(path string) (string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(b)), true
+}
+
+func readSysFloat(path string) (float64, bool) {
+	s, ok := readSysTrim(path)
+	if !ok {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// collectBatteryFromSysfs walks a Linux power-supply directory (parameterized
+// so tests can pass a fixture root). Pure file IO — testable on any platform.
+//
+// Error handling honors the nil-vs-Present:false contract: a genuinely absent
+// subsystem (ENOENT) is a definitive "no battery" (desktop/server), but any
+// OTHER read failure (EACCES, EIO, a restricted /sys) means "couldn't
+// determine" → return nil so the heartbeat omits the field and the server
+// keeps the last-known snapshot rather than flipping a real laptop to a
+// permanent no-battery dash.
+func collectBatteryFromSysfs(root string) *BatteryInfo {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &BatteryInfo{Present: false}
+		}
+		slog.Warn("read power_supply failed", "root", root, "error", err.Error())
+		return nil
+	}
+
+	var (
+		info        BatteryInfo
+		acKnown     bool
+		pluggedIn   bool
+		haveBattery bool
+		sawReadErr  bool
+	)
+
+	for _, e := range entries {
+		dir := filepath.Join(root, e.Name())
+		typ, ok := readSysTrim(filepath.Join(dir, "type"))
+		if !ok {
+			// A supply dir with an unreadable `type` — can't classify it. Note
+			// the error so we don't later assert a definitive "no battery" if
+			// this was in fact the (unreadable) system battery.
+			sawReadErr = true
+			continue
+		}
+		switch typ {
+		case "Mains", "USB", "ADP", "Wireless":
+			if online, ok := readSysFloat(filepath.Join(dir, "online")); ok {
+				acKnown = true
+				if online >= 1 {
+					pluggedIn = true
+				}
+			}
+		case "Battery":
+			// Skip peripheral batteries (wireless mouse/keyboard) — scope=Device.
+			if scope, ok := readSysTrim(filepath.Join(dir, "scope")); ok && scope == "Device" {
+				continue
+			}
+			// Skip empty battery bays (present=0).
+			if present, ok := readSysFloat(filepath.Join(dir, "present")); ok && present < 1 {
+				continue
+			}
+			if haveBattery {
+				continue // headline state comes from the first system battery
+			}
+			haveBattery = true
+
+			if pct, ok := readSysFloat(filepath.Join(dir, "capacity")); ok {
+				info.Percent = floatPtr(clampPercent(pct))
+			}
+			if status, ok := readSysTrim(filepath.Join(dir, "status")); ok {
+				info.ChargingState = normalizeLinuxChargingState(status)
+			} else {
+				info.ChargingState = batteryStateUnknown
+			}
+
+			// Time estimate from energy/power (µWh/µW) or charge/current (µAh/µA).
+			reservoirNow, haveNow := readSysFloat(filepath.Join(dir, "energy_now"))
+			rate, haveRate := readSysFloat(filepath.Join(dir, "power_now"))
+			full, haveFull := readSysFloat(filepath.Join(dir, "energy_full"))
+			if !haveNow || !haveRate {
+				reservoirNow, haveNow = readSysFloat(filepath.Join(dir, "charge_now"))
+				rate, haveRate = readSysFloat(filepath.Join(dir, "current_now"))
+				full, haveFull = readSysFloat(filepath.Join(dir, "charge_full"))
+			}
+			if haveNow && haveRate {
+				switch info.ChargingState {
+				case batteryStateDischarging:
+					info.TimeRemainingMinutes = linuxMinutesFromEnergy(reservoirNow, rate)
+				case batteryStateCharging:
+					if haveFull && full >= reservoirNow {
+						info.TimeToFullMinutes = linuxMinutesFromEnergy(full-reservoirNow, rate)
+					}
+				}
+			}
+		}
+	}
+
+	// Couldn't positively identify a battery but hit read errors along the way
+	// → we don't actually know there's no battery. Omit rather than clobber.
+	if !haveBattery && sawReadErr {
+		return nil
+	}
+
+	info.Present = haveBattery
+	if acKnown {
+		info.PluggedIn = boolPtr(pluggedIn)
+	}
+	if info.ChargingState == "" && haveBattery {
+		info.ChargingState = batteryStateUnknown
+	}
+	return &info
 }
