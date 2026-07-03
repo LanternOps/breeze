@@ -13,6 +13,7 @@ import {
 import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
+import { getLoginContext } from '../../lib/loginContext';
 
 function getRegistrationDisabledNotice(): string | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -98,8 +99,24 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // entirely in the effect (client-only), keeping SSR and CSR initial output
   // identical (both render the placeholder).
   const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(false);
+  const [partnerSso, setPartnerSso] = useState<{ providerName: string; loginUrl: string } | null>(null);
 
   const login = useAuthStore((state) => state.login);
+
+  // Partner SSO: the (memoized) login context tells us whether this deployment
+  // resolves to a single partner with an enforced/available SSO provider. If so,
+  // surface a "Sign in with {provider}" button above the password form. Fetch
+  // failure / null response leaves the button absent (password-only login).
+  useEffect(() => {
+    let cancelled = false;
+    getLoginContext().then((ctx) => {
+      if (cancelled) return;
+      if (ctx.partnerSso?.available) {
+        setPartnerSso({ providerName: ctx.partnerSso.providerName, loginUrl: ctx.partnerSso.loginUrl });
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // CF Access trust mode: if the deployment has it on AND we're not already
   // in the post-redirect bounce (which AuthOverlay handles), top-level
@@ -276,6 +293,15 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
         >
           {ssoLoginNotice}
         </div>
+      )}
+      {partnerSso && (
+        <a
+          href={`${partnerSso.loginUrl}${safeNext ? `?redirect=${encodeURIComponent(safeNext)}` : ''}`}
+          data-testid="partner-sso-button"
+          className="mb-4 flex w-full items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+        >
+          Sign in with {partnerSso.providerName}
+        </a>
       )}
       <LoginForm
         onSubmit={handleLogin}
