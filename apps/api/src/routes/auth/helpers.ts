@@ -703,7 +703,7 @@ export async function auditUserLoginFailure(
 
 export function auditLogin(
   c: RequestLike,
-  opts: { orgId: string | null; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string }
+  opts: { orgId: string | null; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string; method?: string }
 ): void {
   createAuditLogAsync({
     orgId: opts.orgId ?? undefined,
@@ -713,7 +713,7 @@ export function auditLogin(
     resourceType: 'user',
     resourceId: opts.userId,
     resourceName: opts.name,
-    details: { method: 'password', mfa: opts.mfa, scope: opts.scope },
+    details: { method: opts.method ?? 'password', mfa: opts.mfa, scope: opts.scope },
     ipAddress: opts.ip,
     userAgent: c.req.header('user-agent'),
     result: 'success'
