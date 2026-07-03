@@ -6,6 +6,11 @@ import { zodResolver } from '@hookform/resolvers/zod';
 const ssoProviderSchema = z.object({
   name: z.string().min(1, 'Provider name is required'),
   type: z.enum(['oidc', 'saml']),
+  // Ownership axis (#2183, mirrors software policies #2126): 'partner' = a
+  // partner-wide provider used for technician login. Surfaced on create only,
+  // for partner-scope users (showOwnerScope); the server derives the partner
+  // from the caller's own token. Update schema omits it (create-only).
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   preset: z.string().optional(),
   issuer: z.string().url('Must be a valid URL').optional().or(z.literal('')),
   clientId: z.string().optional(),
@@ -42,6 +47,9 @@ export type ProviderPreset = {
 export type Role = {
   id: string;
   name: string;
+  // Present on roles fetched from /roles. Used to filter the default-role
+  // dropdown by the selected ownership scope (partner vs organization).
+  scope?: 'partner' | 'organization';
 };
 
 type SsoProviderFormProps = {
@@ -56,6 +64,8 @@ type SsoProviderFormProps = {
   testingConnection?: boolean;
   isEditing?: boolean;
   hasClientSecret?: boolean;
+  /** Show the ownership-scope selector (create-only, partner-scope users). */
+  showOwnerScope?: boolean;
 };
 
 const presetOptions = [
@@ -77,7 +87,8 @@ export default function SsoProviderForm({
   loading,
   testingConnection,
   isEditing,
-  hasClientSecret
+  hasClientSecret,
+  showOwnerScope = false
 }: SsoProviderFormProps) {
   const [showSecret, setShowSecret] = useState(false);
 
@@ -108,12 +119,23 @@ export default function SsoProviderForm({
       defaultRoleId: '',
       allowedDomains: '',
       enforceSSO: false,
+      ownerScope: 'organization',
       ...defaultValues
     }
   });
 
   const selectedPreset = useWatch({ control, name: 'preset' });
   const enforceSSO = useWatch({ control, name: 'enforceSSO' });
+  const ownerScope = useWatch({ control, name: 'ownerScope' });
+
+  // The default-role dropdown must offer roles that match the chosen ownership
+  // scope: partner-wide providers auto-provision into PARTNER roles, org
+  // providers into ORG roles. Roles carry `scope`; when it's absent (older
+  // payloads) fall back to showing them under the organization scope.
+  const visibleRoles = useMemo(() => {
+    if (ownerScope === 'partner') return roles.filter(r => r.scope === 'partner');
+    return roles.filter(r => r.scope !== 'partner');
+  }, [roles, ownerScope]);
 
   // Apply preset configuration when preset changes
   useEffect(() => {
@@ -135,6 +157,32 @@ export default function SsoProviderForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
+      {/* Ownership scope — partner-scope creators only, create-only (#2183) */}
+      {showOwnerScope && !isEditing && (
+        <fieldset className="space-y-2 rounded-md border p-4" data-testid="sso-provider-owner">
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Applies to</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="organization"
+              {...register('ownerScope')}
+              data-testid="sso-provider-owner-org"
+            />
+            This organization
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="partner"
+              {...register('ownerScope')}
+              data-testid="sso-provider-owner-partner"
+            />
+            Partner (technician login){' '}
+            <span className="text-muted-foreground">(your own team signs in with this)</span>
+          </label>
+        </fieldset>
+      )}
+
       {/* Basic Information */}
       <div className="space-y-4">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -374,7 +422,7 @@ export default function SsoProviderForm({
               {...register('defaultRoleId')}
             >
               <option value="">Select a role...</option>
-              {roles.map(role => (
+              {visibleRoles.map(role => (
                 <option key={role.id} value={role.id}>
                   {role.name}
                 </option>

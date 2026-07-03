@@ -9,6 +9,9 @@ export type SsoProvider = {
   autoProvision: boolean;
   enforceSSO: boolean;
   createdAt: string;
+  // Set for partner-wide providers used for technician login (#2183). When
+  // present, the row shows a "Partner" badge.
+  partnerId?: string | null;
 };
 
 type SsoProviderListProps = {
@@ -156,7 +159,20 @@ export default function SsoProviderList({
                     key={provider.id}
                     className="transition hover:bg-muted/40"
                   >
-                    <td className="px-4 py-3 text-sm font-medium">{provider.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium">
+                      <div className="flex items-center gap-2">
+                        <span>{provider.name}</span>
+                        {provider.partnerId && (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            title="Partner-wide provider — used for technician login across all organizations"
+                            data-testid="sso-provider-partner-badge"
+                          >
+                            Partner
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-sm">
                       <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium">
                         {typeLabels[provider.type]}

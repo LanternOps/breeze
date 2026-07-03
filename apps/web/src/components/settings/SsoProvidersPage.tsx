@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { getJwtClaims } from '../../lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
@@ -31,26 +32,51 @@ export default function SsoProvidersPage() {
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
+  // Partner-scope viewers additionally own partner-wide (technician-login)
+  // providers. Gate on the JWT scope, never partners.length (known-broken).
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+
   const fetchProviders = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
+
       const response = await fetchWithAuth('/sso/providers');
-      if (!response.ok) {
-        if (response.status === 401) {
+      if (response.status === 401) {
+        void navigateTo('/login', { replace: true });
+        return;
+      }
+      const orgProviders: SsoProvider[] = response.ok ? (await response.json()).data ?? [] : [];
+
+      // Also pull partner-wide providers for partner-scope viewers and merge
+      // them in (deduped by id). Additive: a failure here must not wipe the
+      // org list, and vice-versa.
+      let partnerProviders: SsoProvider[] = [];
+      if (isPartnerScope) {
+        const partnerRes = await fetchWithAuth('/sso/providers?scope=partner');
+        if (partnerRes.status === 401) {
           void navigateTo('/login', { replace: true });
           return;
         }
+        if (partnerRes.ok) {
+          partnerProviders = (await partnerRes.json()).data ?? [];
+        }
+      }
+
+      if (!response.ok && partnerProviders.length === 0) {
         throw new Error('Failed to fetch SSO providers');
       }
-      const data = await response.json();
-      setProviders(data.data ?? []);
+
+      const byId = new Map<string, SsoProvider>();
+      for (const p of [...orgProviders, ...partnerProviders]) byId.set(p.id, p);
+      setProviders(Array.from(byId.values()));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isPartnerScope]);
 
   const fetchPresets = useCallback(async () => {
     try {
@@ -191,8 +217,10 @@ export default function SsoProvidersPage() {
 
       // Don't send empty client secret on edit
       const payload = { ...values };
-      if (modalMode === 'edit' && !payload.clientSecret) {
-        delete payload.clientSecret;
+      if (modalMode === 'edit') {
+        if (!payload.clientSecret) delete payload.clientSecret;
+        // ownerScope is create-only (the update schema omits it); never PATCH it.
+        delete payload.ownerScope;
       }
 
       const response = await fetchWithAuth(url, {
@@ -343,6 +371,7 @@ export default function SsoProvidersPage() {
               testingConnection={testingConnection}
               isEditing={modalMode === 'edit'}
               hasClientSecret={selectedProviderDetails?.hasClientSecret}
+              showOwnerScope={isPartnerScope}
             />
           </div>
         </div>
