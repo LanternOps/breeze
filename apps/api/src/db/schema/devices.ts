@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
@@ -122,7 +122,11 @@ export const deviceLinkGroups = pgTable('device_link_groups', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('device_link_groups_org_id_idx').on(table.orgId),
-  idOrgUnique: unique('device_link_groups_id_org_id_uniq').on(table.id, table.orgId),
+  // UNIQUE INDEX (not a constraint) to match the migration's
+  // `CREATE UNIQUE INDEX` and satisfy db:check-drift — same convention as the
+  // pax8/ticketMailbox composite-(id, axis) FK targets. Backs the composite FK
+  // devices(link_group_id, org_id) -> device_link_groups(id, org_id).
+  idOrgUnique: uniqueIndex('device_link_groups_id_org_id_uniq').on(table.id, table.orgId),
 }));
 
 export const deviceHardware = pgTable('device_hardware', {

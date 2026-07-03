@@ -268,7 +268,19 @@ linksRoutes.patch(
       }
     }
 
+    // Validate removals through the SAME org+site chokepoint as additions and
+    // reads (loadMembers), so a site-restricted caller cannot unlink a boot
+    // profile in a site they can't access just by knowing its id.
     const toRemove = [...new Set(removeDeviceIds ?? [])];
+    for (const id of toRemove) {
+      const device = await getDeviceWithOrgAndSiteCheck(c, id, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        return c.json({ error: 'Access to a device site denied' }, 403);
+      }
+      if (!device) {
+        return c.json({ error: `Device ${id} not found` }, 404);
+      }
+    }
 
     // Enforce the size ceiling on the resulting membership.
     const currentMembers = await db
