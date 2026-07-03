@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, ilike, inArray } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { catalogItems, catalogItemOrgPricing, catalogBundleComponents } from '../db/schema';
 import { emitCatalogEvent } from './catalogEvents';
@@ -92,35 +92,37 @@ export async function createCatalogItem(input: CreateCatalogItemInput, actor: Ca
     markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null
   });
   assertPriceInRange(unitPrice);
-  try {
-    const rows = await db.insert(catalogItems).values({
-      partnerId,
-      itemType: input.itemType,
-      name: input.name,
-      sku: input.sku ?? null,
-      description: input.description ?? null,
-      billingType: input.billingType,
-      billingFrequency: input.billingFrequency ?? null,
-      commitmentTermMonths: input.commitmentTermMonths ?? null,
-      unitPrice,
-      costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
-      markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null,
-      unitOfMeasure: input.unitOfMeasure,
-      taxable: input.taxable,
-      taxCategory: input.taxCategory ?? null,
-      isBundle: input.isBundle,
-      attributes: input.attributes,
-      createdBy: actor.userId
-    }).returning();
-    const item = rows[0]!;
-    await emitCatalogEvent({ type: 'catalog.item.created', catalogItemId: item.id, partnerId, actorUserId: actor.userId });
-    return item;
-  } catch (err) {
-    if (isPgUniqueViolation(err)) {
-      throw new CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU');
-    }
-    throw err;
+  // ON CONFLICT DO NOTHING instead of catch-and-map: the request runs inside the
+  // withDbAccessContext transaction, and postgres.js re-throws any query error at
+  // commit time even after it was caught here (begin() records it as
+  // uncaughtError), so a raised unique violation turns the mapped 409 back into a
+  // raw 500. Suppressing the conflict at the statement level keeps the
+  // transaction healthy; zero returned rows means the SKU already exists.
+  const rows = await db.insert(catalogItems).values({
+    partnerId,
+    itemType: input.itemType,
+    name: input.name,
+    sku: input.sku ?? null,
+    description: input.description ?? null,
+    billingType: input.billingType,
+    billingFrequency: input.billingFrequency ?? null,
+    commitmentTermMonths: input.commitmentTermMonths ?? null,
+    unitPrice,
+    costBasis: input.costBasis != null ? input.costBasis.toFixed(2) : null,
+    markupPercent: input.markupPercent != null ? input.markupPercent.toFixed(2) : null,
+    unitOfMeasure: input.unitOfMeasure,
+    taxable: input.taxable,
+    taxCategory: input.taxCategory ?? null,
+    isBundle: input.isBundle,
+    attributes: input.attributes,
+    createdBy: actor.userId
+  }).onConflictDoNothing().returning();
+  const item = rows[0];
+  if (!item) {
+    throw new CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU');
   }
+  await emitCatalogEvent({ type: 'catalog.item.created', catalogItemId: item.id, partnerId, actorUserId: actor.userId });
+  return item;
 }
 
 async function getOwnedItemOr404(id: string, partnerId: string) {
@@ -134,6 +136,20 @@ async function getOwnedItemOr404(id: string, partnerId: string) {
 export async function updateCatalogItem(id: string, input: UpdateCatalogItemInput, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
   const existing = await getOwnedItemOr404(id, partnerId);
+
+  // Pre-check a SKU change instead of relying on the unique index raising: a
+  // raised violation aborts the surrounding withDbAccessContext transaction and
+  // postgres.js re-throws it at commit even when caught, clobbering the mapped
+  // 409 with a raw 500 (same reasoning as createCatalogItem's onConflictDoNothing).
+  // The isPgUniqueViolation catch below stays as a concurrent-writer backstop.
+  if (input.sku != null && input.sku !== existing.sku) {
+    const dup = await db.select({ one: catalogItems.id }).from(catalogItems)
+      .where(and(eq(catalogItems.partnerId, partnerId), eq(catalogItems.sku, input.sku), ne(catalogItems.id, id)))
+      .limit(1);
+    if (dup.length > 0) {
+      throw new CatalogServiceError('An item with this SKU already exists', 409, 'DUPLICATE_SKU');
+    }
+  }
 
   // Recompute derived price if markup/cost changed and no explicit price supplied.
   // unit_price is authoritative — a manually entered unit_price always wins, and a

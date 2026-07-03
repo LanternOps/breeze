@@ -587,6 +587,102 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect(econ.marginPct).toBe(25);
   });
 
+  // ---------------------------------------------------------------------------
+  // (h) REGRESSION — duplicate SKU must 409 WITHOUT poisoning the RLS transaction
+  //
+  // The request path runs inside withDbAccessContext's postgres.js transaction.
+  // postgres.js begin() records ANY query error as uncaughtError and re-throws
+  // it when the callback resolves — even if the app caught it and mapped it to a
+  // 409. So a raised unique violation used to surface as a raw PostgresError 500
+  // (TD SYNNEX "Import & add" on an already-imported SKU). createCatalogItem now
+  // uses ON CONFLICT DO NOTHING (no error raised); updateCatalogItem pre-checks.
+  // These tests run the duplicate attempt INSIDE one context and then keep using
+  // the same transaction — both fail if the conflict is allowed to raise.
+  // ---------------------------------------------------------------------------
+  const dupInput = (name: string, sku: string) => ({
+    itemType: 'hardware' as const,
+    name,
+    sku,
+    billingType: 'one_time' as const,
+    unitPrice: 100,
+    unitOfMeasure: 'each',
+    taxable: true,
+    isBundle: false,
+    attributes: {},
+  });
+
+  runDb('createCatalogItem: duplicate partner+sku throws 409 DUPLICATE_SKU and the transaction stays usable', async () => {
+    const fx = await seedFixture();
+
+    const outcome = await withDbAccessContext(fx.ctxA, async () => {
+      await createCatalogItem(dupInput('First import', 'DUP-SKU-1'), fx.actorA);
+
+      let caught: unknown;
+      try {
+        await createCatalogItem(dupInput('Second import', 'DUP-SKU-1'), fx.actorA);
+      } catch (err) {
+        caught = err;
+      }
+
+      // The conflict must not abort the surrounding transaction: this follow-up
+      // query would fail with 25P02 (and the context itself would reject at
+      // commit) if the unique violation had been raised and merely caught.
+      const rows = await db.select({ id: catalogItems.id }).from(catalogItems)
+        .where(and(eq(catalogItems.partnerId, fx.partnerA.id), eq(catalogItems.sku, 'DUP-SKU-1')));
+      return { caught, rowCount: rows.length };
+    });
+
+    expect(outcome.caught).toBeInstanceOf(CatalogServiceError);
+    expect(outcome.caught).toMatchObject({ status: 409, code: 'DUPLICATE_SKU' });
+    expect(outcome.rowCount).toBe(1); // only the first import persisted
+  });
+
+  runDb('createCatalogItem: same sku under a DIFFERENT partner is not a conflict', async () => {
+    const fx = await seedFixture();
+    await withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(dupInput('Partner A item', 'SHARED-SKU'), fx.actorA));
+
+    const actorB: CatalogActor = { userId: null as unknown as string, partnerId: fx.partnerB.id, accessibleOrgIds: null };
+    const ctxB: DbAccessContext = { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [fx.partnerB.id], userId: null };
+    const itemB = await withDbAccessContext(ctxB, () =>
+      createCatalogItem(dupInput('Partner B item', 'SHARED-SKU'), actorB));
+    expect(itemB.sku).toBe('SHARED-SKU');
+  });
+
+  runDb('updateCatalogItem: changing sku to another item\'s sku throws 409 without poisoning the transaction', async () => {
+    const fx = await seedFixture();
+    const [, itemB] = await withDbAccessContext(fx.ctxA, () => Promise.all([
+      createCatalogItem(dupInput('Item A', 'SKU-A'), fx.actorA),
+      createCatalogItem(dupInput('Item B', 'SKU-B'), fx.actorA),
+    ]));
+
+    const outcome = await withDbAccessContext(fx.ctxA, async () => {
+      let caught: unknown;
+      try {
+        await updateCatalogItem(itemB!.id, { sku: 'SKU-A' }, fx.actorA);
+      } catch (err) {
+        caught = err;
+      }
+      const rows = await db.select({ sku: catalogItems.sku }).from(catalogItems)
+        .where(eq(catalogItems.id, itemB!.id)).limit(1);
+      return { caught, skuAfter: rows[0]?.sku };
+    });
+
+    expect(outcome.caught).toMatchObject({ status: 409, code: 'DUPLICATE_SKU' });
+    expect(outcome.skuAfter).toBe('SKU-B'); // pre-check ran before the write
+  });
+
+  runDb('updateCatalogItem: re-submitting an item\'s own sku is not a conflict', async () => {
+    const fx = await seedFixture();
+    const item = await withDbAccessContext(fx.ctxA, () =>
+      createCatalogItem(dupInput('Keep my sku', 'SKU-KEEP'), fx.actorA));
+
+    const updated = await withDbAccessContext(fx.ctxA, () =>
+      updateCatalogItem(item.id, { sku: 'SKU-KEEP', name: 'Renamed' }, fx.actorA));
+    expect(updated.sku).toBe('SKU-KEEP');
+    expect(updated.name).toBe('Renamed');
+  });
+
   runDb('updateCatalogItem: flipping a bundle to a plain item clears its components (no orphans)', async () => {
     const fx = await seedFixture();
     const { bundle, comp1 } = await seedBundleAndComponents(fx);
