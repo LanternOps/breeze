@@ -1725,4 +1725,63 @@ describe('sso routes', () => {
       expect(db.delete).not.toHaveBeenCalled();
     });
   });
+
+  describe('GET /sso/login/partner/:partnerId (#2183)', () => {
+    it('404s when the partner has no active partner-axis provider', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('redirects to the IdP authorization URL and sets the state cookie for an active provider', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: null,
+              partnerId: PARTNER_UUID,
+              type: 'oidc',
+              status: 'active',
+              issuer: 'https://issuer.example.com',
+              authorizationUrl: 'https://issuer.example.com/auth',
+              tokenUrl: 'https://issuer.example.com/token',
+              userInfoUrl: 'https://issuer.example.com/userinfo',
+              jwksUrl: 'https://issuer.example.com/jwks',
+              clientId: 'client-id',
+              clientSecret: 'client-secret',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: false,
+              allowedDomains: null,
+              defaultRoleId: null
+            }])
+          })
+        })
+      } as any);
+
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}?redirect=/dashboard`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('https://idp.example.com/auth');
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        providerId: PROVIDER_UUID,
+        redirectUrl: '/dashboard'
+      }));
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).toContain('breeze_sso_state=');
+    });
+  });
 });

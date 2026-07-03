@@ -989,6 +989,71 @@ ssoRoutes.delete(
 // SSO Login Flow (Public)
 // ============================================
 
+const partnerIdParamSchema = z.object({ partnerId: z.string().guid() });
+
+// Initiate partner-axis SSO login (#2183) — the MSP's own technician login.
+// Public route: all DB access MUST run under system context (no request scope
+// exists yet; bare `db` silently returns 0 rows under RLS). Mounted ABOVE
+// `/login/:orgId` so the literal `partner` path segment is never parsed as
+// an orgId (Hono would also disambiguate correctly by segment count, but
+// ordering here documents the intent).
+ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSchema), async (c) => {
+  const { partnerId } = c.req.valid('param');
+  const redirectUrl = normalizeRedirectPath(c.req.query('redirect'));
+
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db
+      .select()
+      .from(ssoProviders)
+      .where(and(
+        eq(ssoProviders.partnerId, partnerId),
+        eq(ssoProviders.status, 'active')
+      ))
+      .limit(1)
+  );
+
+  if (!provider) {
+    return c.json({ error: 'No active SSO provider for this partner' }, 404);
+  }
+
+  if (provider.type !== 'oidc') {
+    return c.json({ error: 'Only OIDC login is currently supported' }, 400);
+  }
+
+  const config = getOIDCConfig(provider);
+  const pkce = generatePKCEChallenge();
+  const state = generateState();
+  const nonce = generateNonce();
+
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  await withSystemDbAccessContext(async () =>
+    db.insert(ssoSessions).values({
+      providerId: provider.id,
+      state,
+      nonce,
+      codeVerifier: pkce.codeVerifier,
+      redirectUrl,
+      expiresAt
+    })
+  );
+
+  const authUrl = buildAuthorizationUrl({
+    config,
+    state,
+    nonce,
+    redirectUri: buildSsoCallbackUri(),
+    pkce
+  });
+
+  const stateCookie = buildSsoStateCookie(state);
+  if (!stateCookie) {
+    return c.json({ error: 'SSO login binding secret is not configured on this instance' }, 500);
+  }
+  c.header('Set-Cookie', stateCookie, { append: true });
+
+  return c.redirect(authUrl);
+});
+
 // Initiate SSO login
 ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) => {
   const { orgId } = c.req.valid('param');
