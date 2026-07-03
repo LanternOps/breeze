@@ -91,6 +91,7 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
 export const DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
+  'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_sla_events',
   'backup_snapshots', 'backup_verifications',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
