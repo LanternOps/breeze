@@ -148,7 +148,7 @@ export type ScheduledTasksProps = {
 // Status badge configuration
 const statusConfig: Record<TaskStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
   ready: { label: 'Ready', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
-  running: { label: 'Running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
+  running: { label: 'Running', color: 'bg-primary/15 text-primary border-primary/30', icon: Loader2 },
   disabled: { label: 'Disabled', color: 'bg-muted text-muted-foreground border-border', icon: Pause },
   queued: { label: 'Queued', color: 'bg-warning/15 text-warning border-warning/30', icon: Clock },
   unknown: { label: 'Unknown', color: 'bg-muted text-muted-foreground border-border', icon: AlertCircle }
@@ -157,7 +157,7 @@ const statusConfig: Record<TaskStatus, { label: string; color: string; icon: typ
 // Last result interpretation
 function getResultInfo(code?: number): { label: string; color: string; icon: typeof CheckCircle } {
   if (code === undefined || code === null) {
-    return { label: 'Never run', color: 'text-gray-500', icon: Info };
+    return { label: 'Never run', color: 'text-muted-foreground', icon: Info };
   }
   if (code === 0) {
     return { label: 'Success', color: 'text-green-600', icon: CheckCircle };
@@ -169,10 +169,10 @@ function getResultInfo(code?: number): { label: string; color: string; icon: typ
     return { label: 'Task running', color: 'text-blue-600', icon: Loader2 };
   }
   if (code === 267011) {
-    return { label: 'Task not started', color: 'text-gray-500', icon: Info };
+    return { label: 'Task not started', color: 'text-muted-foreground', icon: Info };
   }
   if (code === 267014) {
-    return { label: 'Task disabled', color: 'text-gray-500', icon: Pause };
+    return { label: 'Task disabled', color: 'text-muted-foreground', icon: Pause };
   }
   const hexCode = code.toString(16).toUpperCase();
   return { label: 'Error (0x' + hexCode + ')', color: 'text-red-600', icon: AlertCircle };
@@ -268,16 +268,16 @@ function FolderTree({
         className={cn(
           'w-full flex items-center gap-1.5 px-2 py-1.5 text-sm rounded-md transition-colors text-left',
           isSelected
-            ? 'bg-blue-500/20 text-blue-700'
-            : 'hover:bg-gray-100 text-gray-700',
+            ? 'bg-primary/10 text-primary'
+            : 'hover:bg-muted text-muted-foreground',
           paddingLeftPxClass(level * 12 + 8)
         )}
       >
         {hasChildren ? (
           expanded ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-500" />
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-500" />
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           )
         ) : (
           <span className="w-3.5" />
@@ -358,18 +358,18 @@ function TaskDetailPanel({
   const [activeTab, setActiveTab] = useState<'general' | 'triggers' | 'actions' | 'conditions' | 'settings' | 'history'>('general');
 
   return (
-    <div className="flex flex-col h-full bg-white border-l">
+    <div className="flex flex-col h-full bg-card border-l">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+      <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/40">
         <div className="min-w-0 flex-1">
-          <h3 className="font-semibold text-gray-900 truncate">{task.name}</h3>
-          <p className="text-xs text-gray-500 truncate">{task.path}</p>
+          <h3 className="font-semibold text-foreground truncate">{task.name}</h3>
+          <p className="text-xs text-muted-foreground truncate">{task.path}</p>
         </div>
         <button
           onClick={onClose}
-          className="p-1.5 hover:bg-gray-200 rounded-md transition-colors ml-2"
+          className="p-1.5 hover:bg-muted rounded-md transition-colors ml-2"
         >
-          <X className="h-4 w-4 text-gray-500" />
+          <X className="h-4 w-4 text-muted-foreground" />
         </button>
       </div>
 
@@ -381,7 +381,7 @@ function TaskDetailPanel({
           className={cn(
             'inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
             task.status === 'running'
-              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              ? 'bg-muted text-muted-foreground cursor-not-allowed'
               : 'bg-green-600 text-white hover:bg-green-700'
           )}
         >
@@ -399,7 +399,7 @@ function TaskDetailPanel({
         ) : (
           <button
             onClick={onDisable}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-muted text-foreground hover:bg-accent transition-colors"
           >
             <Pause className="h-3.5 w-3.5" />
             Disable
@@ -425,8 +425,8 @@ function TaskDetailPanel({
               className={cn(
                 'flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
                 activeTab === tab.id
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
               )}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -441,38 +441,38 @@ function TaskDetailPanel({
         {activeTab === 'general' && (
           <div className="space-y-4">
             <div>
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Status</label>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</label>
               <div className="mt-1">
                 <StatusBadge status={task.status} />
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Author</label>
-              <p className="mt-1 text-sm text-gray-900">{task.author || 'Unknown'}</p>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Author</label>
+              <p className="mt-1 text-sm text-foreground">{task.author || 'Unknown'}</p>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Description</label>
-              <p className="mt-1 text-sm text-gray-700">{task.description || 'No description'}</p>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Description</label>
+              <p className="mt-1 text-sm text-muted-foreground">{task.description || 'No description'}</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Last Run</label>
-                <p className="mt-1 text-sm text-gray-900">{formatDateTime(task.lastRun)}</p>
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Last Run</label>
+                <p className="mt-1 text-sm text-foreground">{formatDateTime(task.lastRun)}</p>
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Last Result</label>
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Last Result</label>
                 <div className="mt-1">
                   <ResultBadge code={task.lastResult} />
                 </div>
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Next Run</label>
-                <p className="mt-1 text-sm text-gray-900">{formatDateTime(task.nextRun)}</p>
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Next Run</label>
+                <p className="mt-1 text-sm text-foreground">{formatDateTime(task.nextRun)}</p>
               </div>
               {task.securityPrincipal && (
                 <div>
-                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Run As</label>
-                  <p className="mt-1 text-sm text-gray-900">{task.securityPrincipal.userId}</p>
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Run As</label>
+                  <p className="mt-1 text-sm text-foreground">{task.securityPrincipal.userId}</p>
                 </div>
               )}
             </div>
@@ -482,38 +482,38 @@ function TaskDetailPanel({
         {activeTab === 'triggers' && (
           <div className="space-y-3">
             {task.triggers.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-4">No triggers configured</p>
+              <p className="text-sm text-muted-foreground text-center py-4">No triggers configured</p>
             ) : (
               task.triggers.map((trigger, index) => (
                 <div
                   key={index}
                   className={cn(
                     'p-3 rounded-lg border',
-                    trigger.enabled ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-200'
+                    trigger.enabled ? 'bg-card border-border' : 'bg-muted/40 border-border'
                   )}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-2">
-                      <Zap className={cn('h-4 w-4', trigger.enabled ? 'text-blue-600' : 'text-gray-400')} />
-                      <span className="text-sm font-medium text-gray-900">{trigger.description}</span>
+                      <Zap className={cn('h-4 w-4', trigger.enabled ? 'text-blue-600' : 'text-muted-foreground')} />
+                      <span className="text-sm font-medium text-foreground">{trigger.description}</span>
                     </div>
                     <span
                       className={cn(
                         'text-xs px-2 py-0.5 rounded',
-                        trigger.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                        trigger.enabled ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground'
                       )}
                     >
                       {trigger.enabled ? 'Enabled' : 'Disabled'}
                     </span>
                   </div>
                   {trigger.nextRun && (
-                    <p className="mt-2 text-xs text-gray-500 flex items-center gap-1">
+                    <p className="mt-2 text-xs text-muted-foreground flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
                       Next: {formatDateTime(trigger.nextRun)}
                     </p>
                   )}
                   {trigger.repetition && (
-                    <p className="mt-1 text-xs text-gray-500 flex items-center gap-1">
+                    <p className="mt-1 text-xs text-muted-foreground flex items-center gap-1">
                       <Timer className="h-3 w-3" />
                       Repeats every {trigger.repetition.interval.replace('PT', '').toLowerCase()}
                     </p>
@@ -527,36 +527,36 @@ function TaskDetailPanel({
         {activeTab === 'actions' && (
           <div className="space-y-3">
             {task.actions.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-4">No actions configured</p>
+              <p className="text-sm text-muted-foreground text-center py-4">No actions configured</p>
             ) : (
               task.actions.map((action, index) => (
-                <div key={index} className="p-3 rounded-lg border bg-white border-gray-200">
+                <div key={index} className="p-3 rounded-lg border bg-card border-border">
                   <div className="flex items-center gap-2 mb-2">
                     <FileCode className="h-4 w-4 text-purple-600" />
-                    <span className="text-sm font-medium text-gray-900">
+                    <span className="text-sm font-medium text-foreground">
                       {action.type === 'execute' ? 'Start a program' : action.type.replace('_', ' ')}
                     </span>
                   </div>
                   {action.path && (
                     <div className="mt-2">
-                      <label className="text-xs text-gray-500">Program/script:</label>
-                      <code className="block mt-0.5 text-xs bg-gray-100 px-2 py-1 rounded font-mono text-gray-800 break-all">
+                      <label className="text-xs text-muted-foreground">Program/script:</label>
+                      <code className="block mt-0.5 text-xs bg-muted px-2 py-1 rounded font-mono text-foreground break-all">
                         {action.path}
                       </code>
                     </div>
                   )}
                   {action.arguments && (
                     <div className="mt-2">
-                      <label className="text-xs text-gray-500">Arguments:</label>
-                      <code className="block mt-0.5 text-xs bg-gray-100 px-2 py-1 rounded font-mono text-gray-800 break-all">
+                      <label className="text-xs text-muted-foreground">Arguments:</label>
+                      <code className="block mt-0.5 text-xs bg-muted px-2 py-1 rounded font-mono text-foreground break-all">
                         {action.arguments}
                       </code>
                     </div>
                   )}
                   {action.workingDirectory && (
                     <div className="mt-2">
-                      <label className="text-xs text-gray-500">Start in:</label>
-                      <code className="block mt-0.5 text-xs bg-gray-100 px-2 py-1 rounded font-mono text-gray-800">
+                      <label className="text-xs text-muted-foreground">Start in:</label>
+                      <code className="block mt-0.5 text-xs bg-muted px-2 py-1 rounded font-mono text-foreground">
                         {action.workingDirectory}
                       </code>
                     </div>
@@ -570,9 +570,9 @@ function TaskDetailPanel({
         {activeTab === 'conditions' && (
           <div className="space-y-4">
             {task.conditions.idleCondition && (
-              <div className="p-3 rounded-lg border bg-white border-gray-200">
-                <h4 className="text-sm font-medium text-gray-900 mb-2">Idle Conditions</h4>
-                <ul className="text-sm text-gray-700 space-y-1">
+              <div className="p-3 rounded-lg border bg-card border-border">
+                <h4 className="text-sm font-medium text-foreground mb-2">Idle Conditions</h4>
+                <ul className="text-sm text-muted-foreground space-y-1">
                   <li>Wait for idle: {task.conditions.idleCondition.duration}</li>
                   <li>Wait timeout: {task.conditions.idleCondition.waitTimeout}</li>
                   <li>Stop on idle end: {task.conditions.idleCondition.stopOnIdleEnd ? 'Yes' : 'No'}</li>
@@ -581,9 +581,9 @@ function TaskDetailPanel({
               </div>
             )}
             {task.conditions.powerCondition && (
-              <div className="p-3 rounded-lg border bg-white border-gray-200">
-                <h4 className="text-sm font-medium text-gray-900 mb-2">Power Conditions</h4>
-                <ul className="text-sm text-gray-700 space-y-1">
+              <div className="p-3 rounded-lg border bg-card border-border">
+                <h4 className="text-sm font-medium text-foreground mb-2">Power Conditions</h4>
+                <ul className="text-sm text-muted-foreground space-y-1">
                   <li>
                     Start on AC only: {task.conditions.powerCondition.disallowStartIfOnBatteries ? 'Yes' : 'No'}
                   </li>
@@ -594,22 +594,22 @@ function TaskDetailPanel({
               </div>
             )}
             {task.conditions.networkCondition && (
-              <div className="p-3 rounded-lg border bg-white border-gray-200">
-                <h4 className="text-sm font-medium text-gray-900 mb-2">Network Conditions</h4>
-                <p className="text-sm text-gray-700">Required: {task.conditions.networkCondition.name}</p>
+              <div className="p-3 rounded-lg border bg-card border-border">
+                <h4 className="text-sm font-medium text-foreground mb-2">Network Conditions</h4>
+                <p className="text-sm text-muted-foreground">Required: {task.conditions.networkCondition.name}</p>
               </div>
             )}
             {!task.conditions.idleCondition && !task.conditions.powerCondition && !task.conditions.networkCondition && (
-              <p className="text-sm text-gray-500 text-center py-4">No conditions configured</p>
+              <p className="text-sm text-muted-foreground text-center py-4">No conditions configured</p>
             )}
           </div>
         )}
 
         {activeTab === 'settings' && (
           <div className="space-y-3">
-            <div className="p-3 rounded-lg border bg-white border-gray-200">
-              <h4 className="text-sm font-medium text-gray-900 mb-2">General Settings</h4>
-              <ul className="text-sm text-gray-700 space-y-1.5">
+            <div className="p-3 rounded-lg border bg-card border-border">
+              <h4 className="text-sm font-medium text-foreground mb-2">General Settings</h4>
+              <ul className="text-sm text-muted-foreground space-y-1.5">
                 <li className="flex items-center gap-2">
                   {task.settings.allowDemandStart ? (
                     <CheckCircle className="h-3.5 w-3.5 text-green-600" />
@@ -635,9 +635,9 @@ function TaskDetailPanel({
               </ul>
             </div>
             {task.settings.restartOnFailure.count > 0 && (
-              <div className="p-3 rounded-lg border bg-white border-gray-200">
-                <h4 className="text-sm font-medium text-gray-900 mb-2">Restart on Failure</h4>
-                <ul className="text-sm text-gray-700 space-y-1">
+              <div className="p-3 rounded-lg border bg-card border-border">
+                <h4 className="text-sm font-medium text-foreground mb-2">Restart on Failure</h4>
+                <ul className="text-sm text-muted-foreground space-y-1">
                   <li>Restart count: {task.settings.restartOnFailure.count}</li>
                   <li>Restart interval: {task.settings.restartOnFailure.interval.replace('PT', '').toLowerCase()}</li>
                 </ul>
@@ -653,7 +653,7 @@ function TaskDetailPanel({
                 <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
               </div>
             ) : history.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-4">No history available</p>
+              <p className="text-sm text-muted-foreground text-center py-4">No history available</p>
             ) : (
               history.map(entry => (
                 <div
@@ -661,10 +661,10 @@ function TaskDetailPanel({
                   className={cn(
                     'p-3 rounded-lg border',
                     entry.level === 'error'
-                      ? 'bg-red-50 border-red-200'
+                      ? 'bg-destructive/10 border-destructive/30'
                       : entry.level === 'warning'
-                      ? 'bg-yellow-50 border-yellow-200'
-                      : 'bg-white border-gray-200'
+                      ? 'bg-warning/10 border-warning/30'
+                      : 'bg-card border-border'
                   )}
                 >
                   <div className="flex items-start justify-between">
@@ -676,9 +676,9 @@ function TaskDetailPanel({
                       ) : (
                         <Info className="h-4 w-4 text-blue-600" />
                       )}
-                      <span className="text-sm text-gray-900">{entry.message}</span>
+                      <span className="text-sm text-foreground">{entry.message}</span>
                     </div>
-                    <span className="text-xs text-gray-500 whitespace-nowrap ml-2">
+                    <span className="text-xs text-muted-foreground whitespace-nowrap ml-2">
                       {formatDateTime(entry.timestamp)}
                     </span>
                   </div>
@@ -892,30 +892,30 @@ export default function ScheduledTasks({
   }, []);
 
   return (
-    <div className={cn('flex flex-col h-full bg-gray-50', className)}>
+    <div className={cn('flex flex-col h-full bg-muted/40', className)}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 bg-white border-b">
+      <div className="flex items-center justify-between px-4 py-3 bg-card border-b">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">Scheduled Tasks</h2>
+          <h2 className="text-lg font-semibold text-foreground">Scheduled Tasks</h2>
           {deviceName && (
-            <p className="text-sm text-gray-500">{deviceName}</p>
+            <p className="text-sm text-muted-foreground">{deviceName}</p>
           )}
         </div>
         <div className="flex items-center gap-3">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <input
               type="text"
               placeholder="Search tasks..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64"
+              className="pl-9 pr-3 py-2 text-sm bg-background text-foreground border border-input rounded-lg focus:ring-2 focus:ring-ring focus:border-ring w-64"
             />
           </div>
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-foreground bg-background border border-input rounded-lg hover:bg-muted disabled:opacity-50 transition-colors"
           >
             <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
             Refresh
@@ -926,7 +926,7 @@ export default function ScheduledTasks({
       {/* Main Content */}
       <div className="flex flex-1 overflow-hidden">
         {/* Folder Tree */}
-        <div className="w-1/4 min-w-[200px] max-w-[300px] bg-white border-r overflow-y-auto p-2">
+        <div className="w-1/4 min-w-[200px] max-w-[300px] bg-card border-r overflow-y-auto p-2">
           <FolderTree
             node={folderTree}
             selectedFolder={selectedFolder}
@@ -941,7 +941,7 @@ export default function ScheduledTasks({
               <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
             </div>
           ) : filteredTasks.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-gray-500">
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
               <Calendar className="h-12 w-12 mb-3" />
               <p className="text-lg font-medium">No scheduled tasks available</p>
               <p className="text-sm">
@@ -966,7 +966,7 @@ export default function ScheduledTasks({
                     <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-200 bg-white">
+                <tbody className="divide-y divide-border bg-card">
                   {filteredTasks.map(task => (
                     <tr
                       key={task.path}
@@ -974,34 +974,34 @@ export default function ScheduledTasks({
                       className={cn(
                         'cursor-pointer transition-colors',
                         selectedTaskPath === task.path
-                          ? 'bg-blue-50'
-                          : 'hover:bg-gray-50'
+                          ? 'bg-primary/10'
+                          : 'hover:bg-muted'
                       )}
                     >
                       <td className="px-4 py-3">
                         <div>
-                          <p className="text-sm font-medium text-gray-900">{task.name}</p>
-                          <p className="text-xs text-gray-500 truncate max-w-[200px]">{task.folder}</p>
+                          <p className="text-sm font-medium text-foreground">{task.name}</p>
+                          <p className="text-xs text-muted-foreground truncate max-w-[200px]">{task.folder}</p>
                         </div>
                       </td>
                       <td className="px-4 py-3">
                         <StatusBadge status={task.status} />
                       </td>
                       <td className="px-4 py-3 hidden lg:table-cell">
-                        <span className="text-sm text-gray-700">
+                        <span className="text-sm text-muted-foreground">
                           {task.triggers.length > 0 ? task.triggers[0] : '-'}
                           {task.triggers.length > 1 && (
-                            <span className="text-xs text-gray-400 ml-1">
+                            <span className="text-xs text-muted-foreground ml-1">
                               +{task.triggers.length - 1}
                             </span>
                           )}
                         </span>
                       </td>
                       <td className="px-4 py-3 hidden md:table-cell">
-                        <span className="text-sm text-gray-700">{formatDateTime(task.nextRun)}</span>
+                        <span className="text-sm text-muted-foreground">{formatDateTime(task.nextRun)}</span>
                       </td>
                       <td className="px-4 py-3 hidden md:table-cell">
-                        <span className="text-sm text-gray-700">{formatDateTime(task.lastRun)}</span>
+                        <span className="text-sm text-muted-foreground">{formatDateTime(task.lastRun)}</span>
                       </td>
                       <td className="px-4 py-3 hidden sm:table-cell">
                         <ResultBadge code={task.lastResult} />
@@ -1014,7 +1014,7 @@ export default function ScheduledTasks({
                               handleRunTask(task.path);
                             }}
                             disabled={actionLoading === task.path || task.status === 'running'}
-                            className="p-1.5 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded transition-colors disabled:opacity-50"
+                            className="p-1.5 text-muted-foreground hover:text-success hover:bg-success/10 rounded transition-colors disabled:opacity-50"
                             title="Run now"
                           >
                             {actionLoading === task.path ? (
@@ -1030,7 +1030,7 @@ export default function ScheduledTasks({
                                 handleEnableTask(task.path);
                               }}
                               disabled={actionLoading === task.path}
-                              className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors disabled:opacity-50"
+                              className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors disabled:opacity-50"
                               title="Enable"
                             >
                               <PlayCircle className="h-4 w-4" />
@@ -1042,7 +1042,7 @@ export default function ScheduledTasks({
                                 handleDisableTask(task.path);
                               }}
                               disabled={actionLoading === task.path}
-                              className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
+                              className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors disabled:opacity-50"
                               title="Disable"
                             >
                               <Pause className="h-4 w-4" />
@@ -1075,7 +1075,7 @@ export default function ScheduledTasks({
       </div>
 
       {/* Footer */}
-      <div className="px-4 py-2 bg-white border-t text-sm text-gray-500 flex items-center justify-between">
+      <div className="px-4 py-2 bg-card border-t text-sm text-muted-foreground flex items-center justify-between">
         <span>
           {filteredTasks.length} task{filteredTasks.length !== 1 ? 's' : ''}
           {searchQuery && ' matching "' + searchQuery + '"'}
