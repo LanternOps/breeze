@@ -1260,7 +1260,11 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     expect(body.upgradeTo).toBeFalsy();
   });
 
-  it('fails open (offers upgrade) when the policy lookup throws', async () => {
+  // #2125 — the update policy is a control-plane safety setting. If the lookup
+  // throws the handler cannot prove auto-upgrades are allowed, so it must FAIL
+  // CLOSED and withhold the version-to-version agent upgradeTo (a fail-open here
+  // would silently bypass Manual mode / a maintenance window on a DB hiccup).
+  it('fails closed (withholds upgrade) when the policy lookup throws', async () => {
     const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
     vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
@@ -1270,7 +1274,7 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     const resp = await postAgentHeartbeat();
     expect(resp.status).toBe(200);
     const body = await resp.json() as { upgradeTo?: string | null };
-    expect(body.upgradeTo).toBe('0.66.0');
+    expect(body.upgradeTo).toBeFalsy();
   });
 
   // A dev-push build (dev-*) must never be auto-upgraded back to a release,
@@ -1393,6 +1397,42 @@ describe('POST /agents/:id/heartbeat — helper/watchdog upgrade gating', () => 
     expect(body.upgradeTo).toBeFalsy(); // agent version-to-version IS gated → withheld
     expect(body.helperUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite manual
     expect(body.watchdogUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite manual
+  });
+
+  // #2125 — a policy lookup failure must fail closed on the helper and watchdog
+  // version-to-version channels too, not just the main agent channel.
+  it('policy lookup failure → withholds helper and watchdog version-to-version upgrades (fail closed)', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
+
+    const resp = await postWithInstalledComponents(deviceWithWatchdog);
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { helperUpgradeTo?: string | null; watchdogUpgradeTo?: string | null };
+    expect(body.helperUpgradeTo).toBeFalsy();
+    expect(body.watchdogUpgradeTo).toBeFalsy();
+  });
+
+  // Fail-closed must not strand fresh devices: a missing helper/watchdog still
+  // bootstraps even when the policy lookup itself throws (bootstrap is ungated).
+  it('policy lookup failure → STILL bootstraps a missing helper and watchdog', async () => {
+    const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceNeedingBootstrap]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', agentVersion: '0.65.10', metrics: minimalHeartbeatBody.metrics }),
+    });
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as {
+      upgradeTo?: string | null; helperUpgradeTo?: string | null; watchdogUpgradeTo?: string | null;
+    };
+    expect(body.upgradeTo).toBeFalsy(); // agent version-to-version gated → withheld
+    expect(body.helperUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite lookup failure
+    expect(body.watchdogUpgradeTo).toBe('0.66.0'); // bootstrap → offered despite lookup failure
   });
 });
 
