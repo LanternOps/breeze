@@ -65,11 +65,14 @@ export const msiProductCodeDetectionRuleSchema = z.object({
 export const FILE_VERSION_OPERATORS = ['>=', '>', '==', '<=', '<'] as const;
 export type FileVersionOperator = (typeof FILE_VERSION_OPERATORS)[number];
 
-// A dotted numeric version: 1–4 components, each 0–65535 (the range of a Win32
-// VS_FIXEDFILEINFO version word). Missing trailing components are treated as 0 by
-// the agent (so "1.2" == "1.2.0.0"). String compares would mis-order "1.10" vs
-// "1.9", so the agent parses to integer quads before comparing.
+// A dotted numeric version: 1–4 components. Missing trailing components are
+// treated as 0 by the agent (so "1.2" == "1.2.0.0"). String compares would
+// mis-order "1.10" vs "1.9", so the agent parses to integer quads before
+// comparing. Each component is capped at 65535: the agent reads the actual
+// on-disk version from 16-bit Win32 version words, so a target above 65535 could
+// never match a real file and is rejected here rather than silently never firing.
 const FILE_VERSION_REGEX = /^\d{1,5}(\.\d{1,5}){0,3}$/;
+const FILE_VERSION_MAX_COMPONENT = 65535;
 
 export const fileVersionDetectionRuleSchema = z.object({
   type: z.literal('file_version'),
@@ -81,7 +84,11 @@ export const fileVersionDetectionRuleSchema = z.object({
     .string()
     .min(1)
     .max(64)
-    .regex(FILE_VERSION_REGEX, 'Must be a dotted numeric version, e.g. 1.2.3.4'),
+    .regex(FILE_VERSION_REGEX, 'Must be a dotted numeric version, e.g. 1.2.3.4')
+    .refine(
+      (v) => v.split('.').every((part) => Number(part) <= FILE_VERSION_MAX_COMPONENT),
+      `Each version component must be between 0 and ${FILE_VERSION_MAX_COMPONENT}`,
+    ),
 });
 
 export const detectionRuleSchema = z.discriminatedUnion('type', [

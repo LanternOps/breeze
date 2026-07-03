@@ -262,14 +262,30 @@ func evaluateFileVersionComparison(actual, operator, target string) (matched boo
 		return cmp >= 0, true
 	case ">":
 		return cmp > 0, true
-	case "==", "=":
+	case "==":
 		return cmp == 0, true
 	case "<=":
 		return cmp <= 0, true
 	case "<":
 		return cmp < 0, true
 	default:
+		// Operator set is the FILE_VERSION_OPERATORS enum in
+		// packages/shared/src/validators/softwareDetection.ts (the source of
+		// truth). Anything else can't be evaluated → undeterminable.
 		slog.Warn("detection: unknown file_version operator", "operator", operator)
 		return false, false
 	}
+}
+
+// normalizeVersionString converts a Win32 StringFileInfo "FileVersion" value
+// into the dotted numeric form parseFileVersion accepts. Version resources
+// commonly use comma separators ("1, 2, 3, 4"); anything still non-numeric after
+// this (e.g. "5.0.1 (build 3)") is left for parseFileVersion to reject, so the
+// caller falls back to the binary fixed-version block.
+func normalizeVersionString(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, ", ", ".")
+	s = strings.ReplaceAll(s, ",", ".")
+	s = strings.ReplaceAll(s, " ", "")
+	return s
 }

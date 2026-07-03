@@ -66,6 +66,50 @@ func TestEvaluateFileVersionRule_MissingFileIsCleanNegative(t *testing.T) {
 	}
 }
 
+// A present, versioned system DLL exercises the full read → parse → compare →
+// matched path (the actual detection behavior).
+func TestEvaluateFileVersionRule_RealFile(t *testing.T) {
+	sysDLL := filepath.Join(os.Getenv("SystemRoot"), "System32", "kernel32.dll")
+	if _, err := os.Stat(sysDLL); err != nil {
+		t.Skipf("cannot stat %s: %v", sysDLL, err)
+	}
+
+	// kernel32 is well above 0.0.0.1, so >= must match and < must not.
+	if matched, supported := evaluateFileVersionRule(DetectionRule{
+		Type: "file_version", Path: sysDLL, Operator: ">=", Version: "0.0.0.1",
+	}); !matched || !supported {
+		t.Errorf(">= 0.0.0.1: want (matched=true, supported=true), got (%v, %v)", matched, supported)
+	}
+	if matched, supported := evaluateFileVersionRule(DetectionRule{
+		Type: "file_version", Path: sysDLL, Operator: "<", Version: "0.0",
+	}); matched || !supported {
+		t.Errorf("< 0.0: want (matched=false, supported=true), got (%v, %v)", matched, supported)
+	}
+}
+
+// A file that exists but carries no version resource must be undeterminable
+// (supported=false → fall back to exit code), NOT a definitive clean negative.
+func TestEvaluateFileVersionRule_NoVersionResourceIsUndeterminable(t *testing.T) {
+	plain := filepath.Join(t.TempDir(), "plain.txt")
+	if err := os.WriteFile(plain, []byte("not a PE with a version resource"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, found, err := readFileVersion(plain); found || err == nil {
+		t.Errorf("readFileVersion(no-resource file): want (found=false, err!=nil), got (found=%v, err=%v)", found, err)
+	}
+
+	matched, supported := evaluateFileVersionRule(DetectionRule{
+		Type: "file_version", Path: plain, Operator: ">=", Version: "1.0",
+	})
+	if matched {
+		t.Errorf("expected matched=false for file with no version resource")
+	}
+	if supported {
+		t.Errorf("expected supported=false (undeterminable) for file with no version resource")
+	}
+}
+
 func TestResolveDetectionRegistryRoot(t *testing.T) {
 	cases := []struct {
 		hive    string

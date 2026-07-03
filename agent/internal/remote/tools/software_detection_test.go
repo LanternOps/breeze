@@ -231,12 +231,15 @@ func TestEvaluateFileVersionComparison(t *testing.T) {
 		{"gt greater", "1.2.3.5", ">", "1.2.3.4", true, true},
 		{"eq match", "1.2", "==", "1.2.0.0", true, true},
 		{"eq mismatch", "1.2.0.1", "==", "1.2", false, true},
-		{"single = alias for eq", "1.2.3.4", "=", "1.2.3.4", true, true},
 		{"le equal", "1.2.3.4", "<=", "1.2.3.4", true, true},
 		{"le lesser", "1.0", "<=", "1.2", true, true},
+		{"le greater is false", "2.0", "<=", "1.9", false, true},
+		{"lt lesser is true", "1.8", "<", "1.9", true, true},
 		{"lt greater is false", "2.0", "<", "1.9", false, true},
 		{"numeric not lexical: 1.10 >= 1.9", "1.10", ">=", "1.9", true, true},
+		{"bare = is not a supported operator => unsupported", "1.2.3.4", "=", "1.2.3.4", false, false},
 		{"unknown operator => unsupported", "1.2.3.4", "~=", "1.2.3.4", false, false},
+		{"empty operator => unsupported", "1.2.3.4", "", "1.2.3.4", false, false},
 		{"unparseable actual => unsupported", "1.x", ">=", "1.0", false, false},
 		{"unparseable target => unsupported", "1.0", ">=", "1.x", false, false},
 	}
@@ -250,6 +253,24 @@ func TestEvaluateFileVersionComparison(t *testing.T) {
 				t.Errorf("supported: want %v, got %v", tc.wantSupported, supported)
 			}
 		})
+	}
+}
+
+func TestNormalizeVersionString(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"1.2.3.4", "1.2.3.4"},
+		{"1, 2, 3, 4", "1.2.3.4"},            // comma-space form
+		{"1,2,3,4", "1.2.3.4"},               // bare-comma form
+		{"  1.2.3  ", "1.2.3"},               // trimmed
+		{"5.0.1 (build 3)", "5.0.1(build3)"}, // left for parseFileVersion to reject
+	}
+	for _, tc := range cases {
+		if got := normalizeVersionString(tc.in); got != tc.want {
+			t.Errorf("normalizeVersionString(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

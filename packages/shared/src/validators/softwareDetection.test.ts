@@ -92,6 +92,25 @@ describe('detectionRuleSchema', () => {
     expect(r.success).toBe(false);
   });
 
+  it('accepts a file_version component at the 65535 ceiling but rejects above it', () => {
+    expect(
+      detectionRuleSchema.safeParse({
+        type: 'file_version',
+        path: 'C:\\app.exe',
+        operator: '>=',
+        version: '65535.65535.65535.65535',
+      }).success,
+    ).toBe(true);
+    expect(
+      detectionRuleSchema.safeParse({ type: 'file_version', path: 'C:\\app.exe', operator: '>=', version: '65536' })
+        .success,
+    ).toBe(false);
+    expect(
+      detectionRuleSchema.safeParse({ type: 'file_version', path: 'C:\\app.exe', operator: '>=', version: '70000.0.0.0' })
+        .success,
+    ).toBe(false);
+  });
+
   it('rejects a file_version clause with a non-numeric or malformed version', () => {
     expect(
       detectionRuleSchema.safeParse({ type: 'file_version', path: 'C:\\x', operator: '>=', version: '1.2.x' })
