@@ -1,6 +1,6 @@
 // Owns ticketing configuration: custom statuses, priority SLA settings, and org-level overrides — per 2026-06-12 spec.
 
-import { eq, and, asc, desc, inArray, count } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, count, ne, sql } from 'drizzle-orm';
 import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound, organizations, customerEmailDomains } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
 import { getConfig } from '../config/validate';
@@ -408,26 +408,31 @@ export async function getTicketConfig(partnerId: string) {
 }
 
 export async function createTicketStatus(partnerId: string, input: CreateTicketStatusInput) {
-  try {
-    const [row] = await db
-      .insert(ticketStatuses)
-      .values({
-        partnerId,
-        name: input.name,
-        coreStatus: input.coreStatus,
-        color: input.color ?? null,
-        sortOrder: input.sortOrder ?? 0,
-        isSystem: false,
-        isActive: true,
-      })
-      .returning();
-    return row;
-  } catch (err) {
-    if (isUniqueNameViolation(err)) {
-      throw new TicketConfigServiceError('A status with this name already exists', 409, 'STATUS_NAME_TAKEN');
-    }
-    throw err;
+  // ON CONFLICT DO NOTHING instead of catch-and-map: see createCatalogItem in
+  // catalogService.ts — postgres.js re-throws a raised unique violation at
+  // transaction-commit time even after it's caught here, clobbering the mapped
+  // 409 into a raw 500. A bare .onConflictDoNothing() is fine: this insert
+  // always sets isSystem: false, so ticket_statuses_partner_core_status_system_uq
+  // (partial, isSystem-only) can never be the conflicting index, and the id PK
+  // is a generated uuid — the only realistic conflict is the name index.
+  const rows = await db
+    .insert(ticketStatuses)
+    .values({
+      partnerId,
+      name: input.name,
+      coreStatus: input.coreStatus,
+      color: input.color ?? null,
+      sortOrder: input.sortOrder ?? 0,
+      isSystem: false,
+      isActive: true,
+    })
+    .onConflictDoNothing()
+    .returning();
+  const row = rows[0];
+  if (!row) {
+    throw new TicketConfigServiceError('A status with this name already exists', 409, 'STATUS_NAME_TAKEN');
   }
+  return row;
 }
 
 export async function updateTicketStatus(partnerId: string, id: string, input: UpdateTicketStatusInput) {
@@ -452,6 +457,30 @@ export async function updateTicketStatus(partnerId: string, id: string, input: U
     }
     if (input.isActive === false) {
       throw new TicketConfigServiceError('System statuses cannot be deactivated', 400, 'SYSTEM_STATUS_REQUIRED');
+    }
+  }
+
+  // Pre-check a name change instead of relying on the unique index raising: see
+  // createCatalogItem/updateCatalogItem in catalogService.ts — a raised violation
+  // aborts the surrounding withDbAccessContext transaction and postgres.js
+  // re-throws it at commit even when caught, clobbering the mapped 409 with a raw
+  // 500. Match ticket_statuses_partner_name_uq's case-insensitivity (it's a
+  // lower(name) functional index) via sql`lower(...)`. The isUniqueNameViolation
+  // catch below stays as a concurrent-writer backstop.
+  if (input.name !== undefined) {
+    const dup = await db
+      .select({ one: ticketStatuses.id })
+      .from(ticketStatuses)
+      .where(
+        and(
+          eq(ticketStatuses.partnerId, partnerId),
+          sql`lower(${ticketStatuses.name}) = lower(${input.name})`,
+          ne(ticketStatuses.id, id),
+        ),
+      )
+      .limit(1);
+    if (dup.length > 0) {
+      throw new TicketConfigServiceError('A status with this name already exists', 409, 'STATUS_NAME_TAKEN');
     }
   }
 
@@ -848,26 +877,28 @@ export async function createCustomerEmailDomain(
     .limit(1);
   if (!orgOk) throw new TicketConfigServiceError('That organization is not in your partner', 400, 'ORG_NOT_ACCESSIBLE');
 
-  try {
-    const [row] = await db
-      .insert(customerEmailDomains)
-      .values({
-        partnerId,
-        orgId: input.orgId,
-        domain: input.domain,
-        autoCreateContact: input.autoCreateContact,
-        createdBy: actor.userId,
-      })
-      .returning();
-    return row!;
-  } catch (err) {
-    // Pin the constraint name (matches the isUniqueNameViolation pattern above):
-    // a future second unique index must not be mislabeled as a domain collision.
-    if (isPgUniqueViolation(err, 'customer_email_domains_partner_domain_uq')) {
-      throw new TicketConfigServiceError('That domain is already mapped', 409, 'DOMAIN_ALREADY_MAPPED');
-    }
-    throw err;
+  // ON CONFLICT DO NOTHING instead of catch-and-map: see createCatalogItem in
+  // catalogService.ts — postgres.js re-throws a raised unique violation at
+  // transaction-commit time even after it's caught here, clobbering the mapped
+  // 409 into a raw 500. A bare .onConflictDoNothing() is fine: the id PK is a
+  // generated uuid, so the only realistic conflict is
+  // customer_email_domains_partner_domain_uq.
+  const rows = await db
+    .insert(customerEmailDomains)
+    .values({
+      partnerId,
+      orgId: input.orgId,
+      domain: input.domain,
+      autoCreateContact: input.autoCreateContact,
+      createdBy: actor.userId,
+    })
+    .onConflictDoNothing()
+    .returning();
+  const row = rows[0];
+  if (!row) {
+    throw new TicketConfigServiceError('That domain is already mapped', 409, 'DOMAIN_ALREADY_MAPPED');
   }
+  return row;
 }
 
 export async function updateCustomerEmailDomain(

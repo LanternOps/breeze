@@ -6,7 +6,6 @@ import { backupInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/s
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
-import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { findOfflineDurationViolation } from '../../services/alertConditions/offlineDuration';
 import {
   getConfigPolicy,
@@ -170,30 +169,31 @@ featureLinkRoutes.post(
       if (violation) return c.json({ error: violation }, 400);
     }
 
-    try {
-      const link = await addFeatureLink(
-        id,
-        data.featureType,
-        data.featurePolicyId,
-        data.inlineSettings
-      );
+    // addFeatureLink returns null (instead of throwing) on a duplicate — see the
+    // comment on its onConflictDoNothing insert in configurationPolicy.ts for
+    // why the raised-violation catch pattern doesn't work inside this route's
+    // withDbAccessContext transaction.
+    const link = await addFeatureLink(
+      id,
+      data.featureType,
+      data.featurePolicyId,
+      data.inlineSettings
+    );
 
-      writeRouteAudit(c, {
-        orgId: policy.orgId,
-        action: 'config_policy.feature_link.add',
-        resourceType: 'configuration_policy',
-        resourceId: id,
-        resourceName: policy.name,
-        details: { featureType: data.featureType, featurePolicyId: data.featurePolicyId },
-      });
-
-      return c.json(link, 201);
-    } catch (err: unknown) {
-      if (isPgUniqueViolation(err)) {
-        return c.json({ error: `Feature type "${data.featureType}" already linked to this policy` }, 409);
-      }
-      throw err;
+    if (!link) {
+      return c.json({ error: `Feature type "${data.featureType}" already linked to this policy` }, 409);
     }
+
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'config_policy.feature_link.add',
+      resourceType: 'configuration_policy',
+      resourceId: id,
+      resourceName: policy.name,
+      details: { featureType: data.featureType, featurePolicyId: data.featurePolicyId },
+    });
+
+    return c.json(link, 201);
   }
 );
 

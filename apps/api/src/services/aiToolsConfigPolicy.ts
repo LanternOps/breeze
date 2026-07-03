@@ -1,5 +1,4 @@
 import { db } from '../db';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
@@ -221,28 +220,29 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' });
       }
 
-      try {
-        const assignment = await assignPolicy(
-          input.configPolicyId as string,
-          input.level as any,
-          input.targetId as string,
-          Number(input.priority) || 0,
-          auth.user.id,
-          (input.roleFilter as string[] | undefined),
-          (input.osFilter as string[] | undefined)
-        );
+      // assignPolicy returns null (instead of throwing) on a duplicate — see
+      // the comment on its onConflictDoNothing insert in configurationPolicy.ts
+      // for why the raised-violation catch pattern doesn't work inside this
+      // tool call's withDbAccessContext transaction.
+      const assignment = await assignPolicy(
+        input.configPolicyId as string,
+        input.level as any,
+        input.targetId as string,
+        Number(input.priority) || 0,
+        auth.user.id,
+        (input.roleFilter as string[] | undefined),
+        (input.osFilter as string[] | undefined)
+      );
 
-        return JSON.stringify({
-          success: true,
-          message: `Policy "${policy.name}" assigned to ${input.level} ${input.targetId}`,
-          assignmentId: assignment.id,
-        });
-      } catch (err: unknown) {
-        if (isPgUniqueViolation(err)) {
-          return JSON.stringify({ error: 'This policy is already assigned to this target at this level' });
-        }
-        throw err;
+      if (!assignment) {
+        return JSON.stringify({ error: 'This policy is already assigned to this target at this level' });
       }
+
+      return JSON.stringify({
+        success: true,
+        message: `Policy "${policy.name}" assigned to ${input.level} ${input.targetId}`,
+        assignmentId: assignment.id,
+      });
     }),
   });
 
@@ -617,20 +617,20 @@ For link-only types, set featurePolicyId instead of inlineSettings:
           });
         }
 
-        try {
-          const link = await addFeatureLink(
-            configPolicyId,
-            featureType as any,
-            (input.featurePolicyId as string) ?? null,
-            input.inlineSettings ?? null
-          );
-          return JSON.stringify({ success: true, featureLink: link });
-        } catch (err: unknown) {
-          if (isPgUniqueViolation(err)) {
-            return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
-          }
-          throw err;
+        // addFeatureLink returns null (instead of throwing) on a duplicate —
+        // see the comment on its onConflictDoNothing insert in
+        // configurationPolicy.ts for why the raised-violation catch pattern
+        // doesn't work inside this tool call's withDbAccessContext transaction.
+        const link = await addFeatureLink(
+          configPolicyId,
+          featureType as any,
+          (input.featurePolicyId as string) ?? null,
+          input.inlineSettings ?? null
+        );
+        if (!link) {
+          return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
         }
+        return JSON.stringify({ success: true, featureLink: link });
       }
 
       if (action === 'update') {

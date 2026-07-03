@@ -982,6 +982,14 @@ export async function addFeatureLink(
         ? normalizePatchInlineSettings(inlineSettings)
         : inlineSettings;
 
+    // ON CONFLICT DO NOTHING instead of catch-and-map: callers run inside the
+    // withDbAccessContext transaction, and postgres.js re-throws a raised
+    // unique violation at commit time even after it's caught by the caller,
+    // turning a mapped 409 back into a raw 500 (see createCatalogItem in
+    // catalogService.ts). `config_feature_links_unique` (config_policy_id,
+    // feature_type) is the only non-PK unique constraint on this table, so a
+    // bare onConflictDoNothing only ever suppresses that duplicate-link case.
+    // Callers must treat a null return as "already linked".
     const [link] = await tx
       .insert(configPolicyFeatureLinks)
       .values({
@@ -991,9 +999,10 @@ export async function addFeatureLink(
         // Keep JSONB as a compatibility/UI mirror; runtime must read normalized settings.
         inlineSettings: effectiveInlineSettings ?? null,
       })
+      .onConflictDoNothing()
       .returning();
 
-    if (!link) throw new Error('Failed to create feature link');
+    if (!link) return null;
 
     // Decompose inlineSettings into normalized per-feature table
     if (featureType === 'patch' || effectiveInlineSettings) {
@@ -1131,6 +1140,14 @@ export async function assignPolicy(
   roleFilter?: string[],
   osFilter?: string[]
 ) {
+  // ON CONFLICT DO NOTHING instead of catch-and-map: callers run inside the
+  // withDbAccessContext transaction, and postgres.js re-throws a raised unique
+  // violation at commit time even after it's caught by the caller, turning a
+  // mapped 409 back into a raw 500 (see createCatalogItem in catalogService.ts).
+  // `config_assignments_unique` (config_policy_id, level, target_id) is the
+  // only non-PK unique constraint on this table, so a bare onConflictDoNothing
+  // only ever suppresses that duplicate-assignment case. Callers must treat a
+  // null return as "already assigned".
   const [assignment] = await db
     .insert(configPolicyAssignments)
     .values({
@@ -1142,9 +1159,9 @@ export async function assignPolicy(
       osFilter: osFilter?.length ? osFilter : null,
       assignedBy: userId,
     })
+    .onConflictDoNothing()
     .returning();
-  if (!assignment) throw new Error('Failed to create policy assignment');
-  return assignment;
+  return assignment ?? null;
 }
 
 export async function validateAssignmentTarget(

@@ -27,6 +27,7 @@ import {
   getPartnerStripe,
   getPartnerStripeStatus,
   disconnectPartnerStripe,
+  PartnerStripeError,
 } from '../../services/partnerStripe';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -125,6 +126,69 @@ describe('partner Stripe API-key credentials (breeze_app, real DB)', () => {
       .rejects.toMatchObject({ code: 'INVALID_STRIPE_KEY' });
     const rows = await withSystemDbAccessContext(() => db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, b.id)));
     expect(rows).toHaveLength(0); // acct_uq violation rolled back — nothing persisted for B
+  });
+
+  // REGRESSION #2189 — the cross-partner claim must surface as a typed error
+  // WITHOUT poisoning the partner-scoped request transaction. The old code let
+  // acct_uq raise a 23505 inside withDbAccessContext; postgres.js records the
+  // raw error and re-throws it at commit even after the service mapped it, so
+  // the route's friendly 400 was deterministically clobbered into a raw 500.
+  // The fix pre-checks the claim under a SYSTEM context on its own connection
+  // (partner-axis RLS hides the other partner's row from the request context,
+  // so an in-context pre-check would be silently vacuous). This test runs the
+  // duplicate attempt INSIDE one partner-scoped context — the route's exact
+  // shape — then keeps using the same transaction; both assertions fail
+  // against the old code (25P02 on the follow-up, raw re-throw at commit).
+  runDb('duplicate account claim inside a partner-scoped request context: typed error caught inline, transaction stays usable', async () => {
+    const [a, b] = await withSystemDbAccessContext(async () => [await createPartner(), await createPartner()]);
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_claimed2189', charges_enabled: true });
+    await withSystemDbAccessContext(() =>
+      savePartnerStripeKey({ partnerId: a.id, apiKey: ['sk', 'test', '51CLAIMEDaaaa1111'].join('_'), userId: null }));
+
+    const outcome = await withDbAccessContext(partnerCtx(b!.id), async () => {
+      let caught: unknown;
+      try {
+        await savePartnerStripeKey({ partnerId: b!.id, apiKey: ['sk', 'test', '51CLAIMEDbbbb2222'].join('_'), userId: null });
+      } catch (err) {
+        caught = err;
+      }
+      // Follow-up query in the SAME transaction — dies with 25P02 under the
+      // old code because the acct_uq violation aborted the transaction.
+      const rows = await db
+        .select({ id: stripeConnectAccounts.id })
+        .from(stripeConnectAccounts)
+        .where(eq(stripeConnectAccounts.partnerId, b!.id));
+      return { caught, rowCount: rows.length };
+    });
+
+    // Reaching here proves the context resolved (no raw re-throw at commit).
+    expect(outcome.caught).toBeInstanceOf(PartnerStripeError);
+    expect(outcome.caught).toMatchObject({
+      code: 'INVALID_STRIPE_KEY',
+      status: 400,
+      message: 'That Stripe account is already connected to another partner. Use a key for a different Stripe account.',
+    });
+    expect(outcome.rowCount).toBe(0); // nothing persisted for B
+  });
+
+  // The pre-check must not false-positive on the partner's OWN claim: rotating
+  // a key for the same Stripe account, inside the partner's own request
+  // context, still upserts in place.
+  runDb('re-saving the SAME account under the partner\'s own request context passes the pre-check (rotation)', async () => {
+    const partner = await withSystemDbAccessContext(() => createPartner());
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_rotate2189', charges_enabled: true });
+    const keyA = ['sk', 'test', '51ROTATEaaaa1111'].join('_');
+    const keyB = ['sk', 'test', '51ROTATEbbbb2222'].join('_');
+    await withDbAccessContext(partnerCtx(partner.id), () =>
+      savePartnerStripeKey({ partnerId: partner.id, apiKey: keyA, userId: null }));
+    const res = await withDbAccessContext(partnerCtx(partner.id), () =>
+      savePartnerStripeKey({ partnerId: partner.id, apiKey: keyB, userId: null }));
+    expect(res.last4).toBe('2222');
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, partner.id)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.keyLast4).toBe('2222');
   });
 
   // A live key (rk_live/sk_live) flips livemode — drives the test/live badge in the UI.

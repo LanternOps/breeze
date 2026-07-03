@@ -186,6 +186,29 @@ describe('featureLinks routes', () => {
       expect(addFeatureLinkMock).toHaveBeenCalled();
     });
 
+    it('returns 409 (not 500) when the feature type is already linked to this policy', async () => {
+      // addFeatureLink uses .onConflictDoNothing().returning() rather than
+      // raising a 23505: withDbAccessContext wraps the request in a postgres.js
+      // transaction that re-throws the original error at commit time even
+      // after it's caught, turning a mapped 409 back into a raw 500 (see
+      // createCatalogItem in catalogService.ts). A null return from the
+      // mocked service is how the route detects the duplicate feature link.
+      addFeatureLinkMock.mockResolvedValue(null);
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'pam',
+          inlineSettings: {},
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toEqual({
+        error: 'Feature type "pam" already linked to this policy',
+      });
+    });
+
     it('rejects pam inlineSettings with unknown extra key (strict passthrough behavior)', async () => {
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',

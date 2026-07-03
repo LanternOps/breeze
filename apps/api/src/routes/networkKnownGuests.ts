@@ -6,7 +6,6 @@ import { db } from '../db';
 import { networkKnownGuests } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const networkKnownGuestsRoutes = new Hono();
 const requireKnownGuestRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -51,25 +50,28 @@ networkKnownGuestsRoutes.post(
     const body = c.req.valid('json');
     const normalizedMac = body.macAddress.toLowerCase();
 
-    try {
-      const [guest] = await db
-        .insert(networkKnownGuests)
-        .values({
-          partnerId: auth.partnerId,
-          macAddress: normalizedMac,
-          label: body.label,
-          notes: body.notes ?? null,
-          addedBy: auth.user?.id ?? null
-        })
-        .returning();
+    // ON CONFLICT DO NOTHING instead of catch-and-map: the request runs inside
+    // the withDbAccessContext transaction, and postgres.js re-throws a raised
+    // unique violation at commit time even after it's caught here, turning the
+    // mapped 409 back into a raw 500 (see createCatalogItem in catalogService.ts).
+    // Zero returned rows means this partner/MAC pair already exists.
+    const [guest] = await db
+      .insert(networkKnownGuests)
+      .values({
+        partnerId: auth.partnerId,
+        macAddress: normalizedMac,
+        label: body.label,
+        notes: body.notes ?? null,
+        addedBy: auth.user?.id ?? null
+      })
+      .onConflictDoNothing()
+      .returning();
 
-      return c.json({ data: guest }, 201);
-    } catch (err: unknown) {
-      if (isPgUniqueViolation(err)) {
-        return c.json({ error: 'This MAC address is already in your known guests list' }, 409);
-      }
-      throw err;
+    if (!guest) {
+      return c.json({ error: 'This MAC address is already in your known guests list' }, 409);
     }
+
+    return c.json({ data: guest }, 201);
   }
 );
 

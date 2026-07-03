@@ -288,7 +288,9 @@ describe('networkBaseline routes', () => {
       const created = makeBaseline();
       vi.mocked(db.insert).mockReturnValueOnce({
         values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([created]),
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([created]),
+          }),
         }),
       } as any);
 
@@ -364,11 +366,17 @@ describe('networkBaseline routes', () => {
         }),
       } as any);
 
+      // The route uses .onConflictDoNothing().returning() rather than catching
+      // a raised 23505: withDbAccessContext wraps the request in a postgres.js
+      // transaction that re-throws the original error at commit time even
+      // after it's caught, turning a mapped 409 back into a raw 500 (see
+      // createCatalogItem in catalogService.ts). Zero returned rows is how the
+      // route detects the duplicate org/site/subnet collision.
       vi.mocked(db.insert).mockReturnValueOnce({
         values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockRejectedValue(
-            Object.assign(new Error('unique constraint'), { code: '23505' })
-          ),
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([]),
+          }),
         }),
       } as any);
 

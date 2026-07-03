@@ -125,6 +125,29 @@ describe('configurationPolicies assignment routes', () => {
     );
   });
 
+  it('returns 409 (not 500) when the policy is already assigned to this target at this level', async () => {
+    // assignPolicy uses .onConflictDoNothing().returning() rather than raising
+    // a 23505: withDbAccessContext wraps the request in a postgres.js
+    // transaction that re-throws the original error at commit time even after
+    // it's caught, turning a mapped 409 back into a raw 500 (see
+    // createCatalogItem in catalogService.ts). A null return from the mocked
+    // service is how the route detects the duplicate assignment.
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue(null);
+
+    const res = await app.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'device', targetId: DEVICE_ID }),
+    });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error: 'This policy is already assigned to this target at this level',
+    });
+  });
+
   it('denies cross-org assignment targets before inserting the assignment', async () => {
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
     validateAssignmentTargetMock.mockResolvedValue({

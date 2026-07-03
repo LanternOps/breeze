@@ -32,7 +32,6 @@ import {
   getIncidentWithOrgCheck,
 } from './incidents.helpers';
 import { incidentActionRoutes } from './incidentActions';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export const incidentRoutes = new Hono();
 const requireIncidentRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -100,39 +99,35 @@ incidentRoutes.post(
       },
     }];
 
-    let incident;
-    try {
-      [incident] = await db
-        .insert(incidents)
-        .values({
-          orgId: orgId!,
-          title: data.title,
-          classification: data.classification,
-          severity: data.severity,
-          status: data.status ?? 'detected',
-          summary: data.summary,
-          relatedAlerts: data.relatedAlerts ?? [],
-          affectedDevices: data.affectedDevices ?? [],
-          timeline: initialTimeline,
-          assignedTo: data.assignedTo,
-          detectedAt,
-          sourceType: data.sourceType,
-          sourceRef: data.sourceRef,
-        })
-        .returning();
-    } catch (err) {
-      // Promoting the same EDR finding twice collides on the partial unique
-      // index `incidents_source_ref_unique` (org_id, source_type, source_ref).
-      // Surface a clean 409 instead of leaking the raw Postgres 23505 as a 500.
-      // Match the specific constraint so an unrelated 23505 still throws.
-      if (isPgUniqueViolation(err, 'incidents_source_ref_unique')) {
-        return c.json({ error: 'This finding has already been promoted to an incident' }, 409);
-      }
-      throw err;
-    }
+    // ON CONFLICT DO NOTHING instead of catch-and-map: the request runs inside
+    // the withDbAccessContext transaction, and postgres.js re-throws a raised
+    // unique violation at commit time even after it's caught here, turning the
+    // mapped 409 back into a raw 500 (see createCatalogItem in catalogService.ts).
+    // Promoting the same EDR finding twice collides on the partial unique index
+    // `incidents_source_ref_unique` (org_id, source_type, source_ref); zero
+    // returned rows means it's already been promoted.
+    const [incident] = await db
+      .insert(incidents)
+      .values({
+        orgId: orgId!,
+        title: data.title,
+        classification: data.classification,
+        severity: data.severity,
+        status: data.status ?? 'detected',
+        summary: data.summary,
+        relatedAlerts: data.relatedAlerts ?? [],
+        affectedDevices: data.affectedDevices ?? [],
+        timeline: initialTimeline,
+        assignedTo: data.assignedTo,
+        detectedAt,
+        sourceType: data.sourceType,
+        sourceRef: data.sourceRef,
+      })
+      .onConflictDoNothing()
+      .returning();
 
     if (!incident) {
-      return c.json({ error: 'Failed to create incident' }, 500);
+      return c.json({ error: 'This finding has already been promoted to an incident' }, 409);
     }
 
     try {

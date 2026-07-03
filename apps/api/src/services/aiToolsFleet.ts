@@ -664,8 +664,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             });
           }
 
-          // Add new patch feature link
+          // Add new patch feature link. addFeatureLink returns null (instead of
+          // throwing) on a duplicate; existingLinks was just checked above so
+          // this is effectively unreachable outside a race, but guard anyway.
           const link = await addFeatureLink(configPolicyId, 'patch', null, patchSettings);
+          if (!link) return JSON.stringify({ error: 'Patch feature link already exists on this policy' });
           return JSON.stringify({
             success: true,
             message: `Patch auto-approval configured on policy "${policy.name}"`,
@@ -686,7 +689,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         if (!newPolicy) return JSON.stringify({ error: 'Failed to create configuration policy' });
 
+        // newPolicy.id is freshly generated above, so a duplicate feature-link
+        // conflict is not realistically reachable; guard for type-safety only.
         const link = await addFeatureLink(newPolicy.id, 'patch', null, patchSettings);
+        if (!link) return JSON.stringify({ error: 'Failed to configure patch auto-approval on the new policy' });
         return JSON.stringify({
           success: true,
           message: `Created new policy "${newPolicy.name}" with patch auto-approval`,

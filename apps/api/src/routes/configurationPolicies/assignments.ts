@@ -4,7 +4,6 @@ import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
-import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   getConfigPolicy,
   assignPolicy,
@@ -100,36 +99,37 @@ assignmentRoutes.post(
       return c.json({ error: targetValidation.error ?? 'Assignment target is not valid for this policy organization' }, 403);
     }
 
-    try {
-      const assignment = await assignPolicy(
-        id,
-        data.level,
-        targetId,
-        data.priority ?? 0,
-        auth.user.id,
-        data.roleFilter,
-        data.osFilter
-      );
+    // assignPolicy returns null (instead of throwing) on a duplicate — see the
+    // comment on its onConflictDoNothing insert in configurationPolicy.ts for
+    // why the raised-violation catch pattern doesn't work inside this route's
+    // withDbAccessContext transaction.
+    const assignment = await assignPolicy(
+      id,
+      data.level,
+      targetId,
+      data.priority ?? 0,
+      auth.user.id,
+      data.roleFilter,
+      data.osFilter
+    );
 
-      // Invalidate remote access policy cache — assignment may affect access decisions
-      invalidateRemoteAccessCache();
-
-      writeRouteAudit(c, {
-        orgId: policy.orgId,
-        action: 'config_policy.assign',
-        resourceType: 'configuration_policy',
-        resourceId: id,
-        resourceName: policy.name,
-        details: { level: data.level, targetId, priority: data.priority },
-      });
-
-      return c.json(assignment, 201);
-    } catch (err: unknown) {
-      if (isPgUniqueViolation(err)) {
-        return c.json({ error: 'This policy is already assigned to this target at this level' }, 409);
-      }
-      throw err;
+    if (!assignment) {
+      return c.json({ error: 'This policy is already assigned to this target at this level' }, 409);
     }
+
+    // Invalidate remote access policy cache — assignment may affect access decisions
+    invalidateRemoteAccessCache();
+
+    writeRouteAudit(c, {
+      orgId: policy.orgId,
+      action: 'config_policy.assign',
+      resourceType: 'configuration_policy',
+      resourceId: id,
+      resourceName: policy.name,
+      details: { level: data.level, targetId, priority: data.priority },
+    });
+
+    return c.json(assignment, 201);
   }
 );
 

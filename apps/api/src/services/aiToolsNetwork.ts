@@ -11,7 +11,6 @@
 
 import { isIP } from 'node:net';
 import { db } from '../db';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   devices,
   deviceIpHistory,
@@ -321,31 +320,31 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
       });
 
-      try {
-        const [created] = await db
-          .insert(networkBaselines)
-          .values({
-            orgId,
-            siteId,
-            subnet,
-            knownDevices: [],
-            scanSchedule: nextSchedule,
-            alertSettings: nextAlertSettings,
-            updatedAt: new Date()
-          })
-          .returning({ id: networkBaselines.id });
+      // ON CONFLICT DO NOTHING instead of catch-and-map: this handler runs inside
+      // the AI tool's withDbAccessContext transaction, which re-throws a caught
+      // unique violation as a raw PostgresError at commit time (see
+      // createCatalogItem in catalogService.ts). Suppressing the conflict at the
+      // statement level keeps the transaction healthy; zero returned rows means
+      // a baseline already exists for this org/site/subnet.
+      const [created] = await db
+        .insert(networkBaselines)
+        .values({
+          orgId,
+          siteId,
+          subnet,
+          knownDevices: [],
+          scanSchedule: nextSchedule,
+          alertSettings: nextAlertSettings,
+          updatedAt: new Date()
+        })
+        .onConflictDoNothing()
+        .returning({ id: networkBaselines.id });
 
-        if (!created) {
-          return JSON.stringify({ error: 'Failed to create baseline' });
-        }
-
-        return JSON.stringify({ success: true, baselineId: created.id, action: 'created' });
-      } catch (error) {
-        if (isPgUniqueViolation(error)) {
-          return JSON.stringify({ error: 'Baseline already exists for this org/site/subnet' });
-        }
-        throw error;
+      if (!created) {
+        return JSON.stringify({ error: 'Baseline already exists for this org/site/subnet' });
       }
+
+      return JSON.stringify({ success: true, baselineId: created.id, action: 'created' });
     }
   });
 

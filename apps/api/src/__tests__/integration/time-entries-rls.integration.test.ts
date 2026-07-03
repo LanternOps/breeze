@@ -307,15 +307,14 @@ describe('timer semantics (D3) — real driver', () => {
 
     // Each startTimer runs in its own withDbAccessContext (its own transaction)
     // to simulate two concurrent HTTP requests racing — exactly how it happens
-    // in production. withDbAccessContext wraps everything in a single postgres.js
-    // transaction, so if a unique-constraint violation occurs inside a context,
-    // that transaction is aborted and the retry (which happens inside the same
-    // aborted transaction) will also fail. This is expected: in production, one
-    // concurrent request wins and the other surfaces a transient error to the
-    // client, who can retry. What the DB-level unique index GUARANTEES is that
-    // you can NEVER end up with two running entries simultaneously — at most one
-    // survives. Promise.allSettled lets us accept that one call may throw while
-    // proving the invariant: exactly one running entry in the DB.
+    // in production. Since #2189, startTimer suppresses the one-running-timer
+    // conflict with ON CONFLICT DO NOTHING (a raised 23505 used to abort the
+    // request transaction, kill the in-transaction retry with 25P02, and get
+    // re-thrown raw at commit by postgres.js). The loser's insert now blocks on
+    // the winner's uncommitted row, returns zero rows once it commits, and the
+    // retry auto-stops the winner's entry and starts its own — so BOTH requests
+    // succeed, and the DB-level partial unique index still guarantees at most
+    // one running entry survives.
     const results = await Promise.allSettled([
       withDbAccessContext(partnerAContext, () =>
         startTimer({ description: 'race-1' }, techAActor)
@@ -325,9 +324,10 @@ describe('timer semantics (D3) — real driver', () => {
       ),
     ]);
 
-    // At least one call must have succeeded.
+    // Both calls succeed (the loser retries after the conflict instead of
+    // dying inside an aborted transaction).
     const succeeded = results.filter((r) => r.status === 'fulfilled');
-    expect(succeeded.length).toBeGreaterThanOrEqual(1);
+    expect(succeeded).toHaveLength(2);
 
     // The DB-level partial unique index enforces the invariant: exactly one
     // running entry per user — regardless of which request(s) succeeded.
@@ -341,6 +341,59 @@ describe('timer semantics (D3) — real driver', () => {
           isNull(timeEntries.endedAt)
         )
       );
+    expect(running).toHaveLength(1);
+  });
+
+  // REGRESSION #2189 — a running-timer conflict that startTimer can NEVER
+  // resolve (the conflicting row is hidden from the request context by
+  // partner-axis RLS, so the D3 auto-stop can't see or stop it, while the
+  // GLOBAL partial unique index still fires) must surface as the typed 409
+  // WITHOUT poisoning the request transaction. Under the old catch-and-retry
+  // code this was the doubly-broken path: the 23505 aborted the transaction,
+  // the retry died with 25P02 (not a unique violation), the intended 409 was
+  // unreachable, and postgres.js re-threw the raw error at commit.
+  it('an unresolvable running-timer conflict maps to a typed 409 inside one context and the transaction stays usable', async () => {
+    const { partnerB, techA, partnerAContext, techAActor } = await seedFixture();
+    const adminDb = getTestDb() as any;
+
+    // A RUNNING entry for techA under partner B, seeded via the privileged
+    // pool. Partner A's context cannot see it (partner-axis RLS), so
+    // stopRunningEntry never stops it — but time_entries_one_running_per_user_uq
+    // is a global index on user_id and still rejects a second running row.
+    await adminDb.insert(timeEntries).values({
+      partnerId: partnerB.id,
+      userId: techA.id,
+      startedAt: new Date(Date.now() - 60_000),
+      endedAt: null,
+      durationMinutes: null,
+    });
+
+    const outcome = await withDbAccessContext(partnerAContext, async () => {
+      let caught: unknown;
+      try {
+        await startTimer({ description: 'blocked by hidden running entry' }, techAActor);
+      } catch (err) {
+        caught = err;
+      }
+      // Follow-up query in the SAME transaction — fails with 25P02 under the
+      // old code because the raised 23505 aborted the transaction.
+      const rows = await db
+        .select({ id: timeEntries.id })
+        .from(timeEntries)
+        .where(eq(timeEntries.userId, techAActor.userId));
+      return { caught, followUpOk: Array.isArray(rows) };
+    });
+
+    // Reaching here proves the context resolved (no raw re-throw at commit).
+    expect(outcome.caught).toBeInstanceOf(TimeEntryServiceError);
+    expect(outcome.caught).toMatchObject({ status: 409, code: 'ENTRY_RUNNING' });
+    expect(outcome.followUpOk).toBe(true);
+
+    // No second running entry was created for the user.
+    const running = await adminDb
+      .select({ id: timeEntries.id })
+      .from(timeEntries)
+      .where(and(eq(timeEntries.userId, techA.id), isNull(timeEntries.endedAt)));
     expect(running).toHaveLength(1);
   });
 

@@ -6,11 +6,16 @@ const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
     // queue of results for successive db.select()...where()/limit() terminals
     selectResults: [] as unknown[][],
     insertResult: [] as unknown[],
+    // Per-call insert results (shifted before falling back to insertResult) —
+    // lets a test give the first timeEntries insert a conflict (empty array via
+    // onConflictDoNothing) and the retry a success row.
+    insertResultsQueue: [] as unknown[][],
     insertErrors: [] as unknown[],
     updateResult: [] as unknown[],
     insertedValues: [] as Record<string, unknown>[],
     updateSetArgs: [] as Record<string, unknown>[],
-    whereArgs: [] as unknown[]
+    whereArgs: [] as unknown[],
+    onConflictDoNothingCalls: 0
   };
   const configMocks = {
     getOrgBillingDefaults: vi.fn().mockResolvedValue(null),
@@ -54,11 +59,19 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => ({
       values: vi.fn((vals: Record<string, unknown>) => {
         dbMocks.insertedValues.push(vals);
+        const returning = vi.fn(() => {
+          const err = dbMocks.insertErrors.shift();
+          if (err) return Promise.reject(err);
+          const queued = dbMocks.insertResultsQueue.shift();
+          return Promise.resolve(queued ?? dbMocks.insertResult);
+        });
         return {
-          returning: vi.fn(() => {
-            const err = dbMocks.insertErrors.shift();
-            if (err) return Promise.reject(err);
-            return Promise.resolve(dbMocks.insertResult);
+          returning,
+          // startTimer suppresses the one-running-timer conflict at the
+          // statement level (#2189): zero returned rows = lost the race.
+          onConflictDoNothing: vi.fn(() => {
+            dbMocks.onConflictDoNothingCalls += 1;
+            return { returning };
           })
         };
       })
@@ -138,9 +151,11 @@ beforeEach(() => {
   dbMocks.insertedValues.length = 0;
   dbMocks.updateSetArgs.length = 0;
   dbMocks.insertErrors.length = 0;
+  dbMocks.insertResultsQueue.length = 0;
   dbMocks.whereArgs.length = 0;
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
+  dbMocks.onConflictDoNothingCalls = 0;
   emitMock.mockClear();
   configMocks.getOrgBillingDefaults.mockResolvedValue(null);
 });
@@ -388,51 +403,47 @@ describe('startTimer / stopTimer', () => {
     await expect(stopTimer({}, ACTOR)).rejects.toMatchObject({ code: 'NO_RUNNING_TIMER', status: 404 });
   });
 
-  it('converts a second running-timer unique violation into a 409 service error', async () => {
-    const uniqueViolation = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
-    dbMocks.insertErrors.push(uniqueViolation, uniqueViolation);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      await expect(startTimer({ description: 'race' }, ACTOR))
-        .rejects.toMatchObject({ code: 'ENTRY_RUNNING', status: 409 });
-      expect(consoleSpy).toHaveBeenCalledWith(
-        '[timeEntryService.startTimer] unique violation, retrying once',
-        uniqueViolation.message
-      );
-    } finally {
-      consoleSpy.mockRestore();
-    }
-  });
-
-  // Regression: real postgres.js/Drizzle errors nest the PG code under `.cause`
-  // (the top-level DrizzleQueryError has no `.code`). A flat `{ code: '23505' }`
-  // mock hid this — in production the unique-violation guard never matched and a
-  // raw 500 leaked instead of the retry/409 path. isUniqueViolation must unwrap.
-  it('detects a unique violation wrapped in a DrizzleQueryError cause (no top-level code)', async () => {
-    const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
-    const wrapped = Object.assign(new Error('Failed query: insert into "time_entries" ...'), { cause: pgError }); // no .code on the wrapper
-    dbMocks.insertErrors.push(wrapped, wrapped);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      await expect(startTimer({ description: 'race' }, ACTOR))
-        .rejects.toMatchObject({ code: 'ENTRY_RUNNING', status: 409 });
-    } finally {
-      consoleSpy.mockRestore();
-    }
-  });
-
-  it('retries once and succeeds when only the first start hits a wrapped unique violation', async () => {
-    const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
-    const wrapped = Object.assign(new Error('Failed query: insert ...'), { cause: pgError });
+  // #2189 regression block: the one-running-timer conflict must NEVER raise a
+  // statement error. The old catch-and-retry design let the 23505 abort the
+  // surrounding withDbAccessContext transaction — the in-transaction retry then
+  // died with 25P02 (not a unique violation), so the intended 409 at the end of
+  // startTimer was unreachable, and postgres.js re-threw the raw error at
+  // commit anyway. startTimer now suppresses the conflict with ON CONFLICT DO
+  // NOTHING: zero returned rows = lost the race, no error object ever exists.
+  it('startTimer routes the running-timer insert through onConflictDoNothing', async () => {
     dbMocks.updateResult = []; // no running timer to stop
-    dbMocks.insertErrors.push(wrapped); // first attempt fails, retry uses insertResult
-    dbMocks.insertResult = [{ id: 'te-retry', endedAt: null }];
+    dbMocks.insertResult = [{ id: 'te-new', endedAt: null }];
+    await startTimer({ description: 'plain start' }, ACTOR);
+    expect(dbMocks.onConflictDoNothingCalls).toBe(1);
+  });
+
+  it('converts a persistent running-timer conflict into the typed 409 (no statement ever raises)', async () => {
+    dbMocks.updateResult = []; // nothing visible to auto-stop (e.g. an RLS-hidden running entry)
+    dbMocks.insertResultsQueue.push([], []); // both attempts lose the race → zero rows
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(startTimer({ description: 'race' }, ACTOR))
+        .rejects.toMatchObject({ name: 'TimeEntryServiceError', code: 'ENTRY_RUNNING', status: 409 });
+      expect(consoleSpy).toHaveBeenCalledWith('[timeEntryService.startTimer] running-timer conflict, retrying once');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    // Exactly two attempts: the initial insert plus one retry (each preceded by
+    // an auto-stop CAS update).
+    expect(dbMocks.insertedValues).toHaveLength(2);
+    expect(dbMocks.updateSetArgs).toHaveLength(2);
+  });
+
+  it('retries once and succeeds when only the first insert loses the running-timer race', async () => {
+    dbMocks.updateResult = []; // no running timer to stop
+    dbMocks.insertResultsQueue.push([], [{ id: 'te-retry', endedAt: null }]);
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       await expect(startTimer({ description: 'race' }, ACTOR)).resolves.toMatchObject({ id: 'te-retry' });
     } finally {
       consoleSpy.mockRestore();
     }
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'time_entry.created', timeEntryId: 'te-retry' }));
   });
 });
 

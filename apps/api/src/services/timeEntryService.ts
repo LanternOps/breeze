@@ -3,7 +3,6 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, users, ticketComments } from '../db/schema';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { getOrgBillingDefaults } from './ticketConfigService';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus } from '@breeze/shared';
 
 export type TimeEntryServiceErrorCode =
@@ -268,10 +267,6 @@ async function stopRunningEntry(
   return rows[0] ?? null;
 }
 
-// Unwraps the DrizzleQueryError `.cause` so the retry/409 path actually fires
-// (a bare `err.code` check missed every wrapped insert). See utils/pgErrors.
-const isUniqueViolation = (err: unknown): boolean => isPgUniqueViolation(err);
-
 export async function startTimer(input: { ticketId?: string; description?: string }, actor: TimeEntryActor) {
   let partnerId = actor.partnerId;
   let orgId: string | null = null;
@@ -300,6 +295,17 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         `${actor.name ?? 'Technician'} logged ${fmtMinutes(autoStopped.durationMinutes)}${autoStopped.isBillable ? ' (billable)' : ''}`
       );
     }
+    // ON CONFLICT DO NOTHING instead of catch-and-retry (issue #2189): the
+    // request runs inside the withDbAccessContext transaction, so a raised
+    // 23505 on time_entries_one_running_per_user_uq ABORTED that transaction —
+    // the old catch-then-retry re-ran attempt() inside the aborted transaction,
+    // the retry failed with 25P02 (not a unique violation), and postgres.js
+    // substituted the original raw error back in at commit, so the intended
+    // 409 below was unreachable and callers always got a raw 500. Suppressing
+    // the conflict at the statement level keeps the transaction healthy: zero
+    // rows back means we lost the one-running-timer-per-user race (including
+    // to a running entry that partner-axis RLS hides from this context, which
+    // stopRunningEntry can never see or stop).
     const rows = await db
       .insert(timeEntries)
       .values({
@@ -315,25 +321,20 @@ export async function startTimer(input: { ticketId?: string; description?: strin
         hourlyRate: defaultRate,
         billingStatus: 'not_billed'
       })
+      .onConflictDoNothing()
       .returning();
-    return rows[0]!;
+    return rows[0] ?? null;
   };
 
-  let entry: typeof timeEntries.$inferSelect;
-  try {
+  let entry = await attempt();
+  if (!entry) {
+    // Lost the race: another start slipped in between the auto-stop and our
+    // insert — stop that one too and retry once.
+    console.error('[timeEntryService.startTimer] running-timer conflict, retrying once');
     entry = await attempt();
-  } catch (err) {
-    if (!isUniqueViolation(err)) throw err;
-    // Lost the race: another start slipped in — stop it and retry once.
-    console.error('[timeEntryService.startTimer] unique violation, retrying once', err instanceof Error ? err.message : err);
-    try {
-      entry = await attempt();
-    } catch (retryErr) {
-      if (isUniqueViolation(retryErr)) {
-        throw new TimeEntryServiceError('Timer start conflicted with a concurrent request — try again', 409, 'ENTRY_RUNNING');
-      }
-      throw retryErr;
-    }
+  }
+  if (!entry) {
+    throw new TimeEntryServiceError('Timer start conflicted with a concurrent request — try again', 409, 'ENTRY_RUNNING');
   }
 
   await emitTimeEntryEvent({

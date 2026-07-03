@@ -15,6 +15,7 @@ vi.mock('../db', () => ({
 
 import {
   addFeatureLink,
+  assignPolicy,
   updateFeatureLink,
   listFeatureLinks,
   pamInlineSettingsSchema,
@@ -78,17 +79,19 @@ describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () =>
             // feature link insert — captures what lands in the inline_settings JSONB
             storedJsonb = v.inlineSettings;
             return {
-              returning: vi.fn(() =>
-                Promise.resolve([
-                  {
-                    id: 'link-1',
-                    configPolicyId: 'policy-1',
-                    featureType: 'patch',
-                    featurePolicyId: null,
-                    inlineSettings: v.inlineSettings,
-                  },
-                ])
-              ),
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-1',
+                      configPolicyId: 'policy-1',
+                      featureType: 'patch',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
             };
           }
           // config_policy_patch_settings insert (decomposeInlineSettings)
@@ -404,11 +407,13 @@ describe('addFeatureLink — pam inlineSettings service-layer validation', () =>
     const tx = {
       insert: vi.fn(() => ({
         values: vi.fn(() => ({
-          returning: vi.fn(() =>
-            Promise.resolve([
-              { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: { uacInterceptionEnabled: false } },
-            ])
-          ),
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() =>
+              Promise.resolve([
+                { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: { uacInterceptionEnabled: false } },
+              ])
+            ),
+          })),
         })),
       })),
     };
@@ -423,11 +428,13 @@ describe('addFeatureLink — pam inlineSettings service-layer validation', () =>
     const tx = {
       insert: vi.fn(() => ({
         values: vi.fn(() => ({
-          returning: vi.fn(() =>
-            Promise.resolve([
-              { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: {} },
-            ])
-          ),
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() =>
+              Promise.resolve([
+                { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: {} },
+              ])
+            ),
+          })),
         })),
       })),
     };
@@ -441,11 +448,13 @@ describe('addFeatureLink — pam inlineSettings service-layer validation', () =>
     const tx = {
       insert: vi.fn(() => ({
         values: vi.fn(() => ({
-          returning: vi.fn(() =>
-            Promise.resolve([
-              { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: null },
-            ])
-          ),
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() =>
+              Promise.resolve([
+                { id: 'link-pam', configPolicyId: 'policy-1', featureType: 'pam', featurePolicyId: null, inlineSettings: null },
+              ])
+            ),
+          })),
         })),
       })),
     };
@@ -526,11 +535,13 @@ describe('addFeatureLink — vulnerability inlineSettings service-layer validati
     const tx = {
       insert: vi.fn(() => ({
         values: vi.fn(() => ({
-          returning: vi.fn(() =>
-            Promise.resolve([
-              { id: 'link-vuln', configPolicyId: 'policy-1', featureType: 'vulnerability', featurePolicyId: null, inlineSettings },
-            ])
-          ),
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() =>
+              Promise.resolve([
+                { id: 'link-vuln', configPolicyId: 'policy-1', featureType: 'vulnerability', featurePolicyId: null, inlineSettings },
+              ])
+            ),
+          })),
         })),
       })),
     };
@@ -769,5 +780,54 @@ describe('validateFeaturePolicyExists — software_policy dual-axis linking (#21
     const result = await validateFeaturePolicyExists('security', 'missing', { orgId: 'org-1', partnerId: null });
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/Security policy .* not found/i);
+  });
+});
+
+// ============================================================
+// onConflictDoNothing duplicate handling (issue #2189) — a raised unique
+// violation gets re-thrown by postgres.js at withDbAccessContext commit time
+// even after a caller catches it, turning a mapped 409 back into a raw 500
+// (see createCatalogItem in catalogService.ts). Both inserts below suppress
+// the conflict at the statement level and return null instead.
+// ============================================================
+
+describe('addFeatureLink — duplicate feature link returns null instead of throwing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns null when onConflictDoNothing suppresses a duplicate (config_feature_links_unique)', async () => {
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([])),
+          })),
+        })),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const link = await addFeatureLink('policy-1', 'patch', null, null);
+    expect(link).toBeNull();
+  });
+});
+
+describe('assignPolicy — duplicate assignment returns null instead of throwing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns null when onConflictDoNothing suppresses a duplicate (config_assignments_unique)', async () => {
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve([])),
+        })),
+      })),
+    } as any);
+
+    const assignment = await assignPolicy('policy-1', 'device', 'device-1', 0, 'user-1');
+    expect(assignment).toBeNull();
   });
 });

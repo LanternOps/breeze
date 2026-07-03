@@ -111,6 +111,63 @@ describe('configuration policy AI tools', () => {
     expect(assignPolicyMock).not.toHaveBeenCalled();
   });
 
+  it('assigns a configuration policy when no conflicting assignment exists', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' }]),
+        }),
+      }),
+    } as any);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'device',
+      targetId: DEVICE_ID,
+    }, makeAuth());
+
+    expect(JSON.parse(output)).toEqual({
+      success: true,
+      message: `Policy "Policy 1" assigned to device ${DEVICE_ID}`,
+      assignmentId: 'assignment-1',
+    });
+  });
+
+  // assignPolicy's insert (configurationPolicy.ts) uses onConflictDoNothing and
+  // returns null instead of throwing on a duplicate — see the comment there.
+  // Before the fix, this scenario surfaced as a raw PostgresError because the
+  // withDbAccessContext transaction re-throws a caught unique violation at
+  // commit time; the tool handler must instead branch on a null return.
+  it('returns a friendly error, not a throw, when apply_configuration_policy hits a duplicate assignment', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' }]),
+        }),
+      }),
+    } as any);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue(null);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'device',
+      targetId: DEVICE_ID,
+    }, makeAuth());
+
+    expect(JSON.parse(output)).toEqual({
+      error: 'This policy is already assigned to this target at this level',
+    });
+  });
+
   // The HTTP route (featureLinks.ts) rejects org-scoped-only features on
   // partner-wide policies with a 400; the AI path must mirror that rule from
   // the same shared constant (ORG_SCOPED_ONLY_FEATURE_TYPES, #2101) since
@@ -167,5 +224,35 @@ describe('configuration policy AI tools', () => {
       null,
       { sources: ['os'] }
     );
+  });
+
+  // addFeatureLink's insert (configurationPolicy.ts) uses onConflictDoNothing
+  // and returns null instead of throwing on a duplicate — see the comment
+  // there. Before the fix, this scenario surfaced as a raw PostgresError
+  // because the withDbAccessContext transaction re-throws a caught unique
+  // violation at commit time; the tool handler must instead branch on a null
+  // return.
+  it('returns a friendly error, not a throw, when manage_policy_feature_link hits a duplicate feature link', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      name: 'Org policy',
+    } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue(null as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'patch',
+      inlineSettings: { sources: ['os'] },
+    }, makeAuth());
+
+    expect(JSON.parse(output)).toEqual({
+      error: 'Feature type "patch" already exists on this policy. Use update action instead.',
+    });
   });
 });

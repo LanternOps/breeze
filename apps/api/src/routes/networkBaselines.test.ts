@@ -126,10 +126,11 @@ function rigSiteLookup(site: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({ from } as never);
 }
 
-/** Rigs the insert chain: db.insert(...).values(...).returning(). */
+/** Rigs the insert chain: db.insert(...).values(...).onConflictDoNothing().returning(). */
 function rigInsert(row: unknown) {
   const returning = vi.fn().mockResolvedValue([row]);
-  const values = vi.fn().mockReturnValue({ returning });
+  const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+  const values = vi.fn().mockReturnValue({ onConflictDoNothing });
   vi.mocked(db.insert).mockReturnValueOnce({ values } as never);
 }
 

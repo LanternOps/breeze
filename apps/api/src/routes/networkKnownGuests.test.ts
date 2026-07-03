@@ -177,7 +177,8 @@ describe('networkKnownGuests routes', () => {
       };
 
       const mockReturning = vi.fn().mockResolvedValue([insertedGuest]);
-      const mockValues = vi.fn().mockReturnValue({ returning: mockReturning });
+      const mockOnConflictDoNothing = vi.fn().mockReturnValue({ returning: mockReturning });
+      const mockValues = vi.fn().mockReturnValue({ onConflictDoNothing: mockOnConflictDoNothing });
       vi.mocked(db.insert).mockReturnValue({ values: mockValues } as any);
 
       const res = await app.request('/partner/known-guests', {
@@ -212,7 +213,8 @@ describe('networkKnownGuests routes', () => {
       };
 
       const mockReturning = vi.fn().mockResolvedValue([insertedGuest]);
-      const mockValues = vi.fn().mockReturnValue({ returning: mockReturning });
+      const mockOnConflictDoNothing = vi.fn().mockReturnValue({ returning: mockReturning });
+      const mockValues = vi.fn().mockReturnValue({ onConflictDoNothing: mockOnConflictDoNothing });
       vi.mocked(db.insert).mockReturnValue({ values: mockValues } as any);
 
       const res = await app.request('/partner/known-guests', {
@@ -231,10 +233,15 @@ describe('networkKnownGuests routes', () => {
     });
 
     it('returns 409 on duplicate MAC for same partner', async () => {
-      const mockReturning = vi.fn().mockRejectedValue(
-        Object.assign(new Error('unique constraint'), { code: '23505' })
-      );
-      const mockValues = vi.fn().mockReturnValue({ returning: mockReturning });
+      // The route uses .onConflictDoNothing().returning() rather than catching
+      // a raised 23505: withDbAccessContext wraps the request in a postgres.js
+      // transaction that re-throws the original error at commit time even
+      // after it's caught, turning a mapped 409 back into a raw 500 (see
+      // createCatalogItem in catalogService.ts). Zero returned rows is how the
+      // route detects the duplicate partner/MAC collision.
+      const mockReturning = vi.fn().mockResolvedValue([]);
+      const mockOnConflictDoNothing = vi.fn().mockReturnValue({ returning: mockReturning });
+      const mockValues = vi.fn().mockReturnValue({ onConflictDoNothing: mockOnConflictDoNothing });
       vi.mocked(db.insert).mockReturnValue({ values: mockValues } as any);
 
       const res = await app.request('/partner/known-guests', {

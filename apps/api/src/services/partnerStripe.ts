@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { stripeConnectAccounts } from '../db/schema/stripePayments';
 import { encryptSecret, decryptSecret } from './secretCrypto';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -81,6 +81,40 @@ export async function savePartnerStripeKey(input: {
   const encrypted = encryptSecret(apiKey);
   const now = new Date();
 
+  // stripe_connect_accounts_acct_uq is a GLOBAL unique index on
+  // stripe_account_id (one Breeze partner per Stripe account, cross-partner),
+  // while the table's RLS policy is partner-axis — from THIS partner's request
+  // context another partner's claim on the account is invisible. Two
+  // consequences (issue #2189):
+  //   1. an in-context pre-check SELECT would silently return zero rows and
+  //      the upsert would still trip the constraint, and
+  //   2. letting the constraint raise doesn't work either: the request runs
+  //      inside the withDbAccessContext transaction, and postgres.js records
+  //      the raw 23505 and re-throws it at commit even after the catch below
+  //      maps it — the route's mapped 400 was deterministically clobbered
+  //      into a raw 500.
+  // So pre-check under a system context on its own short-lived transaction.
+  // runOutsideDbContext is required: a nested withSystemDbAccessContext alone
+  // short-circuits into the SAME partner-scoped request transaction. Only the
+  // claiming partner_id is read — nothing crosses the tenant boundary back to
+  // the caller.
+  const claimedByOtherPartner = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const rows = await db
+        .select({ partnerId: stripeConnectAccounts.partnerId })
+        .from(stripeConnectAccounts)
+        .where(eq(stripeConnectAccounts.stripeAccountId, accountId))
+        .limit(1);
+      return rows[0] !== undefined && rows[0].partnerId !== input.partnerId;
+    })
+  );
+  if (claimedByOtherPartner) {
+    throw new PartnerStripeError(
+      'That Stripe account is already connected to another partner. Use a key for a different Stripe account.',
+      'INVALID_STRIPE_KEY',
+    );
+  }
+
   try {
     await db
       .insert(stripeConnectAccounts)
@@ -111,12 +145,16 @@ export async function savePartnerStripeKey(input: {
         },
       });
   } catch (err) {
-    // The upsert resolves conflicts on partner_id, but a second unique index
-    // (stripe_connect_accounts_acct_uq) guards stripe_account_id. If this key
-    // belongs to a Stripe account already claimed by ANOTHER partner, the row is
-    // a fresh INSERT that trips acct_uq (23505). Surface it as a key problem the
-    // partner can act on, not a raw 500. Drizzle wraps the postgres.js error, so
-    // the pg code/constraint live on `.cause` — isPgUniqueViolation walks the chain.
+    // Concurrent-writer backstop only: the system-context pre-check above
+    // catches the deterministic case, so acct_uq (23505) can now fire solely
+    // when another partner claims the same Stripe account BETWEEN the
+    // pre-check and this upsert. On this path the surrounding
+    // withDbAccessContext transaction is already aborted and postgres.js will
+    // re-throw the raw error at commit (the mapped error below does NOT reach
+    // the caller — they see a 500), but the window is a vanishing-probability
+    // race instead of the previously deterministic path. Kept for the log/
+    // intent trail; Drizzle wraps the postgres.js error, so the pg code/
+    // constraint live on `.cause` — isPgUniqueViolation walks the chain.
     if (isPgUniqueViolation(err, 'stripe_connect_accounts_acct_uq')) {
       throw new PartnerStripeError(
         'That Stripe account is already connected to another partner. Use a key for a different Stripe account.',

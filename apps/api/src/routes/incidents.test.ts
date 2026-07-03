@@ -177,18 +177,20 @@ describe('incidentRoutes', () => {
   it('creates an incident from POST /incidents', async () => {
     vi.mocked(db.insert).mockReturnValueOnce({
       values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([
-          {
-            id: '33333333-3333-4333-8333-333333333333',
-            orgId: '22222222-2222-4222-8222-222222222222',
-            title: 'Ransomware behavior detected',
-            classification: 'malware',
-            severity: 'p1',
-            status: 'detected',
-            relatedAlerts: [],
-            affectedDevices: [],
-          },
-        ]),
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            {
+              id: '33333333-3333-4333-8333-333333333333',
+              orgId: '22222222-2222-4222-8222-222222222222',
+              title: 'Ransomware behavior detected',
+              classification: 'malware',
+              severity: 'p1',
+              status: 'detected',
+              relatedAlerts: [],
+              affectedDevices: [],
+            },
+          ]),
+        }),
       }),
     } as any);
 
@@ -219,20 +221,22 @@ describe('incidentRoutes', () => {
 
   it('persists sourceType/sourceRef when promoting an EDR finding', async () => {
     const valuesMock = vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue([
-        {
-          id: '33333333-3333-4333-8333-333333333333',
-          orgId: '22222222-2222-4222-8222-222222222222',
-          title: 'Huntress: Suspicious login',
-          classification: 'huntress-incident',
-          severity: 'p1',
-          status: 'detected',
-          relatedAlerts: [],
-          affectedDevices: [],
-          sourceType: 'huntress_incident',
-          sourceRef: 'hunt-abc-123',
-        },
-      ]),
+      onConflictDoNothing: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: '33333333-3333-4333-8333-333333333333',
+            orgId: '22222222-2222-4222-8222-222222222222',
+            title: 'Huntress: Suspicious login',
+            classification: 'huntress-incident',
+            severity: 'p1',
+            status: 'detected',
+            relatedAlerts: [],
+            affectedDevices: [],
+            sourceType: 'huntress_incident',
+            sourceRef: 'hunt-abc-123',
+          },
+        ]),
+      }),
     });
     vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
 
@@ -261,20 +265,17 @@ describe('incidentRoutes', () => {
   });
 
   it('returns 409 (not 500) when the same EDR finding is promoted twice', async () => {
-    // postgres.js raises a 23505 PostgresError carrying the constraint name;
-    // Drizzle wraps it in a query error whose real fields live on `.cause`.
-    // isPgUniqueViolation walks that chain, so reproduce both layers here. The
-    // promote handler matches `incidents_source_ref_unique` specifically.
-    const pgError = Object.assign(
-      new Error('duplicate key value violates unique constraint "incidents_source_ref_unique"'),
-      { code: '23505', constraint: 'incidents_source_ref_unique' },
-    );
-    const drizzleError = Object.assign(new Error('Failed query: insert into "incidents"'), {
-      cause: pgError,
-    });
+    // The route uses .onConflictDoNothing().returning() rather than catching a
+    // raised 23505: withDbAccessContext wraps the request in a postgres.js
+    // transaction that re-throws the original error at commit time even after
+    // it's caught, turning a mapped 409 back into a raw 500 (see
+    // createCatalogItem in catalogService.ts). Zero returned rows is how the
+    // route detects the duplicate `incidents_source_ref_unique` collision.
     vi.mocked(db.insert).mockReturnValueOnce({
       values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockRejectedValue(drizzleError),
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
       }),
     } as any);
 

@@ -56,6 +56,7 @@ vi.mock('../db', () => ({
         };
         return {
           returning: vi.fn(returning),
+          onConflictDoNothing: vi.fn(() => ({ returning: vi.fn(returning) })),
           onConflictDoUpdate: vi.fn((arg: Record<string, unknown>) => {
             dbMocks.conflictArgs.push(arg);
             // priority upsert has no .returning(); make the chain awaitable AND
@@ -103,6 +104,7 @@ vi.mock('drizzle-orm', async (importActual) => {
     ...actual,
     and: vi.fn((...conds: unknown[]) => ({ __op: 'and', conds })),
     eq: vi.fn((column: unknown, value: unknown) => ({ __op: 'eq', column, value })),
+    ne: vi.fn((column: unknown, value: unknown) => ({ __op: 'ne', column, value })),
     inArray: vi.fn((column: unknown, values: unknown) => ({ __op: 'inArray', column, values })),
   };
 });
@@ -134,6 +136,11 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'id', partnerId: 'partnerId',
   },
+  customerEmailDomains: {
+    id: 'id', partnerId: 'partnerId', orgId: 'orgId', domain: 'domain',
+    autoCreateContact: 'autoCreateContact', isActive: 'isActive', createdBy: 'createdBy',
+    createdAt: 'createdAt', updatedAt: 'updatedAt',
+  },
 }));
 
 // ticketStatusEnum is read at module load for CoreTicketStatus type/values.
@@ -159,6 +166,7 @@ import {
   upsertPrioritySettings, upsertOrgTicketSettings, getOrgTicketSettings,
   TicketConfigServiceError, findStatusByName, listActiveStatusNames,
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
+  createCustomerEmailDomain,
 } from './ticketConfigService';
 
 const PARTNER = 'p-1';
@@ -300,30 +308,13 @@ describe('createTicketStatus', () => {
     expect(vals).toMatchObject({ partnerId: PARTNER, name: 'Triage', coreStatus: 'open', sortOrder: 0, isSystem: false, isActive: true, color: null });
   });
 
-  it('maps a 23505 unique violation to STATUS_NAME_TAKEN 409', async () => {
-    dbMocks.insertErrors.push(Object.assign(new Error('dup'), { code: '23505', constraint: 'ticket_statuses_partner_name_uq' }));
+  it('maps a suppressed conflict (onConflictDoNothing returns zero rows) to STATUS_NAME_TAKEN 409', async () => {
+    // The insert uses .onConflictDoNothing().returning() so a name collision never
+    // raises at the statement level (see the comment on createTicketStatus) — it
+    // surfaces as an empty .returning() result instead of a thrown 23505.
+    dbMocks.insertResult = [];
     await expect(createTicketStatus(PARTNER, { name: 'New', coreStatus: 'new' }))
       .rejects.toMatchObject({ status: 409, code: 'STATUS_NAME_TAKEN' });
-  });
-
-  it('maps a constraint-name violation surfaced only in the message to STATUS_NAME_TAKEN', async () => {
-    // postgres.js sets code 23505 but some wrappers drop the discrete .constraint
-    // field — the helper then falls back to scanning the message.
-    dbMocks.insertErrors.push(Object.assign(new Error('violates unique constraint "ticket_statuses_partner_name_uq"'), { code: '23505' }));
-    await expect(createTicketStatus(PARTNER, { name: 'New', coreStatus: 'new' }))
-      .rejects.toMatchObject({ code: 'STATUS_NAME_TAKEN' });
-  });
-
-  it('does NOT map a 23505 on a different constraint to STATUS_NAME_TAKEN', async () => {
-    // A 23505 on ticket_statuses_partner_core_status_system_uq is unrelated to name
-    // uniqueness and must be rethrown as-is (not mapped to STATUS_NAME_TAKEN).
-    const err = Object.assign(new Error('dup key'), {
-      code: '23505',
-      constraint: 'ticket_statuses_partner_core_status_system_uq',
-    });
-    dbMocks.insertErrors.push(err);
-    await expect(createTicketStatus(PARTNER, { name: 'New', coreStatus: 'new' }))
-      .rejects.toSatisfy((e: unknown) => !(e instanceof TicketConfigServiceError));
   });
 });
 
@@ -347,7 +338,8 @@ describe('updateTicketStatus', () => {
   });
 
   it('allows renaming + recoloring a system row (same coreStatus is fine)', async () => {
-    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'new', isSystem: true }]);
+    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'new', isSystem: true }]); // load
+    dbMocks.selectResults.push([]); // name pre-check: no duplicate
     dbMocks.updateResult = [{ id: STATUS_ID, name: 'Brand New' }];
     const row = await updateTicketStatus(PARTNER, STATUS_ID, { name: 'Brand New', color: '#112233', coreStatus: 'new' });
     expect(row).toEqual({ id: STATUS_ID, name: 'Brand New' });
@@ -364,8 +356,25 @@ describe('updateTicketStatus', () => {
     expect(dbMocks.updateSetArgs[0]!).toMatchObject({ isActive: false });
   });
 
-  it('maps a name unique violation on update to STATUS_NAME_TAKEN', async () => {
-    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'open', isSystem: false }]);
+  it('throws STATUS_NAME_TAKEN 409 from the pre-check when another status already has that name', async () => {
+    // The pre-check SELECT finds a conflicting row before the UPDATE ever runs —
+    // this is the fix for the 23505-clobbers-409 bug (see the comment on
+    // updateTicketStatus): no statement-level unique violation is raised.
+    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'open', isSystem: false }]); // load
+    dbMocks.selectResults.push([{ one: 'other-status-id' }]); // pre-check: conflicting row found
+    await expect(updateTicketStatus(PARTNER, STATUS_ID, { name: 'New' }))
+      .rejects.toMatchObject({ status: 409, code: 'STATUS_NAME_TAKEN' });
+    // The pre-check excludes the row being updated and scopes to the partner.
+    const dupWhere = dbMocks.whereArgs[dbMocks.whereArgs.length - 1];
+    expect(whereHasColumn(dupWhere, 'partnerId')).toBe(true);
+  });
+
+  it('maps a name unique violation on update to STATUS_NAME_TAKEN (concurrent-writer backstop)', async () => {
+    // The pre-check SELECT finds no duplicate, but a concurrent writer inserts the
+    // same name between the pre-check and the UPDATE — the isUniqueNameViolation
+    // catch is the backstop for that race.
+    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'open', isSystem: false }]); // load
+    dbMocks.selectResults.push([]); // pre-check: no duplicate at check time
     dbMocks.updateResult = []; // unused; error path
     // force the update returning to reject
     const { db } = await import('../db');
@@ -382,7 +391,8 @@ describe('updateTicketStatus', () => {
 
   it('throws STATUS_NOT_FOUND 404 when the UPDATE affects no rows (TOCTOU guard)', async () => {
     // Row exists at load time but is deleted before the UPDATE executes.
-    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'open', isSystem: false }]);
+    dbMocks.selectResults.push([{ id: STATUS_ID, coreStatus: 'open', isSystem: false }]); // load
+    dbMocks.selectResults.push([]); // pre-check: no duplicate
     dbMocks.updateResult = []; // UPDATE returns empty — row was deleted between SELECT and UPDATE
     await expect(updateTicketStatus(PARTNER, STATUS_ID, { name: 'X' }))
       .rejects.toMatchObject({ status: 404, code: 'STATUS_NOT_FOUND' });
@@ -664,5 +674,40 @@ describe('dismissEmailInbound', () => {
   it('throws INBOUND_ROW_ALREADY_RESOLVED for an already-ignored row', async () => {
     dbMocks.selectResults.push([{ id: 'r-1', partnerId: 'p-1', parseStatus: 'ignored' }]);
     await expect(dismissEmailInbound('p-1', 'r-1')).rejects.toMatchObject({ code: 'INBOUND_ROW_ALREADY_RESOLVED' });
+  });
+});
+
+// ── createCustomerEmailDomain ─────────────────────────────────────────────
+
+describe('createCustomerEmailDomain', () => {
+  const DOMAIN_ACTOR = { userId: 'u-1' };
+
+  it('creates a domain mapping for an org under the partner', async () => {
+    dbMocks.selectResults.push([{ id: 'o-1' }]); // org guard
+    dbMocks.insertResult = [{ id: 'd-1', domain: 'acme.com', orgId: 'o-1' }];
+    const row = await createCustomerEmailDomain(
+      PARTNER,
+      { orgId: 'o-1', domain: 'acme.com', autoCreateContact: true },
+      DOMAIN_ACTOR,
+    );
+    expect(row).toEqual({ id: 'd-1', domain: 'acme.com', orgId: 'o-1' });
+  });
+
+  it('throws ORG_NOT_ACCESSIBLE when the org is not under the partner', async () => {
+    dbMocks.selectResults.push([]); // org guard fails
+    await expect(
+      createCustomerEmailDomain(PARTNER, { orgId: 'o-x', domain: 'acme.com', autoCreateContact: true }, DOMAIN_ACTOR),
+    ).rejects.toMatchObject({ status: 400, code: 'ORG_NOT_ACCESSIBLE' });
+  });
+
+  it('maps a suppressed conflict (onConflictDoNothing returns zero rows) to DOMAIN_ALREADY_MAPPED 409', async () => {
+    // The insert uses .onConflictDoNothing().returning() so a domain collision
+    // never raises at the statement level (see the comment on
+    // createCustomerEmailDomain) — it surfaces as an empty .returning() result.
+    dbMocks.selectResults.push([{ id: 'o-1' }]); // org guard
+    dbMocks.insertResult = [];
+    await expect(
+      createCustomerEmailDomain(PARTNER, { orgId: 'o-1', domain: 'acme.com', autoCreateContact: true }, DOMAIN_ACTOR),
+    ).rejects.toMatchObject({ status: 409, code: 'DOMAIN_ALREADY_MAPPED' });
   });
 });

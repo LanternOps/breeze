@@ -11,7 +11,6 @@ import {
 } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { enqueueBaselineScan } from '../jobs/networkBaselineWorker';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   normalizeBaselineAlertSettings,
   normalizeBaselineScanSchedule
@@ -288,47 +287,46 @@ networkBaselineRoutes.post(
     const schedule = normalizeBaselineScanSchedule(body.scanSchedule);
     const alertSettings = normalizeBaselineAlertSettings(body.alertSettings);
 
-    try {
-      const [created] = await db
-        .insert(networkBaselines)
-        .values({
-          orgId,
-          siteId: body.siteId,
-          subnet: body.subnet,
-          knownDevices: [],
-          scanSchedule: schedule,
-          alertSettings,
-          lastScanAt: null,
-          lastScanJobId: null,
-          updatedAt: new Date()
-        })
-        .returning();
-
-      if (!created) {
-        return c.json({ error: 'Failed to create baseline' }, 500);
-      }
-
-      writeRouteAudit(c, {
+    // ON CONFLICT DO NOTHING instead of catch-and-map: the request runs inside
+    // the withDbAccessContext transaction, and postgres.js re-throws a raised
+    // unique violation at commit time even after it's caught here, turning the
+    // mapped 409 back into a raw 500 (see createCatalogItem in catalogService.ts).
+    // Zero returned rows means a baseline already exists for this org/site/subnet.
+    const [created] = await db
+      .insert(networkBaselines)
+      .values({
         orgId,
-        action: 'network.baseline.create',
-        resourceType: 'network_baseline',
-        resourceId: created.id,
-        resourceName: created.subnet,
-        details: {
-          siteId: created.siteId,
-          profileId: body.profileId ?? null,
-          scanSchedule: created.scanSchedule,
-          alertSettings: created.alertSettings
-        }
-      });
+        siteId: body.siteId,
+        subnet: body.subnet,
+        knownDevices: [],
+        scanSchedule: schedule,
+        alertSettings,
+        lastScanAt: null,
+        lastScanJobId: null,
+        updatedAt: new Date()
+      })
+      .onConflictDoNothing()
+      .returning();
 
-      return c.json(mapBaselineRow(created), 201);
-    } catch (error) {
-      if (isPgUniqueViolation(error)) {
-        return c.json({ error: 'Baseline already exists for this org/site/subnet' }, 409);
-      }
-      throw error;
+    if (!created) {
+      return c.json({ error: 'Baseline already exists for this org/site/subnet' }, 409);
     }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'network.baseline.create',
+      resourceType: 'network_baseline',
+      resourceId: created.id,
+      resourceName: created.subnet,
+      details: {
+        siteId: created.siteId,
+        profileId: body.profileId ?? null,
+        scanSchedule: created.scanSchedule,
+        alertSettings: created.alertSettings
+      }
+    });
+
+    return c.json(mapBaselineRow(created), 201);
   }
 );
 
