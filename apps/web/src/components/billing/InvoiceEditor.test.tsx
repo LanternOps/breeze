@@ -300,6 +300,29 @@ describe('InvoiceEditor', () => {
     await waitFor(() => expect(notes).not.toBeDisabled());
   });
 
+  it('disables the terms textarea while its own save is in flight (busy cue)', async () => {
+    // Symmetric with the notes field — the terms disable also reflects
+    // isPending('terms').
+    let releasePatch: (v: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1' && opts?.method === 'PATCH') {
+        return new Promise<Response>((resolve) => { releasePatch = resolve; });
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const terms = screen.getByTestId('invoice-terms');
+    fireEvent.change(terms, { target: { value: 'Net 30' } });
+    fireEvent.blur(terms); // dirty → saveTerms → PATCH held open
+
+    await waitFor(() => expect(terms).toBeDisabled());
+    releasePatch(json({ data: {} }));
+    await waitFor(() => expect(terms).not.toBeDisabled());
+  });
+
   it('editing the T&C textarea and blurring issues PATCH /invoices/:id with { termsAndConditions }', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {

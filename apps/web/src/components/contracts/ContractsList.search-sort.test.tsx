@@ -203,8 +203,11 @@ describe('ContractsList — search, sort & skeleton', () => {
     expect(window.location.hash).toContain('status=active');
 
     fireEvent.change(screen.getByTestId('contracts-filter-status'), { target: { value: '' } });
-    // No residual '#': the fragment is gone entirely, not left as a bare hash.
-    expect(window.location.hash).toBe('');
+    // Assert on the full href, NOT `location.hash`: jsdom reports `location.hash`
+    // as '' even when a bare '#' dangles on the href, so a `.hash` check would
+    // pass against the old buggy `location.hash = ''` clear too (vacuous). The
+    // residue lives on the href, so that's what must be free of '#'.
+    expect(window.location.href).not.toContain('#');
   });
 
   // Only the `name` comparator was covered above; the org/status/estimate/start

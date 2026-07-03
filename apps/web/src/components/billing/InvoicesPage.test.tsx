@@ -217,7 +217,9 @@ describe('InvoicesPage', () => {
     expect(screen.queryByTestId('invoices-filters-clear')).not.toBeInTheDocument();
     fireEvent.change(screen.getByTestId('invoices-filter-status'), { target: { value: 'overdue' } });
     fireEvent.click(screen.getByTestId('invoices-filters-clear'));
-    expect(window.location.hash).toBe('');
+    // Assert on href (not `location.hash`, which jsdom reports '' even with a
+    // dangling '#'): the shared writeHashFilters clear must leave no residual '#'.
+    expect(window.location.href).not.toContain('#');
     expect(screen.getByTestId('invoices-filter-status')).toHaveValue('');
   });
 

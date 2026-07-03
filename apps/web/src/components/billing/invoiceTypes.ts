@@ -137,7 +137,7 @@ export const STATUS_LABELS: Record<InvoiceStatus, string> = {
 };
 
 // The semantic pill vocabulary (STATUS_PILL roles + StatusPillRole) now lives in
-// ./shared/statusPill — the shared sub-layer non-component modules (e.g.
+// ./shared/statusPillRoles — the shared sub-layer non-component modules (e.g.
 // lib/api/contracts) can import from without reaching into invoice-specific
 // component types. Re-exported here so existing './invoiceTypes' consumers are
 // unaffected.
