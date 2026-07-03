@@ -1,7 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
-import type { DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
+import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
@@ -79,6 +79,13 @@ export const devices = pgTable('devices', {
   // on the first post-reboot heartbeat. Backs the system.rebootRequired
   // filter and the "Reboot pending" UI badge.
   pendingReboot: boolean('pending_reboot').notNull().default(false),
+  // Current-state power/battery snapshot from the agent heartbeat (#2142).
+  // Latest value only — dynamic per-heartbeat state, stored next to uptime /
+  // pendingReboot rather than in the device_metrics time-series. null when the
+  // agent has never reported (old agent); { present: false } for a real
+  // no-battery desktop. Backs the optional "Power" list column and the
+  // device-detail Power section.
+  batteryStatus: jsonb('battery_status').$type<BatteryStatus | null>(),
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),

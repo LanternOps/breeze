@@ -185,6 +185,16 @@ export const heartbeatSchema = z.object({
     checkedAt: z.string().datetime({ offset: true }),
   }).optional().catch(undefined),
   isHeadless: z.boolean().optional().catch(undefined),
+  // Current-state power/battery telemetry (#2142). Informational — a bad value
+  // drops the whole battery object (.catch) rather than 400-ing the heartbeat.
+  battery: z.object({
+    present: z.boolean(),
+    percent: z.number().min(0).max(100).optional().catch(undefined),
+    chargingState: z.enum(['charging', 'discharging', 'full', 'not_charging', 'unknown']).optional().catch(undefined),
+    pluggedIn: z.boolean().optional().catch(undefined),
+    timeRemainingMinutes: z.number().int().min(0).optional().catch(undefined),
+    timeToFullMinutes: z.number().int().min(0).optional().catch(undefined),
+  }).optional().catch(undefined),
   role: z.enum(['agent', 'watchdog']).optional(),
   watchdogState: z.string().optional().catch(undefined),
   // Watchdog-only: 24h restart accounting for the main agent (#799 Layer B).

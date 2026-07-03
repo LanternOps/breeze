@@ -17,6 +17,46 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.success).toBe(true);
   });
 
+  it('parses a full battery snapshot (#2142)', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      battery: {
+        present: true,
+        percent: 42.5,
+        chargingState: 'discharging',
+        pluggedIn: false,
+        timeRemainingMinutes: 90,
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.battery).toMatchObject({ present: true, percent: 42.5, chargingState: 'discharging' });
+  });
+
+  it('drops an out-of-range battery percent but keeps the rest of the snapshot', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      battery: { present: true, percent: 250, chargingState: 'charging' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    // 250 > 100 fails the range check → dropped via .catch; present/state survive.
+    expect(result.data.battery?.percent).toBeUndefined();
+    expect(result.data.battery?.present).toBe(true);
+    expect(result.data.battery?.chargingState).toBe('charging');
+  });
+
+  it('drops an unknown chargingState enum value rather than rejecting', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      battery: { present: true, chargingState: 'supercharging' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.battery?.chargingState).toBeUndefined();
+    expect(result.data.battery?.present).toBe(true);
+  });
+
   it('drops oversized macAddress in currentIPs instead of rejecting heartbeat', () => {
     const payload = {
       ...minimal,

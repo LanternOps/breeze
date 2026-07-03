@@ -67,6 +67,45 @@ describe('DeviceList — OS version display', () => {
   });
 });
 
+describe('DeviceList — Power column (#2142)', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  const enablePower = () => {
+    fireEvent.click(screen.getByRole('button', { name: /columns/i }));
+    fireEvent.click(screen.getByLabelText('Power'));
+  };
+
+  it('shows battery percentage for devices with a battery', () => {
+    const device: Device = {
+      ...baseDevice,
+      batteryStatus: { present: true, percent: 85, chargingState: 'discharging', pluggedIn: false, reportedAt: new Date().toISOString() },
+    };
+    render(<DeviceList devices={[device]} />);
+    enablePower();
+    expect(screen.getByTestId(`device-${device.id}-power`)).toHaveTextContent('85%');
+  });
+
+  it('renders a dash for a no-battery desktop', () => {
+    const device: Device = {
+      ...baseDevice,
+      batteryStatus: { present: false, pluggedIn: true, reportedAt: new Date().toISOString() },
+    };
+    render(<DeviceList devices={[device]} />);
+    enablePower();
+    const cell = screen.getByTestId(`device-${device.id}-power`);
+    expect(cell).toHaveTextContent('—');
+    expect(cell).not.toHaveTextContent('%');
+  });
+
+  it('renders a dash when no battery data has been reported', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+    enablePower();
+    expect(screen.getByTestId(`device-${baseDevice.id}-power`)).toHaveTextContent('—');
+  });
+});
+
 describe('DeviceList — Device column display names', () => {
   beforeEach(() => {
     window.localStorage?.clear();

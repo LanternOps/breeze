@@ -393,6 +393,21 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       deviceUpdates.isHeadless = data.isHeadless;
     }
   }
+  if (data.battery) {
+    // Store the latest power snapshot, stamping the server-side receive time as
+    // "last reported". Only set fields the agent actually sent so a real 0
+    // (0% charge, 0 minutes) is distinct from "not reported" (absent). An old
+    // agent omits `battery` entirely, so we never clobber the last snapshot.
+    deviceUpdates.batteryStatus = {
+      present: data.battery.present,
+      ...(data.battery.percent !== undefined ? { percent: data.battery.percent } : {}),
+      ...(data.battery.chargingState !== undefined ? { chargingState: data.battery.chargingState } : {}),
+      ...(data.battery.pluggedIn !== undefined ? { pluggedIn: data.battery.pluggedIn } : {}),
+      ...(data.battery.timeRemainingMinutes !== undefined ? { timeRemainingMinutes: data.battery.timeRemainingMinutes } : {}),
+      ...(data.battery.timeToFullMinutes !== undefined ? { timeToFullMinutes: data.battery.timeToFullMinutes } : {}),
+      reportedAt: new Date().toISOString(),
+    };
+  }
 
   await db
     .update(devices)

@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu } from 'lucide-react';
-import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
+import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu, Battery, BatteryCharging, BatteryWarning, Plug } from 'lucide-react';
+import type { BatteryStatus, DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
@@ -117,6 +117,12 @@ export type Device = {
   reliabilityScore?: number | null;
   /** Reliability trend from the same subsystem; drives the small arrow indicator. */
   reliabilityTrend?: 'improving' | 'stable' | 'degrading' | null;
+  /**
+   * Current-state power/battery snapshot (#2142). null/undefined = no data
+   * reported yet (old agent or network device) → the Power column renders a
+   * dash. { present: false } = a real no-battery desktop → also a dash.
+   */
+  batteryStatus?: BatteryStatus | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -284,6 +290,12 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   pendingReboot: d => (d.pendingReboot ? 1 : null),
   cpu: d => (d.status === 'online' ? d.cpuPercent : null),
   ram: d => (d.status === 'online' ? d.ramPercent : null),
+  // Sort by charge for devices with a battery; no-battery/unknown rows sort as
+  // blanks-last null to match the dash the cell renders (#1284 invariant).
+  power: d =>
+    d.batteryStatus?.present && typeof d.batteryStatus.percent === 'number'
+      ? d.batteryStatus.percent
+      : null,
   cpuModel: d => d.hardware?.cpuModel || null,
   cores: d => (typeof d.hardware?.cpuCores === 'number' ? d.hardware.cpuCores : null),
   ramTotal: d => (typeof d.hardware?.ramTotalMb === 'number' ? d.hardware.ramTotalMb : null),
@@ -683,6 +695,31 @@ export default function DeviceList({
     degrading: { glyph: '↓', label: 'Degrading' },
   };
 
+  // Power/battery cell helpers (#2142).
+  const fmtBatteryDuration = (minutes: number): string => {
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    return `${m}m`;
+  };
+  const batteryStateLabel: Record<NonNullable<BatteryStatus['chargingState']>, string> = {
+    charging: 'Charging',
+    discharging: 'On battery',
+    full: 'Full',
+    not_charging: 'Not charging',
+    unknown: 'Unknown',
+  };
+  const formatBatteryTooltip = (b: BatteryStatus): string => {
+    const parts: string[] = [];
+    if (typeof b.percent === 'number') parts.push(`${Math.round(b.percent)}%`);
+    if (b.chargingState) parts.push(batteryStateLabel[b.chargingState] ?? b.chargingState);
+    if (b.pluggedIn !== undefined) parts.push(b.pluggedIn ? 'Plugged in (AC)' : 'On battery power');
+    if (typeof b.timeRemainingMinutes === 'number') parts.push(`~${fmtBatteryDuration(b.timeRemainingMinutes)} remaining`);
+    if (typeof b.timeToFullMinutes === 'number') parts.push(`~${fmtBatteryDuration(b.timeToFullMinutes)} to full`);
+    if (b.reportedAt) parts.push(`reported ${formatLastSeen(b.reportedAt, effectiveTimezone)}`);
+    return parts.join(' • ');
+  };
+
   // columnDefs is the single source of truth for each toggleable column's
   // header and per-row cell. The thead and tbody iterate `renderedColumns`
   // and pick from this table, so adding a new column means adding one
@@ -901,6 +938,42 @@ export default function DeviceList({
       cell: (device) => (
         <td key="ram" className="px-3 py-3 text-sm">{agentCell(device, metricBar(device.ramPercent, device.status === 'online'))}</td>
       ),
+    },
+    power: {
+      header: () => sortHeader('power', 'Power', 'Sort by battery charge'),
+      cell: (device) => {
+        const b = device.batteryStatus;
+        // No battery data, or a real no-battery desktop → dash.
+        if (!b || !b.present) {
+          return (
+            <td key="power" className="px-3 py-3 text-sm" data-testid={`device-${device.id}-power`}>
+              {agentCell(device, dash)}
+            </td>
+          );
+        }
+        const pct = typeof b.percent === 'number' ? Math.round(b.percent) : null;
+        const charging = b.chargingState === 'charging';
+        // "Low" only when actually running the battery down — plugged-in or
+        // charging at a low charge isn't an alert state.
+        const low = pct !== null && pct <= 20 && b.pluggedIn !== true && !charging && b.chargingState !== 'full';
+        const Icon = charging ? BatteryCharging : b.pluggedIn ? Plug : low ? BatteryWarning : Battery;
+        const colorClass = low ? 'text-destructive' : charging ? 'text-success' : 'text-muted-foreground';
+        return (
+          <td
+            key="power"
+            className="px-3 py-3 text-sm whitespace-nowrap"
+            title={formatBatteryTooltip(b)}
+            data-testid={`device-${device.id}-power`}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Icon className={`h-4 w-4 shrink-0 ${colorClass}`} aria-hidden="true" />
+              <span className={low ? 'font-medium text-destructive tabular-nums' : 'tabular-nums'}>
+                {pct !== null ? `${pct}%` : batteryStateLabel[b.chargingState ?? 'unknown']}
+              </span>
+            </span>
+          </td>
+        );
+      },
     },
     cpuModel: {
       header: () => sortHeader('cpuModel', 'CPU Model', 'Sort by CPU model'),

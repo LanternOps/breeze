@@ -85,6 +85,10 @@ type HeartbeatPayload struct {
 	OSVersion        string                    `json:"osVersion,omitempty"`
 	OSBuild          string                    `json:"osBuild,omitempty"`
 	IsHeadless       bool                      `json:"isHeadless"`
+	// Current-state power/battery telemetry (#2142). Pointer + omitempty so an
+	// old agent (or a platform that can't report power state) omits the field
+	// and the server keeps whatever it last knew rather than clobbering it.
+	Battery          *collectors.BatteryInfo   `json:"battery,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -2438,6 +2442,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	} else {
 		payload.MetricsAvailable = &metricsAvailable
 	}
+
+	// Current power/battery state (#2142). Nil on platforms that can't report
+	// it or when the query failed — omitempty then drops the field.
+	payload.Battery = h.hardwareCol.CollectBattery()
 
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()

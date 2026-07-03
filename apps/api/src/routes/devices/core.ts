@@ -534,6 +534,7 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        batteryStatus: devices.batteryStatus,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -650,6 +651,7 @@ coreRoutes.get(
         lastUser: d.lastUser,
         uptimeSeconds: d.uptimeSeconds,
         isHeadless: d.isHeadless,
+        batteryStatus: d.batteryStatus ?? null,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,

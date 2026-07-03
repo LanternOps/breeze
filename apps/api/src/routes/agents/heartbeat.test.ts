@@ -963,6 +963,99 @@ describe('pendingReboot persistence', () => {
 });
 
 // ---------------------------------------------------------------------
+// batteryStatus persistence (#2142)
+// ---------------------------------------------------------------------
+
+describe('batteryStatus persistence', () => {
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  function setupMocks(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  it('persists a battery snapshot, stamping reportedAt and keeping only sent fields', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        battery: { present: true, percent: 85, chargingState: 'discharging', pluggedIn: false, timeRemainingMinutes: 150 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    const battery = updateArg.batteryStatus as Record<string, unknown>;
+    expect(battery).toMatchObject({
+      present: true,
+      percent: 85,
+      chargingState: 'discharging',
+      pluggedIn: false,
+      timeRemainingMinutes: 150,
+    });
+    // reportedAt is stamped server-side; timeToFull was never sent so it is absent.
+    expect(typeof battery.reportedAt).toBe('string');
+    expect(battery).not.toHaveProperty('timeToFullMinutes');
+  });
+
+  it('records a no-battery desktop as { present: false }', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, battery: { present: false, pluggedIn: true } }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    const battery = updateArg.batteryStatus as Record<string, unknown>;
+    expect(battery.present).toBe(false);
+    expect(battery.pluggedIn).toBe(true);
+    expect(battery).not.toHaveProperty('percent');
+  });
+
+  it('leaves batteryStatus untouched when the agent omits battery (old agent)', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('batteryStatus');
+  });
+});
+
+// ---------------------------------------------------------------------
 // PAM config delivery (#uacInterceptionEnabled in heartbeat response)
 // ---------------------------------------------------------------------
 

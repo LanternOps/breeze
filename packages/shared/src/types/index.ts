@@ -153,8 +153,34 @@ export interface Device {
   tags: string[];
   isHeadless: boolean;
   pendingReboot: boolean;
+  batteryStatus: BatteryStatus | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// Current-state power/battery telemetry for portable devices (#2142). Reported
+// by the agent every heartbeat and stored as the latest snapshot on the
+// `devices` table (jsonb), so it lives next to other per-heartbeat current
+// state (uptime, pendingReboot, status). `present` distinguishes a real
+// no-battery desktop (false) from an old agent that never reported (the column
+// is null). Battery HEALTH (design/full capacity, cycle count, condition) is
+// intentionally out of scope for v1 — this is operational current state only.
+export type BatteryChargingState = 'charging' | 'discharging' | 'full' | 'not_charging' | 'unknown';
+
+export interface BatteryStatus {
+  /** Whether the device has a battery at all. false = desktop/no battery. */
+  present: boolean;
+  /** Current charge, 0-100. Omitted when the OS doesn't report it. */
+  percent?: number;
+  chargingState?: BatteryChargingState;
+  /** On external/AC power. Equivalent to power source = AC. */
+  pluggedIn?: boolean;
+  /** Estimated runtime left on battery, in minutes, when the OS reports it. */
+  timeRemainingMinutes?: number;
+  /** Estimated time to full charge, in minutes, when the OS reports it. */
+  timeToFullMinutes?: number;
+  /** ISO timestamp the API stamped when it ingested this snapshot. */
+  reportedAt: string;
 }
 
 export interface DeviceHardware {

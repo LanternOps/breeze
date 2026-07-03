@@ -319,6 +319,7 @@ export default function DevicesPage() {
           architecture: d.architecture as string | undefined,
           isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
           pendingReboot: d.pendingReboot === true,
+          batteryStatus: (d.batteryStatus as Device['batteryStatus']) ?? null,
           enrolledAt: d.enrolledAt as string | undefined,
           desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
           hardware: hardware ? {

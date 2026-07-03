@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Monitor, Cpu, Shield, Tag, Info, ListChecks, Pencil, Check, X, AlertTriangle } from 'lucide-react';
-import type { DesktopAccessState, TCCPermissions } from '@breeze/shared';
+import { Monitor, Cpu, Shield, Tag, Info, ListChecks, Pencil, Check, X, AlertTriangle, BatteryCharging } from 'lucide-react';
+import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import MacOSPermissionsCard from './MacOSPermissionsCard';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
@@ -50,6 +50,7 @@ type DeviceInfo = {
   customFields?: Record<string, unknown>;
   tccPermissions?: TCCPermissions | null;
   desktopAccess?: DesktopAccessState | null;
+  batteryStatus?: BatteryStatus | null;
   hardware?: {
     serialNumber?: string | null;
     manufacturer?: string | null;
@@ -77,6 +78,22 @@ function formatDisk(valueGb: number | null | undefined): string {
   if (valueGb === null || valueGb === undefined) return '—';
   if (valueGb >= 1024) return `${(valueGb / 1024).toFixed(1)} TB`;
   return `${valueGb.toFixed(1)} GB`;
+}
+
+const batteryChargingStateLabels: Record<NonNullable<BatteryStatus['chargingState']>, string> = {
+  charging: 'Charging',
+  discharging: 'Discharging',
+  full: 'Full',
+  not_charging: 'Not charging',
+  unknown: 'Unknown',
+};
+
+function formatBatteryDuration(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return '—';
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
 }
 
 function formatDate(dateString: string | null | undefined): string {
@@ -694,6 +711,39 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow label="Motherboard" value={formatMotherboard(hw)} />
         <InfoRow label="BIOS Version" value={hw?.biosVersion ?? '—'} />
       </Section>
+
+      {/* Power / battery current state (#2142) — only for devices that actually
+          have a battery. Desktops (present: false) and never-reported devices
+          (null) omit the section entirely. */}
+      {info?.batteryStatus?.present && (
+        <Section title="Power" icon={<BatteryCharging className="h-4 w-4 text-muted-foreground" />}>
+          <InfoRow
+            label="Battery Charge"
+            value={typeof info.batteryStatus.percent === 'number' ? `${Math.round(info.batteryStatus.percent)}%` : '—'}
+          />
+          <InfoRow
+            label="Charging State"
+            value={info.batteryStatus.chargingState ? batteryChargingStateLabels[info.batteryStatus.chargingState] : '—'}
+          />
+          <InfoRow
+            label="Power Source"
+            value={
+              info.batteryStatus.pluggedIn === undefined
+                ? '—'
+                : info.batteryStatus.pluggedIn
+                  ? 'AC (plugged in)'
+                  : 'Battery'
+            }
+          />
+          {typeof info.batteryStatus.timeRemainingMinutes === 'number' && (
+            <InfoRow label="Time Remaining" value={formatBatteryDuration(info.batteryStatus.timeRemainingMinutes)} />
+          )}
+          {typeof info.batteryStatus.timeToFullMinutes === 'number' && (
+            <InfoRow label="Time to Full" value={formatBatteryDuration(info.batteryStatus.timeToFullMinutes)} />
+          )}
+          <InfoRow label="Last Reported" value={formatDate(info.batteryStatus.reportedAt)} />
+        </Section>
+      )}
 
       <Section title="Agent" icon={<Shield className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="Agent Version" value={info?.agentVersion ?? '—'} />
