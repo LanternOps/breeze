@@ -64,9 +64,16 @@ func (c *VPNCollector) Collect() ([]VpnPresence, error) {
 	if err != nil {
 		return nil, err
 	}
+	return assembleVPNs(ifaces, runningVPNSignals(), tailscaleDNSName), nil
+}
 
-	signals := runningVPNSignals()
-
+// assembleVPNs is the pure detection assembly: given the interface list, the
+// provider->source signal map, and a lazy Tailscale-DNS resolver, it produces
+// the reported VPN set. Split out from Collect (which owns the impure OS calls)
+// so the branch logic — no-IP skip, generic promotion, source corroboration,
+// per-provider DNS attachment — is table-testable. dnsFn is invoked at most
+// once, only when a Tailscale tunnel is present.
+func assembleVPNs(ifaces []psnet.InterfaceStat, signals map[string]string, dnsFn func() string) []VpnPresence {
 	var (
 		vpns             []VpnPresence
 		tailscaleName    string
@@ -110,7 +117,7 @@ func (c *VPNCollector) Collect() ([]VpnPresence, error) {
 
 		if provider == vpnTailscale {
 			if !tailscaleFetched {
-				tailscaleName = tailscaleDNSName()
+				tailscaleName = dnsFn()
 				tailscaleFetched = true
 			}
 			vpn.DNSName = tailscaleName
@@ -119,7 +126,7 @@ func (c *VPNCollector) Collect() ([]VpnPresence, error) {
 		vpns = append(vpns, vpn)
 	}
 
-	return vpns, nil
+	return vpns
 }
 
 // classifyVPNInterface maps an interface/adapter name to a VPN provider. It

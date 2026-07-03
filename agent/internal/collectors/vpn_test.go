@@ -162,6 +162,110 @@ func TestSoleVPNSignal(t *testing.T) {
 	}
 }
 
+func TestAssembleVPNs(t *testing.T) {
+	noDNS := func() string { return "" }
+
+	t.Run("skips down interfaces and non-tunnels", func(t *testing.T) {
+		ifaces := []psnet.InterfaceStat{
+			{Name: "eth0", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.0.0.5/24"}}},
+			{Name: "wg0", Flags: []string{"broadcast"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.8.0.2/32"}}}, // down
+		}
+		if got := assembleVPNs(ifaces, map[string]string{}, noDNS); len(got) != 0 {
+			t.Fatalf("expected no VPNs, got %+v", got)
+		}
+	})
+
+	t.Run("skips up tunnel with no overlay IP (phantom guard)", func(t *testing.T) {
+		ifaces := []psnet.InterfaceStat{
+			{Name: "utun4", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "fe80::1/64"}}}, // link-local only
+		}
+		if got := assembleVPNs(ifaces, map[string]string{}, noDNS); len(got) != 0 {
+			t.Fatalf("expected phantom tunnel skipped, got %+v", got)
+		}
+	})
+
+	t.Run("classified provider keeps interface source with no signals", func(t *testing.T) {
+		ifaces := []psnet.InterfaceStat{
+			{Name: "wg0", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.8.0.2/32"}}},
+		}
+		got := assembleVPNs(ifaces, map[string]string{}, noDNS)
+		if len(got) != 1 || got[0].Provider != vpnWireGuard || got[0].DetectionSource != vpnSourceInterface {
+			t.Fatalf("got %+v", got)
+		}
+		if got[0].IPv4 != "10.8.0.2" || !got[0].Active {
+			t.Errorf("unexpected fields %+v", got[0])
+		}
+	})
+
+	t.Run("classified provider source upgraded by corroborating signal", func(t *testing.T) {
+		ifaces := []psnet.InterfaceStat{
+			{Name: "wg0", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.8.0.2/32"}}},
+		}
+		got := assembleVPNs(ifaces, map[string]string{vpnWireGuard: vpnSourceService}, noDNS)
+		if len(got) != 1 || got[0].DetectionSource != vpnSourceService {
+			t.Fatalf("expected source upgraded to service, got %+v", got)
+		}
+	})
+
+	t.Run("generic tunnel promoted to sole signal provider", func(t *testing.T) {
+		ifaces := []psnet.InterfaceStat{
+			{Name: "utun3", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.64.0.1/32"}}},
+		}
+		got := assembleVPNs(ifaces, map[string]string{vpnOpenVPN: vpnSourceProcess}, noDNS)
+		if len(got) != 1 || got[0].Provider != vpnOpenVPN || got[0].DetectionSource != vpnSourceProcess {
+			t.Fatalf("expected generic promoted to openvpn/process, got %+v", got)
+		}
+	})
+
+	t.Run("generic tunnel stays generic when signals ambiguous", func(t *testing.T) {
+		ifaces := []psnet.InterfaceStat{
+			{Name: "utun3", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.64.0.1/32"}}},
+		}
+		signals := map[string]string{vpnOpenVPN: vpnSourceProcess, vpnWireGuard: vpnSourceService}
+		got := assembleVPNs(ifaces, signals, noDNS)
+		if len(got) != 1 || got[0].Provider != vpnGeneric || got[0].DetectionSource != vpnSourceInterface {
+			t.Fatalf("expected generic/interface when ambiguous, got %+v", got)
+		}
+	})
+
+	t.Run("tailscale DNS fetched once and attached only to tailscale", func(t *testing.T) {
+		calls := 0
+		dnsFn := func() string { calls++; return "host.tailnet.ts.net" }
+		ifaces := []psnet.InterfaceStat{
+			{Name: "tailscale0", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.64.0.1/32"}}},
+			{Name: "tailscale1", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.64.0.2/32"}}},
+			{Name: "wg0", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.8.0.2/32"}}},
+		}
+		got := assembleVPNs(ifaces, map[string]string{}, dnsFn)
+		if len(got) != 3 {
+			t.Fatalf("expected 3 VPNs, got %d", len(got))
+		}
+		if calls != 1 {
+			t.Errorf("expected dnsFn called once, got %d", calls)
+		}
+		for _, v := range got {
+			if v.Provider == vpnTailscale && v.DNSName != "host.tailnet.ts.net" {
+				t.Errorf("tailscale entry missing DNS name: %+v", v)
+			}
+			if v.Provider == vpnWireGuard && v.DNSName != "" {
+				t.Errorf("non-tailscale entry should not carry DNS name: %+v", v)
+			}
+		}
+	})
+
+	t.Run("dnsFn not called when no tailscale present", func(t *testing.T) {
+		calls := 0
+		dnsFn := func() string { calls++; return "x" }
+		ifaces := []psnet.InterfaceStat{
+			{Name: "wg0", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.8.0.2/32"}}},
+		}
+		assembleVPNs(ifaces, map[string]string{}, dnsFn)
+		if calls != 0 {
+			t.Errorf("expected dnsFn not called, got %d", calls)
+		}
+	})
+}
+
 func TestMatchVPNServiceTokens(t *testing.T) {
 	tests := []struct {
 		name string

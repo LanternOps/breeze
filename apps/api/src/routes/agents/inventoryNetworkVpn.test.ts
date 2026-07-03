@@ -41,14 +41,16 @@ function mockDeviceLookup(device: { id: string; orgId: string } | null) {
 }
 
 // Capture what the handler writes to devices.activeVpns inside the txn.
+// `updateCalled` distinguishes "wrote []" from "never touched the column".
 function mockTransactionCapture() {
-  const captured: { activeVpns?: unknown } = {};
+  const captured: { activeVpns?: unknown; updateCalled: boolean } = { updateCalled: false };
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
     const tx = {
       delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
       insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockImplementation((row: { activeVpns?: unknown }) => {
+          captured.updateCalled = true;
           captured.activeVpns = row.activeVpns;
           return { where: vi.fn().mockResolvedValue(undefined) };
         }),
@@ -106,7 +108,8 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
 
     const stored = captured.activeVpns as Array<Record<string, unknown>>;
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({
+    const [entry] = stored;
+    expect(entry).toMatchObject({
       provider: 'tailscale',
       active: true,
       interfaceName: 'utun3',
@@ -115,11 +118,11 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
       detectionSource: 'interface',
     });
     // reportedAt is stamped by the API, not sent by the agent.
-    expect(typeof stored[0].reportedAt).toBe('string');
-    expect(Number.isNaN(Date.parse(stored[0].reportedAt as string))).toBe(false);
+    expect(typeof entry!.reportedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(entry!.reportedAt as string))).toBe(false);
   });
 
-  it('stores an empty array when an older agent omits vpns', async () => {
+  it('leaves activeVpns untouched (preserving last-known) when an older agent omits vpns', async () => {
     mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
     const captured = mockTransactionCapture();
 
@@ -128,7 +131,24 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
     });
 
     expect(res.status).toBe(200);
+    // Omitted key -> no clobber, and no devices update at all.
+    expect((await res.json()).vpnCount).toBeNull();
+    expect(captured.updateCalled).toBe(false);
+  });
+
+  it('stores an empty array when the agent reports zero active VPNs', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const captured = mockTransactionCapture();
+
+    const res = await putNetwork(makeApp(), {
+      adapters: [{ interfaceName: 'eth0', ipAddress: '10.0.0.5', ipType: 'ipv4' }],
+      vpns: [],
+    });
+
+    expect(res.status).toBe(200);
+    // Explicit [] -> "collected, no active VPN": the column IS written to [].
     expect((await res.json()).vpnCount).toBe(0);
+    expect(captured.updateCalled).toBe(true);
     expect(captured.activeVpns).toEqual([]);
   });
 
