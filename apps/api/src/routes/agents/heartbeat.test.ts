@@ -21,17 +21,26 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: (...args: unknown[]) =>
     runOutsideDbContextMock(...(args as [any])),
-  // Pass-through that records when the scoped callback resolves — in
-  // production the org transaction is released at this point.
+  // Pass-through that records when the org-scoped context opens and when its
+  // callback resolves — in production the org transaction is released at the
+  // latter point.
   withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => {
+    callOrder.push('dbContext:opened');
     const result = await fn();
     callOrder.push('dbContext:released');
     return result;
   },
-  // Pass-through: the effective agent-update-policy lookup (#2123) and the
-  // policy-probe read both run in a system context. Invoke the callback so the
-  // mocked getOrgAgentUpdatePolicy / buildPolicyProbeConfigUpdate still run.
-  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
+  // Pass-through: the effective agent-update-policy lookup (#2123, BEFORE the
+  // org block) and the policy-probe read (AFTER it) both run in a system
+  // context. Invoke the callback so the mocked getOrgAgentUpdatePolicy /
+  // buildPolicyProbeConfigUpdate still run, and record enter/exit so tests can
+  // assert the update-policy context opens AND closes before the org context.
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => {
+    callOrder.push('systemCtx:enter');
+    const result = await fn();
+    callOrder.push('systemCtx:exit');
+    return result;
+  },
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -1283,6 +1292,35 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     // A fleet-wide upgrade freeze must be loud: the lookup failure is reported
     // to Sentry, not just logged (#2125).
     expect(vi.mocked(captureException)).toHaveBeenCalled();
+  });
+
+  // #2123 + #1105 — the effective-policy lookup reads the parent partners row,
+  // which the org-scoped RLS context (accessiblePartnerIds: []) cannot see, so
+  // it MUST run in a system context that opens AND closes BEFORE the org
+  // transaction opens (never holding two pooled connections at once). Without
+  // this ordering assertion, a regression that moved the lookup back inside the
+  // org block — reintroducing both the RLS bug and the #1105 hazard — would
+  // pass every other test in this file.
+  it('resolves the update policy in a system context that closes before the org context opens', async () => {
+    const { getOrgAgentUpdatePolicy } = await import('./helpers');
+    vi.mocked(getOrgAgentUpdatePolicy).mockResolvedValue({ policy: 'auto', maintenanceWindow: null });
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    callOrder.length = 0;
+
+    const resp = await postAgentHeartbeat();
+    expect(resp.status).toBe(200);
+
+    // First system context = the update-policy lookup; it must enter and exit
+    // before the org context opens. (A later system context is the post-block
+    // policy-probe read — that one legitimately runs after dbContext:released.)
+    const enter = callOrder.indexOf('systemCtx:enter');
+    const exit = callOrder.indexOf('systemCtx:exit');
+    const opened = callOrder.indexOf('dbContext:opened');
+    expect(enter).toBeGreaterThanOrEqual(0);
+    expect(opened).toBeGreaterThanOrEqual(0);
+    expect(enter).toBeLessThan(exit);
+    expect(exit).toBeLessThan(opened);
   });
 
   // A dev-push build (dev-*) must never be auto-upgraded back to a release,

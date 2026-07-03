@@ -2057,7 +2057,7 @@ function extractSettingsDefaults(settings: unknown): Record<string, unknown> {
  * Issue #2123: before this, the gate read org-local `settings.defaults` only, so
  * a partner-locked policy (e.g. Manual) had zero runtime effect and unconfigured
  * child orgs fell back to the permissive default despite the partner lock.
- * (#2124 will build version pins on top of this effective plumbing.)
+ * (Future version-pin work is expected to build on this effective plumbing.)
  */
 export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdateSettings> {
   // LEFT JOIN so a missing partner (shouldn't happen) still returns the org row

@@ -23,8 +23,8 @@
  * PATCH /organizations/:id (org-local) and PATCH /partners/me (partner default,
  * which now reaches this gate: a partner-set field wins and locks, and the
  * org-local value applies only where the partner has not set it). Any legacy
- * malformed value still
- * fails open (no restriction) rather than permanently blocking, and is logged
+ * malformed value still fails open (no restriction) rather than permanently
+ * blocking, and is logged
  * the first time it is ignored per org (per process; see getOrgAgentUpdatePolicy)
  * so the lifted restriction is observable.
  *
