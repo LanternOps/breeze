@@ -37,6 +37,25 @@ function mockProviderRows(rows: unknown[]) {
   } as unknown as ReturnType<typeof db.select>);
 }
 
+// Axis-aware mock: inspects the actual `and(eq(...), ...)` condition object
+// built by the (also-mocked) drizzle-orm helpers above and returns different
+// rows depending on whether the query filtered on `ssoProviders.orgId` or
+// `ssoProviders.partnerId`. This lets a single test prove one axis's rows
+// never leak into the other axis's query — a naive mock that returns the
+// same rows regardless of the `where` argument can't distinguish "queried
+// the wrong axis and got a false positive" from "queried the right axis and
+// correctly found nothing".
+function mockAxisAwareProviderRows(orgAxisRows: unknown[], partnerAxisRows: unknown[]) {
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn((condition: { conditions?: Array<{ left?: unknown }> }) => {
+        const isOrgAxis = condition?.conditions?.some((c) => c.left === 'ssoProviders.orgId');
+        return { limit: vi.fn().mockResolvedValue(isOrgAxis ? orgAxisRows : partnerAxisRows) };
+      }),
+    }),
+  } as unknown as ReturnType<typeof db.select>);
+}
+
 describe('SSO password auth policy', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -94,6 +113,17 @@ describe('isPasswordAuthDisabledBySso — partner scope (#2183)', () => {
 
   it('false for partner scope with no partner provider', async () => {
     mockProviderRows([]);
+
+    await expect(
+      isPasswordAuthDisabledBySso({ scope: 'partner', orgId: null, partnerId: 'partner-1' })
+    ).resolves.toBe(false);
+  });
+
+  it('partner staff unaffected by an org provider\'s enforceSSO', async () => {
+    // Org axis has an active enforcing provider; partner axis has none.
+    // If the partner branch ever queried (or matched) the org-axis rows,
+    // this would incorrectly resolve to `true`.
+    mockAxisAwareProviderRows([{ id: 'org-provider' }], []);
 
     await expect(
       isPasswordAuthDisabledBySso({ scope: 'partner', orgId: null, partnerId: 'partner-1' })
