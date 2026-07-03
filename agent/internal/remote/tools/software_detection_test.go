@@ -128,6 +128,146 @@ func TestParseDetectionRules(t *testing.T) {
 			t.Errorf("unexpected ProductCode: %q", got[0].ProductCode)
 		}
 	})
+
+	t.Run("valid file_version rule", func(t *testing.T) {
+		payload := map[string]any{
+			"detectionRules": []any{
+				map[string]any{
+					"type":     "file_version",
+					"path":     `C:\Program Files\Acme\app.exe`,
+					"operator": ">=",
+					"version":  "1.2.3.4",
+				},
+			},
+		}
+		got := parseDetectionRules(payload)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 rule, got %d", len(got))
+		}
+		r := got[0]
+		if r.Type != "file_version" || r.Path != `C:\Program Files\Acme\app.exe` ||
+			r.Operator != ">=" || r.Version != "1.2.3.4" {
+			t.Errorf("unexpected parsed rule: %+v", r)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// file_version — version parsing and comparison (cross-platform)
+// ---------------------------------------------------------------------------
+
+func TestParseFileVersion(t *testing.T) {
+	okCases := []struct {
+		in   string
+		want [4]int64
+	}{
+		{"1", [4]int64{1, 0, 0, 0}},
+		{"1.2", [4]int64{1, 2, 0, 0}},
+		{"1.2.3", [4]int64{1, 2, 3, 0}},
+		{"1.2.3.4", [4]int64{1, 2, 3, 4}},
+		{"  10.0.19041.1  ", [4]int64{10, 0, 19041, 1}},
+		{"0.0.0.0", [4]int64{0, 0, 0, 0}},
+	}
+	for _, tc := range okCases {
+		got, err := parseFileVersion(tc.in)
+		if err != nil {
+			t.Errorf("parseFileVersion(%q) unexpected error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("parseFileVersion(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+
+	badCases := []string{"", "   ", "1.2.3.4.5", "1.x", "abc", "1..2", "-1.0", "1.-2"}
+	for _, in := range badCases {
+		if _, err := parseFileVersion(in); err == nil {
+			t.Errorf("parseFileVersion(%q) expected error, got nil", in)
+		}
+	}
+}
+
+func TestCompareFileVersions(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1.2.3.4", "1.2.3.4", 0},
+		{"1.2", "1.2.0.0", 0},
+		{"1.9", "1.10", -1},   // numeric, not lexical
+		{"1.10", "1.9", 1},    // numeric, not lexical
+		{"2.0", "1.9.9.9", 1}, // major dominates
+		{"1.0.0.1", "1.0.0.0", 1},
+		{"1.0.0.0", "1.0.0.1", -1},
+	}
+	for _, tc := range cases {
+		a, err := parseFileVersion(tc.a)
+		if err != nil {
+			t.Fatalf("setup parseFileVersion(%q): %v", tc.a, err)
+		}
+		b, err := parseFileVersion(tc.b)
+		if err != nil {
+			t.Fatalf("setup parseFileVersion(%q): %v", tc.b, err)
+		}
+		if got := compareFileVersions(a, b); got != tc.want {
+			t.Errorf("compareFileVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestEvaluateFileVersionComparison(t *testing.T) {
+	tests := []struct {
+		name          string
+		actual        string
+		operator      string
+		target        string
+		wantMatched   bool
+		wantSupported bool
+	}{
+		{"ge equal", "1.2.3.4", ">=", "1.2.3.4", true, true},
+		{"ge greater", "2.0.0.0", ">=", "1.2.3.4", true, true},
+		{"ge lesser", "1.0.0.0", ">=", "1.2.3.4", false, true},
+		{"gt equal is false", "1.2.3.4", ">", "1.2.3.4", false, true},
+		{"gt greater", "1.2.3.5", ">", "1.2.3.4", true, true},
+		{"eq match", "1.2", "==", "1.2.0.0", true, true},
+		{"eq mismatch", "1.2.0.1", "==", "1.2", false, true},
+		{"single = alias for eq", "1.2.3.4", "=", "1.2.3.4", true, true},
+		{"le equal", "1.2.3.4", "<=", "1.2.3.4", true, true},
+		{"le lesser", "1.0", "<=", "1.2", true, true},
+		{"lt greater is false", "2.0", "<", "1.9", false, true},
+		{"numeric not lexical: 1.10 >= 1.9", "1.10", ">=", "1.9", true, true},
+		{"unknown operator => unsupported", "1.2.3.4", "~=", "1.2.3.4", false, false},
+		{"unparseable actual => unsupported", "1.x", ">=", "1.0", false, false},
+		{"unparseable target => unsupported", "1.0", ">=", "1.x", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			matched, supported := evaluateFileVersionComparison(tc.actual, tc.operator, tc.target)
+			if matched != tc.wantMatched {
+				t.Errorf("matched: want %v, got %v", tc.wantMatched, matched)
+			}
+			if supported != tc.wantSupported {
+				t.Errorf("supported: want %v, got %v", tc.wantSupported, supported)
+			}
+		})
+	}
+}
+
+// On non-Windows, a file_version clause is platform-unsupported and the whole
+// rule set must report Supported=false (fall back to exit-code behavior).
+func TestEvaluateDetectionRules_FileVersionUnsupportedOnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file_version is supported on Windows")
+	}
+	out := EvaluateDetectionRules([]DetectionRule{
+		{Type: "file_version", Path: `C:\app.exe`, Operator: ">=", Version: "1.0"},
+	})
+	if out.Supported {
+		t.Errorf("expected Supported=false on non-Windows, got true (detail: %q)", out.Detail)
+	}
+	if out.Detected {
+		t.Errorf("expected Detected=false, got true (detail: %q)", out.Detail)
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -6,22 +6,27 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 )
 
 // DetectionRule describes one clause in a software detection rule set.
 // A package is considered detected only when ALL clauses evaluate to true.
 type DetectionRule struct {
-	Type string `json:"type"` // "registry" | "file_exists" | "msi_product_code"
+	Type string `json:"type"` // "registry" | "file_exists" | "msi_product_code" | "file_version"
 
 	// registry fields
 	Hive      string `json:"hive,omitempty"`      // HKLM (default) | HKCU | HKCR | HKU | HKCC
-	Path      string `json:"path,omitempty"`      // registry key path, or file/dir path for file_exists
+	Path      string `json:"path,omitempty"`      // registry key path, or file/dir path for file_exists / file_version
 	ValueName string `json:"valueName,omitempty"` // optional value name under the key
 	ValueData string `json:"valueData,omitempty"` // optional exact-match expected data
 
 	// msi_product_code fields
 	ProductCode string `json:"productCode,omitempty"` // GUID, braces optional
+
+	// file_version fields
+	Operator string `json:"operator,omitempty"` // ">=" | ">" | "==" | "<=" | "<"
+	Version  string `json:"version,omitempty"`  // dotted numeric target version, e.g. "1.2.3.4"
 }
 
 // DetectionOutcome is the result of evaluating a rule set on this device.
@@ -64,6 +69,8 @@ func parseDetectionRules(payload map[string]any) []DetectionRule {
 			ValueName:   detectionStringField(m, "valueName"),
 			ValueData:   detectionStringField(m, "valueData"),
 			ProductCode: detectionStringField(m, "productCode"),
+			Operator:    detectionStringField(m, "operator"),
+			Version:     detectionStringField(m, "version"),
 		}
 		if rule.Type == "" {
 			continue
@@ -108,8 +115,9 @@ func evaluateFileExists(path string) (matched bool, supported bool) {
 //
 // Platform dispatch:
 //   - "file_exists"      → cross-platform os.Stat check (this file)
-//   - "registry"         → evaluateRegistryRule    (platform files)
+//   - "registry"         → evaluateRegistryRule       (platform files)
 //   - "msi_product_code" → evaluateMsiProductCodeRule (platform files)
+//   - "file_version"     → evaluateFileVersionRule    (platform files, Windows-only)
 //   - anything else      → unsupported
 func EvaluateDetectionRules(rules []DetectionRule) DetectionOutcome {
 	if len(rules) == 0 {
@@ -155,6 +163,8 @@ func evaluateClause(rule DetectionRule) (matched bool, supported bool) {
 		return evaluateRegistryRule(rule)
 	case "msi_product_code":
 		return evaluateMsiProductCodeRule(rule)
+	case "file_version":
+		return evaluateFileVersionRule(rule)
 	default:
 		return false, false
 	}
@@ -177,7 +187,89 @@ func ruleNotSatisfiedDetail(rule DetectionRule) string {
 		return "rule not satisfied: file_exists " + rule.Path
 	case "msi_product_code":
 		return "rule not satisfied: msi_product_code " + rule.ProductCode
+	case "file_version":
+		return fmt.Sprintf("rule not satisfied: file_version %s %s %s", rule.Path, rule.Operator, rule.Version)
 	default:
 		return "rule not satisfied: " + rule.Type
+	}
+}
+
+// parseFileVersion parses a dotted numeric version string ("1", "1.2",
+// "1.2.3", "1.2.3.4") into a fixed 4-element quad. Missing trailing components
+// default to 0, so "1.2" parses as {1,2,0,0}. Accepts 1–4 components; anything
+// non-numeric, negative, or with more than four components is an error.
+func parseFileVersion(s string) ([4]int64, error) {
+	var out [4]int64
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return out, errors.New("empty version string")
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) > 4 {
+		return out, fmt.Errorf("too many version components: %q", s)
+	}
+	for i, p := range parts {
+		n, err := strconv.ParseInt(strings.TrimSpace(p), 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("invalid version component %q in %q: %w", p, s, err)
+		}
+		if n < 0 {
+			return out, fmt.Errorf("negative version component %q in %q", p, s)
+		}
+		out[i] = n
+	}
+	return out, nil
+}
+
+// compareFileVersions returns -1, 0 or 1 as a orders before, equal to, or
+// after b, comparing component-by-component (major, minor, build, revision).
+func compareFileVersions(a, b [4]int64) int {
+	for i := 0; i < 4; i++ {
+		switch {
+		case a[i] < b[i]:
+			return -1
+		case a[i] > b[i]:
+			return 1
+		}
+	}
+	return 0
+}
+
+// evaluateFileVersionComparison compares an actual on-disk file version against
+// the rule's target version using the given operator. It returns
+// (matched, supported). Both version strings are parsed to integer quads first —
+// a naive string compare would mis-order "1.10" against "1.9".
+//
+// An unparseable version or an unrecognized operator yields supported=false, so
+// the caller falls back to exit-code behavior rather than reporting a false
+// negative (mirrors the platform-unsupported contract). Schema validation
+// normally prevents both, but the agent must not trust the payload blindly.
+func evaluateFileVersionComparison(actual, operator, target string) (matched bool, supported bool) {
+	av, err := parseFileVersion(actual)
+	if err != nil {
+		slog.Warn("detection: cannot parse actual file version", "version", actual, "error", err.Error())
+		return false, false
+	}
+	tv, err := parseFileVersion(target)
+	if err != nil {
+		slog.Warn("detection: cannot parse target file version", "version", target, "error", err.Error())
+		return false, false
+	}
+
+	cmp := compareFileVersions(av, tv)
+	switch operator {
+	case ">=":
+		return cmp >= 0, true
+	case ">":
+		return cmp > 0, true
+	case "==", "=":
+		return cmp == 0, true
+	case "<=":
+		return cmp <= 0, true
+	case "<":
+		return cmp < 0, true
+	default:
+		slog.Warn("detection: unknown file_version operator", "operator", operator)
+		return false, false
 	}
 }

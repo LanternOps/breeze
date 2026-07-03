@@ -12,13 +12,16 @@ import { z } from 'zod';
 //      the box, not just whether the installer returned 0).
 //
 // Composition is implicit AND: every clause must be satisfied for the package to
-// count as "detected" (matches Intune/PDQ semantics). Phase 1 ships three clause
-// types; file-version comparison is deferred (it needs Win32 version-info work).
+// count as "detected" (matches Intune/PDQ semantics). Phase 1 shipped three
+// clause types (registry, file_exists, msi_product_code); the file_version
+// comparison clause (issue #2089) was added afterwards — it needs Win32
+// version-info plumbing on the agent side.
 //
-// Registry and MSI-product-code clauses are Windows-only. On a platform where a
-// clause type can't be evaluated the agent reports the rule set as "unsupported"
-// and falls back to exit-code behavior — it never silently treats unsupported as
-// pass or fail. See agent/internal/remote/tools/software_detection*.go.
+// Registry, MSI-product-code and file_version clauses are Windows-only. On a
+// platform where a clause type can't be evaluated the agent reports the rule set
+// as "unsupported" and falls back to exit-code behavior — it never silently
+// treats unsupported as pass or fail. See
+// agent/internal/remote/tools/software_detection*.go.
 
 /** Registry hives a registry detection clause may target. */
 export const REGISTRY_HIVES = ['HKLM', 'HKCU', 'HKCR', 'HKU', 'HKCC'] as const;
@@ -58,15 +61,40 @@ export const msiProductCodeDetectionRuleSchema = z.object({
     .regex(MSI_PRODUCT_CODE_REGEX, 'Must be a GUID, e.g. {3F2504E0-4F89-41D3-9A0C-0305E82C3301}'),
 });
 
+/** Comparison operators supported by a file_version clause. */
+export const FILE_VERSION_OPERATORS = ['>=', '>', '==', '<=', '<'] as const;
+export type FileVersionOperator = (typeof FILE_VERSION_OPERATORS)[number];
+
+// A dotted numeric version: 1–4 components, each 0–65535 (the range of a Win32
+// VS_FIXEDFILEINFO version word). Missing trailing components are treated as 0 by
+// the agent (so "1.2" == "1.2.0.0"). String compares would mis-order "1.10" vs
+// "1.9", so the agent parses to integer quads before comparing.
+const FILE_VERSION_REGEX = /^\d{1,5}(\.\d{1,5}){0,3}$/;
+
+export const fileVersionDetectionRuleSchema = z.object({
+  type: z.literal('file_version'),
+  // Absolute path to the file whose version resource is read (Windows only).
+  path: z.string().min(1).max(1024),
+  operator: z.enum(FILE_VERSION_OPERATORS),
+  // Target version compared against the file's version, e.g. "1.2.3" or "1.2.3.4".
+  version: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(FILE_VERSION_REGEX, 'Must be a dotted numeric version, e.g. 1.2.3.4'),
+});
+
 export const detectionRuleSchema = z.discriminatedUnion('type', [
   registryDetectionRuleSchema,
   fileDetectionRuleSchema,
   msiProductCodeDetectionRuleSchema,
+  fileVersionDetectionRuleSchema,
 ]);
 
 export type RegistryDetectionRule = z.infer<typeof registryDetectionRuleSchema>;
 export type FileDetectionRule = z.infer<typeof fileDetectionRuleSchema>;
 export type MsiProductCodeDetectionRule = z.infer<typeof msiProductCodeDetectionRuleSchema>;
+export type FileVersionDetectionRule = z.infer<typeof fileVersionDetectionRuleSchema>;
 export type DetectionRule = z.infer<typeof detectionRuleSchema>;
 
 // The full rule set stored on a software version. An empty array (or null) means

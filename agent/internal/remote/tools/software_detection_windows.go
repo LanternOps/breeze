@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"strings"
 	"syscall"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -120,6 +122,90 @@ func evaluateMsiProductCodeRule(rule DetectionRule) (matched bool, supported boo
 		return false, false
 	}
 	return false, true
+}
+
+// evaluateFileVersionRule reads a file's version resource on Windows and
+// compares it to the rule's target version with the rule's operator.
+//
+// Returns (matched, supported). A file that is missing or carries no version
+// resource is a clean negative (matched=false, supported=true). An access/IO
+// error, or an unparseable/unknown operator, is undeterminable
+// (supported=false) so the caller falls back to exit-code behavior rather than
+// mis-reporting an installed package as absent (#2089).
+func evaluateFileVersionRule(rule DetectionRule) (matched bool, supported bool) {
+	actual, found, err := readFileVersion(rule.Path)
+	if err != nil {
+		slog.Warn("detection: cannot read file version", "path", rule.Path, "error", err.Error())
+		return false, false
+	}
+	if !found {
+		// File absent or no version info to compare → clean negative.
+		return false, true
+	}
+	return evaluateFileVersionComparison(actual, rule.Operator, rule.Version)
+}
+
+// readFileVersion returns the fixed file version ("major.minor.build.revision")
+// from a file's Win32 version resource.
+//
+//   - found=false, err=nil  → the file does not exist or has no version
+//     resource (a clean negative for detection purposes).
+//   - err!=nil              → an access/IO error; presence is undeterminable.
+func readFileVersion(path string) (version string, found bool, err error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false, nil
+	}
+
+	var zeroHandle windows.Handle
+	size, err := windows.GetFileVersionInfoSize(path, &zeroHandle)
+	if err != nil {
+		if fileVersionInfoMissing(err) {
+			return "", false, nil // no version info available → clean negative
+		}
+		return "", false, err
+	}
+	if size == 0 {
+		return "", false, nil
+	}
+
+	buf := make([]byte, size)
+	if err := windows.GetFileVersionInfo(path, 0, size, unsafe.Pointer(&buf[0])); err != nil {
+		if fileVersionInfoMissing(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+
+	var fixed *windows.VS_FIXEDFILEINFO
+	var fixedLen uint32
+	if err := windows.VerQueryValue(unsafe.Pointer(&buf[0]), `\`, unsafe.Pointer(&fixed), &fixedLen); err != nil {
+		if fileVersionInfoMissing(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if fixed == nil || fixedLen == 0 {
+		return "", false, nil
+	}
+
+	// Each 32-bit word packs two 16-bit version components.
+	major := (fixed.FileVersionMS >> 16) & 0xffff
+	minor := fixed.FileVersionMS & 0xffff
+	build := (fixed.FileVersionLS >> 16) & 0xffff
+	revision := fixed.FileVersionLS & 0xffff
+	return fmt.Sprintf("%d.%d.%d.%d", major, minor, build, revision), true, nil
+}
+
+// fileVersionInfoMissing reports whether a version-info API error means the file
+// simply doesn't exist or carries no version resource — a clean negative — as
+// opposed to an error we can't interpret (e.g. ACCESS_DENIED) which must NOT be
+// read as "absent".
+func fileVersionInfoMissing(err error) bool {
+	return errors.Is(err, windows.ERROR_FILE_NOT_FOUND) ||
+		errors.Is(err, windows.ERROR_PATH_NOT_FOUND) ||
+		errors.Is(err, windows.ERROR_RESOURCE_TYPE_NOT_FOUND) ||
+		errors.Is(err, windows.ERROR_RESOURCE_DATA_NOT_FOUND)
 }
 
 // normalizeMsiProductCode converts a product-code GUID to the uppercase

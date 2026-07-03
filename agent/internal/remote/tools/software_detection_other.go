@@ -13,3 +13,10 @@ func evaluateRegistryRule(_ DetectionRule) (matched bool, supported bool) {
 func evaluateMsiProductCodeRule(_ DetectionRule) (matched bool, supported bool) {
 	return false, false
 }
+
+// evaluateFileVersionRule is not supported on non-Windows platforms — reading a
+// file's version resource needs Win32 version-info APIs.
+// Returns (false, false) to signal "unsupported" to EvaluateDetectionRules.
+func evaluateFileVersionRule(_ DetectionRule) (matched bool, supported bool) {
+	return false, false
+}

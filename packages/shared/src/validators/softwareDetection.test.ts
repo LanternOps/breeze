@@ -51,8 +51,68 @@ describe('detectionRuleSchema', () => {
     expect(r.success).toBe(false);
   });
 
+  it('accepts a file_version clause with each supported operator', () => {
+    for (const operator of ['>=', '>', '==', '<=', '<'] as const) {
+      const r = detectionRuleSchema.safeParse({
+        type: 'file_version',
+        path: 'C:\\Program Files\\Acme\\app.exe',
+        operator,
+        version: '1.2.3.4',
+      });
+      expect(r.success, `operator ${operator}`).toBe(true);
+    }
+  });
+
+  it('accepts a file_version clause with a short (1–3 component) version', () => {
+    expect(
+      detectionRuleSchema.safeParse({
+        type: 'file_version',
+        path: 'C:\\app.exe',
+        operator: '>=',
+        version: '10',
+      }).success,
+    ).toBe(true);
+    expect(
+      detectionRuleSchema.safeParse({
+        type: 'file_version',
+        path: 'C:\\app.exe',
+        operator: '>=',
+        version: '1.2.3',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a file_version clause with an unknown operator', () => {
+    const r = detectionRuleSchema.safeParse({
+      type: 'file_version',
+      path: 'C:\\app.exe',
+      operator: '=>',
+      version: '1.2.3',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects a file_version clause with a non-numeric or malformed version', () => {
+    expect(
+      detectionRuleSchema.safeParse({ type: 'file_version', path: 'C:\\x', operator: '>=', version: '1.2.x' })
+        .success,
+    ).toBe(false);
+    expect(
+      detectionRuleSchema.safeParse({ type: 'file_version', path: 'C:\\x', operator: '>=', version: '1.2.3.4.5' })
+        .success,
+    ).toBe(false);
+    expect(
+      detectionRuleSchema.safeParse({ type: 'file_version', path: 'C:\\x', operator: '>=', version: '' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a file_version clause with an empty path', () => {
+    const r = detectionRuleSchema.safeParse({ type: 'file_version', path: '', operator: '>=', version: '1.0' });
+    expect(r.success).toBe(false);
+  });
+
   it('rejects an unknown clause type', () => {
-    const r = detectionRuleSchema.safeParse({ type: 'file_version', path: 'C:\\x', version: '1.0' });
+    const r = detectionRuleSchema.safeParse({ type: 'wmi_query', query: 'SELECT * FROM Win32_Product' });
     expect(r.success).toBe(false);
   });
 
@@ -72,6 +132,7 @@ describe('detectionRulesSchema', () => {
       { type: 'registry', path: 'SOFTWARE\\Acme\\App' },
       { type: 'file_exists', path: 'C:\\Program Files\\Acme\\app.exe' },
       { type: 'msi_product_code', productCode: '{3F2504E0-4F89-41D3-9A0C-0305E82C3301}' },
+      { type: 'file_version', path: 'C:\\Program Files\\Acme\\app.exe', operator: '>=', version: '1.2.3' },
     ]);
     expect(r.success).toBe(true);
   });

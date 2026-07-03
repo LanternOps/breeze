@@ -1,4 +1,5 @@
-import type { DetectionRule, RegistryHive } from '@breeze/shared';
+import type { DetectionRule, FileVersionOperator, RegistryHive } from '@breeze/shared';
+import { FILE_VERSION_OPERATORS } from '@breeze/shared';
 
 interface DetectionRulesEditorProps {
   rules: DetectionRule[];
@@ -11,6 +12,7 @@ const RULE_TYPE_LABELS: Record<DetectionRule['type'], string> = {
   registry: 'Registry key/value',
   file_exists: 'File or folder exists',
   msi_product_code: 'MSI product code',
+  file_version: 'File version (Windows)',
 };
 
 // A fresh clause for a given type, with sensible defaults.
@@ -22,6 +24,8 @@ function blankRule(type: DetectionRule['type']): DetectionRule {
       return { type: 'file_exists', path: '' };
     case 'msi_product_code':
       return { type: 'msi_product_code', productCode: '' };
+    case 'file_version':
+      return { type: 'file_version', path: '', operator: '>=', version: '' };
   }
 }
 
@@ -164,6 +168,47 @@ export default function DetectionRulesEditor({ rules, onChange }: DetectionRules
                     className={inputClass}
                   />
                 </div>
+              )}
+
+              {rule.type === 'file_version' && (
+                <>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto_1fr]">
+                    <input
+                      type="text"
+                      value={rule.path}
+                      placeholder="C:\\Program Files\\Vendor\\App\\app.exe"
+                      aria-label="File path"
+                      onChange={(event) => updateRule(index, { ...rule, path: event.target.value })}
+                      className={inputClass}
+                    />
+                    <select
+                      value={rule.operator}
+                      aria-label="Version comparison operator"
+                      onChange={(event) =>
+                        updateRule(index, { ...rule, operator: event.target.value as FileVersionOperator })
+                      }
+                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    >
+                      {FILE_VERSION_OPERATORS.map((op) => (
+                        <option key={op} value={op}>
+                          {op}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={rule.version}
+                      placeholder="1.2.3.4"
+                      aria-label="Target file version"
+                      onChange={(event) => updateRule(index, { ...rule, version: event.target.value })}
+                      className={inputClass}
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Reads the file&apos;s version resource. Windows only — on other platforms status falls back to
+                    the installer exit code.
+                  </p>
+                </>
               )}
             </div>
           ))}

@@ -37,6 +37,35 @@ describe('DetectionRulesEditor', () => {
     expect(onChange).toHaveBeenCalledWith([{ type: 'msi_product_code', productCode: '' }]);
   });
 
+  it('switches to a file_version clause with default operator and edits its fields', () => {
+    const rules: DetectionRule[] = [{ type: 'file_exists', path: 'C:\\x' }];
+    const onChange = vi.fn();
+    const { rerender } = render(<DetectionRulesEditor rules={rules} onChange={onChange} />);
+
+    fireEvent.change(screen.getByTestId('detection-rule-type'), { target: { value: 'file_version' } });
+    expect(onChange).toHaveBeenCalledWith([{ type: 'file_version', path: '', operator: '>=', version: '' }]);
+
+    const fvRules: DetectionRule[] = [{ type: 'file_version', path: '', operator: '>=', version: '' }];
+    rerender(<DetectionRulesEditor rules={fvRules} onChange={onChange} />);
+
+    fireEvent.change(screen.getByLabelText('File path'), {
+      target: { value: 'C:\\Program Files\\Acme\\app.exe' },
+    });
+    expect(onChange).toHaveBeenCalledWith([
+      { type: 'file_version', path: 'C:\\Program Files\\Acme\\app.exe', operator: '>=', version: '' },
+    ]);
+
+    fireEvent.change(screen.getByLabelText('Target file version'), { target: { value: '1.2.3.4' } });
+    expect(onChange).toHaveBeenCalledWith([
+      { type: 'file_version', path: '', operator: '>=', version: '1.2.3.4' },
+    ]);
+
+    fireEvent.change(screen.getByLabelText('Version comparison operator'), { target: { value: '==' } });
+    expect(onChange).toHaveBeenCalledWith([
+      { type: 'file_version', path: '', operator: '==', version: '' },
+    ]);
+  });
+
   it('removes a clause', () => {
     const rules: DetectionRule[] = [
       { type: 'file_exists', path: 'C:\\a' },
