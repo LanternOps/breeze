@@ -75,6 +75,47 @@ describe('AutomationRunHistory — live progress + per-device results (#2023)', 
     expect(screen.getByText('boom')).toBeTruthy();
   });
 
+  it('re-fetches per-device detail when live progress counts change', async () => {
+    const onLoadRunDetail = vi.fn().mockResolvedValue({ deviceResults: [], logs: [] });
+    const { rerender } = render(
+      <AutomationRunHistory
+        runs={[makeRun({ devicesSuccess: 1, devicesFailed: 0 })]}
+        isOpen
+        onClose={() => {}}
+        onLoadRunDetail={onLoadRunDetail}
+      />,
+    );
+
+    fireEvent.click(screen.getByText(/Manual - 4 devices/).closest('button')!);
+    await waitFor(() => expect(onLoadRunDetail).toHaveBeenCalledTimes(1));
+
+    // A poll bumps the finished count — the expanded row should refresh detail.
+    rerender(
+      <AutomationRunHistory
+        runs={[makeRun({ devicesSuccess: 2, devicesFailed: 0 })]}
+        isOpen
+        onClose={() => {}}
+        onLoadRunDetail={onLoadRunDetail}
+      />,
+    );
+    await waitFor(() => expect(onLoadRunDetail).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows an error state when the per-device detail load fails', async () => {
+    const onLoadRunDetail = vi.fn().mockResolvedValue(null);
+    render(
+      <AutomationRunHistory
+        runs={[makeRun({ status: 'success', completedAt: '2026-07-08T00:01:00.000Z' })]}
+        isOpen
+        onClose={() => {}}
+        onLoadRunDetail={onLoadRunDetail}
+      />,
+    );
+
+    fireEvent.click(screen.getByText(/Manual - 4 devices/).closest('button')!);
+    await waitFor(() => expect(screen.getByText(/Couldn't load device results/)).toBeTruthy());
+  });
+
   it('filters runs by status', () => {
     const runs = [
       makeRun({ id: 'r-run', status: 'running' }),

@@ -150,6 +150,7 @@ function RunItem({
   const [showLogs, setShowLogs] = useState(false);
   const [detail, setDetail] = useState<{ deviceResults: DeviceRunResult[]; logs?: string[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(false);
 
   const isRunning = run.status === 'running';
 
@@ -162,7 +163,15 @@ function RunItem({
     setDetailLoading(true);
     onLoadRunDetail(run.id)
       .then((result) => {
-        if (!cancelled && result) setDetail(result);
+        if (cancelled) return;
+        if (result) {
+          setDetail(result);
+          setDetailError(false);
+        } else {
+          // A null result means the fetch failed (not "zero devices"); surface
+          // it so an empty panel isn't mistaken for a successful empty load.
+          setDetailError(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setDetailLoading(false);
@@ -284,7 +293,11 @@ function RunItem({
             <p className="text-xs text-muted-foreground">Loading device results…</p>
           )}
 
-          {!detailLoading && deviceResults.length === 0 && (
+          {!detailLoading && deviceResults.length === 0 && detailError && (
+            <p className="text-xs text-red-600">Couldn't load device results. Try reopening the run.</p>
+          )}
+
+          {!detailLoading && deviceResults.length === 0 && !detailError && (
             <p className="text-xs text-muted-foreground">No per-device results recorded for this run.</p>
           )}
 
