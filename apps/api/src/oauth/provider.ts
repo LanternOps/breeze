@@ -63,9 +63,12 @@ export const OAUTH_LIFECYCLE_ROW_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * fixed `jobId`. Disable in an emergency with `OAUTH_CLEANUP_ENABLED=false`.
  *
  * Hardening (Task 21, May 2026): the registration endpoint now defaults
- * OFF (`OAUTH_DCR_ENABLED=false`). When ON in production, an initial-
- * access-token is required (`OAUTH_DCR_REQUIRE_IAT=true`) so anonymous
- * clients can no longer create rows via POST /oauth/reg.
+ * OFF (`OAUTH_DCR_ENABLED=false`). When ON in production it must declare an
+ * anti-spam posture — EITHER `OAUTH_DCR_REQUIRE_IAT=true` (gate on an initial-
+ * access-token) OR `OAUTH_DCR_ALLOW_ANONYMOUS=true` (deliberately permit
+ * anonymous DCR — the required posture for public MCP clients like Claude,
+ * which cannot supply an IAT). This GC is one of the compensating controls
+ * that bounds the spam risk when anonymous registration is allowed.
  */
 export async function cleanupStaleOauthClients(
   now: Date = new Date(),
@@ -384,8 +387,12 @@ export async function getProvider(): Promise<Provider> {
       // When OAUTH_DCR_REQUIRE_IAT=true, oidc-provider requires a valid
       // InitialAccessToken (issued out-of-band, e.g. via the dashboard) for
       // every POST /oauth/reg. This closes the public-spam vector that
-      // ungated DCR opens up. validateConfig refuses boot in production if
-      // DCR is enabled without IAT (see config/validate.ts).
+      // ungated DCR opens up. validateConfig refuses boot in production if DCR
+      // is enabled with neither OAUTH_DCR_REQUIRE_IAT nor
+      // OAUTH_DCR_ALLOW_ANONYMOUS set (see config/validate.ts). Note runtime
+      // gating here is driven SOLELY by OAUTH_DCR_REQUIRE_IAT —
+      // OAUTH_DCR_ALLOW_ANONYMOUS is inert at this layer; it only satisfies
+      // the boot-time anti-spam check, so don't wire it into this line.
       registration: { enabled: OAUTH_DCR_ENABLED, initialAccessToken: OAUTH_DCR_REQUIRE_IAT },
       registrationManagement: { enabled: OAUTH_DCR_ENABLED },
       revocation: { enabled: true },

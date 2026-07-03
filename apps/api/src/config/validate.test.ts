@@ -726,12 +726,13 @@ describe('validateConfig', () => {
   });
 
   // ---- OAuth DCR (Dynamic Client Registration) hardening (Task 21) -------
-  // When DCR is on in production, every client registration is anonymous and
-  // self-asserting. Without an initial-access-token gate, the registration
-  // endpoint is open to public spam (deceptive client_name strings, etc.).
-  // Boot must refuse the misconfig.
+  // When DCR is on in production it must declare an anti-spam posture: EITHER
+  // gate registration behind an initial-access-token (OAUTH_DCR_REQUIRE_IAT)
+  // OR deliberately allow anonymous DCR (OAUTH_DCR_ALLOW_ANONYMOUS — required
+  // for public MCP clients like Claude, which cannot supply an IAT). Boot must
+  // refuse only when DCR is enabled with neither posture chosen.
   describe('OAuth DCR config validation', () => {
-    it('refuses boot in production when OAUTH_DCR_ENABLED=true without OAUTH_DCR_REQUIRE_IAT=true', () => {
+    it('refuses boot in production when OAUTH_DCR_ENABLED=true with neither IAT nor anonymous posture', () => {
       withEnv({
         ...validEnv,
         NODE_ENV: 'production',
@@ -739,8 +740,79 @@ describe('validateConfig', () => {
         TRUST_PROXY_HEADERS: 'true',
         OAUTH_DCR_ENABLED: 'true',
         OAUTH_DCR_REQUIRE_IAT: '',
+        OAUTH_DCR_ALLOW_ANONYMOUS: '',
       }, () => {
-        expect(() => validateConfig()).toThrow(/OAUTH_DCR_REQUIRE_IAT/i);
+        expect(() => validateConfig()).toThrow(/OAUTH_DCR_REQUIRE_IAT|OAUTH_DCR_ALLOW_ANONYMOUS/i);
+      });
+    });
+
+    it('boots in production when OAUTH_DCR_ENABLED=true and OAUTH_DCR_ALLOW_ANONYMOUS=true (public MCP posture)', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        OAUTH_DCR_ENABLED: 'true',
+        OAUTH_DCR_REQUIRE_IAT: '',
+        OAUTH_DCR_ALLOW_ANONYMOUS: 'true',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // Security invariant: the posture flags are an explicit truthy-allowlist,
+    // NOT a mere presence/non-empty check. A non-empty-but-falsy value must
+    // still count as "no posture chosen" and boot-refuse — otherwise a
+    // `OAUTH_DCR_ALLOW_ANONYMOUS=false` deploy would silently open an ungated
+    // POST /oauth/reg, the exact misconfig this gate exists to prevent.
+    it.each(['false', '0', 'no', 'off', 'disabled'])(
+      'refuses boot in production when OAUTH_DCR_ALLOW_ANONYMOUS=%s (falsy) and no IAT',
+      (falsyValue) => {
+        withEnv({
+          ...validEnv,
+          NODE_ENV: 'production',
+          CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+          TRUST_PROXY_HEADERS: 'true',
+          OAUTH_DCR_ENABLED: 'true',
+          OAUTH_DCR_REQUIRE_IAT: '',
+          OAUTH_DCR_ALLOW_ANONYMOUS: falsyValue,
+        }, () => {
+          expect(() => validateConfig()).toThrow(/OAUTH_DCR_REQUIRE_IAT|OAUTH_DCR_ALLOW_ANONYMOUS/i);
+        });
+      },
+    );
+
+    // Availability: the truthy aliases accepted for the sibling flags must
+    // also boot the public-MCP posture, so an operator setting `=1`/`yes`/`on`
+    // doesn't hit a surprise boot-refuse on the exact config this feature ships.
+    it.each(['1', 'yes', 'on'])(
+      'boots in production when OAUTH_DCR_ALLOW_ANONYMOUS=%s (truthy alias)',
+      (truthyValue) => {
+        withEnv({
+          ...validEnv,
+          NODE_ENV: 'production',
+          CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+          TRUST_PROXY_HEADERS: 'true',
+          OAUTH_DCR_ENABLED: 'true',
+          OAUTH_DCR_REQUIRE_IAT: '',
+          OAUTH_DCR_ALLOW_ANONYMOUS: truthyValue,
+        }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
+
+    it('boots in production when BOTH OAUTH_DCR_REQUIRE_IAT and OAUTH_DCR_ALLOW_ANONYMOUS are true (IAT wins at provider)', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        OAUTH_DCR_ENABLED: 'true',
+        OAUTH_DCR_REQUIRE_IAT: 'true',
+        OAUTH_DCR_ALLOW_ANONYMOUS: 'true',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
       });
     });
 
