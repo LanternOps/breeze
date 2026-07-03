@@ -269,7 +269,8 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   try {
     await assertPasswordAuthAllowedBySso({
       scope: auth.scope,
-      orgId: auth.orgId
+      orgId: auth.orgId,
+      partnerId: auth.partnerId
     });
   } catch (error) {
     if (!(error instanceof SsoPasswordAuthRequiredError)) throw error;
