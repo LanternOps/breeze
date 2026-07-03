@@ -984,8 +984,9 @@ jobs:
     # The suite (138 files / ~690 tests) runs ~29 min and was tipping over the
     # old 30-min ceiling at the boundary (passed/cancelled non-deterministically
     # on the same commit). Raised to 40 for headroom — the tests pass, this is
-    # runtime growth, not a hang.
-    timeout-minutes: 40
+    # runtime growth, not a hang. By 2026-07 the baseline hit ~36 min and PRs
+    # adding integration suites tipped over 40 the same way; raised to 55.
+    timeout-minutes: 55
 
     steps:
       - name: Checkout
