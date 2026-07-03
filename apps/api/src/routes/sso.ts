@@ -1503,6 +1503,17 @@ ssoRoutes.get('/callback', async (c) => {
     // Membership resolution + token payload, keyed on the provider's axis.
     let tokenPayload: Parameters<typeof createTokenPair>[0];
     if (provider.partnerId) {
+      // Defense-in-depth: a partner token is ONLY for partner STAFF
+      // (users.orgId IS NULL). Re-assert the invariant at the MINT gate, not
+      // just at link/email-resolution time — so even a resolved user reached
+      // via a pre-existing (provider, sub) link cannot mint a scope:'partner'
+      // / orgId:null token if their row is org-bound. Org-bound users never
+      // authenticate through a partner provider.
+      if (user.orgId != null) {
+        clearStateCookie();
+        return c.redirect('/login?error=no_partner_access');
+      }
+
       // Partner axis (#2183): the tech's role membership lives in partner_users
       // and MUST be partner-scoped. A user with NO partner_users membership is
       // REJECTED (no_partner_access) — it never falls back to the provider

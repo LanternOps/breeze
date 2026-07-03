@@ -1960,6 +1960,22 @@ describe('sso routes', () => {
       expect(createTokenPair).not.toHaveBeenCalled();
     });
 
+    it('rejects a linked user whose row is org-bound even with a partner membership (mint-gate re-assert)', async () => {
+      prime();
+      // Pre-existing (provider, sub) link resolves an ORG-BOUND user (orgId set).
+      // The mint-gate orgId IS NULL re-assert must reject before minting, even
+      // though a partner membership could exist.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))           // link exists
+        .mockReturnValueOnce(sel([{ ...STAFF, orgId: ORG_UUID }]));  // resolved user is org-bound
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=no_partner_access');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
     it('redirects no_partner_access when the user has no partner_users membership', async () => {
       prime();
       vi.mocked(db.select)
