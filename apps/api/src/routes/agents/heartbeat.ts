@@ -567,11 +567,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       );
     }
   } catch (err) {
+    // Fail-closed enlarges the blast radius of a persistent lookup failure: it
+    // would silently withhold every version-to-version upgrade for the org's
+    // fleet, invisible to the agent (indistinguishable from "already latest").
+    // Route to Sentry like every other genuine-failure catch in this file so
+    // that freeze is loudly observable, not just a per-heartbeat stdout line.
     console.error(
       `[agents] failed to resolve agent update policy for ${agentId}; ` +
         `withholding version-to-version auto-upgrades (fail closed):`,
       err,
     );
+    captureException(err);
   }
 
   let upgradeTo: string | null = null;

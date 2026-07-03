@@ -1266,6 +1266,7 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
   // would silently bypass Manual mode / a maintenance window on a DB hiccup).
   it('fails closed (withholds upgrade) when the policy lookup throws', async () => {
     const { compareAgentVersions, getOrgAgentUpdatePolicy } = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
     vi.mocked(compareAgentVersions).mockReturnValue(1);
     vi.mocked(getOrgAgentUpdatePolicy).mockRejectedValueOnce(new Error('db down'));
     selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
@@ -1275,6 +1276,9 @@ describe('POST /agents/:id/heartbeat — org agent update policy gating', () => 
     expect(resp.status).toBe(200);
     const body = await resp.json() as { upgradeTo?: string | null };
     expect(body.upgradeTo).toBeFalsy();
+    // A fleet-wide upgrade freeze must be loud: the lookup failure is reported
+    // to Sentry, not just logged (#2125).
+    expect(vi.mocked(captureException)).toHaveBeenCalled();
   });
 
   // A dev-push build (dev-*) must never be auto-upgraded back to a release,
