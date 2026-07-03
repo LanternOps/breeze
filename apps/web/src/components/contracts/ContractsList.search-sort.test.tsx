@@ -189,4 +189,113 @@ describe('ContractsList — search, sort & skeleton', () => {
       expect(screen.getByTestId('contracts-sort-name').closest('th')).toHaveAttribute('aria-sort', 'ascending');
     });
   });
+
+  it('clears the URL fragment cleanly (no bare "#") when filters are reset', async () => {
+    // Regression for the shared writeHashFilters residue fix: setting a filter
+    // writes `#status=…`; clearing it must strip the fragment via replaceState,
+    // not leave a dangling `#` (quotes/invoices already had this; contracts now
+    // shares the helper).
+    listContracts.mockResolvedValue(json({ data: [ALPHA, ZETA] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    fireEvent.change(screen.getByTestId('contracts-filter-status'), { target: { value: 'active' } });
+    expect(window.location.hash).toContain('status=active');
+
+    fireEvent.change(screen.getByTestId('contracts-filter-status'), { target: { value: '' } });
+    // No residual '#': the fragment is gone entirely, not left as a bare hash.
+    expect(window.location.hash).toBe('');
+  });
+
+  // Only the `name` comparator was covered above; the org/status/estimate/start
+  // comparators are exercised here so a regression in any one can't hide.
+  const orderedIds = () =>
+    screen.getAllByTestId(/^contract-row-(?!link)/).map((r) => r.getAttribute('data-testid'));
+
+  it('sorts by organization NAME (not org id) when the Organization header is clicked', async () => {
+    // ALPHA→'Acme Corp' (o1), ZETA→'Globex' (o2). Sorting on the resolved name
+    // must put Acme before Globex regardless of the incoming row order.
+    listContracts.mockResolvedValue(json({ data: [ZETA, ALPHA] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    fireEvent.click(screen.getByTestId('contracts-sort-org'));
+    await waitFor(() => {
+      expect(orderedIds()).toEqual([`contract-row-${ALPHA.id}`, `contract-row-${ZETA.id}`]);
+    });
+
+    fireEvent.click(screen.getByTestId('contracts-sort-org')); // toggle → desc
+    await waitFor(() => {
+      expect(orderedIds()).toEqual([`contract-row-${ZETA.id}`, `contract-row-${ALPHA.id}`]);
+    });
+  });
+
+  it('sorts by status alphabetically when the Status header is clicked', async () => {
+    const activeC = { ...ALPHA, status: 'active' as const };
+    const draftC = { ...ZETA, status: 'draft' as const };
+    listContracts.mockResolvedValue(json({ data: [draftC, activeC] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    fireEvent.click(screen.getByTestId('contracts-sort-status'));
+    // asc → 'active' before 'draft'
+    await waitFor(() => {
+      expect(orderedIds()).toEqual([`contract-row-${activeC.id}`, `contract-row-${draftC.id}`]);
+    });
+  });
+
+  it('sorts numerically by estimated period value (not string order) on the Est./period header', async () => {
+    // '100.00' vs '900.00' — a string sort would agree here, so use values where
+    // lexical and numeric order diverge: 90 < 100 numerically, but '100' < '90'
+    // as strings. Numeric comparator must put 90 first ascending.
+    const small = { ...ALPHA, estimatedPeriodValue: '90.00' };
+    const big = { ...ZETA, estimatedPeriodValue: '100.00' };
+    listContracts.mockResolvedValue(json({ data: [big, small] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    fireEvent.click(screen.getByTestId('contracts-sort-estimate'));
+    await waitFor(() => {
+      expect(orderedIds()).toEqual([`contract-row-${small.id}`, `contract-row-${big.id}`]);
+    });
+  });
+
+  it('sorts by start date on the Start date header, keeping null starts last in both directions', async () => {
+    const early = { ...ALPHA, startDate: '2026-01-01' };
+    const late = { ...ZETA, startDate: '2026-06-01' };
+    const undated = {
+      ...base,
+      id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+      orgId: 'o1',
+      name: 'No Start',
+      status: 'draft' as const,
+      intervalMonths: 1,
+      nextBillingAt: null,
+      startDate: null,
+      estimatedPeriodValue: '50.00',
+    };
+    listContracts.mockResolvedValue(json({ data: [late, undated, early] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    fireEvent.click(screen.getByTestId('contracts-sort-start'));
+    // asc → early, late, then the null-start row (nulls are pinned last).
+    await waitFor(() => {
+      expect(orderedIds()).toEqual([
+        `contract-row-${early.id}`,
+        `contract-row-${late.id}`,
+        `contract-row-${undated.id}`,
+      ]);
+    });
+
+    fireEvent.click(screen.getByTestId('contracts-sort-start')); // toggle → desc
+    await waitFor(() => {
+      // Dated rows reverse; the null-start row stays pinned last, not first.
+      expect(orderedIds()).toEqual([
+        `contract-row-${late.id}`,
+        `contract-row-${early.id}`,
+        `contract-row-${undated.id}`,
+      ]);
+    });
+  });
 });

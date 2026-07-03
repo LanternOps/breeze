@@ -23,6 +23,7 @@ import {
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
 import { StatCard } from './shared/StatCard';
+import { ROW_LINK_CLASS, writeHashFilters } from './shared/listChrome';
 import { INVOICE_STATUSES, BULK_ID_LIMIT } from '@breeze/shared';
 
 interface Organization {
@@ -64,20 +65,12 @@ function readFilters(): Filters {
 }
 
 function writeFilters(f: Filters): void {
-  if (typeof window === 'undefined') return;
   const params = new URLSearchParams();
   if (f.orgId) params.set('orgId', f.orgId);
   if (f.status) params.set('status', f.status);
   if (f.from) params.set('from', f.from);
   if (f.to) params.set('to', f.to);
-  const next = params.toString();
-  if (next) {
-    window.location.hash = `#${next}`;
-  } else if (window.location.hash) {
-    // Clearing: plain `location.hash = ''` can leave a bare '#' dangling in the
-    // URL. replaceState strips the fragment cleanly without a history entry.
-    history.replaceState(null, '', window.location.pathname + window.location.search);
-  }
+  writeHashFilters(params);
 }
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -560,7 +553,7 @@ export function InvoicesPage() {
                               // was redundant). The dash is decorative — give the link
                               // an accessible name so it doesn't read as just "—".
                               aria-label={inv.invoiceNumber ? undefined : 'Draft invoice'}
-                              className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                              className={ROW_LINK_CLASS}
                             >
                               {inv.invoiceNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
                             </a>
@@ -617,7 +610,7 @@ export function InvoicesPage() {
                           onClick={(e) => e.stopPropagation()}
                           data-testid={`invoices-card-link-${inv.id}`}
                           aria-label={inv.invoiceNumber ? undefined : 'Draft invoice'}
-                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                          className={ROW_LINK_CLASS}
                         >
                           {inv.invoiceNumber ?? <span aria-hidden="true" className="text-muted-foreground">—</span>}
                         </a>

@@ -325,6 +325,27 @@ describe('ContractEditor — immediate-commit controls lock while their PATCH is
     expect(box).toBeChecked(); // success — the optimistic value stands
   });
 
+  it('disables the auto-renew checkbox until its PATCH settles', async () => {
+    // Same lock as auto-issue, on the renew toggle's own 'autoRenew' pending key:
+    // a rapid re-toggle mid-flight would otherwise capture the optimistic value
+    // as `prev` and silently drop the second action.
+    let resolvePatch!: (v: Response) => void;
+    (api.updateContract as any).mockReturnValue(new Promise<Response>((r) => { resolvePatch = r; }));
+
+    const renewing: ContractDetail = {
+      ...draftDetail,
+      contract: { ...draftDetail.contract, endDate: '2027-06-01', autoRenew: true, renewalTermMonths: 12 },
+    };
+    render(<ContractEditor detail={renewing} onChanged={vi.fn()} />);
+    const box = (await screen.findByTestId('contract-auto-renew-toggle')).querySelector('input')!;
+    fireEvent.click(box); // uncheck → immediate autoRenew:false PATCH
+
+    await waitFor(() => expect(box).toBeDisabled());
+    resolvePatch(resp({ data: {} }));
+    await waitFor(() => expect(box).not.toBeDisabled());
+    expect(box).not.toBeChecked(); // success — the optimistic uncheck stands
+  });
+
   it('disables the billing-timing select until the PATCH settles', async () => {
     let resolvePatch!: (v: Response) => void;
     (api.updateContract as any).mockReturnValue(new Promise<Response>((r) => { resolvePatch = r; }));

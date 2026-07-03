@@ -477,7 +477,10 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               // readOnly field is still focusable, so if canWrite flipped false
               // mid-edit the onBlur guard would silently drop the typed note.
               onBlur={() => { if (canWrite) void saveNotes(); }}
-              disabled={!canWrite}
+              // Also disable while the field's own save is in flight (matches the
+              // quote editor's terms field) — a visual busy-cue; the inFlight guard
+              // in runScoped already prevents a double-PATCH.
+              disabled={!canWrite || isPending('notes')}
               data-testid="invoice-notes"
               rows={3}
               className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(notesDirty, notesSaved)}`}
@@ -494,7 +497,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               value={terms}
               onChange={(e) => { setTerms(e.target.value); setTermsDirty(true); }}
               onBlur={() => { if (canWrite) void saveTerms(); }}
-              disabled={!canWrite}
+              disabled={!canWrite || isPending('terms')}
               data-testid="invoice-terms"
               rows={3}
               className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}

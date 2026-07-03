@@ -116,6 +116,25 @@ describe('InvoicesPage', () => {
     expect(screen.getByTestId('invoices-status-inv-2')).toHaveTextContent('Draft');
   });
 
+  it('mobile card mirrors the em-dash draft link and its accessible name', async () => {
+    // The stacked mobile card renders its own `invoices-card-link-*` anchor with
+    // the same unnumbered-draft treatment as the desktop row — assert it here so
+    // the two surfaces can't drift.
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+
+    const cardLink = screen.getByTestId('invoices-card-link-inv-2');
+    expect(cardLink.tagName).toBe('A');
+    expect(cardLink).toHaveAttribute('href', '/billing/invoices/inv-2');
+    expect(cardLink).toHaveTextContent('—');
+    expect(within(cardLink).queryByText('Draft')).not.toBeInTheDocument();
+    expect(cardLink).toHaveAttribute('aria-label', 'Draft invoice');
+    // A numbered invoice's card link carries NO draft aria-label (its number is
+    // its accessible name).
+    expect(screen.getByTestId('invoices-card-link-inv-1')).not.toHaveAttribute('aria-label');
+  });
+
   it('writes filter selections to the URL hash', async () => {
     wireDefault();
     render(<InvoicesPage />);

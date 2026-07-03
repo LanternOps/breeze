@@ -12,7 +12,7 @@
 // (e.g. '150.00'), matching the invoice client's string-money convention.
 
 import { fetchWithAuth } from '../../stores/auth';
-import type { StatusPillRole } from '../../components/billing/invoiceTypes';
+import type { StatusPillRole } from '../../components/billing/shared/statusPillRoles';
 
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type ContractBillingTiming = 'advance' | 'arrears';

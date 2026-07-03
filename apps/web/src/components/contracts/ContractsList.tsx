@@ -16,6 +16,7 @@ import { StatusPill } from '../billing/shared/StatusPill';
 import { StatCard } from '../billing/shared/StatCard';
 import { SortableTh } from '../billing/shared/SortableTh';
 import { TableSkeleton } from '../billing/shared/TableSkeleton';
+import { ROW_LINK_CLASS, writeHashFilters } from '../billing/shared/listChrome';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { useBulkSelection } from '../billing/bulk/useBulkSelection';
@@ -55,12 +56,12 @@ function readFilters(): Filters {
 }
 
 function writeFilters(f: Filters): void {
-  if (typeof window === 'undefined') return;
   const params = new URLSearchParams();
   if (f.orgId) params.set('orgId', f.orgId);
   if (f.status) params.set('status', f.status);
-  const next = params.toString();
-  window.location.hash = next ? `#${next}` : '';
+  // Shared writer: clearing strips the fragment via replaceState so no bare '#'
+  // is left dangling (quotes/invoices carried this fix; contracts now shares it).
+  writeHashFilters(params);
 }
 
 // ---- client-side sort ----------------------------------------------------
@@ -159,6 +160,11 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   const newContractHref = lockedOrgId ? `/contracts/new#orgId=${lockedOrgId}` : '/contracts/new';
 
+  // A fresh column sorts ASCending first (A→Z / oldest / smallest), then toggles.
+  // This is intentionally the opposite of the quotes/invoices lists (which open
+  // DESC-first): those lead with money/recency where "biggest/newest first" is
+  // the useful default, whereas contracts lead with a name column where A→Z reads
+  // more naturally.
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
 
@@ -442,7 +448,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                           href={`/contracts/${ctr.id}`}
                           onClick={(e) => e.stopPropagation()}
                           data-testid={`contract-row-link-${ctr.id}`}
-                          className="rounded-xs text-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                          className={ROW_LINK_CLASS}
                         >
                           {ctr.name}
                         </a>

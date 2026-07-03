@@ -1,4 +1,4 @@
-import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
+import { STATUS_PILL, type StatusPillRole } from './statusPillRoles';
 
 const BASE = 'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium';
 

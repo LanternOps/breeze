@@ -247,6 +247,59 @@ describe('InvoiceEditor', () => {
     expect(screen.getByTestId('invoice-line-qty-line-1')).toHaveValue(9);
   });
 
+  it('a background refresh does not clobber a price field being edited', async () => {
+    // The price resync guard is symmetric with qty's (its own `priceEdited` ref),
+    // so a mid-type unit price must likewise survive a server echo.
+    const { rerender } = render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const price = screen.getByTestId('invoice-line-price-line-1');
+    fireEvent.change(price, { target: { value: '75' } }); // mid-edit, not yet blurred
+
+    const serverEcho = { ...manualLine, unitPrice: '50.00', lineTotal: '100.00' };
+    rerender(<InvoiceEditor detail={draft([serverEcho])} onChanged={vi.fn()} />);
+
+    // The user's in-progress "75" survives; the server's 50 does not clobber it.
+    expect(screen.getByTestId('invoice-line-price-line-1')).toHaveValue(75);
+  });
+
+  it('a settled price field DOES re-adopt a new server value on refresh', async () => {
+    // The guard only protects an ACTIVELY-edited field: an untouched price must
+    // still track the server's canonical value when a background poll lands.
+    const { rerender } = render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-line-price-line-1')).toHaveValue(50);
+
+    const serverEcho = { ...manualLine, unitPrice: '65.00', lineTotal: '130.00' };
+    rerender(<InvoiceEditor detail={draft([serverEcho])} onChanged={vi.fn()} />);
+
+    expect(screen.getByTestId('invoice-line-price-line-1')).toHaveValue(65);
+  });
+
+  it('disables the notes textarea while its own save is in flight (busy cue)', async () => {
+    // Visual busy-cue parity with the quote editor's terms field: the textarea
+    // reflects isPending('notes'). The inFlight guard already blocks a double
+    // PATCH; this just makes the in-flight window visible.
+    let releasePatch: (v: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1' && opts?.method === 'PATCH') {
+        return new Promise<Response>((resolve) => { releasePatch = resolve; });
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const notes = screen.getByTestId('invoice-notes');
+    fireEvent.change(notes, { target: { value: 'A note' } });
+    fireEvent.blur(notes); // dirty → saveNotes → PATCH held open
+
+    await waitFor(() => expect(notes).toBeDisabled());
+    releasePatch(json({ data: {} }));
+    await waitFor(() => expect(notes).not.toBeDisabled());
+  });
+
   it('editing the T&C textarea and blurring issues PATCH /invoices/:id with { termsAndConditions }', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
