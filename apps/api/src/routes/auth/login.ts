@@ -1,8 +1,8 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { and, eq, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { userPasskeys, users } from '../../db/schema';
+import { users } from '../../db/schema';
 import {
   createTokenPair,
   verifyToken,
@@ -50,7 +50,8 @@ import {
   NoTenantMembershipError,
   auditUserLoginFailure,
   auditLogin,
-  userRequiresSetup
+  userRequiresSetup,
+  userHasUsablePasskey
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
@@ -422,15 +423,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // authenticator and risk lockout), so login must independently detect
     // whether the account has any usable passkey and offer it as a choice.
     // This ADDS an option; it never removes the primary factor's prompt.
-    // Pre-auth read → system scope, or the RLS `user_passkeys` SELECT under
-    // breeze_app returns 0 rows and the option silently disappears.
-    const passkeyAvailable = (await withSystemDbAccessContext(async () =>
-      db
-        .select({ id: userPasskeys.id })
-        .from(userPasskeys)
-        .where(and(eq(userPasskeys.userId, user.id), isNull(userPasskeys.disabledAt)))
-        .limit(1)
-    )).length > 0;
+    // The helper reads under system scope (pre-auth) and fails closed — a
+    // probe error hides the alternate, it never blocks this login.
+    const passkeyAvailable = await userHasUsablePasskey(user.id);
 
     await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
       userId: user.id,

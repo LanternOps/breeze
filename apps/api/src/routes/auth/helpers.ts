@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, partnerUsers, organizationUsers, organizations } from '../../db/schema';
+import { users, partnerUsers, organizationUsers, organizations, userPasskeys } from '../../db/schema';
 import {
   verifyToken,
   isUserTokenRevoked,
@@ -41,6 +41,40 @@ export const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T>
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
+
+/**
+ * #2153: does the account have at least one usable (non-disabled) passkey?
+ *
+ * Both callers (the password /login handler and the CF-Access login
+ * middleware) use this to advertise a passkey as an ALTERNATE second factor
+ * even when the account's primary `mfaMethod` is totp/sms — registering a
+ * passkey intentionally does not clobber an existing totp/sms method
+ * (passkeys.ts), so login must detect the passkey independently.
+ *
+ * Runs under system DB access because both callers are PRE-AUTH (no request
+ * RLS context): an org-scoped read under `breeze_app` would return 0 rows and
+ * silently hide the option.
+ *
+ * NEVER throws. This is an optional affordance layered on top of the essential
+ * login flow — a transient DB error here must not 500 a correctly-authenticated
+ * user out of login, so a probe failure fails closed (returns false: the
+ * primary factor's prompt is still shown, the passkey alternate is just hidden).
+ */
+export async function userHasUsablePasskey(userId: string): Promise<boolean> {
+  try {
+    const rows = await runWithSystemDbAccess(() =>
+      db
+        .select({ id: userPasskeys.id })
+        .from(userPasskeys)
+        .where(and(eq(userPasskeys.userId, userId), isNull(userPasskeys.disabledAt)))
+        .limit(1)
+    );
+    return rows.length > 0;
+  } catch (err) {
+    console.error('[auth] passkey-availability probe failed; hiding passkey alternate:', err);
+    return false;
+  }
+}
 
 // ============================================
 // Cookie helpers
