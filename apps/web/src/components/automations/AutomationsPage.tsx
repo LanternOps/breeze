@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import AutomationList, { type Automation } from './AutomationList';
-import AutomationRunHistory, { type AutomationRun as RunHistoryRun } from './AutomationRunHistory';
+import AutomationRunHistory, {
+  type AutomationRun as RunHistoryRun,
+  type DeviceRunResult,
+} from './AutomationRunHistory';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
@@ -92,6 +95,31 @@ function toRunHistoryRun(raw: unknown, automation: Automation): RunHistoryRun {
   };
 }
 
+const RUN_HISTORY_POLL_MS = 4000;
+
+const DEVICE_RESULT_STATUSES = ['pending', 'running', 'success', 'failed', 'skipped'] as const;
+
+function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
+  if (!isPlainRecord(raw)) return null;
+  const deviceId = asString(raw.deviceId);
+  if (!deviceId) return null;
+  const statusRaw = asString(raw.status) ?? 'pending';
+  const status = (DEVICE_RESULT_STATUSES as readonly string[]).includes(statusRaw)
+    ? (statusRaw as DeviceRunResult['status'])
+    : 'pending';
+  const duration = typeof raw.duration === 'number' ? raw.duration : undefined;
+  return {
+    deviceId,
+    deviceName: asString(raw.deviceName) ?? deviceId,
+    status,
+    startedAt: asString(raw.startedAt),
+    completedAt: asString(raw.completedAt),
+    duration,
+    output: asString(raw.output),
+    error: asString(raw.error),
+  };
+}
+
 export default function AutomationsPage() {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,9 +160,41 @@ export default function AutomationsPage() {
     }
   }, []);
 
+  const fetchRunDetail = useCallback(async (runId: string) => {
+    try {
+      const response = await fetchWithAuth(`/automations/runs/${runId}`);
+      if (!response.ok) return null;
+      const data = await response.json();
+      const deviceResults = Array.isArray(data.deviceResults)
+        ? data.deviceResults
+          .map(toDeviceRunResult)
+          .filter((r: DeviceRunResult | null): r is DeviceRunResult => r !== null)
+        : [];
+      const logs = Array.isArray(data.logs)
+        ? data.logs.filter((l: unknown): l is string => typeof l === 'string')
+        : undefined;
+      return { deviceResults, logs };
+    } catch {
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     fetchAutomations();
   }, [fetchAutomations]);
+
+  // Live progress: while the history modal is open and any run is still in
+  // progress, re-poll the run list so counts/statuses update (#2023). Stops
+  // automatically once no run is running (or the modal closes).
+  useEffect(() => {
+    if (modalMode !== 'history' || !selectedAutomation) return;
+    const hasRunningRun = runHistory.some((run) => run.status === 'running');
+    if (!hasRunningRun) return;
+    const timer = setInterval(() => {
+      void fetchRunHistory(selectedAutomation);
+    }, RUN_HISTORY_POLL_MS);
+    return () => clearInterval(timer);
+  }, [modalMode, selectedAutomation, runHistory, fetchRunHistory]);
 
   const handleEdit = (automation: Automation) => {
     void navigateTo(`/automations/${automation.id}`);
@@ -311,6 +371,7 @@ export default function AutomationsPage() {
           isOpen={true}
           onClose={handleCloseModal}
           automationName={selectedAutomation.name}
+          onLoadRunDetail={fetchRunDetail}
         />
       )}
     </div>

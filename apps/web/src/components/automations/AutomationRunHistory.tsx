@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   X,
   CheckCircle,
@@ -18,13 +18,19 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 export type DeviceRunResult = {
   deviceId: string;
   deviceName: string;
-  status: 'success' | 'failed' | 'skipped' | 'running';
-  startedAt: string;
+  status: 'pending' | 'success' | 'failed' | 'skipped' | 'running';
+  startedAt?: string;
   completedAt?: string;
   duration?: number;
   output?: string;
   error?: string;
 };
+
+/** Lazy loader for a run's per-device detail, fetched on expand (#2023). */
+export type RunDetailLoader = (runId: string) => Promise<{
+  deviceResults: DeviceRunResult[];
+  logs?: string[];
+} | null>;
 
 export type AutomationRun = {
   id: string;
@@ -48,14 +54,22 @@ type AutomationRunHistoryProps = {
   onClose: () => void;
   automationName?: string;
   timezone?: string;
+  /** When provided, expanding a run lazily fetches its per-device breakdown. */
+  onLoadRunDetail?: RunDetailLoader;
 };
 
-type StatusKey = 'running' | 'success' | 'failed' | 'partial' | 'skipped';
+type StatusKey = 'running' | 'success' | 'failed' | 'partial' | 'skipped' | 'pending';
 const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
   running: {
     label: 'Running',
     color: 'text-blue-600',
     bgColor: 'bg-blue-500/20 border-blue-500/40',
+    icon: Clock
+  },
+  pending: {
+    label: 'Pending',
+    color: 'text-gray-500',
+    bgColor: 'bg-gray-500/20 border-gray-500/40',
     icon: Clock
   },
   success: {
@@ -123,14 +137,54 @@ function formatRelativeTime(dateString: string, timezone: string): string {
   return date.toLocaleDateString([], { timeZone: timezone });
 }
 
-function RunItem({ run, timezone }: { run: AutomationRun; timezone: string }) {
+function RunItem({
+  run,
+  timezone,
+  onLoadRunDetail,
+}: {
+  run: AutomationRun;
+  timezone: string;
+  onLoadRunDetail?: RunDetailLoader;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [detail, setDetail] = useState<{ deviceResults: DeviceRunResult[]; logs?: string[] } | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const isRunning = run.status === 'running';
+
+  // Lazily load the per-device breakdown on first expand, and refresh it while
+  // the run is still in progress (parent polling bumps the counts below, which
+  // re-triggers this effect) so live progress stays current (#2023).
+  useEffect(() => {
+    if (!expanded || !onLoadRunDetail) return;
+    let cancelled = false;
+    setDetailLoading(true);
+    onLoadRunDetail(run.id)
+      .then((result) => {
+        if (!cancelled && result) setDetail(result);
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Re-fetch when counts change (live progress) or the run terminates.
+  }, [expanded, onLoadRunDetail, run.id, run.status, run.devicesSuccess, run.devicesFailed]);
+
+  const deviceResults = detail?.deviceResults ?? run.deviceResults;
+  const logs = detail?.logs ?? run.logs;
 
   const StatusIcon = statusConfig[run.status].icon;
   const duration = run.completedAt
     ? new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime()
     : null;
+
+  const finishedCount = run.devicesSuccess + run.devicesFailed + run.devicesSkipped;
+  const progressPct = run.devicesTotal > 0
+    ? Math.min(100, Math.round((finishedCount / run.devicesTotal) * 100))
+    : 0;
 
   return (
     <div className="rounded-md border">
@@ -182,11 +236,29 @@ function RunItem({ run, timezone }: { run: AutomationRun; timezone: string }) {
         </div>
       </button>
 
+      {/* Live progress bar — shown while a run is in progress (#2023). */}
+      {isRunning && run.devicesTotal > 0 && (
+        <div className="px-4 pb-3" data-testid="run-progress">
+          <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+            <span>
+              {finishedCount} of {run.devicesTotal} devices finished
+            </span>
+            <span>{progressPct}%</span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-blue-500 transition-all"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {expanded && (
         <div className="border-t bg-muted/20 p-4">
           <div className="mb-4 flex items-center justify-between">
             <h4 className="text-sm font-medium">Device Results</h4>
-            {run.logs && run.logs.length > 0 && (
+            {logs && logs.length > 0 && (
               <button
                 type="button"
                 onClick={() => setShowLogs(!showLogs)}
@@ -198,9 +270,9 @@ function RunItem({ run, timezone }: { run: AutomationRun; timezone: string }) {
             )}
           </div>
 
-          {showLogs && run.logs && run.logs.length > 0 && (
+          {showLogs && logs && logs.length > 0 && (
             <div className="mb-4 rounded-md bg-gray-900 p-3 text-xs font-mono text-gray-100 overflow-x-auto max-h-48 overflow-y-auto">
-              {run.logs.map((log, i) => (
+              {logs.map((log, i) => (
                 <div key={i} className="whitespace-pre-wrap">
                   {log}
                 </div>
@@ -208,8 +280,16 @@ function RunItem({ run, timezone }: { run: AutomationRun; timezone: string }) {
             </div>
           )}
 
+          {detailLoading && deviceResults.length === 0 && (
+            <p className="text-xs text-muted-foreground">Loading device results…</p>
+          )}
+
+          {!detailLoading && deviceResults.length === 0 && (
+            <p className="text-xs text-muted-foreground">No per-device results recorded for this run.</p>
+          )}
+
           <div className="space-y-2">
-            {run.deviceResults.map(result => {
+            {deviceResults.map(result => {
               const DeviceStatusIcon = statusConfig[result.status].icon;
               return (
                 <div
@@ -264,7 +344,8 @@ export default function AutomationRunHistory({
   isOpen,
   onClose,
   automationName,
-  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+  onLoadRunDetail
 }: AutomationRunHistoryProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
@@ -322,7 +403,7 @@ export default function AutomationRunHistory({
           ) : (
             <div className="space-y-3">
               {filteredRuns.map(run => (
-                <RunItem key={run.id} run={run} timezone={timezone} />
+                <RunItem key={run.id} run={run} timezone={timezone} onLoadRunDetail={onLoadRunDetail} />
               ))}
             </div>
           )}

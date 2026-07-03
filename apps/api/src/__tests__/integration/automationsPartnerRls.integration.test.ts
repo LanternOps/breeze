@@ -64,7 +64,7 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 });
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { alertRules, alerts, alertTemplates, automationRuns, automations, devices, sites } from '../../db/schema';
+import { alertRules, alerts, alertTemplates, automationRunDeviceResults, automationRuns, automations, devices, sites } from '../../db/schema';
 import { queueEventTriggers } from '../../jobs/automationWorker';
 import { createAutomationRunRecord, executeAutomationRun } from '../../services/automationRuntime';
 import { resolvePolicyRemediationAutomationIdForOrg } from '../../services/policyEvaluationService';
@@ -498,6 +498,34 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
       .filter(([type]) => type === 'alert.triggered')
       .map(([, orgId]) => orgId);
     expect(alertEventOrgs.sort()).toEqual([orgA.id, orgB.id].sort());
+
+    // Per-device result rows (#2023): one per targeted device, each carrying
+    // that DEVICE's org (never the automation's NULL org), a terminal success
+    // status, and start/complete timestamps for duration display.
+    const deviceResultRows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .select({
+          deviceId: automationRunDeviceResults.deviceId,
+          orgId: automationRunDeviceResults.orgId,
+          status: automationRunDeviceResults.status,
+          startedAt: automationRunDeviceResults.startedAt,
+          completedAt: automationRunDeviceResults.completedAt,
+          output: automationRunDeviceResults.output,
+        })
+        .from(automationRunDeviceResults)
+        .where(eq(automationRunDeviceResults.runId, run.id)),
+    );
+    expect(deviceResultRows).toHaveLength(2);
+    const resultByDevice = new Map(deviceResultRows.map((row) => [row.deviceId, row]));
+    for (const [deviceId, expectedOrg] of [[deviceA, orgA.id], [deviceB, orgB.id]] as const) {
+      const row = resultByDevice.get(deviceId);
+      expect(row).toBeDefined();
+      expect(row!.orgId).toBe(expectedOrg);
+      expect(row!.status).toBe('success');
+      expect(row!.startedAt).not.toBeNull();
+      expect(row!.completedAt).not.toBeNull();
+      expect(row!.output).toContain('create_alert action created alert successfully');
+    }
   });
 });
 

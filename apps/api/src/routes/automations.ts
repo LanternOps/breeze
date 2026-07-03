@@ -7,7 +7,9 @@ import { db } from '../db';
 import {
   automations,
   automationRuns,
+  automationRunDeviceResults,
   configurationPolicies,
+  devices,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
@@ -379,6 +381,47 @@ function serializeRunLogs(logs: unknown): string[] {
     .filter((line): line is string => Boolean(line));
 }
 
+/**
+ * Fetch the consolidated per-device breakdown for one run (#2023), joined to
+ * `devices` for a display name. Shaped to the web `DeviceRunResult` contract:
+ * status + start/complete timestamps + duration (ms) + output/error. RLS on
+ * automation_run_device_results (org_id = device's org) already scopes rows to
+ * the caller's tenancy, so no extra org filter is needed here.
+ */
+async function fetchRunDeviceResults(runId: string) {
+  const rows = await db
+    .select({
+      deviceId: automationRunDeviceResults.deviceId,
+      status: automationRunDeviceResults.status,
+      startedAt: automationRunDeviceResults.startedAt,
+      completedAt: automationRunDeviceResults.completedAt,
+      output: automationRunDeviceResults.output,
+      error: automationRunDeviceResults.error,
+      hostname: devices.hostname,
+      displayName: devices.displayName,
+    })
+    .from(automationRunDeviceResults)
+    .leftJoin(devices, eq(devices.id, automationRunDeviceResults.deviceId))
+    .where(eq(automationRunDeviceResults.runId, runId))
+    .orderBy(desc(automationRunDeviceResults.startedAt));
+
+  return rows.map((row) => {
+    const duration = row.startedAt && row.completedAt
+      ? new Date(row.completedAt).getTime() - new Date(row.startedAt).getTime()
+      : undefined;
+    return {
+      deviceId: row.deviceId,
+      deviceName: row.displayName ?? row.hostname ?? row.deviceId,
+      status: row.status,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+      duration,
+      output: row.output ?? undefined,
+      error: row.error ?? undefined,
+    };
+  });
+}
+
 const listAutomationsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
@@ -554,6 +597,7 @@ automationRoutes.get(
         ...run,
         status: toRunStatus(run.status),
         logs: serializeRunLogs(run.logs),
+        deviceResults: await fetchRunDeviceResults(run.id),
         automation: null,
         configPolicyId: run.configPolicyId,
         configItemName: run.configItemName,
@@ -569,6 +613,7 @@ automationRoutes.get(
       ...run,
       status: toRunStatus(run.status),
       logs: serializeRunLogs(run.logs),
+      deviceResults: await fetchRunDeviceResults(run.id),
       automation: {
         id: automation.id,
         name: automation.name,

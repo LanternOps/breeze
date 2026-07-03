@@ -72,6 +72,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   automations: {},
   automationRuns: {},
+  automationRunDeviceResults: {},
   configurationPolicies: {},
   policies: {},
   policyCompliance: {},
@@ -79,6 +80,21 @@ vi.mock('../db/schema', () => ({
   devices: {},
   scripts: {}
 }));
+
+// The run-detail route issues a final select for per-device results (#2023):
+//   db.select().from().leftJoin().where().orderBy()
+// Tests that reach a 200 must supply this via mockReturnValueOnce.
+function deviceResultsSelectMock(rows: any[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockResolvedValue(rows),
+        }),
+      }),
+    }),
+  } as any;
+}
 
 vi.mock('../services/auditEvents', () => ({
   ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
@@ -1063,7 +1079,9 @@ describe('automations routes', () => {
             limit: vi.fn().mockResolvedValue([{ orgId: 'org-123' }])
           })
         })
-      } as any);
+      } as any)
+      // Third select: per-device results (#2023).
+      .mockReturnValueOnce(deviceResultsSelectMock([]));
 
     const res = await app.request('/automations/runs/run-cp-1', {
       method: 'GET',
@@ -1076,6 +1094,7 @@ describe('automations routes', () => {
     expect(body.configPolicyId).toBe('policy-1');
     expect(body.configItemName).toBe('Patch Policy');
     expect(body.automation).toBeNull();
+    expect(body.deviceResults).toEqual([]);
   });
 
   it('returns 404 for an automation-backed run whose org the caller cannot access', async () => {
@@ -1145,7 +1164,30 @@ describe('automations routes', () => {
             }])
           })
         })
-      } as any);
+      } as any)
+      // Third select: per-device results (#2023).
+      .mockReturnValueOnce(deviceResultsSelectMock([
+        {
+          deviceId: 'device-1',
+          status: 'success',
+          startedAt: '2026-07-08T00:00:00.000Z',
+          completedAt: '2026-07-08T00:00:03.000Z',
+          output: '[info] Script queued',
+          error: null,
+          hostname: 'HOST-1',
+          displayName: 'Reception PC',
+        },
+        {
+          deviceId: 'device-2',
+          status: 'failed',
+          startedAt: '2026-07-08T00:00:00.000Z',
+          completedAt: '2026-07-08T00:00:02.000Z',
+          output: '[error] boom',
+          error: 'boom',
+          hostname: 'HOST-2',
+          displayName: null,
+        },
+      ]));
 
     const res = await app.request('/automations/runs/run-ab-1', {
       method: 'GET',
@@ -1160,6 +1202,23 @@ describe('automations routes', () => {
       id: 'auto-1',
       name: 'Automation One',
       orgId: 'org-123',
+    });
+    // Per-device breakdown is included and shaped for the UI (#2023):
+    // display name falls back to hostname, duration is derived from timestamps.
+    expect(body.deviceResults).toHaveLength(2);
+    expect(body.deviceResults[0]).toMatchObject({
+      deviceId: 'device-1',
+      deviceName: 'Reception PC',
+      status: 'success',
+      duration: 3000,
+      output: '[info] Script queued',
+    });
+    expect(body.deviceResults[1]).toMatchObject({
+      deviceId: 'device-2',
+      deviceName: 'HOST-2',
+      status: 'failed',
+      duration: 2000,
+      error: 'boom',
     });
   });
 

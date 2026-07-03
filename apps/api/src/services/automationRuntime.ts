@@ -8,6 +8,7 @@ import {
   alertTemplates,
   automations,
   automationRuns,
+  automationRunDeviceResults,
   configPolicyAutomations,
   deviceGroupMemberships,
   devices,
@@ -1481,6 +1482,97 @@ async function distinctDeviceOrgIds(deviceIds: string[]): Promise<string[]> {
   return rows.map((row) => row.orgId);
 }
 
+type DeviceExecutionRow = {
+  id: string;
+  orgId: string;
+  hostname: string | null;
+  displayName: string | null;
+  osType: 'windows' | 'macos' | 'linux';
+  status: string;
+};
+
+/**
+ * Seed one `automation_run_device_results` row per targeted device in the
+ * `pending` state (#2023). Called before the per-device execution loop so a
+ * polling UI can show every target device up front. org_id is the DEVICE's org
+ * (partner-wide automations have no org of their own). Idempotent per
+ * (run_id, device_id) so a re-executed run doesn't duplicate rows.
+ */
+async function seedAutomationDeviceResults(
+  runId: string,
+  deviceRows: DeviceExecutionRow[],
+): Promise<void> {
+  if (deviceRows.length === 0) return;
+  await db
+    .insert(automationRunDeviceResults)
+    .values(
+      deviceRows.map((device) => ({
+        runId,
+        deviceId: device.id,
+        orgId: device.orgId,
+        status: 'pending' as const,
+      })),
+    )
+    .onConflictDoNothing({
+      target: [automationRunDeviceResults.runId, automationRunDeviceResults.deviceId],
+    });
+}
+
+/** Mark a device's result row `running` and stamp its start time. */
+async function markDeviceResultRunning(
+  runId: string,
+  deviceId: string,
+  startedAt: Date,
+): Promise<void> {
+  await db
+    .update(automationRunDeviceResults)
+    .set({ status: 'running', startedAt, updatedAt: new Date() })
+    .where(
+      and(
+        eq(automationRunDeviceResults.runId, runId),
+        eq(automationRunDeviceResults.deviceId, deviceId),
+      ),
+    );
+}
+
+/**
+ * Finalize a device's result row with its terminal status, completion time,
+ * accumulated per-device output, and (on failure) the first error message.
+ * Output is capped so a chatty run can't bloat the row.
+ */
+async function finalizeDeviceResult(
+  runId: string,
+  deviceId: string,
+  outcome: {
+    status: 'success' | 'failed' | 'skipped';
+    startedAt: Date;
+    completedAt: Date;
+    output: string;
+    error: string | null;
+  },
+): Promise<void> {
+  const MAX_OUTPUT_CHARS = 16_000;
+  const trimmedOutput = outcome.output.length > MAX_OUTPUT_CHARS
+    ? `${outcome.output.slice(0, MAX_OUTPUT_CHARS)}\n…(truncated)`
+    : outcome.output;
+  await db
+    .update(automationRunDeviceResults)
+    .set({
+      status: outcome.status,
+      startedAt: outcome.startedAt,
+      completedAt: outcome.completedAt,
+      output: trimmedOutput.length > 0 ? trimmedOutput : null,
+      error: outcome.error,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(automationRunDeviceResults.runId, runId),
+        eq(automationRunDeviceResults.deviceId, deviceId),
+      ),
+    );
+}
+
 export async function executeAutomationRun(
   runId: string,
   targetDeviceIdsFromQueue?: string[],
@@ -1591,6 +1683,10 @@ export async function executeAutomationRun(
 
   const channelsById = new Map(channelRows.map((channel) => [channel.id, channel]));
 
+  // Seed a per-device result row (pending) for every targeted device so the
+  // execution-history UI can show live progress as each device finishes (#2023).
+  await seedAutomationDeviceResults(run.id, deviceRows);
+
   const existingLogs = getExistingLogs(run.logs);
   const logs: AutomationLogEntry[] = [...existingLogs];
   let devicesSucceeded = 0;
@@ -1598,6 +1694,10 @@ export async function executeAutomationRun(
 
   await runWithConcurrency(deviceRows, 5, async (device) => {
     let deviceFailed = false;
+    const deviceStartedAt = new Date();
+    const deviceOutput: string[] = [];
+    let deviceError: string | null = null;
+    await markDeviceResultRunning(run.id, device.id, deviceStartedAt);
 
     for (const [actionIndex, action] of normalized.actions.entries()) {
       // deploy_software is handled by the batched executeDeploySoftwareActions pass below
@@ -1611,9 +1711,11 @@ export async function executeAutomationRun(
       });
 
       logs.push(result.log);
+      deviceOutput.push(`[${result.log.level}] ${result.log.message}`);
 
       if (!result.success) {
         deviceFailed = true;
+        if (deviceError === null) deviceError = result.log.message;
 
         if (normalized.onFailure === 'notify') {
           const failureLogs = await sendOnFailureNotifications(
@@ -1641,6 +1743,14 @@ export async function executeAutomationRun(
     } else {
       devicesSucceeded += 1;
     }
+
+    await finalizeDeviceResult(run.id, device.id, {
+      status: deviceFailed ? 'failed' : 'success',
+      startedAt: deviceStartedAt,
+      completedAt: new Date(),
+      output: deviceOutput.join('\n'),
+      error: deviceError,
+    });
   });
 
   // Batched deploy_software pass — runs once per automation run, after the per-device loop
