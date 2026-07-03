@@ -78,12 +78,17 @@ partnerLoginBrandingRoutes.put(
         headline: partnerLoginBranding.headline
       });
 
+    // Full-replace semantics: an omitted field is coalesced to null above, so
+    // a "changed fields" list derived from the request body would misrepresent
+    // what happened (e.g. PUT {accentColor} also NULLs logoUrl/headline). Log
+    // the effective applied row instead — truthful regardless of which fields
+    // were present in the request.
     writeRouteAudit(c, {
       orgId: null,
       action: 'partner.login_branding.update',
       resourceType: 'partner_login_branding',
       resourceId: auth.partnerId,
-      details: { partnerId: auth.partnerId, changedFields: Object.keys(body) }
+      details: { partnerId: auth.partnerId, applied: row }
     });
 
     return c.json({ data: row });

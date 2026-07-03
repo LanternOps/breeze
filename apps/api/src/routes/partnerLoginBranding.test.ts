@@ -122,6 +122,47 @@ describe('partner login branding routes (#2183)', () => {
     expect(event.action).toBe('partner.login_branding.update');
     expect(event.resourceId).toBe('p-1');
     expect(event.details.partnerId).toBe('p-1');
+    // Audit must reflect the effective applied row, not the raw request body —
+    // full-replace semantics mean omitted fields were coalesced to null.
+    expect(event.details.applied).toEqual(returned);
+  });
+
+  it('PUT audits the effective applied row (full-replace nulls omitted fields), not a changed-fields list', async () => {
+    resetAuth({ partnerOrgAccess: 'all' });
+    // Only accentColor is sent; logoUrl/headline are coalesced to null by the
+    // route and that's what actually lands in the DB row returned here.
+    const returned = { logoUrl: null, accentColor: '#abcdef', headline: null };
+    dbUpsertReturning.mockResolvedValueOnce([returned]);
+
+    const res = await makeApp().request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accentColor: '#abcdef' })
+    });
+
+    expect(res.status).toBe(200);
+    const event = auditSpy.mock.calls[0]?.[1];
+    expect(event.details).not.toHaveProperty('changedFields');
+    expect(event.details.applied).toEqual(returned);
+  });
+
+  it('PUT populated then GET returns the populated row (round-trip)', async () => {
+    resetAuth({ partnerOrgAccess: 'all' });
+    const applied = { logoUrl: 'https://cdn.example.com/logo.png', accentColor: '#336699', headline: 'Welcome' };
+    dbUpsertReturning.mockResolvedValueOnce([applied]);
+
+    const putRes = await makeApp().request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(applied)
+    });
+    expect(putRes.status).toBe(200);
+    expect((await putRes.json()).data).toEqual(applied);
+
+    dbSelectResult.mockResolvedValueOnce([applied]);
+    const getRes = await makeApp().request('/partners/me/login-branding');
+    expect(getRes.status).toBe(200);
+    expect((await getRes.json()).data).toEqual(applied);
   });
 
   it('PUT 403s without canManagePartnerWidePolicies', async () => {
