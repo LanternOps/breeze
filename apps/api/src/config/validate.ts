@@ -421,12 +421,14 @@ const envSchema = z
     // is gradual: only orgs that already have a verified domain are gated.
     SSO_DOMAIN_VERIFICATION_STRICT: z.string().optional(),
 
-    // OAuth Dynamic Client Registration (DCR) hardening. Both default OFF.
+    // OAuth Dynamic Client Registration (DCR) hardening. All default OFF.
     // See env.ts and provider.ts for the runtime read-paths; the
     // production-only validation in superRefine refuses boot when
-    // OAUTH_DCR_ENABLED=true without OAUTH_DCR_REQUIRE_IAT=true.
+    // OAUTH_DCR_ENABLED=true with neither OAUTH_DCR_REQUIRE_IAT=true nor
+    // OAUTH_DCR_ALLOW_ANONYMOUS=true (no anti-spam posture chosen).
     OAUTH_DCR_ENABLED: z.string().optional(),
     OAUTH_DCR_REQUIRE_IAT: z.string().optional(),
+    OAUTH_DCR_ALLOW_ANONYMOUS: z.string().optional(),
 
     // -- Feature-flagged secrets (Task 26 / audit H-3) -----------------------
     // The validator only enforces these in production when the corresponding
@@ -898,21 +900,28 @@ const envSchema = z
       }
 
       // OAuth DCR (Dynamic Client Registration) hardening (Task 21).
-      // When DCR is enabled in production, an initial-access-token is also
-      // required — without it, POST /oauth/reg is anonymous and any actor
-      // on the internet can create OAuth clients with deceptive
-      // client_name strings (logos, brand mimicry, etc.). Boot-refuse the
-      // misconfig so a "DCR=true, IAT unset" deploy never reaches prod.
+      // When DCR is enabled in production it must declare an anti-spam posture,
+      // EITHER require an initial-access-token (OAUTH_DCR_REQUIRE_IAT=true) OR
+      // deliberately allow anonymous registration (OAUTH_DCR_ALLOW_ANONYMOUS=
+      // true). Anonymous DCR is the ONLY registration path public MCP clients
+      // (Claude Desktop / claude.ai) can use — the IAT gate blocks them — so a
+      // public MCP server sets OAUTH_DCR_ALLOW_ANONYMOUS and relies on the
+      // compensating controls on /oauth/reg (per-IP rate limit, forced public
+      // clients, PKCE S256, software_id rejection, daily stale-client GC).
+      // Boot-refuse only the "DCR=true but neither posture chosen" misconfig so
+      // an accidental deploy can't open an ungated registration endpoint.
       const dcrEnabledRaw = (data.OAUTH_DCR_ENABLED ?? '').trim().toLowerCase();
       const dcrRequireIatRaw = (data.OAUTH_DCR_REQUIRE_IAT ?? '').trim().toLowerCase();
+      const dcrAllowAnonRaw = (data.OAUTH_DCR_ALLOW_ANONYMOUS ?? '').trim().toLowerCase();
       const dcrEnabled = ['true', '1', 'yes', 'on'].includes(dcrEnabledRaw);
       const dcrRequireIat = ['true', '1', 'yes', 'on'].includes(dcrRequireIatRaw);
-      if (dcrEnabled && !dcrRequireIat) {
+      const dcrAllowAnon = ['true', '1', 'yes', 'on'].includes(dcrAllowAnonRaw);
+      if (dcrEnabled && !dcrRequireIat && !dcrAllowAnon) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['OAUTH_DCR_REQUIRE_IAT'],
           message:
-            'OAUTH_DCR_REQUIRE_IAT=true is required when OAUTH_DCR_ENABLED=true in production. Without an initial-access-token gate, POST /oauth/reg is anonymous and any actor can create OAuth clients with deceptive client_name strings.',
+            'When OAUTH_DCR_ENABLED=true in production you must set EITHER OAUTH_DCR_REQUIRE_IAT=true (gate registration behind an initial-access-token) OR OAUTH_DCR_ALLOW_ANONYMOUS=true (deliberately permit anonymous DCR — required for public MCP clients like Claude, which cannot supply an IAT). Setting neither leaves POST /oauth/reg ungated by accident.',
         });
       }
 
@@ -1283,6 +1292,7 @@ export function validateConfig(): AppConfig {
     ENABLE_2FA: env.ENABLE_2FA,
     OAUTH_DCR_ENABLED: env.OAUTH_DCR_ENABLED,
     OAUTH_DCR_REQUIRE_IAT: env.OAUTH_DCR_REQUIRE_IAT,
+    OAUTH_DCR_ALLOW_ANONYMOUS: env.OAUTH_DCR_ALLOW_ANONYMOUS,
     // Task 26 (H-3): feature-flagged production secrets.
     MCP_OAUTH_ENABLED: env.MCP_OAUTH_ENABLED,
     OAUTH_JWKS_PRIVATE_JWK: env.OAUTH_JWKS_PRIVATE_JWK,

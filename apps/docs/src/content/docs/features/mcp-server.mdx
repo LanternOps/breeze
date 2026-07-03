@@ -502,8 +502,9 @@ These apply only when OAuth is enabled. When `MCP_OAUTH_ENABLED=true` in product
 | `OAUTH_JWKS_PRIVATE_JWK` | (empty) | EdDSA private signing key (JWK JSON) for access tokens. Required in production when OAuth is enabled. |
 | `OAUTH_JWKS_PUBLIC_JWK` | (empty) | Matching public key, advertised at `/.well-known/jwks.json`. Derived from the private key if unset. |
 | `OAUTH_COOKIE_SECRET` | (empty) | Secret used to sign sign-in / consent session cookies. Required in production when OAuth is enabled. |
-| `OAUTH_DCR_ENABLED` | `false` | Allow Dynamic Client Registration at `POST /oauth/reg`. Off by default. |
-| `OAUTH_DCR_REQUIRE_IAT` | `false` | Require an initial access token for DCR. In production, this **must** be `true` whenever `OAUTH_DCR_ENABLED=true`, or the API refuses to boot (prevents anonymous client registration). |
+| `OAUTH_DCR_ENABLED` | `false` | Allow Dynamic Client Registration at `POST /oauth/reg`. Off by default. When `true` in production you must also set **one** of the two posture flags below, or the API refuses to boot. |
+| `OAUTH_DCR_REQUIRE_IAT` | `false` | Gate DCR behind an initial access token issued out-of-band. Closes the public-spam vector, but is **incompatible with public MCP clients** (Claude.ai / ChatGPT) — they register anonymously and cannot supply an IAT. Use `OAUTH_DCR_ALLOW_ANONYMOUS` instead for a public server. |
+| `OAUTH_DCR_ALLOW_ANONYMOUS` | `false` | Deliberately permit anonymous DCR. **This is the required posture for connecting Claude.ai / ChatGPT** (see above). Spam risk is bounded by the controls on `/oauth/reg`: per-IP rate limit, forced public clients, mandatory PKCE S256, `software_id` rejection, and a daily stale-client GC. |
 | `OAUTH_CONSENT_URL_BASE` | (empty) | Optional origin for the consent UI redirect (e.g. `http://localhost:4321` for split API/web dev). Defaults to a relative path, which works when the API and web app share an origin behind a reverse proxy. |
 
 ---

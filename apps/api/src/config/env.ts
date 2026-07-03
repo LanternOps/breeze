@@ -55,12 +55,25 @@ export const BILLING_URL = process.env.BILLING_URL ?? '';
 
 // DCR (Dynamic Client Registration) defaults OFF in all environments.
 // Production deployments must explicitly opt in by setting OAUTH_DCR_ENABLED=true,
-// AND must also set OAUTH_DCR_REQUIRE_IAT=true (boot-refused otherwise — see
-// config/validate.ts). The IAT (initial-access-token) requirement closes the
-// public-spam vector: without it, anyone on the internet can POST /oauth/reg
-// and create clients with deceptive client_name strings.
+// AND must then choose an anti-spam posture (boot-refused otherwise — see
+// config/validate.ts), EITHER:
+//   - OAUTH_DCR_REQUIRE_IAT=true  → every POST /oauth/reg needs an initial-
+//     access-token issued out-of-band. Closes the public-spam vector, but is
+//     INCOMPATIBLE with public MCP clients (Claude Desktop / claude.ai) that
+//     register via anonymous RFC 7591 DCR and have no way to supply an IAT.
+//   - OAUTH_DCR_ALLOW_ANONYMOUS=true → deliberately permit anonymous DCR. This
+//     is the required posture for a public MCP server: anonymous DCR is the
+//     only registration path Claude's connector can use. Residual spam risk is
+//     bounded by the compensating controls already on /oauth/reg — per-IP rate
+//     limiting (oauth.ts), forced public clients (token_endpoint_auth_method
+//     'none'), mandatory PKCE S256, software_id rejection, and the daily GC of
+//     stale unused clients (jobs/oauthCleanup.ts).
+// Setting both is allowed (IAT wins at the provider); setting neither with DCR
+// enabled is a boot-refused misconfig so an accidental deploy can't open an
+// ungated registration endpoint.
 export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', false);
 export const OAUTH_DCR_REQUIRE_IAT = envFlag('OAUTH_DCR_REQUIRE_IAT', false);
+export const OAUTH_DCR_ALLOW_ANONYMOUS = envFlag('OAUTH_DCR_ALLOW_ANONYMOUS', false);
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
 // Optional override for the consent UI base. Defaults to '' (relative path)
