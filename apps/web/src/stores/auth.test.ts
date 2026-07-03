@@ -393,7 +393,31 @@ describe('auth API helpers', () => {
       mfaRequired: true,
       tempToken: 'temp-1',
       mfaMethod: 'sms',
+      // #2153: response now always reports whether a passkey alternate exists;
+      // a login body without the flag normalizes to false.
+      passkeyAvailable: false,
       phoneLast4: '1234'
+    });
+  });
+
+  it('apiLogin surfaces passkeyAvailable when the account has an alternate passkey', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        mfaRequired: true,
+        tempToken: 'temp-2',
+        mfaMethod: 'totp',
+        passkeyAvailable: true
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await apiLogin('user@example.com', 'password');
+
+    expect(result).toMatchObject({
+      success: true,
+      mfaRequired: true,
+      mfaMethod: 'totp',
+      passkeyAvailable: true
     });
   });
 

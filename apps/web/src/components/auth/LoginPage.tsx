@@ -69,6 +69,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string>();
   const [mfaMethod, setMfaMethod] = useState<MfaMethod>('totp');
+  const [passkeyAvailable, setPasskeyAvailable] = useState(false);
   const [phoneLast4, setPhoneLast4] = useState<string>();
   const [smsSending, setSmsSending] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
@@ -126,6 +127,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
       setMfaRequired(true);
       setTempToken(result.tempToken);
       setMfaMethod(result.mfaMethod || 'totp');
+      setPasskeyAvailable(result.passkeyAvailable === true);
       setPhoneLast4(result.phoneLast4);
       setSmsSent(false);
       setLoading(false);
@@ -228,6 +230,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           errorMessage={error}
           loading={loading}
           mfaMethod={mfaMethod}
+          passkeyAvailable={passkeyAvailable}
           phoneLast4={phoneLast4}
           onSendSmsCode={handleSendSmsCode}
           smsSending={smsSending}

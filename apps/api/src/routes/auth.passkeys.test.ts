@@ -427,6 +427,197 @@ describe('passkey MFA auth routes', () => {
     );
   });
 
+  // #2153: a TOTP-primary account with a registered passkey must be offered the
+  // passkey as an ALTERNATE factor — login advertises passkeyAvailable and the
+  // pending token records it, without changing the primary mfaMethod.
+  it('advertises passkeyAvailable at login for a TOTP user who also has a passkey', async () => {
+    authState.requireAuthorizationHeader = false;
+    vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    const totpUser = {
+      ...user,
+      mfaMethod: 'totp',
+      mfaSecret: 'enc-secret',
+    };
+    dbState.selectQueue.push(
+      [totpUser],
+      [{ partnerId: 'partner-1', roleId: 'role-1' }],
+      // passkey-availability probe → one active passkey exists
+      [{ id: 'passkey-credential-1' }],
+    );
+
+    const res = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'test@example.com', password: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'totp',
+      passkeyAvailable: true,
+      user: null,
+      tokens: null,
+    });
+    expect(redisMock.setex).toHaveBeenCalledWith(
+      expect.stringMatching(/^mfa:pending:/),
+      300,
+      expect.stringContaining('"passkeyAvailable":true'),
+    );
+    // The passkey probe must run under system DB context (pre-auth); otherwise
+    // the RLS user_passkeys read returns 0 rows and silently hides the option.
+    // Two+ system-scoped reads: the login user lookup + the passkey probe.
+    expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('reports passkeyAvailable=false at login for a TOTP user with no passkey', async () => {
+    authState.requireAuthorizationHeader = false;
+    vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    const totpUser = {
+      ...user,
+      mfaMethod: 'totp',
+      mfaSecret: 'enc-secret',
+    };
+    dbState.selectQueue.push(
+      [totpUser],
+      [{ partnerId: 'partner-1', roleId: 'role-1' }],
+      // passkey-availability probe → no passkeys
+      [],
+    );
+
+    const res = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'test@example.com', password: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'totp',
+      passkeyAvailable: false,
+    });
+    expect(redisMock.setex).toHaveBeenCalledWith(
+      expect.stringMatching(/^mfa:pending:/),
+      300,
+      expect.stringContaining('"passkeyAvailable":false'),
+    );
+  });
+
+  // #2153: the passkey MFA endpoints must accept a pending session whose PRIMARY
+  // method is totp/sms as long as the session flags a passkey as available.
+  it('returns passkey options for a TOTP-primary pending session flagged passkeyAvailable', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'totp',
+      passkeyAvailable: true,
+    }));
+    dbState.selectQueue.push([
+      {
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+      },
+    ]);
+
+    const res = await app.request('/auth/mfa/passkey/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      options: { challenge: 'login-challenge' },
+    });
+    expect(passkeyMocks.generatePasskeyAuthenticationOptions).toHaveBeenCalled();
+  });
+
+  it('verifies a passkey for a TOTP-primary pending session flagged passkeyAvailable', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'totp',
+      passkeyAvailable: true,
+    }));
+    dbState.selectQueue.push(
+      [{ ...user, mfaMethod: 'totp', mfaSecret: 'enc-secret' }],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+    );
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'user-123', mfa: true }),
+      expect.objectContaining({ refreshFam: 'family-passkey' }),
+    );
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+  });
+
+  // #2153 security guard: the token-minting /verify endpoint must REFUSE a
+  // non-passkey session that does not flag a passkey as available. This is the
+  // half of pendingAllowsPasskey that mints tokens — regressing it to accept
+  // any session would be a bypass, so it needs its own explicit test.
+  it('rejects /mfa/passkey/verify for a TOTP session with no available passkey', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'totp',
+      passkeyAvailable: false,
+    }));
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(rateLimiter).not.toHaveBeenCalled();
+    expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  // #2153 backward-compat: a legacy pre-JSON pending token (bare userId string,
+  // not valid JSON) must be treated as a TOTP session with NO passkey available,
+  // so in-flight sessions during a deploy can't reach the passkey path.
+  it('treats a legacy bare-string pending token as passkey-unavailable', async () => {
+    redisMock.get.mockResolvedValueOnce('user-123');
+
+    const res = await app.request('/auth/mfa/passkey/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
+    expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
+  });
+
   it('returns passkey authentication options for a pending passkey MFA login', async () => {
     redisMock.get.mockResolvedValueOnce(JSON.stringify({
       userId: 'user-123',

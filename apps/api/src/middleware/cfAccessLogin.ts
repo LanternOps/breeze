@@ -31,6 +31,7 @@ import {
   setRefreshTokenCookie,
   toPublicTokens,
   userRequiresSetup,
+  userHasUsablePasskey,
 } from '../routes/auth/helpers';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 
@@ -152,15 +153,21 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     }
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
+    // #2153: mirror the password /login handler — a passkey is an accepted
+    // ALTERNATE second factor here too, even when the primary method is
+    // totp/sms. The helper fails closed, so a probe error just hides the
+    // alternate rather than blocking this CF-Access MFA challenge.
+    const passkeyAvailable = await userHasUsablePasskey(user.id);
     await redis.setex(
       `mfa:pending:${tempToken}`,
       300,
-      JSON.stringify({ userId: user.id, mfaMethod })
+      JSON.stringify({ userId: user.id, mfaMethod, passkeyAvailable })
     );
     return c.json({
       mfaRequired: true,
       tempToken,
       mfaMethod,
+      passkeyAvailable,
       phoneLast4: user.phoneNumber?.slice(-4) || null,
       user: null,
       tokens: null,

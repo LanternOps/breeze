@@ -11,6 +11,12 @@ type MFAVerifyFormProps = {
   submitLabel?: string;
   loading?: boolean;
   mfaMethod?: MfaMethod;
+  /**
+   * #2153: true when the account has a passkey registered as an ALTERNATE
+   * second factor while the primary method is totp/sms. Surfaces a "use a
+   * passkey instead" affordance without changing the primary prompt.
+   */
+  passkeyAvailable?: boolean;
   phoneLast4?: string;
   onSendSmsCode?: () => Promise<void>;
   smsSending?: boolean;
@@ -24,6 +30,7 @@ export default function MFAVerifyForm({
   submitLabel = 'Verify',
   loading,
   mfaMethod = 'totp',
+  passkeyAvailable = false,
   phoneLast4,
   onSendSmsCode,
   smsSending,
@@ -38,6 +45,9 @@ export default function MFAVerifyForm({
   const code = digits.join('');
   const isSms = mfaMethod === 'sms';
   const isPasskey = mfaMethod === 'passkey';
+  // #2153: offer the passkey as an alternate factor when the primary method is
+  // the code-based totp/sms flow but the account also has a passkey.
+  const showPasskeyAlternate = !isPasskey && passkeyAvailable && Boolean(onPasskeyVerify);
 
   // Resend cooldown timer
   useEffect(() => {
@@ -235,6 +245,25 @@ export default function MFAVerifyForm({
         >
           {isLoading ? 'Verifying...' : submitLabel}
         </button>
+      )}
+
+      {showPasskeyAlternate && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <span className="h-px flex-1 bg-border" />
+            <span className="text-xs uppercase tracking-wide text-muted-foreground">or</span>
+            <span className="h-px flex-1 bg-border" />
+          </div>
+          <button
+            type="button"
+            data-testid="mfa-passkey-alternate"
+            onClick={handlePasskeyVerify}
+            disabled={isLoading}
+            className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Use a passkey instead
+          </button>
+        </div>
       )}
     </form>
   );
