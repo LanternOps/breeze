@@ -41,6 +41,9 @@ export interface PatchRingResolution {
   ringId: string | null;
   ringName: string | null;
   categoryRules: Record<string, unknown>[];
+  /** Ring category include allowlist / exclude denylist (#2117). API/AI-only. */
+  categories: string[];
+  excludeCategories: string[];
   autoApprove: Record<string, unknown> | boolean;
 }
 
@@ -60,6 +63,12 @@ export interface PatchInventorySummary {
   ok: number;
   needsRepair: number;
   invalidReference: number;
+}
+
+/** Coerce a stored text[] column to a clean string[], tolerating null/garbage. */
+function coerceCategoryList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === 'string' && v.length > 0);
 }
 
 export function normalizePatchInlineSettings(settings: unknown): PatchInlineSettings {
@@ -182,6 +191,8 @@ export async function resolvePatchPolicyReference(
       ringId: null,
       ringName: null,
       categoryRules: [],
+      categories: [],
+      excludeCategories: [],
       autoApprove: {},
     };
   }
@@ -192,6 +203,8 @@ export async function resolvePatchPolicyReference(
       kind: patchPolicies.kind,
       name: patchPolicies.name,
       categoryRules: patchPolicies.categoryRules,
+      categories: patchPolicies.categories,
+      excludeCategories: patchPolicies.excludeCategories,
       autoApprove: patchPolicies.autoApprove,
     })
     .from(patchPolicies)
@@ -206,6 +219,8 @@ export async function resolvePatchPolicyReference(
         ringId: patchPolicy.id,
         ringName: patchPolicy.name,
         categoryRules: Array.isArray(patchPolicy.categoryRules) ? patchPolicy.categoryRules : [],
+        categories: coerceCategoryList(patchPolicy.categories),
+        excludeCategories: coerceCategoryList(patchPolicy.excludeCategories),
         autoApprove: (patchPolicy.autoApprove ?? {}) as Record<string, unknown> | boolean,
       };
     }
@@ -215,6 +230,8 @@ export async function resolvePatchPolicyReference(
       ringId: null,
       ringName: null,
       categoryRules: [],
+      categories: [],
+      excludeCategories: [],
       autoApprove: {},
     };
   }
@@ -232,6 +249,8 @@ export async function resolvePatchPolicyReference(
       ringId: null,
       ringName: null,
       categoryRules: [],
+      categories: [],
+      excludeCategories: [],
       autoApprove: {},
     };
   }
@@ -242,6 +261,8 @@ export async function resolvePatchPolicyReference(
     ringId: null,
     ringName: null,
     categoryRules: [],
+    categories: [],
+    excludeCategories: [],
     autoApprove: {},
   };
 }

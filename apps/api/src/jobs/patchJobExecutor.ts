@@ -41,6 +41,19 @@ const jobPolicyAutoApproveSchema = z.object({
   deferralDays: z.number().int().min(0).optional(),
 });
 
+/**
+ * Coerce a stored job-JSONB category list to string[], or undefined when the
+ * field is absent (legacy job → no category filtering). A present-but-malformed
+ * value degrades to the string entries it does contain; a fully non-array value
+ * yields an empty list (the evaluator treats empty as "no filter") rather than
+ * throwing. Narrowing-only, so this can never widen install scope (#2117).
+ */
+function toStringArrayOrUndefined(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === 'string' && v.length > 0);
+}
+
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -507,6 +520,8 @@ async function prepareDeviceExecution(
   const patchesConfig = patchJob.patches as {
     ringId?: string | null;
     categoryRules?: unknown[];
+    categories?: unknown;
+    excludeCategories?: unknown;
     autoApprove?: unknown;
     sources?: unknown;
     policyAutoApprove?: unknown;
@@ -620,6 +635,12 @@ async function prepareDeviceExecution(
       : []) as RingConfig['categoryRules'],
     autoApprove: patchesConfig?.autoApprove ?? {},
     deferralDays: 0,
+    // Ring category include/exclude filters (#2117). Absent on legacy job
+    // snapshots → undefined → no category filtering. Non-array shapes coerce to
+    // an empty list (drop the filter) rather than throwing; string entries are
+    // kept as-is for the evaluator to canonicalize.
+    categories: toStringArrayOrUndefined(patchesConfig?.categories),
+    excludeCategories: toStringArrayOrUndefined(patchesConfig?.excludeCategories),
     sources: jobSources,
     policyAutoApprove,
     apps: jobApps,

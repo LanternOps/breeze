@@ -36,6 +36,9 @@ export interface PatchesSnapshot {
   ringId: string | null;
   ringName: string | null;
   categoryRules: Record<string, unknown>[];
+  /** Ring category include/exclude filters carried into the job snapshot (#2117). */
+  categories: string[];
+  excludeCategories: string[];
   autoApprove: Record<string, unknown> | boolean;
   sources: PatchInlineSettings['sources'];
   policyAutoApprove: {
@@ -55,6 +58,8 @@ export function buildPatchesSnapshot(policyLocal: PatchesSnapshotInput): Patches
     ringId: policyLocal.ring.ringId,
     ringName: policyLocal.ring.ringName,
     categoryRules: policyLocal.ring.categoryRules,
+    categories: policyLocal.ring.categories,
+    excludeCategories: policyLocal.ring.excludeCategories,
     autoApprove: policyLocal.ring.autoApprove,
     sources: policyLocal.settings.sources,
     policyAutoApprove: {

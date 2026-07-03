@@ -23,6 +23,7 @@ import {
   buildAllowedPatchSources,
   comparePatchVersions,
   evaluateAppRule,
+  isCategoryAllowed,
   resolveApprovedPatchesForDevice,
   THIRD_PARTY_PATCH_SOURCES,
   type ApprovalEvaluationConfig,
@@ -988,5 +989,125 @@ describe('partner-scoped approval evaluation', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+});
+
+// ---- Ring category include/exclude filter (#2117) ----
+describe('isCategoryAllowed', () => {
+  it('allows everything when both lists are empty/absent', () => {
+    expect(isCategoryAllowed('security', [], [])).toBe(true);
+    expect(isCategoryAllowed('security', undefined, undefined)).toBe(true);
+    expect(isCategoryAllowed(null, [], [])).toBe(true);
+  });
+
+  it('drops a patch whose category is in excludeCategories', () => {
+    expect(isCategoryAllowed('driver', [], ['driver'])).toBe(false);
+    expect(isCategoryAllowed('security', [], ['driver'])).toBe(true);
+  });
+
+  it('exclude matching is case-insensitive and canonicalizes definition/definitions', () => {
+    expect(isCategoryAllowed('DRIVER', [], ['driver'])).toBe(false);
+    // ring stored singular 'definition'; agent emits plural 'definitions'
+    expect(isCategoryAllowed('definitions', [], ['definition'])).toBe(false);
+    expect(isCategoryAllowed('definition', [], ['definitions'])).toBe(false);
+  });
+
+  it('never excludes a null-category patch (cannot be in the set)', () => {
+    expect(isCategoryAllowed(null, [], ['driver'])).toBe(true);
+  });
+
+  it('with a non-empty allowlist, keeps only in-list categories', () => {
+    expect(isCategoryAllowed('security', ['security'], [])).toBe(true);
+    expect(isCategoryAllowed('feature', ['security'], [])).toBe(false);
+  });
+
+  it('an active allowlist drops a null-category patch (fail-closed narrowing)', () => {
+    expect(isCategoryAllowed(null, ['security'], [])).toBe(false);
+  });
+
+  it('exclude wins over include when a category is in both', () => {
+    expect(isCategoryAllowed('security', ['security'], ['security'])).toBe(false);
+  });
+});
+
+describe('ring category include/exclude filtering in resolveApprovedPatchesForDevice', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('drops patches in excludeCategories from the approved set', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', category: 'security', severity: 'critical' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', category: 'driver', severity: 'critical' }),
+      ],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      excludeCategories: ['driver'],
+    });
+
+    expect(approved.map((p) => p.patchId)).toEqual([P1]);
+  });
+
+  it('exclude filter overrides an explicit manual approval (never installs excluded)', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'driver', severity: 'low' })],
+      [{ patchId: P1, status: 'approved', ringId: null }]
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      excludeCategories: ['driver'],
+    });
+
+    expect(approved).toEqual([]);
+  });
+
+  it('canonicalizes so a singular "definition" exclusion drops the agent\'s "definitions" patch', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'definitions', severity: 'critical' })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      excludeCategories: ['definition'],
+    });
+
+    expect(approved).toEqual([]);
+  });
+
+  it('with a non-empty allowlist keeps only in-list categories', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', category: 'security', severity: 'critical' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', category: 'feature', severity: 'critical' }),
+      ],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      categories: ['security'],
+    });
+
+    expect(approved.map((p) => p.patchId)).toEqual([P1]);
+  });
+
+  it('applies no category filtering when both lists are absent (legacy jobs)', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', category: 'security', severity: 'critical' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', category: 'driver', severity: 'critical' }),
+      ],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, baseRing);
+
+    expect(approved).toHaveLength(2);
   });
 });

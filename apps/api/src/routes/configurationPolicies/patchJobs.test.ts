@@ -123,6 +123,8 @@ function makePolicyLocal(overrides: Record<string, unknown> = {}): any {
       ringId: null,
       ringName: null,
       categoryRules: [],
+      categories: [],
+      excludeCategories: [],
       autoApprove: {},
     },
     ...overrides,
@@ -761,6 +763,8 @@ describe('configurationPolicies patchJob routes', () => {
             ringId: 'ring-w',
             ringName: 'Winning Ring',
             categoryRules: [],
+            categories: [],
+            excludeCategories: [],
             autoApprove: {},
           },
         });

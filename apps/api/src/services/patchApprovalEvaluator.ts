@@ -62,6 +62,16 @@ export interface ApprovalEvaluationConfig {
   categoryRules: CategoryRule[];
   autoApprove: unknown;
   deferralDays: number;
+  /**
+   * Ring category allowlist (include). Empty/absent = no include restriction.
+   * API/AI-only field (the web UI uses categoryRules); see isCategoryAllowed (#2117).
+   */
+  categories?: string[];
+  /**
+   * Ring category denylist (exclude). Empty/absent = no exclusions.
+   * API/AI-only field (the web UI uses categoryRules); see isCategoryAllowed (#2117).
+   */
+  excludeCategories?: string[];
   /** Policy-level source selections ('os', 'third_party', ...). Absent/empty = no filtering (legacy). */
   sources?: string[];
   /** Policy-level auto-approve, consulted only when ringId is null. Absent means disabled. */
@@ -115,6 +125,52 @@ export function canonicalizePatchCategory(category: string): string {
   const c = category.toLowerCase();
   if (c === 'definition') return 'definitions';
   return c;
+}
+
+/** Canonicalize + dedupe a ring category list into a lookup set, dropping blanks. */
+function normalizeCategorySet(list: string[] | undefined): Set<string> {
+  const set = new Set<string>();
+  for (const c of list ?? []) {
+    if (typeof c === 'string' && c.trim().length > 0) set.add(canonicalizePatchCategory(c));
+  }
+  return set;
+}
+
+/**
+ * Decide whether a patch survives the ring's include/exclude category filter.
+ *
+ * `categories` (include allowlist) and `excludeCategories` (exclude denylist)
+ * are API/AI-only ring fields (the web UI drives categoryRules instead). Until
+ * #2117 they were stored but had NO consumer in the approval/job path, so
+ * excluding a category did nothing at approval time. Both only narrow the
+ * candidate set (fail-safe: they never widen install scope), applied alongside
+ * source and app-rule filtering before approval.
+ *
+ * Categories are canonicalized on both sides so 'definition'/'definitions'
+ * reconcile, consistent with categoryRule matching. Semantics:
+ *  - excludeCategories: a patch whose category is in it is dropped. A
+ *    null-category patch cannot be in the set, so it is never excluded.
+ *  - categories (allowlist): when non-empty, only patches whose category is in
+ *    it survive. A null-category patch matches no allowlist entry, so an active
+ *    allowlist drops it — the same fail-closed narrowing posture as the other
+ *    gates (a patch that can't prove it belongs is not auto-installed).
+ *  - both empty/absent: no filtering (legacy jobs).
+ * Exclude wins over include if a category is (mis)configured in both.
+ */
+export function isCategoryAllowed(
+  category: string | null,
+  categories: string[] | undefined,
+  excludeCategories: string[] | undefined
+): boolean {
+  const include = normalizeCategorySet(categories);
+  const exclude = normalizeCategorySet(excludeCategories);
+  if (include.size === 0 && exclude.size === 0) return true;
+
+  const canon = category ? canonicalizePatchCategory(category) : null;
+
+  if (canon !== null && exclude.has(canon)) return false;
+  if (include.size > 0) return canon !== null && include.has(canon);
+  return true;
 }
 
 /** patches.source values that count as OS updates. Keep in sync with patchSourceEnum (db/schema/patches.ts). */
@@ -310,12 +366,33 @@ export async function resolveApprovedPatchesForDevice(
     return [];
   }
 
+  // Ring category include/exclude filtering (#2117). These stored ring arrays
+  // previously had no approval-path consumer, so excluding a category did
+  // nothing. Like source and app-rule filtering they only narrow the candidate
+  // set — so, consistently with those gates, they also override an explicit
+  // manual approval (an excluded category is never installed).
+  const hasCategoryFilter =
+    (ringConfig.categories?.length ?? 0) > 0 || (ringConfig.excludeCategories?.length ?? 0) > 0;
+  const categoryFiltered = hasCategoryFilter
+    ? candidatePatches.filter((p) => {
+        if (isCategoryAllowed(p.category, ringConfig.categories, ringConfig.excludeCategories)) {
+          return true;
+        }
+        console.warn(
+          `[PatchApproval] device ${deviceId}: patch ${p.patchId} (category=${p.category ?? 'null'}) excluded by ring category filter (include=[${(ringConfig.categories ?? []).join(', ')}] exclude=[${(ringConfig.excludeCategories ?? []).join(', ')}])`
+        );
+        return false;
+      })
+    : candidatePatches;
+
+  if (categoryFiltered.length === 0) return [];
+
   // App rules filter before manual approvals are loaded — a policy block/pin
   // overrides even an explicit manual approval in the job flow; manual
   // per-device installs bypass this evaluator entirely.
   const appRuleMap = buildAppRuleMap(ringConfig.apps);
   const finalCandidates = appRuleMap.size > 0
-    ? candidatePatches.filter((p) => {
+    ? categoryFiltered.filter((p) => {
         if (!p.packageId && isThirdPartyPatchSource(p.source)) {
           // Deliberate allow-with-warn: holding every unidentified third-party
           // patch because one unrelated app is pinned/blocked would be
@@ -334,7 +411,7 @@ export async function resolveApprovedPatchesForDevice(
         }
         return true;
       })
-    : candidatePatches;
+    : categoryFiltered;
 
   if (finalCandidates.length === 0) return [];
 

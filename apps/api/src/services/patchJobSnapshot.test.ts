@@ -20,6 +20,8 @@ function makePolicyLocal(overrides: {
       ringId: 'ring-1',
       ringName: 'Pilot Ring',
       categoryRules: [{ category: 'security', action: 'auto' }],
+      categories: [],
+      excludeCategories: [],
       autoApprove: { security: true },
       ...overrides.ring,
     },
@@ -45,6 +47,8 @@ describe('buildPatchesSnapshot', () => {
       ringId: 'ring-1',
       ringName: 'Pilot Ring',
       categoryRules: [{ category: 'security', action: 'auto' }],
+      categories: [],
+      excludeCategories: [],
       autoApprove: { security: true },
       sources: ['os', 'third_party'],
       policyAutoApprove: {
@@ -95,6 +99,18 @@ describe('buildPatchesSnapshot', () => {
     expect(snapshot.apps).toEqual([]);
   });
 
+  it('carries ring category include/exclude filters into the snapshot (#2117)', () => {
+    const snapshot = buildPatchesSnapshot(makePolicyLocal({
+      ring: {
+        categories: ['security'],
+        excludeCategories: ['driver', 'feature'],
+      },
+    }));
+
+    expect(snapshot.categories).toEqual(['security']);
+    expect(snapshot.excludeCategories).toEqual(['driver', 'feature']);
+  });
+
   it('preserves null ring fields and invalid ring validation state', () => {
     const snapshot = buildPatchesSnapshot(makePolicyLocal({
       ring: {
@@ -103,6 +119,8 @@ describe('buildPatchesSnapshot', () => {
         ringId: null,
         ringName: null,
         categoryRules: [],
+        categories: [],
+        excludeCategories: [],
         autoApprove: false,
       },
     }));
