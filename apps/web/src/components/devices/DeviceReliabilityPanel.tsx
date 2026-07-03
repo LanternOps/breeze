@@ -217,8 +217,17 @@ function factorEvidenceText(
       break;
     }
     case 'uptime': {
+      // The uptime factor is scored from 90-day availability, not the 30d
+      // headline — lead with the scored figure so a 0-point row can't sit next
+      // to "100.0% in 30d" with no explanation; keep 30d as context.
+      const uptime90 = pick('uptime90d');
       const uptime30 = pick('uptime30d') ?? snapshot.uptime30d;
-      parts.push(`${uptime30.toFixed(1)}% ${windowPhrase}`);
+      if (uptime90 !== null) {
+        parts.push(`${uptime90.toFixed(1)}% in 90d (scored window)`);
+        if (uptime90 !== uptime30) parts.push(`${uptime30.toFixed(1)}% ${windowPhrase}`);
+      } else {
+        parts.push(`${uptime30.toFixed(1)}% ${windowPhrase}`);
+      }
       break;
     }
     default:

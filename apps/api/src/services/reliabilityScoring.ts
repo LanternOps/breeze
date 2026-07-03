@@ -107,6 +107,9 @@ type DailyAggregateBucket = {
   serviceFailureCount: number;
   recoveredServiceCount: number;
   selfServiceFailureCount: number;
+  // Overlap of the two subsets above: recovered failures that are also Breeze's
+  // own. Needed so the recovery credit can be limited to non-self recoveries.
+  recoveredSelfServiceCount: number;
   hardwareErrorCount: number;
   hardwareCriticalCount: number;
   hardwareErrorSeverityCount: number;
@@ -381,9 +384,43 @@ function observedUpDayKeys(dailyBuckets: DailyAggregateBucket[]): Set<string> {
   return days;
 }
 
+// A history row also proves the device was up for the whole continuous boot
+// span [bootTime, collectedAt] it reports: the OS accreted uptimeSeconds across
+// days where the agent never posted (agent stopped, network outage, API
+// unreachable). Without this, a multi-day posting gap inside an unbroken boot
+// span reads as downtime and craters uptime90d even though the machine never
+// went down (win-build: a 9-day gap → 88.6% → below the 90% cliff → 0/30 pts
+// while the 30d figure showed 100%). Spans are clamped to the lookback window
+// so a long-lived boot never walks further back than any scoring window sees,
+// and rows with bootTime after collectedAt (clock skew / bogus data) are skipped.
+function bootSpanUpDayKeys(
+  rows: Array<Pick<HistoryRow, 'bootTime' | 'collectedAt'>>,
+  windowStart: Date,
+  now: Date
+): Set<string> {
+  const days = new Set<string>();
+  const windowStartMs = windowStart.getTime();
+  const nowMs = now.getTime();
+  for (const row of rows) {
+    const bootMs = row.bootTime.getTime();
+    const collectedMs = row.collectedAt.getTime();
+    if (!Number.isFinite(bootMs) || !Number.isFinite(collectedMs)) continue;
+    if (bootMs > collectedMs) continue;
+    const spanStartMs = Math.max(bootMs, windowStartMs);
+    const spanEndMs = Math.min(collectedMs, nowMs);
+    if (spanEndMs < spanStartMs) continue; // span lies entirely outside the window
+    const endKey = toDayKey(new Date(spanEndMs));
+    for (let ms = spanStartMs; toDayKey(new Date(ms)) <= endKey; ms += DAY_MS) {
+      days.add(toDayKey(new Date(ms)));
+    }
+  }
+  return days;
+}
+
 // Uptime is real availability over the (enrollment-clamped) window: the fraction
 // of calendar days the device was up. A day counts as "up" when EITHER we
-// observed a reliability sample that day (the device reported, so it was online)
+// observed a reliability sample that day (the device reported, so it was online),
+// OR the day falls inside any reported boot span (see bootSpanUpDayKeys),
 // OR the day falls inside the current continuous boot span [bootTime, now].
 //
 // This replaces the old single-boot-snapshot model, where uptime% was
@@ -486,16 +523,22 @@ function scoreServiceFailures(
   serviceFailureCount30d: number,
   recoveredCount30d: number,
   observedUpDays30: number = RELIABILITY_RATE_REFERENCE_DAYS,
-  selfServiceFailureCount30d = 0
+  selfServiceFailureCount30d = 0,
+  recoveredSelfServiceCount30d = 0
 ): number {
   // Issue #1908: recovered failures get half-weight credit. Math.max(0, ...)
   // floors the case where recoveries exceed failures (weightedCount 0 → rate 0 →
   // score 100) before the divide. Rate-normalized; k_rate = K_SERVICES / REFERENCE.
   // Breeze's own service failures (a subset of the 30d count) are excluded from
   // the score entirely — restarts we caused must not read as device instability.
+  // A recovered SELF failure (agent auto-update: SCM 7031 + Windows restart) is
+  // already fully excluded, so its recovery must not ALSO earn the half-weight
+  // credit — that double-dip would hand out -0.5 net credit per auto-update and
+  // quietly offset genuine failures. Only non-self recoveries earn credit.
+  const nonSelfRecovered = Math.max(0, recoveredCount30d - recoveredSelfServiceCount30d);
   const weightedCount = Math.max(
     0,
-    serviceFailureCount30d - selfServiceFailureCount30d - recoveredCount30d * 0.5
+    serviceFailureCount30d - selfServiceFailureCount30d - nonSelfRecovered * 0.5
   );
   return saturatingRateScore(weightedCount, K_SERVICES, observedUpDays30);
 }
@@ -592,6 +635,7 @@ function createEmptyBucket(date: string): DailyAggregateBucket {
     serviceFailureCount: 0,
     recoveredServiceCount: 0,
     selfServiceFailureCount: 0,
+    recoveredSelfServiceCount: 0,
     hardwareErrorCount: 0,
     hardwareCriticalCount: 0,
     hardwareErrorSeverityCount: 0,
@@ -626,6 +670,7 @@ function normalizeBucketRecord(raw: unknown, dateOverride?: string): DailyAggreg
     serviceFailureCount: coerceCount(obj.serviceFailureCount),
     recoveredServiceCount: coerceCount(obj.recoveredServiceCount),
     selfServiceFailureCount: coerceCount(obj.selfServiceFailureCount),
+    recoveredSelfServiceCount: coerceCount(obj.recoveredSelfServiceCount),
     hardwareErrorCount: coerceCount(obj.hardwareErrorCount),
     hardwareCriticalCount: coerceCount(obj.hardwareCriticalCount),
     hardwareErrorSeverityCount: coerceCount(obj.hardwareErrorSeverityCount),
@@ -685,6 +730,7 @@ function serializeDailyBuckets(dailyBuckets: DailyAggregateBucket[]): DailyAggre
     serviceFailureCount: bucket.serviceFailureCount,
     recoveredServiceCount: bucket.recoveredServiceCount,
     selfServiceFailureCount: bucket.selfServiceFailureCount,
+    recoveredSelfServiceCount: bucket.recoveredSelfServiceCount,
     hardwareErrorCount: bucket.hardwareErrorCount,
     hardwareCriticalCount: bucket.hardwareCriticalCount,
     hardwareErrorSeverityCount: bucket.hardwareErrorSeverityCount,
@@ -880,7 +926,12 @@ function mergeRowsIntoDailyBuckets(
       // separately so the score can exclude self-inflicted failures (an agent
       // auto-update lands as SCM 7031 "terminated unexpectedly") while the
       // headline tile still shows every failure.
-      if (isBreezeSelfServiceFailure(event.serviceName)) bucket.selfServiceFailureCount += 1;
+      if (isBreezeSelfServiceFailure(event.serviceName)) {
+        bucket.selfServiceFailureCount += 1;
+        // Overlap counter: a recovered self failure must not also earn the
+        // recovery credit (the self exclusion already zeroes it out).
+        if (event.recovered) bucket.recoveredSelfServiceCount += 1;
+      }
       bucket.lastServiceFailureAt = maxTimestamp([bucket.lastServiceFailureAt, event.timestamp ?? fallbackTimestamp]);
     }
 
@@ -957,7 +1008,14 @@ function scoreDailyBucket(bucket: DailyAggregateBucket): number {
     lost(saturatingScore(effectiveCrashLoad(bucket.crashCount, bucket.appCrashCount), K_CRASHES))
     + lost(saturatingScore(bucket.hangCount + bucket.unresolvedHangCount, K_HANGS))
     + lost(saturatingScore(
-      Math.max(0, bucket.serviceFailureCount - bucket.selfServiceFailureCount - bucket.recoveredServiceCount * 0.5),
+      // Same non-self-recovery rule as scoreServiceFailures: a recovered self
+      // failure is already excluded outright and earns no recovery credit.
+      Math.max(
+        0,
+        bucket.serviceFailureCount
+          - bucket.selfServiceFailureCount
+          - Math.max(0, bucket.recoveredServiceCount - bucket.recoveredSelfServiceCount) * 0.5,
+      ),
       K_SERVICES,
     ))
     + lost(saturatingScore(
@@ -1020,7 +1078,14 @@ function computeTrend(dailyBuckets: DailyAggregateBucket[], now: Date): { direct
 function computeMtbfHours(dailyBuckets: DailyAggregateBucket[], upDays90: number, now: Date): number | null {
   const crashes90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.crashCount);
   const hangs90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.hangCount);
-  const service90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.serviceFailureCount);
+  // Breeze's own service restarts (agent auto-updates) are not device failures —
+  // exclude them from MTBF the same way the service-failure score excludes them.
+  const service90d = sumBucketsInWindow(
+    dailyBuckets,
+    90,
+    now,
+    (bucket) => Math.max(0, bucket.serviceFailureCount - bucket.selfServiceFailureCount)
+  );
   const hardware90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.hardwareErrorCount);
   const failures = crashes90d + hangs90d + service90d + hardware90d;
   if (failures <= 0) return null;
@@ -1295,6 +1360,9 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
 
   const enrolledAt = device.enrolledAt ?? null;
   const observedDays = observedUpDayKeys(dailyBuckets);
+  // Credit days covered by any reported boot span: an agent posting gap inside
+  // an unbroken boot is proof of uptime, not downtime (see bootSpanUpDayKeys).
+  for (const key of bootSpanUpDayKeys(allRows, lookbackStart, now)) observedDays.add(key);
   const observedUpDays30 = countObservedUpDaysInWindow(dailyBuckets, 30, now);
   const uptime7d = computeUptimePercent(latest, observedDays, 7, now, enrolledAt);
   const uptime30d = computeUptimePercent(latest, observedDays, 30, now, enrolledAt);
@@ -1315,6 +1383,7 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
   const serviceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.serviceFailureCount);
   const recoveredServiceCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.recoveredServiceCount);
   const selfServiceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.selfServiceFailureCount);
+  const recoveredSelfServiceCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.recoveredSelfServiceCount);
 
   const hardwareErrorCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.hardwareErrorCount);
   const hardwareErrorCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hardwareErrorCount);
@@ -1333,7 +1402,8 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     serviceFailureCount30d,
     recoveredServiceCount30d,
     observedUpDays30,
-    selfServiceFailureCount30d
+    selfServiceFailureCount30d,
+    recoveredSelfServiceCount30d
   );
   const hardwareErrorScore = scoreHardwareErrors(
     criticalHardwareCount30d,
@@ -1394,6 +1464,8 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
         // Subset of serviceFailureCount30d excluded from the score (Breeze's own
         // services); recorded so drill-downs can explain count vs. score.
         selfServiceFailureCount30d,
+        // Overlap of recovered ∩ self — recoveries that earned no credit.
+        recoveredSelfServiceCount30d,
       },
       hardwareErrors: {
         score: hardwareErrorScore,
@@ -2057,6 +2129,7 @@ export const reliabilityScoringInternals = {
   computeUptimePercent,
   computeUptimeAvailability,
   observedUpDayKeys,
+  bootSpanUpDayKeys,
   scoreUptime,
   scoreCrashes,
   scoreHangs,
