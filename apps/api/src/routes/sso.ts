@@ -1760,22 +1760,32 @@ ssoRoutes.get('/callback', async (c) => {
         mfa: ssoMfa
       };
     } else {
-      const [orgUser] = await db
-        .select({
-          orgId: organizationUsers.orgId,
-          roleId: organizationUsers.roleId,
-          roleName: roles.name,
-          roleScope: roles.scope
-        })
-        .from(organizationUsers)
-        .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
-        .where(
-          and(
-            eq(organizationUsers.userId, user.id),
-            eq(organizationUsers.orgId, provider.orgId!)
+      // System context required: same class of bug as the "Get provider"
+      // fix above — the callback is unauthenticated (no request scope), so a
+      // bare `db` read here silently 0-rows under RLS and every org-axis
+      // login would fail with no_org_access regardless of real membership.
+      // Pre-existing (predates #2183, confirmed via git blame); fixed here
+      // alongside the provider-read fix since both are shared callback
+      // plumbing and the org-axis e2e regression case now exercises this
+      // exact path (see ssoPartnerLogin.integration.test.ts).
+      const [orgUser] = await withSystemDbAccessContext(async () =>
+        db
+          .select({
+            orgId: organizationUsers.orgId,
+            roleId: organizationUsers.roleId,
+            roleName: roles.name,
+            roleScope: roles.scope
+          })
+          .from(organizationUsers)
+          .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
+          .where(
+            and(
+              eq(organizationUsers.userId, user.id),
+              eq(organizationUsers.orgId, provider.orgId!)
+            )
           )
-        )
-        .limit(1);
+          .limit(1)
+      );
 
       if (!orgUser) {
         clearStateCookie();

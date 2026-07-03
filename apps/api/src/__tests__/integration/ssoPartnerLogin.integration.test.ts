@@ -12,13 +12,14 @@
  * unit suite but here against the genuine `breeze_app` RLS-enforced pool.
  *
  * Also includes ONE org-axis callback case (see "org-axis callback" test
- * below) to regression-lock the shared `withSystemDbAccessContext` fix to
- * the callback's provider read — that fix is shared plumbing hit by BOTH
- * axes, so a partner-only suite wouldn't catch a regression on the org side.
- * That case seeds `sso_sessions` directly rather than going through
+ * below) to regression-lock the TWO `withSystemDbAccessContext` fixes to
+ * the callback's shared plumbing (the provider read, and the org-membership
+ * read in the org branch of the token-payload switch) — both are shared by
+ * BOTH axes, so a partner-only suite wouldn't catch a regression on the org
+ * side. That case seeds `sso_sessions` directly rather than going through
  * `GET /sso/login/:orgId`, because that route's own provider read is a
- * SEPARATE, pre-existing, unfixed bare-db bug (see PR description) that
- * always 404s regardless of this fix.
+ * SEPARATE, still-pre-existing, unfixed bare-db bug (see PR description)
+ * that always 404s independent of the callback fixes.
  *
  * Prerequisites:
  *   docker compose -f docker-compose.test.yml up -d
@@ -424,31 +425,26 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(secondPayload.orgId).toBeNull();
   });
 
-  it('org-axis callback: the shared provider-read fix resolves an org provider too (regression lock for both axes)', async () => {
-    // This is the ORG-axis sibling of the "Get provider" fix's regression
-    // coverage. The fix (routes/sso.ts, wrapping the callback's provider
-    // read in withSystemDbAccessContext) is shared plumbing hit identically
-    // by both axes — if it regressed back to a bare `db` read, an org-axis
-    // provider would 0-row exactly like a partner-axis one, and this test
-    // would see `provider_not_found`/`session_expired` instead of the
-    // asserted `no_org_access`.
+  it('org-axis callback: full login succeeds and mints a scope:organization token (regression lock for both axes)', async () => {
+    // This is the ORG-axis sibling of the callback's shared-plumbing fixes:
+    // both the "Get provider" read AND the org-membership read (org branch
+    // of the token-payload switch) were bare `db` reads that 0-rowed under
+    // real RLS — the first blocked EVERY axis at provider resolution, the
+    // second specifically blocked org-axis at the final membership check.
+    // Both are now wrapped in withSystemDbAccessContext, matching every
+    // other pre-auth read in this handler. This test drives a full org-axis
+    // login to a successfully minted token, so a regression in EITHER fix
+    // fails loudly here: reverting the provider-read fix yields
+    // `provider_not_found`; reverting the membership-read fix yields
+    // `no_org_access` — neither matches the asserted `#ssoCode=` success path.
     //
     // We can't reach this via GET /sso/login/:orgId — that route's OWN
-    // provider read is a separate, pre-existing, unfixed bare-db bug (see
-    // PR description) that always 404s. So the sso_sessions row is seeded
-    // directly instead (that table carries no RLS policy at all — confirmed
-    // empirically and via migration grep — so a direct insert is a faithful
-    // stand-in for what a working initiation route would have written).
-    //
-    // The org-axis callback has its OWN separate, pre-existing, unfixed
-    // bare-db bug too — the final organizationUsers membership check
-    // (routes/sso.ts, org branch of the token-payload switch) — which always
-    // 0-rows and yields `no_org_access` regardless of real membership. That
-    // is NOT what this test is regression-locking (org-axis behavior is out
-    // of scope for this fix); it's simply the accurate, currently-true
-    // outcome once the provider resolves correctly. The important signal is
-    // that the callback gets THIS far at all — proving the shared fix works
-    // for the org axis, not just partner.
+    // provider read is a separate, still-pre-existing, unfixed bare-db bug
+    // (see PR description) that always 404s. So the sso_sessions row is
+    // seeded directly instead (that table carries no RLS policy at all —
+    // confirmed empirically and via migration grep — so a direct insert is a
+    // faithful stand-in for what a working initiation route would have
+    // written).
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const role = await createRole({ scope: 'organization', orgId: org.id });
@@ -499,16 +495,35 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       headers: { cookie: buildTestSsoStateCookie(state) },
     });
     expect(callbackRes.status).toBe(302);
-    // Exact match (not `.toContain`): a regression back to the bare provider
-    // read would land on a DIFFERENT error (provider_not_found), so this
-    // assertion fails loudly rather than passing on the wrong redirect.
-    expect(callbackRes.headers.get('location')).toBe('/login?error=no_org_access');
+    const location = callbackRes.headers.get('location');
+    expect(location).toContain('#ssoCode=');
 
-    // The session row was still atomically claimed (deleted) — proves the
-    // callback reached past the session-claim step and into provider
-    // resolution, not an early bail before ever touching the DB.
+    // The session row was atomically claimed (deleted).
     const [claimedSession] = await db.select().from(ssoSessions).where(eq(ssoSessions.state, state)).limit(1);
     expect(claimedSession).toBeUndefined();
+
+    const ssoCode = extractSsoCodeFromLocation(location!);
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: ssoCode }),
+    });
+    expect(exchangeRes.status).toBe(200);
+    const exchangeBody = await exchangeRes.json();
+    const payload = decodeJwt(exchangeBody.accessToken);
+    expect(payload.scope).toBe('organization');
+    expect(payload.orgId).toBe(org.id);
+    expect(payload.partnerId).toBeNull();
+    expect(payload.roleId).toBe(role.id);
+    expect(payload.sub).toBe(user.id);
+
+    const [identity] = await db
+      .select()
+      .from(userSsoIdentities)
+      .where(eq(userSsoIdentities.providerId, orgProvider.id))
+      .limit(1);
+    expect(identity?.userId).toBe(user.id);
+    expect(identity?.externalId).toBe('external-sub-org');
   });
 });
 
