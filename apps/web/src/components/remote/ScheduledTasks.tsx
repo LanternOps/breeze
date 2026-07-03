@@ -399,7 +399,7 @@ function TaskDetailPanel({
         ) : (
           <button
             onClick={onDisable}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-muted text-muted-foreground hover:bg-muted transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-muted text-foreground hover:bg-accent transition-colors"
           >
             <Pause className="h-3.5 w-3.5" />
             Disable
@@ -1042,7 +1042,7 @@ export default function ScheduledTasks({
                                 handleDisableTask(task.path);
                               }}
                               disabled={actionLoading === task.path}
-                              className="p-1.5 text-muted-foreground hover:text-muted-foreground hover:bg-muted rounded transition-colors disabled:opacity-50"
+                              className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors disabled:opacity-50"
                               title="Disable"
                             >
                               <Pause className="h-4 w-4" />
