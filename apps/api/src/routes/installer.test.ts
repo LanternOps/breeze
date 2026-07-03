@@ -95,7 +95,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
     errSpy.mockRestore();
   });
 
-  it("returns 404 for already-consumed token", async () => {
+  it("returns 404 for exhausted token (consumed_count >= max_usage)", async () => {
     vi.mocked(db.select).mockReturnValue({
       from: () => ({
         where: () => ({
@@ -107,7 +107,8 @@ describe("POST /api/v1/installer/bootstrap", () => {
                 orgId: "o1",
                 parentEnrollmentKeyId: "pk1",
                 siteId: "s1",
-                maxUsage: 1,
+                maxUsage: 2,
+                consumedCount: 2,
                 consumedAt: new Date(),
                 expiresAt: new Date(Date.now() + 60_000),
               },
@@ -137,6 +138,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
                 parentEnrollmentKeyId: "pk1",
                 siteId: "s1",
                 maxUsage: 1,
+                consumedCount: 0,
                 consumedAt: null,
                 expiresAt: new Date(Date.now() - 1000),
               },
@@ -153,7 +155,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(res.status).toBe(404);
   });
 
-  it("happy path: consumes token, creates child key, returns enrollment payload", async () => {
+  it("partially-consumed multi-use token still redeems and mints a single-use child key", async () => {
     process.env.PUBLIC_API_URL = "https://us.2breeze.app";
     process.env.AGENT_ENROLLMENT_SECRET = "shared-secret-test";
 
@@ -164,8 +166,9 @@ describe("POST /api/v1/installer/bootstrap", () => {
       parentEnrollmentKeyId: "pk1",
       siteId: "s1",
       maxUsage: 3,
+      consumedCount: 1,
       createdBy: "u1",
-      consumedAt: null,
+      consumedAt: new Date(Date.now() - 5_000),
       expiresAt: new Date(Date.now() + 60_000),
     };
     const parentKey = {
@@ -196,12 +199,16 @@ describe("POST /api/v1/installer/bootstrap", () => {
         }),
       } as any);
 
-    // INSERT child key
+    // INSERT child key — capture values to assert it is minted single-use.
+    let capturedChildKeyValues: Record<string, unknown> | null = null;
     vi.mocked(db.insert).mockReturnValue({
-      values: () => ({
-        returning: () =>
-          Promise.resolve([{ id: "ck1", orgId: "o1", siteId: "s1" }]),
-      }),
+      values: (vals: Record<string, unknown>) => {
+        capturedChildKeyValues = vals;
+        return {
+          returning: () =>
+            Promise.resolve([{ id: "ck1", orgId: "o1", siteId: "s1" }]),
+        };
+      },
     } as any);
 
     // UPDATE consume (returns consumed row)
@@ -226,6 +233,12 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(body.siteId).toBe("s1");
     expect(body.orgName).toBe("Acme Corp");
     expect(body.enrollmentKey).toMatch(/^[a-f0-9]{64}$/);
+    // Each redemption hands the child key to exactly one device, so it must be
+    // single-use regardless of the token's max_usage (#2161).
+    expect(capturedChildKeyValues).not.toBeNull();
+    expect(
+      (capturedChildKeyValues as unknown as Record<string, unknown>).maxUsage,
+    ).toBe(1);
   });
 
   it("propagates installer_platform from token to child enrollment key", async () => {
@@ -239,6 +252,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       parentEnrollmentKeyId: "pk1",
       siteId: "s1",
       maxUsage: 1,
+      consumedCount: 0,
       createdBy: "u1",
       consumedAt: null,
       expiresAt: new Date(Date.now() + 60_000),

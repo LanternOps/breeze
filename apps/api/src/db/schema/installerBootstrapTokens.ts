@@ -36,6 +36,13 @@ export const installerBootstrapTokens = pgTable(
     }),
     /** Must be >= 1; enforced by DB CHECK installer_bootstrap_tokens_max_usage_positive */
     maxUsage: integer("max_usage").notNull().default(1),
+    /**
+     * Redemptions so far. The token is spendable while consumed_count <
+     * max_usage; each redemption mints one fresh single-use child enrollment
+     * key. Gating on this (not the consumed_at boolean) is what lets one
+     * downloaded installer with a device-limit of N enroll N devices (#2161).
+     */
+    consumedCount: integer("consumed_count").notNull().default(0),
     createdBy: uuid("created_by").references(() => users.id, {
       onDelete: "set null",
     }),
