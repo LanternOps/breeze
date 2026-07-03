@@ -201,7 +201,7 @@ WebAuthn is implemented with `@simplewebauthn/server`. Registration and authenti
 
 ### MFA During Login
 
-When MFA is enabled, login returns `mfaRequired: true`, the primary `mfaMethod` (`totp`, `sms`, or `passkey`), and a `tempToken` (valid for 5 minutes). The flow continues based on the method:
+When MFA is enabled, login returns `mfaRequired: true`, the primary `mfaMethod` (`totp`, `sms`, or `passkey`), and a `tempToken` (valid for 5 minutes). When the account also has a usable enrolled passkey, login additionally returns `passkeyAvailable: true`. The flow continues based on the method:
 
 <Steps>
 1. (If SMS) Call `POST /auth/mfa/sms/send` with the `tempToken` to trigger an SMS code.
@@ -209,6 +209,8 @@ When MFA is enabled, login returns `mfaRequired: true`, the primary `mfaMethod` 
 3. (Passkey) Call `POST /auth/mfa/passkey/options` with the `tempToken` to obtain a WebAuthn authentication challenge, complete the assertion in the browser, then call `POST /auth/mfa/passkey/verify` with `{ "tempToken": "...", "credential": { ... } }`.
 4. On success, full JWT tokens are issued with the `mfa: true` claim.
 </Steps>
+
+If the primary method is `totp` or `sms` but `passkeyAvailable` is `true`, the user can bypass the primary challenge and authenticate with their passkey instead — the dashboard shows a **"Use a passkey instead"** option that runs the passkey flow in step 3. A passkey is itself a strong second factor, so this relaxes no security requirement.
 
 MFA verification is rate-limited separately from login.
 
