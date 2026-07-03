@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { calculateCostCents, recordUsage, recordUsageFromSdkResult } from './aiCostTracker';
-import { db } from '../db';
+import { calculateCostCents, checkAiRateLimit, checkBudget, recordUsage, recordUsageFromSdkResult } from './aiCostTracker';
+import { db, withSystemDbAccessContext } from '../db';
+import { getEffectiveAiBudget } from './effectiveSettings';
+import { rateLimiter } from './rate-limit';
 
 // ============================================
 // Mocks
@@ -345,5 +347,82 @@ describe('recordUsage', () => {
     await expect(
       recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, true),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ============================================
+// #2190 — self-contexted DB ops (no ambient request transaction)
+// ============================================
+//
+// The distributor catalog import routes opt out of the auth middleware's auto
+// request-transaction, so checkBudget / checkAiRateLimit / recordUsage now run
+// with NO ambient DB context on that path. Each DB op in this module must open
+// its own short withSystemDbAccessContext (which reuses an ambient context when
+// one is active, so all other callers are unchanged). These tests run with the
+// '../db' mock's pass-through withSystemDbAccessContext and assert the wrapper
+// actually guards the DB work — a regression back to bare `db` calls would drop
+// the wrapper calls and silently skip budget enforcement / usage recording
+// under RLS.
+
+describe('#2190 self-contexted DB ops', () => {
+  const effectiveBudget = (over: Record<string, unknown> = {}) => ({
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    ...over,
+  }) as Awaited<ReturnType<typeof getEffectiveAiBudget>>;
+
+  it('checkBudget wraps the effective-budget read and the usage read, and still enforces the budget', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({ dailyBudgetCents: 1000 }));
+    // Daily usage row at the budget → must be blocked.
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ totalCostCents: 1000 }]) })),
+      })),
+    }));
+
+    const res = await checkBudget('org-1');
+
+    expect(res).toContain('Daily AI budget exceeded');
+    // getEffectiveAiBudget + the daily usage read each ran inside the wrapper.
+    expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('checkBudget still allows when under budget (wrapper is a pass-through, not a filter)', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({ dailyBudgetCents: 1000, monthlyBudgetCents: 5000 }));
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ totalCostCents: 1 }]) })),
+      })),
+    }));
+
+    await expect(checkBudget('org-1')).resolves.toBeNull();
+    // budget read + daily read + monthly read all self-contexted.
+    expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('checkAiRateLimit wraps its getEffectiveAiBudget read (it is NOT Redis-only)', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget());
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, resetAt: new Date() } as Awaited<ReturnType<typeof rateLimiter>>);
+
+    await expect(checkAiRateLimit('u1', 'org-1')).resolves.toBeNull();
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getEffectiveAiBudget)).toHaveBeenCalledWith('org-1');
+  });
+
+  it('recordUsage (sessionless) wraps each aggregate upsert and still writes both periods', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, false);
+
+    // Both aggregates written, each inside its own short context (a third call
+    // may come from the fire-and-forget anomaly check — assert at least the two
+    // awaited upserts).
+    expect(captured.aggregateValues.length).toBe(2);
+    expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });

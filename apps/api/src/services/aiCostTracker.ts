@@ -5,7 +5,7 @@
  * and provides usage summaries.
  */
 
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
 import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
@@ -48,11 +48,21 @@ export async function checkBillingCredits(orgId: string): Promise<string | null>
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
   if (!billingUrl || !billingKey) return null;
 
-  const [org] = await db
+  // #2190 — self-context this read (and every other DB op in this module's
+  // budget/usage path): the distributor import routes now run WITHOUT an ambient
+  // request transaction (SELF_MANAGED_DB_CONTEXT_ROUTES), and a contextless read
+  // under forced RLS silently returns 0 rows. withSystemDbAccessContext reuses an
+  // already-active ambient context (withDbAccessContext short-circuits), so every
+  // existing AI caller behaves identically; only the contextless path escalates.
+  // Spend/budget accounting is an internal-metering question keyed by the explicit
+  // orgId, not a tenant-visibility one — same rationale as the identity-read
+  // escalation in getUserPermissions (services/permissions.ts). The outbound
+  // billing fetch below stays OUTSIDE the context.
+  const [org] = await withSystemDbAccessContext(() => db
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, orgId))
-    .limit(1);
+    .limit(1));
 
   if (!org?.partnerId) return null;
 
@@ -163,7 +173,12 @@ export async function checkBudget(orgId: string): Promise<string | null> {
   const creditError = await checkBillingCredits(orgId);
   if (creditError) return creditError;
 
-  const budget = await getEffectiveAiBudget(orgId);
+  // #2190 — getEffectiveAiBudget reads organizations/partners/aiBudgets; run
+  // contextless (the exempted distributor import routes) the org read is
+  // RLS-filtered to 0 rows and throws a 404, silently disabling enrichment.
+  // Self-context it; the wrapper reuses any active ambient context (see the
+  // rationale on checkBillingCredits above).
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
   if (!budget.enabled) return 'AI features are disabled for this organization';
 
   const now = new Date();
@@ -172,7 +187,9 @@ export async function checkBudget(orgId: string): Promise<string | null> {
 
   // Check daily budget
   if (budget.dailyBudgetCents) {
-    const [dailyUsage] = await db
+    // #2190 — self-contexted: contextless this read returned 0 rows, silently
+    // skipping budget enforcement.
+    const [dailyUsage] = await withSystemDbAccessContext(() => db
       .select({ totalCostCents: aiCostUsage.totalCostCents })
       .from(aiCostUsage)
       .where(
@@ -182,7 +199,7 @@ export async function checkBudget(orgId: string): Promise<string | null> {
           eq(aiCostUsage.periodKey, dailyKey)
         )
       )
-      .limit(1);
+      .limit(1));
 
     if (dailyUsage && dailyUsage.totalCostCents >= budget.dailyBudgetCents) {
       return `Daily AI budget exceeded ($${(budget.dailyBudgetCents / 100).toFixed(2)})`;
@@ -191,7 +208,8 @@ export async function checkBudget(orgId: string): Promise<string | null> {
 
   // Check monthly budget
   if (budget.monthlyBudgetCents) {
-    const [monthlyUsage] = await db
+    // #2190 — self-contexted (same as the daily read above).
+    const [monthlyUsage] = await withSystemDbAccessContext(() => db
       .select({ totalCostCents: aiCostUsage.totalCostCents })
       .from(aiCostUsage)
       .where(
@@ -201,7 +219,7 @@ export async function checkBudget(orgId: string): Promise<string | null> {
           eq(aiCostUsage.periodKey, monthlyKey)
         )
       )
-      .limit(1);
+      .limit(1));
 
     if (monthlyUsage && monthlyUsage.totalCostCents >= budget.monthlyBudgetCents) {
       return `Monthly AI budget exceeded ($${(budget.monthlyBudgetCents / 100).toFixed(2)})`;
@@ -221,8 +239,12 @@ export async function checkAiRateLimit(
 ): Promise<string | null> {
   const redis = getRedis();
 
-  // Load effective rate limits (partner overrides org)
-  const budget = await getEffectiveAiBudget(orgId);
+  // Load effective rate limits (partner overrides org).
+  // #2190 — despite this function being otherwise Redis-only, this call reads
+  // organizations/partners/aiBudgets; contextless (exempted import routes) the
+  // org read is RLS-filtered to 0 rows and throws a 404. Self-context it; the
+  // wrapper reuses any active ambient context (see checkBillingCredits).
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
   const msgsPerMin = budget?.messagesPerMinutePerUser ?? 20;
   const msgsPerHour = budget?.messagesPerHourPerOrg ?? 200;
 
@@ -286,7 +308,13 @@ export async function recordUsage(
   // These are additive counters so partial failure is acceptable.
   if (sessionId !== null) {
     try {
-      await db
+      // #2190 — self-contexted: a contextless write under forced RLS silently
+      // matches 0 rows AND trips the contextless-write guard (#1375). The
+      // wrapper reuses any active ambient context (see checkBillingCredits), so
+      // existing in-request callers are unchanged; the fire-and-forget
+      // invocation from the sessionless enrichment path (which may run after
+      // its caller's context closed) now opens its own short system context.
+      await withSystemDbAccessContext(() => db
         .update(aiSessions)
         .set({
           totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
@@ -296,7 +324,7 @@ export async function recordUsage(
           lastActivityAt: new Date(),
           updatedAt: new Date()
         })
-        .where(eq(aiSessions.id, sessionId));
+        .where(eq(aiSessions.id, sessionId)));
     } catch (err) {
       console.error(`[AI] Failed to update session totals for session=${sessionId}, cost=${costCents}:`, err);
       throw err;
@@ -306,7 +334,10 @@ export async function recordUsage(
   // Update daily/monthly aggregates
   for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
     try {
-      await db
+      // #2190 — self-contexted per upsert (keeps the "partial failure is
+      // acceptable" independence of the two periods; see the session update
+      // above for the escalation rationale).
+      await withSystemDbAccessContext(() => db
         .insert(aiCostUsage)
         .values({
           orgId,
@@ -331,7 +362,7 @@ export async function recordUsage(
               : aiCostUsage.toolExecutionCount,
             updatedAt: new Date()
           }
-        });
+        }));
     } catch (err) {
       console.error(`[AI] Failed to update ${period} aggregate for org=${orgId}, key=${periodKey}, cost=${costCents}:`, err);
       // Continue to attempt the other period
@@ -596,51 +627,58 @@ async function checkCostAnomalies(
   costCents: number,
   dailyKey: string
 ): Promise<void> {
-  const [budget] = await db
-    .select()
-    .from(aiBudgets)
-    .where(eq(aiBudgets.orgId, orgId))
-    .limit(1);
+  // #2190 — self-contexted: reached fire-and-forget from recordUsage on the
+  // (contextless) enrichment path; without a context these reads RLS-filter to
+  // 0 rows and the anomaly warnings silently never fire. The whole body is
+  // DB reads + console.warn, so one short context covers it; the wrapper
+  // reuses any active ambient context (see checkBillingCredits).
+  return withSystemDbAccessContext(async () => {
+    const [budget] = await db
+      .select()
+      .from(aiBudgets)
+      .where(eq(aiBudgets.orgId, orgId))
+      .limit(1);
 
-  if (!budget || !budget.dailyBudgetCents) return;
+    if (!budget || !budget.dailyBudgetCents) return;
 
-  // Check if single session exceeds 10% of daily budget. Sessionless flows
-  // (sessionId === null, e.g. catalog enrichment) have no per-session row, so
-  // skip straight to the org-level daily check.
-  const [session] = sessionId === null
-    ? [undefined]
-    : await db
-        .select({ totalCostCents: aiSessions.totalCostCents })
-        .from(aiSessions)
-        .where(eq(aiSessions.id, sessionId))
-        .limit(1);
+    // Check if single session exceeds 10% of daily budget. Sessionless flows
+    // (sessionId === null, e.g. catalog enrichment) have no per-session row, so
+    // skip straight to the org-level daily check.
+    const [session] = sessionId === null
+      ? [undefined]
+      : await db
+          .select({ totalCostCents: aiSessions.totalCostCents })
+          .from(aiSessions)
+          .where(eq(aiSessions.id, sessionId))
+          .limit(1);
 
-  if (session && session.totalCostCents > budget.dailyBudgetCents * 0.1) {
-    console.warn(
-      `[AI] Cost anomaly: session ${sessionId} has used ${session.totalCostCents} cents ` +
-      `(>${Math.round(budget.dailyBudgetCents * 0.1)} cents = 10% of daily budget)`
-    );
-  }
+    if (session && session.totalCostCents > budget.dailyBudgetCents * 0.1) {
+      console.warn(
+        `[AI] Cost anomaly: session ${sessionId} has used ${session.totalCostCents} cents ` +
+        `(>${Math.round(budget.dailyBudgetCents * 0.1)} cents = 10% of daily budget)`
+      );
+    }
 
-  // Check if daily spend > 80% of budget
-  const [dailyUsage] = await db
-    .select({ totalCostCents: aiCostUsage.totalCostCents })
-    .from(aiCostUsage)
-    .where(
-      and(
-        eq(aiCostUsage.orgId, orgId),
-        eq(aiCostUsage.period, 'daily'),
-        eq(aiCostUsage.periodKey, dailyKey)
+    // Check if daily spend > 80% of budget
+    const [dailyUsage] = await db
+      .select({ totalCostCents: aiCostUsage.totalCostCents })
+      .from(aiCostUsage)
+      .where(
+        and(
+          eq(aiCostUsage.orgId, orgId),
+          eq(aiCostUsage.period, 'daily'),
+          eq(aiCostUsage.periodKey, dailyKey)
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  if (dailyUsage && dailyUsage.totalCostCents > budget.dailyBudgetCents * 0.8) {
-    console.warn(
-      `[AI] Cost warning: org ${orgId} daily spend at ${dailyUsage.totalCostCents} cents ` +
-      `(>${Math.round(budget.dailyBudgetCents * 0.8)} cents = 80% of daily budget)`
-    );
-  }
+    if (dailyUsage && dailyUsage.totalCostCents > budget.dailyBudgetCents * 0.8) {
+      console.warn(
+        `[AI] Cost warning: org ${orgId} daily spend at ${dailyUsage.totalCostCents} cents ` +
+        `(>${Math.round(budget.dailyBudgetCents * 0.8)} cents = 80% of daily budget)`
+      );
+    }
+  });
 }
 
 /**

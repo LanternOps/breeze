@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbAccessContext, type DbAccessContext } from '../db';
 import { pax8Integrations, pax8ProductMappings } from '../db/schema/pax8';
 import { catalogItems } from '../db/schema/catalog';
 import { createPax8ClientForIntegration } from './pax8SyncService';
@@ -118,8 +118,17 @@ function mapBillingFrequency(billingTerm: string | null): 'monthly' | 'annual' {
   return 'monthly';
 }
 
-export async function importPax8CatalogItem(input: Pax8ImportInput, actor: CatalogActor): Promise<typeof catalogItems.$inferSelect> {
-  const integration = await getActiveIntegration(actor);
+// #2190 — this route (POST /distributors/pax8/import) opts out of the auth
+// middleware's ambient request transaction (SELF_MANAGED_DB_CONTEXT_ROUTES) so
+// the up-to-12s enrichDistributorListing call below never runs inside a held DB
+// transaction. `dbCtx` is the request's RLS DbAccessContext, rebuilt by the route
+// from `auth` (dbAccessContextFromAuth) since it can no longer rely on an ambient
+// one; the getActiveIntegration read runs in its own short context, then — after
+// enrichment, under NO ambient context — the catalog-item write and the product-
+// mapping upsert run together in a second short context (same atomicity as
+// before, when both lived in the single ambient request transaction).
+export async function importPax8CatalogItem(input: Pax8ImportInput, actor: CatalogActor, dbCtx: DbAccessContext): Promise<typeof catalogItems.$inferSelect> {
+  const integration = await withDbAccessContext(dbCtx, () => getActiveIntegration(actor));
   if (!integration) throw new Pax8CatalogError('Pax8 is not connected', 400, 'PAX8_NOT_CONFIGURED');
   const { product, item } = input;
 
@@ -171,37 +180,39 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
     },
   };
 
-  let created: typeof catalogItems.$inferSelect;
-  try {
-    created = await createCatalogItem(payload, actor);
-  } catch (err) {
-    const sku = payload.sku;
-    if (err instanceof CatalogServiceError && err.code === 'DUPLICATE_SKU' && sku) {
-      const [existing] = await db.select().from(catalogItems)
-        .where(and(eq(catalogItems.partnerId, integration.partnerId), eq(catalogItems.sku, sku)))
-        .limit(1);
-      if (!existing) throw err;
-      created = existing;
-    } else {
-      throw err;
+  return withDbAccessContext(dbCtx, async () => {
+    let created: typeof catalogItems.$inferSelect;
+    try {
+      created = await createCatalogItem(payload, actor);
+    } catch (err) {
+      const sku = payload.sku;
+      if (err instanceof CatalogServiceError && err.code === 'DUPLICATE_SKU' && sku) {
+        const [existing] = await db.select().from(catalogItems)
+          .where(and(eq(catalogItems.partnerId, integration.partnerId), eq(catalogItems.sku, sku)))
+          .limit(1);
+        if (!existing) throw err;
+        created = existing;
+      } else {
+        throw err;
+      }
     }
-  }
 
-  // Dedup + linkage so subscription pricing-sync can later reconcile this product.
-  await db
-    .insert(pax8ProductMappings)
-    .values({
-      integrationId: integration.id,
-      partnerId: integration.partnerId,
-      pax8ProductId: product.pax8ProductId,
-      vendorSkuId: product.vendorSku,
-      productName: product.name,
-      catalogItemId: created.id,
-    })
-    .onConflictDoUpdate({
-      target: [pax8ProductMappings.integrationId, pax8ProductMappings.pax8ProductId],
-      set: { catalogItemId: created.id, productName: product.name, vendorSkuId: product.vendorSku, updatedAt: new Date() },
-    });
+    // Dedup + linkage so subscription pricing-sync can later reconcile this product.
+    await db
+      .insert(pax8ProductMappings)
+      .values({
+        integrationId: integration.id,
+        partnerId: integration.partnerId,
+        pax8ProductId: product.pax8ProductId,
+        vendorSkuId: product.vendorSku,
+        productName: product.name,
+        catalogItemId: created.id,
+      })
+      .onConflictDoUpdate({
+        target: [pax8ProductMappings.integrationId, pax8ProductMappings.pax8ProductId],
+        set: { catalogItemId: created.id, productName: product.name, vendorSkuId: product.vendorSku, updatedAt: new Date() },
+      });
 
-  return created;
+    return created;
+  });
 }

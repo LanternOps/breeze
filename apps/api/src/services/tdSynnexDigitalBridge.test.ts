@@ -14,10 +14,13 @@ const mocks = vi.hoisted(() => {
     safeFetch: vi.fn(),
     SsrfBlockedError,
     enrichDistributorListing: vi.fn(),
+    // #2190 — pass-through wrapper; kept as a vi.fn (not an inline arrow) so
+    // tests can assert call ORDER relative to enrichDistributorListing.
+    withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   };
 });
 
-vi.mock('../db', () => ({ db: mocks.db }));
+vi.mock('../db', () => ({ db: mocks.db, withDbAccessContext: mocks.withDbAccessContext }));
 vi.mock('./secretCrypto', () => ({
   encryptSecret: mocks.encryptSecret,
   decryptForColumn: mocks.decryptForColumn,
@@ -44,6 +47,9 @@ import {
 } from './tdSynnexDigitalBridge';
 
 const actor = { userId: 'user-1', partnerId: 'partner-1', accessibleOrgIds: null };
+// #2190 — the request-scoped DbAccessContext the route rebuilds from `auth` and
+// passes into the import function alongside `actor`.
+const dbCtx = { scope: 'partner' as const, orgId: null, accessibleOrgIds: null, accessiblePartnerIds: ['partner-1'], userId: 'user-1', currentPartnerId: 'partner-1' };
 
 function selectChain(rows: unknown[]) {
   return {
@@ -217,7 +223,7 @@ describe('tdSynnexDigitalBridge service', () => {
         unitPrice: 125,
         taxable: true,
       },
-    }, actor)).rejects.toThrow(TdSynnexDigitalBridgeError);
+    }, actor, dbCtx)).rejects.toThrow(TdSynnexDigitalBridgeError);
     expect(mocks.createCatalogItem).not.toHaveBeenCalled();
   });
 
@@ -431,7 +437,7 @@ describe('tdSynnexDigitalBridge service', () => {
         raw: { anything: true }, lastRefreshedAt: new Date().toISOString(),
       },
       item: { name: 'Dock', sku: 'SKU-1', unitPrice: 125, taxable: true },
-    }, actor);
+    }, actor, dbCtx);
     const input = mocks.createCatalogItem.mock.calls[0]![0];
     expect(input.attributes.distributor).toMatchObject({
       provider: 'td_synnex_digital_bridge', sourceProductId: 'td-1', vendor: 'Lenovo',
@@ -460,7 +466,7 @@ describe('tdSynnexDigitalBridge service', () => {
       },
       item: { name: 'SPL Dock DISTI', sku: 'SKU-1', unitPrice: 125, taxable: true },
       aiCleanup: true,
-    }, actor);
+    }, actor, dbCtx);
     const [query, hint] = mocks.enrichDistributorListing.mock.calls[0]!;
     expect(query).toContain('MPN-1');
     expect(hint).toBe('hardware');
@@ -469,6 +475,16 @@ describe('tdSynnexDigitalBridge service', () => {
     expect(input.description).toMatch(/4K/);
     expect(input.attributes.distributor.aiEnriched).toBe(true);
     expect(input.attributes.distributor.rawName).toBe('SPL Dock DISTI');
+
+    // #2190 — enrichDistributorListing must run BEFORE the short DB context that
+    // wraps createCatalogItem, so the (potentially 12s) call never runs inside a
+    // held transaction. The getActiveIntegration read (first withDbAccessContext
+    // call) legitimately happens before enrichment; the createCatalogItem write
+    // (second call) must come after.
+    const enrichOrder = mocks.enrichDistributorListing.mock.invocationCallOrder[0]!;
+    const ctxOrders = mocks.withDbAccessContext.mock.invocationCallOrder;
+    expect(ctxOrders).toHaveLength(2);
+    expect(ctxOrders[1]).toBeGreaterThan(enrichOrder);
   });
 
   it('keeps raw values and marks aiEnriched=false when enrichment is unavailable', async () => {
@@ -484,7 +500,7 @@ describe('tdSynnexDigitalBridge service', () => {
       },
       item: { name: 'SPL Dock DISTI', sku: 'SKU-1', unitPrice: 125, taxable: true },
       aiCleanup: true,
-    }, actor);
+    }, actor, dbCtx);
     const input = mocks.createCatalogItem.mock.calls[0]![0];
     expect(input.name).toBe('SPL Dock DISTI'); // unchanged
     expect(input.description).toBe('raw desc');

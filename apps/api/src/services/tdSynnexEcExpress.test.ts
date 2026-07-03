@@ -14,12 +14,18 @@ const mocks = vi.hoisted(() => {
       value?.startsWith('enc(') ? value.slice(4, -1) : (value ?? null)
     ),
     safeFetch: vi.fn(),
+    // #2190 — pass-through wrapper; kept as a vi.fn (not an inline arrow) so
+    // tests can assert call ORDER relative to enrichDistributorListing below.
+    withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   };
 });
 
 const enrichMocks = vi.hoisted(() => ({ enrichDistributorListing: vi.fn() }));
 
-vi.mock('../db', () => ({ db: mocks.db }));
+vi.mock('../db', () => ({
+  db: mocks.db,
+  withDbAccessContext: mocks.withDbAccessContext,
+}));
 vi.mock('./secretCrypto', () => ({
   encryptSecret: mocks.encryptSecret,
   decryptForColumn: mocks.decryptForColumn,
@@ -48,6 +54,9 @@ vi.mock('./catalogService', () => ({
 }));
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+// #2190 — the request-scoped DbAccessContext the route rebuilds from `auth` and
+// passes into the import function alongside `actor`.
+const dbCtx = { scope: 'partner' as const, orgId: null, accessibleOrgIds: null, accessiblePartnerIds: ['p1'], userId: 'u1', currentPartnerId: 'p1' };
 
 function selectChain(rows: unknown[]) {
   return {
@@ -408,7 +417,7 @@ it('maps msrp === "0" to null', () => {
 it('imports a product into the catalog with a distributor snapshot', async () => {
   const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item1' } as any);
   const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'Dell U2724D', description: 'Dell U2724D', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1437, warehouses: [], weight: 20.50, parcelShippable: 'Y', raw: {} };
-  await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35, taxable: true } }, actor);
+  await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35, taxable: true } }, actor, dbCtx);
   const arg = createSpy.mock.calls[0]![0];
   expect(arg).toMatchObject({ itemType: 'hardware', name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35 });
   expect((arg.attributes as any).distributor.source).toBe('td_synnex_ec_express');
@@ -426,7 +435,7 @@ it('web-enriches the listing when aiCleanup is set (clean name + technical descr
     provenance: { source: 'ai_enrich', model: 'm', query: 'q', suggestion: {}, enrichedAt: 't', enrichedBy: 'u1' },
   });
   const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: null, currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
-  await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor);
+  await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor, dbCtx);
 
   // Query is anchored on the manufacturer part number for an accurate web lookup.
   const [query, hint] = enrichMocks.enrichDistributorListing.mock.calls.at(-1)!;
@@ -441,13 +450,20 @@ it('web-enriches the listing when aiCleanup is set (clean name + technical descr
   expect((arg.attributes as any).distributor.aiEnriched).toBe(true);
   expect((arg.attributes as any).distributor.aiProvenance.source).toBe('ai_enrich');
   expect((arg.attributes as any).distributor.rawName).toBe('SPL Dell U2724D DISTI');
+
+  // #2190 — enrichDistributorListing must run BEFORE the short DB context that
+  // wraps createCatalogItem, so the (potentially 12s) call never runs inside a
+  // held transaction.
+  const enrichOrder = enrichMocks.enrichDistributorListing.mock.invocationCallOrder.at(-1)!;
+  const ctxOrder = mocks.withDbAccessContext.mock.invocationCallOrder.at(-1)!;
+  expect(enrichOrder).toBeLessThan(ctxOrder);
 });
 
 it('falls back to the raw values when aiCleanup is set but enrichment is unavailable', async () => {
   const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item3' } as any);
   enrichMocks.enrichDistributorListing.mockResolvedValueOnce(null); // rate-limited / down
   const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: 'raw desc', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
-  await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor);
+  await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor, dbCtx);
   const arg = createSpy.mock.calls.at(-1)![0];
   expect(arg.name).toBe('SPL Dell U2724D DISTI'); // unchanged raw name
   expect((arg.attributes as any).distributor.aiEnriched).toBe(false);

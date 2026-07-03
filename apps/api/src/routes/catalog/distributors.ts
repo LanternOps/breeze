@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { checkSsrfSafe } from '../../services/ssrfGuard';
 import { CatalogServiceError } from '../../services/catalogService';
@@ -37,6 +37,17 @@ export const catalogDistributorRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CATALOG_READ.resource, PERMISSIONS.CATALOG_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
+
+// #2190 — the three import routes below opt out of the auth middleware's
+// ambient request transaction (SELF_MANAGED_DB_CONTEXT_ROUTES) so the best-effort
+// AI enrichment call the import services make doesn't hold a pooled connection
+// idle-in-transaction across it. Rebuild the request's RLS DbAccessContext here
+// (mirroring `dbAccessContextFromAuth`'s single-source-of-truth mapping from
+// `auth`) and pass it into the import service, which wraps its own short DB ops
+// in it AFTER enrichment completes.
+function catalogDbContextFrom(c: { get: (k: string) => unknown }) {
+  return dbAccessContextFromAuth(c.get('auth') as AuthContext);
+}
 
 const baseUrlSchema = z.string().url().max(2000).superRefine((value, ctx) => {
   let parsed: URL;
@@ -205,6 +216,7 @@ catalogDistributorRoutes.post(
       const data = await importTdSynnexCatalogItem(
         { product: body.product, item: body.item, aiCleanup: body.aiCleanup },
         catalogActorFrom(c),
+        catalogDbContextFrom(c),
       );
       return c.json({ data });
     } catch (err) {
@@ -304,7 +316,7 @@ catalogDistributorRoutes.get('/distributors/td-synnex-ec/lookup', scopes, readPe
 catalogDistributorRoutes.post('/distributors/td-synnex-ec/import', scopes, writePerm, requireMfa(), zValidator('json', ecImportSchema), async (c) => {
   try {
     const body = c.req.valid('json');
-    const data = await importEcExpressCatalogItem({ product: body.product, item: body.item, aiCleanup: body.aiCleanup }, catalogActorFrom(c));
+    const data = await importEcExpressCatalogItem({ product: body.product, item: body.item, aiCleanup: body.aiCleanup }, catalogActorFrom(c), catalogDbContextFrom(c));
     return c.json({ data });
   } catch (err) { return handleEcError(c, err); }
 });
@@ -373,6 +385,7 @@ catalogDistributorRoutes.post('/distributors/pax8/import', scopes, writePerm, re
     const data = await importPax8CatalogItem(
       { product: body.product, item: body.item, aiCleanup: body.aiCleanup },
       catalogActorFrom(c),
+      catalogDbContextFrom(c),
     );
     return c.json({ data });
   } catch (err) { return handlePax8Error(c, err); }

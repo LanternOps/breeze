@@ -3,6 +3,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { resolveDefaultModel } from './aiAgent';
 import { checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage } from './aiCostTracker';
 import { captureException } from './sentry';
+import { assertOutsideHeldDbContext } from '../db';
 import {
   enrichDraftSchema,
   type CatalogItemType,
@@ -329,6 +330,13 @@ export async function enrichDistributorListing(
   actor: { userId: string | null; orgId: string | null },
   timeoutMs: number = DISTRIBUTOR_ENRICH_TIMEOUT_MS,
 ): Promise<DistributorEnrichment | null> {
+  // #2190 tripwire: this call can block up to `timeoutMs` (default 12s) on an
+  // outbound Anthropic request. Its only callers are the three distributor
+  // import services (tdSynnexEcExpress, tdSynnexDigitalBridge, pax8CatalogService),
+  // all three of which now opt out of the auth middleware's ambient request
+  // transaction (SELF_MANAGED_DB_CONTEXT_ROUTES) and call this with NO context
+  // held — so this should never fire. It's here to catch a future reintroduction.
+  assertOutsideHeldDbContext('enrichDistributorListing');
   const q = query.trim();
   if (!q) return null;
   try {

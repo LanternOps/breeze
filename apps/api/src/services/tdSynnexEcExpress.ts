@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { XMLParser } from 'fast-xml-parser';
-import { db } from '../db';
+import { db, withDbAccessContext, type DbAccessContext } from '../db';
 import { tdSynnexEcExpressIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { safeFetch } from './urlSafety';
@@ -499,7 +499,14 @@ export interface EcImportInput {
   aiCleanup?: boolean;
 }
 
-export async function importEcExpressCatalogItem(input: EcImportInput, actor: CatalogActor) {
+// #2190 — this route (POST /distributors/td-synnex-ec/import) opts out of the
+// auth middleware's ambient request transaction (SELF_MANAGED_DB_CONTEXT_ROUTES)
+// so the up-to-12s enrichDistributorListing call below never runs inside a held
+// DB transaction. `dbCtx` is the request's RLS DbAccessContext, rebuilt by the
+// route from `auth` (dbAccessContextFromAuth) since it can no longer rely on an
+// ambient one; the only DB op this function performs (createCatalogItem) is
+// wrapped in a fresh short-lived withDbAccessContext AFTER enrichment completes.
+export async function importEcExpressCatalogItem(input: EcImportInput, actor: CatalogActor, dbCtx: DbAccessContext) {
   const { product, item } = input;
 
   // The quote/catalog lookup flows pass the raw distributor title as item.name,
@@ -563,5 +570,5 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
       },
     },
   };
-  return createCatalogItem(payload, actor);
+  return withDbAccessContext(dbCtx, () => createCatalogItem(payload, actor));
 }

@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbAccessContext, type DbAccessContext } from '../db';
 import { tdSynnexDigitalBridgeIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { createCatalogItem, type CatalogActor } from './catalogService';
@@ -530,8 +530,16 @@ export interface ImportTdSynnexCatalogItemInput {
   aiCleanup?: boolean;
 }
 
-export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItemInput, actor: CatalogActor) {
-  await getActiveIntegration(actor);
+// #2190 — this route (POST /distributors/td-synnex/import) opts out of the auth
+// middleware's ambient request transaction (SELF_MANAGED_DB_CONTEXT_ROUTES) so
+// the up-to-12s enrichDistributorListing call below never runs inside a held DB
+// transaction. `dbCtx` is the request's RLS DbAccessContext, rebuilt by the route
+// from `auth` (dbAccessContextFromAuth) since it can no longer rely on an ambient
+// one; each DB op (the getActiveIntegration read, then createCatalogItem) runs in
+// its own short-lived withDbAccessContext, with enrichment running between them
+// under NO ambient context.
+export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItemInput, actor: CatalogActor, dbCtx: DbAccessContext) {
+  await withDbAccessContext(dbCtx, () => getActiveIntegration(actor));
   const existingSku = input.item.sku?.trim();
 
   // Optional web-search enrichment: turn the raw distributor listing into a clean
@@ -586,5 +594,5 @@ export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItem
       }
     }
   };
-  return createCatalogItem(catalogInput, actor);
+  return withDbAccessContext(dbCtx, () => createCatalogItem(catalogInput, actor));
 }

@@ -33,6 +33,17 @@ vi.mock('../../middleware/auth', () => ({
     if (mfaGate.block) return c.json({ error: 'MFA required' }, 403);
     return next();
   },
+  // #2190 — the import routes rebuild a DbAccessContext from `auth` since they
+  // opt out of the ambient request transaction; a trivial pass-through is
+  // enough here since the underlying import services are themselves mocked.
+  dbAccessContextFromAuth: (auth: any) => ({
+    scope: auth.scope,
+    orgId: auth.orgId,
+    accessibleOrgIds: auth.accessibleOrgIds,
+    accessiblePartnerIds: auth.scope === 'partner' && auth.partnerId ? [auth.partnerId] : null,
+    userId: auth.user?.id ?? null,
+    currentPartnerId: auth.partnerId ?? null,
+  }),
 }));
 
 vi.mock('../../services/permissions', () => ({
@@ -210,6 +221,11 @@ describe('POST /distributors/pax8/import', () => {
     const body = await res.json();
     expect(body.data.id).toBe('ci-1');
     expect(pax8Svc.importPax8CatalogItem).toHaveBeenCalledOnce();
+    // #2190 — a third arg (the rebuilt DbAccessContext) is passed alongside actor,
+    // since the route opts out of the ambient request transaction.
+    const call = pax8Svc.importPax8CatalogItem.mock.calls[0]!;
+    expect(call).toHaveLength(3);
+    expect(call[2]).toMatchObject({ scope: 'partner', currentPartnerId: 'p1' });
   });
 
   it('requires MFA — returns 403 without it', async () => {

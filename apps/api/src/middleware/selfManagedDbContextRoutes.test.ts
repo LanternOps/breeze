@@ -18,6 +18,15 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/accounting/quickbooks/customers/'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/'],
+    // #2190 — distributor catalog imports run a best-effort AI enrichment call
+    // inside the handler.
+    ['POST', '/api/v1/catalog/distributors/td-synnex/import'],
+    ['POST', '/api/v1/catalog/distributors/td-synnex/import/'],
+    ['POST', '/api/v1/catalog/distributors/td-synnex-ec/import'],
+    ['POST', '/api/v1/catalog/distributors/td-synnex-ec/import/'],
+    ['POST', '/api/v1/catalog/distributors/pax8/import'],
+    ['POST', '/api/v1/catalog/distributors/pax8/import/'],
+    ['post', '/api/v1/catalog/distributors/pax8/import'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -34,6 +43,21 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/extra', 'extra segment must not match'],
+    // #2190 — the other distributor routes (status/config/test/search/lookup/pricing)
+    // do only DB work — keep the ambient tx.
+    ['GET', '/api/v1/catalog/distributors/td-synnex/status', 'status route is DB-only'],
+    ['POST', '/api/v1/catalog/distributors/td-synnex/test', 'connection test is DB-only'],
+    ['GET', '/api/v1/catalog/distributors/td-synnex/search', 'search is DB-only'],
+    ['POST', '/api/v1/catalog/distributors/td-synnex/import/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/catalog/distributors/td-synnex/import', 'import is POST-only'],
+    ['GET', '/api/v1/catalog/distributors/td-synnex-ec/status', 'status route is DB-only'],
+    ['GET', '/api/v1/catalog/distributors/td-synnex-ec/lookup', 'lookup is DB-only'],
+    ['POST', '/api/v1/catalog/distributors/td-synnex-ec/import/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/catalog/distributors/pax8/status', 'status route is DB-only'],
+    ['GET', '/api/v1/catalog/distributors/pax8/search', 'search is DB-only'],
+    ['GET', '/api/v1/catalog/distributors/pax8/pricing', 'pricing is DB-only'],
+    ['POST', '/api/v1/catalog/distributors/pax8/import/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/catalog/distributors/pax8/import', 'import is POST-only'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

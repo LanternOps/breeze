@@ -71,7 +71,15 @@ vi.mock('../../middleware/auth', () => ({
   },
   requireScope: () => async (_c: any, next: any) => next(),
   requirePermission: () => async (_c: any, next: any) => next(),
-  requireMfa: () => async (_c: any, next: any) => next()
+  requireMfa: () => async (_c: any, next: any) => next(),
+  // #2190 — the import routes rebuild the request DbAccessContext from `auth`
+  // and pass it into the (mocked) import services; the value only needs to exist.
+  dbAccessContextFromAuth: (auth: any) => ({
+    scope: auth?.scope ?? 'partner',
+    currentPartnerId: auth?.partnerId ?? null,
+    accessibleOrgIds: auth?.accessibleOrgIds ?? null,
+    userId: auth?.user?.id ?? null
+  })
 }));
 
 import { catalogRoutes } from './index';

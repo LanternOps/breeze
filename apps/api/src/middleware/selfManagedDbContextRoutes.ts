@@ -38,6 +38,15 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // around each DB op, so we must NOT pin a request transaction across the call.
   { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/import\/?$/ },
+  // #2190 — the three distributor catalog import routes run a best-effort AI
+  // enrichment (enrichDistributorListing, up to a 12s outbound Anthropic call)
+  // before persisting. The import services manage their own short
+  // withDbAccessContext blocks around each DB op (the request-scoped context
+  // built by the route from `auth`), so the enrichment call runs with NO
+  // ambient transaction held across it.
+  { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex\/import\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-ec\/import\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/pax8\/import\/?$/ },
 ];
 
 /**
