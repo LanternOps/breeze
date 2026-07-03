@@ -15,15 +15,18 @@
  * at any time. This preserves the historical behaviour for orgs that never
  * configured the policy.
  *
- * Timezone note: the org `maintenanceWindow` is a string with no timezone
+ * Timezone note: the `maintenanceWindow` is a string with no timezone
  * component (e.g. "Sun 02:00-04:00"), so it is evaluated against UTC server
- * time. This gate reads ORG settings only (getOrgAgentUpdatePolicy), so the
- * gate-relevant write path is PATCH /organizations/:id — validated at save time
- * as of issue #1963. (The partner route PATCH /partners/me validates the same
- * field too, but only for UX parity; partner settings never reach this gate.)
- * Any legacy malformed value still fails open (no restriction) rather than
- * permanently blocking, and is logged the first time it is ignored per org (per
- * process; see getOrgAgentUpdatePolicy) so the lifted restriction is observable.
+ * time. This gate reads the EFFECTIVE settings (getOrgAgentUpdatePolicy) —
+ * partner defaults applied on top of org-local values, matching the settings UI
+ * (issue #2123). Both write paths are validated at save time as of issue #1963:
+ * PATCH /organizations/:id (org-local) and PATCH /partners/me (partner default,
+ * which now reaches this gate: a partner-set field wins and locks, and the
+ * org-local value applies only where the partner has not set it). Any legacy
+ * malformed value still
+ * fails open (no restriction) rather than permanently blocking, and is logged
+ * the first time it is ignored per org (per process; see getOrgAgentUpdatePolicy)
+ * so the lifted restriction is observable.
  *
  * This module is pure and side-effect free so it can be unit tested without a
  * database. The DB read lives in `getOrgAgentUpdatePolicy` (helpers.ts).

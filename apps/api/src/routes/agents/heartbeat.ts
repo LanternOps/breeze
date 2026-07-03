@@ -114,6 +114,46 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     currentPartnerId: null,
   };
 
+  // Org > General > Agent update policy — governs whether we may hand the agent
+  // (or its helper/watchdog) an auto-upgrade target right now. `manual` blocks
+  // all auto-upgrades; `auto`/`staged` honour the maintenance window when set.
+  // Resolved as EFFECTIVE settings (partner defaults merged over org-local,
+  // issue #2123), so it must run in a SYSTEM context: the org-scoped block below
+  // has `accessiblePartnerIds: []` and cannot read the parent partners row under
+  // RLS, so a partner-locked policy would be silently invisible there. This
+  // short-lived context also opens and CLOSES before the org transaction below,
+  // so we never hold two pooled connections at once (#1105 mass-reconnect
+  // deadlock — same pattern as the policy-probe/trust-keyset reads at the end).
+  // Fails CLOSED (#2125): the gate starts denied and is only opened by a
+  // successful policy evaluation; a lookup failure withholds version-to-version
+  // targets rather than bypass Manual mode / a maintenance window. Bootstrap
+  // installs (a component not yet present) are NOT gated inside the block below.
+  let updateGateAllows = false;
+  try {
+    const updateSettings = await withSystemDbAccessContext(() =>
+      getOrgAgentUpdatePolicy(agent.orgId),
+    );
+    const gate = shouldSendAgentUpgrade(updateSettings, new Date());
+    updateGateAllows = gate.allow;
+    if (!gate.allow) {
+      console.log(
+        `[agents] auto-upgrade withheld for ${agentId} by org update policy (${gate.reason})`,
+      );
+    }
+  } catch (err) {
+    // Fail-closed enlarges the blast radius of a persistent lookup failure: it
+    // would silently withhold every version-to-version upgrade for the org's
+    // fleet, invisible to the agent (indistinguishable from "already latest").
+    // Route to Sentry like every other genuine-failure catch in this file so
+    // that freeze is loudly observable, not just a per-heartbeat stdout line.
+    console.error(
+      `[agents] failed to resolve agent update policy for ${agentId}; ` +
+        `withholding version-to-version auto-upgrades (fail closed):`,
+      err,
+    );
+    captureException(err);
+  }
+
   const scoped = await withDbAccessContext(
     dbContext,
     async (): Promise<Response | { deviceOrgId: string; mainResponse: Record<string, unknown> }> => {
@@ -545,41 +585,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // closes, under a system context — same #1105 pattern as the manifest
   // trust keyset below.
 
-  // Org > General > Agent update policy. Governs whether we may hand the agent
-  // (or its helper/watchdog) an auto-upgrade target right now. `manual` blocks
-  // all auto-upgrades; `auto`/`staged` honour the maintenance window when set.
-  // Bootstrap installs (a component not yet present) are intentionally NOT
-  // gated below — a device must be able to finish installing regardless.
-  // Fails CLOSED (#2125): the agent update policy is a control-plane safety
-  // setting, so if the lookup throws we cannot prove auto-upgrades are allowed
-  // and must withhold version-to-version targets rather than bypass Manual mode
-  // or a maintenance window. The gate therefore starts denied and is only
-  // opened by a successful policy evaluation. Missing-component bootstrap stays
-  // allowed via its own explicit branches below, which never read this gate.
-  let updateGateAllows = false;
-  try {
-    const updateSettings = await getOrgAgentUpdatePolicy(device.orgId);
-    const gate = shouldSendAgentUpgrade(updateSettings, new Date());
-    updateGateAllows = gate.allow;
-    if (!gate.allow) {
-      console.log(
-        `[agents] auto-upgrade withheld for ${agentId} by org update policy (${gate.reason})`,
-      );
-    }
-  } catch (err) {
-    // Fail-closed enlarges the blast radius of a persistent lookup failure: it
-    // would silently withhold every version-to-version upgrade for the org's
-    // fleet, invisible to the agent (indistinguishable from "already latest").
-    // Route to Sentry like every other genuine-failure catch in this file so
-    // that freeze is loudly observable, not just a per-heartbeat stdout line.
-    console.error(
-      `[agents] failed to resolve agent update policy for ${agentId}; ` +
-        `withholding version-to-version auto-upgrades (fail closed):`,
-      err,
-    );
-    captureException(err);
-  }
-
+  // `updateGateAllows` was resolved above (effective partner+org update policy,
+  // issue #2123) in a system context BEFORE this org-scoped block opened — see
+  // the comment there for why (RLS on partners + #1105 connection ordering). The
+  // agent / helper / watchdog version-to-version branches below read it; missing-
+  // component bootstrap branches never do, so a first install is never gated.
   let upgradeTo: string | null = null;
   const normalizedArch = normalizeAgentArchitecture(device.architecture);
   if (normalizedArch) {

@@ -20,6 +20,7 @@ import {
   sensitiveDataFindings,
   sensitiveDataScans,
   organizations,
+  partners,
   deviceGroupMemberships,
   configPolicyAssignments,
   configurationPolicies,
@@ -2028,23 +2029,64 @@ export function __resetMalformedWindowWarnCache(): void {
   warnedMalformedWindowOrgs.clear();
 }
 
+/** Pull the `defaults` sub-object out of a settings JSONB blob (safe for null). */
+function extractSettingsDefaults(settings: unknown): Record<string, unknown> {
+  const root = isObject(settings) ? settings : {};
+  return isObject(root.defaults) ? root.defaults : {};
+}
+
 /**
- * Read the org-level agent update policy from `organizations.settings.defaults`
- * (Org > General). Returns a normalized policy plus the raw maintenance-window
- * string; the gating decision lives in `shouldSendAgentUpgrade`. Unconfigured
- * orgs resolve to a permissive default (staged + no window = upgrade anytime).
+ * Resolve the EFFECTIVE agent update policy for an org (Org > General), applying
+ * partner defaults exactly as the settings UI and `getEffectiveOrgSettings`
+ * (`services/effectiveSettings.ts`) do: for each field a partner-set value wins
+ * and locks; the org-local value only applies where the partner has NOT set that
+ * field. Fields are merged independently — a partner may lock `agentUpdatePolicy`
+ * while leaving `maintenanceWindow` to the org, or vice versa.
+ *
+ * Returns a normalized policy plus the raw maintenance-window string; the gating
+ * decision lives in `shouldSendAgentUpgrade`. Orgs (and partners) that never
+ * configured the field resolve to a permissive default (staged + no window =
+ * upgrade anytime), preserving historical behaviour.
+ *
+ * Hot path: this runs once per device per heartbeat, so org + partner settings
+ * are fetched in a single joined round trip rather than two queries. A thrown
+ * error propagates to the heartbeat gate, which fails CLOSED (#2125); a missing
+ * org/partner row is NOT an error — it falls back to the permissive default like
+ * an unconfigured org, matching the pre-effective-settings behaviour.
+ *
+ * Issue #2123: before this, the gate read org-local `settings.defaults` only, so
+ * a partner-locked policy (e.g. Manual) had zero runtime effect and unconfigured
+ * child orgs fell back to the permissive default despite the partner lock.
+ * (#2124 will build version pins on top of this effective plumbing.)
  */
 export async function getOrgAgentUpdatePolicy(orgId: string): Promise<AgentUpdateSettings> {
-  const [org] = await db
-    .select({ settings: organizations.settings })
+  // LEFT JOIN so a missing partner (shouldn't happen) still returns the org row
+  // and falls back to org-local settings rather than dropping the whole lookup.
+  const [row] = await db
+    .select({ orgSettings: organizations.settings, partnerSettings: partners.settings })
     .from(organizations)
+    .leftJoin(partners, eq(partners.id, organizations.partnerId))
     .where(eq(organizations.id, orgId))
     .limit(1);
-  const settings = isObject(org?.settings) ? org.settings : {};
-  const defaults = isObject(settings.defaults) ? settings.defaults : {};
-  const policy = normalizeAgentUpdatePolicy(defaults.agentUpdatePolicy);
-  const rawWindow =
-    typeof defaults.maintenanceWindow === 'string' ? defaults.maintenanceWindow.trim() : '';
+
+  const orgDefaults = extractSettingsDefaults(row?.orgSettings);
+  const partnerDefaults = extractSettingsDefaults(row?.partnerSettings);
+
+  // Effective merge, per field (mirrors effectiveSettings.mergeCategory): a
+  // partner-set field wins and locks; the org value fills the gap only where the
+  // partner has not set that field. `in` (not truthiness) matches mergeCategory,
+  // which locks any key the partner has present.
+  const effectivePolicy =
+    'agentUpdatePolicy' in partnerDefaults
+      ? partnerDefaults.agentUpdatePolicy
+      : orgDefaults.agentUpdatePolicy;
+  const effectiveWindow =
+    'maintenanceWindow' in partnerDefaults
+      ? partnerDefaults.maintenanceWindow
+      : orgDefaults.maintenanceWindow;
+
+  const policy = normalizeAgentUpdatePolicy(effectivePolicy);
+  const rawWindow = typeof effectiveWindow === 'string' ? effectiveWindow.trim() : '';
   // The explicit "24/7"/empty always-state means "no restriction" → null, same
   // as an absent window. Only a real window string is carried through to the gate.
   const maintenanceWindow = rawWindow && !isAlwaysMaintenanceWindow(rawWindow) ? rawWindow : null;

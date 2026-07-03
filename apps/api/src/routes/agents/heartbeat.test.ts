@@ -28,6 +28,10 @@ vi.mock('../../db', () => ({
     callOrder.push('dbContext:released');
     return result;
   },
+  // Pass-through: the effective agent-update-policy lookup (#2123) and the
+  // policy-probe read both run in a system context. Invoke the callback so the
+  // mocked getOrgAgentUpdatePolicy / buildPolicyProbeConfigUpdate still run.
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../../db/schema', () => ({

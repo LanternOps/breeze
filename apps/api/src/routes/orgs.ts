@@ -398,11 +398,12 @@ const partnerSettingsSchema = z.object({
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
     // Reject malformed windows on the partner (/partners/me) write path at save
-    // time (issue #1963), for consistency with the org route. NOTE: the agent
-    // heartbeat gate reads ORG settings (see updateOrgHandler /
-    // getOrgAgentUpdatePolicy), so this partner-level check is UX parity — the
-    // org-route check is what actually protects the gate. Accepts the
-    // "24/7"/empty always-state or a "[Day ]HH:MM-HH:MM" window.
+    // time (issue #1963), for consistency with the org route. As of issue #2123
+    // the agent heartbeat gate reads the EFFECTIVE settings (partner defaults
+    // merged over org-local; see getOrgAgentUpdatePolicy), so a partner-locked
+    // window now reaches the gate directly — this save-time check protects it
+    // just as the org-route check does. Accepts the "24/7"/empty always-state or
+    // a "[Day ]HH:MM-HH:MM" window.
     maintenanceWindow: z.string().max(64).optional().refine(
       (v) => v === undefined || isValidMaintenanceWindow(v),
       { message: MAINTENANCE_WINDOW_ERROR_MESSAGE },
