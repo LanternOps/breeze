@@ -131,7 +131,7 @@ export function canonicalizePatchCategory(category: string): string {
 function normalizeCategorySet(list: string[] | undefined): Set<string> {
   const set = new Set<string>();
   for (const c of list ?? []) {
-    if (typeof c === 'string' && c.trim().length > 0) set.add(canonicalizePatchCategory(c));
+    if (typeof c === 'string' && c.trim().length > 0) set.add(canonicalizePatchCategory(c.trim()));
   }
   return set;
 }

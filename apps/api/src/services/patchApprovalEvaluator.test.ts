@@ -1097,6 +1097,34 @@ describe('ring category include/exclude filtering in resolveApprovedPatchesForDe
     expect(approved.map((p) => p.patchId)).toEqual([P1]);
   });
 
+  it('allowlist overrides an explicit manual approval for an out-of-list category', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'feature', severity: 'low' })],
+      [{ patchId: P1, status: 'approved', ringId: null }]
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      categories: ['security'],
+    });
+
+    expect(approved).toEqual([]);
+  });
+
+  it('an active allowlist drops a null-category patch (fail-closed early return)', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: null, severity: 'critical' })],
+      [{ patchId: P1, status: 'approved', ringId: null }]
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      categories: ['security'],
+    });
+
+    expect(approved).toEqual([]);
+  });
+
   it('applies no category filtering when both lists are absent (legacy jobs)', async () => {
     mockPendingAndApprovals(
       [

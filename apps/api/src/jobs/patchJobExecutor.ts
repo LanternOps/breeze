@@ -42,16 +42,26 @@ const jobPolicyAutoApproveSchema = z.object({
 });
 
 /**
- * Coerce a stored job-JSONB category list to string[], or undefined when the
- * field is absent (legacy job → no category filtering). A present-but-malformed
- * value degrades to the string entries it does contain; a fully non-array value
- * yields an empty list (the evaluator treats empty as "no filter") rather than
- * throwing. Narrowing-only, so this can never widen install scope (#2117).
+ * Parse one stored job-JSONB ring category list (`categories` / `excludeCategories`).
+ * Returns:
+ *  - `undefined` when the field is absent (legacy job → no category filtering),
+ *  - `string[]` (blanks dropped) when the value is a valid array of strings, or
+ *  - `null` when present-but-malformed (a non-array, or an array containing a
+ *    non-string entry).
+ *
+ * A malformed value must NOT be silently coerced to "no filter": dropping a
+ * `categories` allowlist would widen to "install every category" and dropping an
+ * `excludeCategories` denylist would let an excluded category into the install
+ * set — the same widen-past-admin-intent hazard the `sources` handler guards
+ * against. Callers fail closed (skip the device) on `null`. An empty array is
+ * valid and means "no filter" (the schema default), unlike `sources` where an
+ * empty set means "install nothing". (#2117)
  */
-function toStringArrayOrUndefined(value: unknown): string[] | undefined {
+export function parseJobCategoryList(value: unknown): string[] | null | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value)) return [];
-  return value.filter((v): v is string => typeof v === 'string' && v.length > 0);
+  if (!Array.isArray(value)) return null;
+  if (value.some((v) => typeof v !== 'string')) return null;
+  return (value as string[]).filter((v) => v.length > 0);
 }
 
 const { db } = dbModule;
@@ -628,6 +638,40 @@ async function prepareDeviceExecution(
     }
   }
 
+  // Ring category include/exclude filters (#2117). Mirror the sources posture:
+  // absent = legacy job (no filtering); present-but-malformed skips the device
+  // rather than silently dropping the filter, which would widen install scope
+  // past the ring's category intent (an excluded category would flow in, or an
+  // allowlist would collapse to "install everything").
+  let jobCategories: string[] | undefined;
+  let jobExcludeCategories: string[] | undefined;
+  let malformedCategoryFilter = false;
+
+  const parsedCategories = parseJobCategoryList(patchesConfig?.categories);
+  if (parsedCategories === null) {
+    malformedCategoryFilter = true;
+    const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.categories; skipping device to avoid widening install scope past the ring category filter`;
+    console.warn(`${message}:`, JSON.stringify(patchesConfig?.categories));
+    captureException(new Error(message));
+  } else {
+    jobCategories = parsedCategories;
+  }
+
+  const parsedExcludeCategories = parseJobCategoryList(patchesConfig?.excludeCategories);
+  if (parsedExcludeCategories === null) {
+    malformedCategoryFilter = true;
+    const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.excludeCategories; skipping device to avoid widening install scope past the ring category filter`;
+    console.warn(`${message}:`, JSON.stringify(patchesConfig?.excludeCategories));
+    captureException(new Error(message));
+  } else {
+    jobExcludeCategories = parsedExcludeCategories;
+  }
+
+  if (malformedCategoryFilter) {
+    await markDeviceSkipped(patchJobId, deviceId, 'invalid_patch_categories');
+    return { skipped: true, reason: 'Invalid patch category filter' };
+  }
+
   const ringConfig: RingConfig = {
     ringId: patchesConfig?.ringId ?? null,
     categoryRules: (Array.isArray(patchesConfig?.categoryRules)
@@ -635,12 +679,8 @@ async function prepareDeviceExecution(
       : []) as RingConfig['categoryRules'],
     autoApprove: patchesConfig?.autoApprove ?? {},
     deferralDays: 0,
-    // Ring category include/exclude filters (#2117). Absent on legacy job
-    // snapshots → undefined → no category filtering. Non-array shapes coerce to
-    // an empty list (drop the filter) rather than throwing; string entries are
-    // kept as-is for the evaluator to canonicalize.
-    categories: toStringArrayOrUndefined(patchesConfig?.categories),
-    excludeCategories: toStringArrayOrUndefined(patchesConfig?.excludeCategories),
+    categories: jobCategories,
+    excludeCategories: jobExcludeCategories,
     sources: jobSources,
     policyAutoApprove,
     apps: jobApps,

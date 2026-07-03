@@ -97,6 +97,7 @@ import {
   enqueuePatchJob,
   selectStaleScheduledJobIds,
   filterOrphanedJobIds,
+  parseJobCategoryList,
 } from './patchJobExecutor';
 import { resolveApprovedPatchesForDevice } from '../services/patchApprovalEvaluator';
 import { queueCommandForExecution } from '../services/commandQueue';
@@ -852,5 +853,28 @@ describe('orphaned scheduled-job reconcile (#1733)', () => {
     const orphaned = await filterOrphanedJobIds([]);
     expect(orphaned).toEqual([]);
     expect(shared.getJobMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('parseJobCategoryList (#2117 category filter fail-closed parse)', () => {
+  it('returns undefined for an absent field (legacy job → no filtering)', () => {
+    expect(parseJobCategoryList(undefined)).toBeUndefined();
+  });
+
+  it('returns the string list for a valid array, dropping blanks', () => {
+    expect(parseJobCategoryList(['driver', 'feature'])).toEqual(['driver', 'feature']);
+    expect(parseJobCategoryList(['driver', '', '  '])).toEqual(['driver', '  ']);
+    expect(parseJobCategoryList([])).toEqual([]);
+  });
+
+  it('returns null (malformed → caller fails closed) for a non-array value', () => {
+    expect(parseJobCategoryList('driver')).toBeNull();
+    expect(parseJobCategoryList({ 0: 'driver' })).toBeNull();
+    expect(parseJobCategoryList(null)).toBeNull();
+  });
+
+  it('returns null when an array carries a non-string entry', () => {
+    expect(parseJobCategoryList(['driver', 42])).toBeNull();
+    expect(parseJobCategoryList([{ category: 'driver' }])).toBeNull();
   });
 });
