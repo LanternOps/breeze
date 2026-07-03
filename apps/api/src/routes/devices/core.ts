@@ -39,6 +39,7 @@ import {
   type DevicesSortKey,
 } from './cursor';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
@@ -1340,6 +1341,13 @@ coreRoutes.delete(
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }
         await tx.delete(devices).where(eq(devices.id, deviceId));
+
+        // #2138 — the deleted device's link_group_id went with its row. If it
+        // was a boot profile and the group now has a single lone survivor,
+        // dissolve the (meaningless) group.
+        if (device.linkGroupId) {
+          await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
+        }
       });
     } catch (err: unknown) {
       const pgCode = (err as { code?: string })?.code;

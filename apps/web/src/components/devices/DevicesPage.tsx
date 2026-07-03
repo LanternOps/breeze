@@ -5,6 +5,7 @@ import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
+import { collapseLinkedDevices, type LinkGroupSummary } from './linkedDevices';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
@@ -26,7 +27,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
 import AccessDenied from '../shared/AccessDenied';
@@ -76,6 +77,9 @@ export default function DevicesPage() {
   const [sites, setSites] = useState<Site[]>([]);
   const [deviceGroups, setDeviceGroups] = useState<DeviceGroup[]>([]);
   const [groupMembershipMap, setGroupMembershipMap] = useState<Map<string, Set<string>>>(new Map());
+  // Linked multi-boot profiles (#2138) — used to collapse each group into a
+  // single primary row in the list view.
+  const [linkGroups, setLinkGroups] = useState<LinkGroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
@@ -221,6 +225,12 @@ export default function DevicesPage() {
     },
     [classFilteredDevices, advancedFilterIds, includeDecommissioned]
   );
+  // Collapse linked multi-boot groups into a single primary row for the list
+  // view (#2138). The grid view keeps individual cards.
+  const listDevices = useMemo(
+    () => collapseLinkedDevices(classFilteredDevices, linkGroups),
+    [classFilteredDevices, linkGroups]
+  );
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -238,7 +248,7 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
-      const [devicesResult, networkResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
+      const [devicesResult, networkResult, orgsResponse, sitesResponse, groupsResponse, linkGroupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
           signal,
@@ -281,6 +291,15 @@ export default function DevicesPage() {
           // catch can short-circuit cleanly; don't log it as a real failure.
           if (err instanceof Error && err.name === 'AbortError') throw err;
           console.warn('Failed to fetch device groups:', err);
+          return null;
+        }),
+        // Linked multi-boot profiles (#2138). Best-effort: a transient/absent
+        // failure must not blank the fleet — degrade to no grouping. A 401 is a
+        // real auth failure and re-thrown to the outer catch (as elsewhere).
+        fetchWithAuth('/devices/link-groups', { signal }).catch((err) => {
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          if (err instanceof Response && err.status === 401) throw err;
+          console.warn('Failed to fetch device link groups:', err);
           return null;
         })
       ]);
@@ -420,8 +439,25 @@ export default function DevicesPage() {
         }
       }
 
+      // Linked multi-boot profiles (#2138): map to LinkGroupSummary for collapse.
+      let linkGroupsList: LinkGroupSummary[] = [];
+      if (linkGroupsResponse && linkGroupsResponse.ok) {
+        const linkData = await linkGroupsResponse.json();
+        const raw = (linkData.data ?? []) as Array<Record<string, unknown>>;
+        linkGroupsList = raw.map((g) => ({
+          id: g.id as string,
+          name: (g.name as string | null) ?? null,
+          deviceIds: Array.isArray(g.members)
+            ? (g.members as Array<Record<string, unknown>>).map((m) => m.deviceId as string)
+            : [],
+        }));
+      } else if (linkGroupsResponse && !linkGroupsResponse.ok) {
+        console.warn('Failed to fetch device link groups:', linkGroupsResponse.status);
+      }
+
       setDeviceGroups(groupsList);
       setGroupMembershipMap(memberMap);
+      setLinkGroups(linkGroupsList);
       setDevices(devicesWithNames);
       setOrgs(orgsList);
       setSites(sitesList);
@@ -753,6 +789,20 @@ export default function DevicesPage() {
       setActionInProgress(true);
 
       switch (action) {
+        case 'link-multiboot': {
+          if (deviceIds.length < 2) {
+            showToast({ type: 'error', message: 'Select at least two devices to link as multi-boot profiles.' });
+            break;
+          }
+          await linkDevicesMultiboot(deviceIds);
+          showToast({
+            type: 'success',
+            message: `Linked ${deviceCount} devices as multi-boot profiles.`,
+          });
+          await fetchDevices();
+          break;
+        }
+
         case 'reboot':
         case 'reboot_safe_mode':
         case 'shutdown':
@@ -1034,7 +1084,7 @@ export default function DevicesPage() {
         </div>
       ) : viewMode === 'list' ? (
         <DeviceList
-          devices={classFilteredDevices}
+          devices={listDevices}
           orgs={orgs}
           sites={sites}
           groups={deviceGroups}

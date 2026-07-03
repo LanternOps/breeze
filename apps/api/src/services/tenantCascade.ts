@@ -143,6 +143,10 @@ export const ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_groups',
   'device_hardware',
   'device_ip_history',
+  // #2138 — linked multi-boot profiles. The topo-sort deletes `devices` before
+  // this (devices carries the FK to device_link_groups), so members are cleared
+  // first and the group rows delete cleanly.
+  'device_link_groups',
   'device_metrics',
   'device_network',
   'device_patches',

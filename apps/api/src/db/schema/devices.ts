@@ -66,6 +66,13 @@ export const devices = pgTable('devices', {
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
+  // Linked device profiles for multi-boot systems (#2138). NULL => unlinked.
+  // When set, the device is one boot profile of a physical machine grouped in
+  // `device_link_groups`. A composite FK (link_group_id, org_id) ->
+  // device_link_groups(id, org_id) — declared in the migration, not here,
+  // matching the users(org_id, partner_id) composite-FK convention — pins every
+  // member of a group to the group's org (same-org invariant).
+  linkGroupId: uuid('link_group_id'),
   tags: text('tags').array().default([]),
   customFields: jsonb('custom_fields').default({}),
   managementPosture: jsonb('management_posture'),
@@ -99,6 +106,24 @@ export const devices = pgTable('devices', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// Linked device profiles for multi-boot systems (#2138). One row per physical
+// machine whose OS boot profiles are surfaced as separate device records. This
+// is a NON-destructive UI/monitoring overlay — the linked device rows keep all
+// of their own inventory/software/scripts/history/audit. Shape 1 (direct
+// org_id): auto-discovered by the rls-coverage contract test. Membership lives
+// on `devices.link_group_id` (one group per device), not a child table.
+export const deviceLinkGroups = pgTable('device_link_groups', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  name: varchar('name', { length: 255 }),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  orgIdIdx: index('device_link_groups_org_id_idx').on(table.orgId),
+  idOrgUnique: unique('device_link_groups_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 export const deviceHardware = pgTable('device_hardware', {
   deviceId: uuid('device_id').primaryKey().references(() => devices.id),
