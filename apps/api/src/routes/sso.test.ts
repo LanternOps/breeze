@@ -95,12 +95,14 @@ vi.mock('../db/schema', () => ({
   ssoProviders: {
     id: 'id',
     orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     type: 'type',
     status: 'status',
     issuer: 'issuer',
     autoProvision: 'autoProvision',
     enforceSSO: 'enforceSSO',
+    trustsIdpMfa: 'trustsIdpMfa',
     createdAt: 'createdAt',
     authorizationUrl: 'authorizationUrl',
     tokenUrl: 'tokenUrl',
@@ -134,7 +136,9 @@ vi.mock('../db/schema', () => ({
   roles: {
     id: 'id',
     name: 'name',
-    scope: 'scope'
+    scope: 'scope',
+    orgId: 'orgId',
+    partnerId: 'partnerId'
   }
 }));
 
@@ -193,6 +197,7 @@ import {
   verifyIdTokenSignature,
 } from '../services/sso';
 import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -209,6 +214,7 @@ describe('sso routes', () => {
     partnerId: string | null;
     accessibleOrgIds: string[] | null;
     canAccessOrg: (orgId: string) => boolean;
+    partnerOrgAccess: 'all' | 'selected' | 'none' | null;
   }> = {}) => {
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
@@ -217,6 +223,7 @@ describe('sso routes', () => {
         partnerId: 'partnerId' in overrides ? overrides.partnerId : null,
         accessibleOrgIds: 'accessibleOrgIds' in overrides ? overrides.accessibleOrgIds : [ORG_UUID],
         canAccessOrg: overrides.canAccessOrg ?? (() => true),
+        partnerOrgAccess: 'partnerOrgAccess' in overrides ? overrides.partnerOrgAccess : null,
         user: { id: USER_UUID, email: 'test@example.com' }
       });
       return next();
@@ -1457,6 +1464,265 @@ describe('sso routes', () => {
       expect(body.data[0].verified).toBe(false);
       expect(body.data[0].recordName).toBeDefined();
       expect(body.data[0].recordValue).toBeDefined();
+    });
+  });
+
+  describe('partner-axis provider CRUD (#2183)', () => {
+    it('creates a partner-axis provider for ownerScope=partner with orgAccess=all', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [],
+        partnerOrgAccess: 'all'
+      });
+
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: PROVIDER_UUID,
+          name: 'Partner Okta',
+          orgId: null,
+          partnerId: PARTNER_UUID
+        }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner Okta',
+          type: 'oidc'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: null,
+        partnerId: PARTNER_UUID
+      }));
+    });
+
+    it('403s ownerScope=partner when partnerOrgAccess is not all', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID],
+        partnerOrgAccess: 'selected'
+      });
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner Okta',
+          type: 'oidc'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('400s a partner-axis defaultRoleId that is not a partner-scoped role of the caller partner', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [],
+        partnerOrgAccess: 'all'
+      });
+
+      // No matching partner-scoped role for this partner.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner Okta',
+          type: 'oidc',
+          defaultRoleId: '00000000-0000-4000-8000-000000000099'
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-scoped role/);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects ownerScope on update (schema omits it)', async () => {
+      // Existing provider is org-axis; a PATCH body carrying `ownerScope` must
+      // be stripped by the schema (createProviderSchema.omit({ownerScope:true}))
+      // so the axis is never touched by an update.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: PROVIDER_UUID,
+            orgId: ORG_UUID,
+            partnerId: null,
+            name: 'Okta Renamed'
+          }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerScope: 'partner', name: 'Okta Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      const setArg = setMock.mock.calls[0]?.[0];
+      expect(setArg).not.toHaveProperty('ownerScope');
+      expect(setArg).not.toHaveProperty('orgId');
+    });
+
+    it('does not accept partnerId from the request body', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [],
+        partnerOrgAccess: 'all'
+      });
+
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: PROVIDER_UUID,
+          name: 'Partner Okta',
+          orgId: null,
+          partnerId: PARTNER_UUID
+        }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          partnerId: 'p-EVIL',
+          name: 'Partner Okta',
+          type: 'oidc'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      // partnerId always comes from the caller's token, never the body — even
+      // though createProviderSchema doesn't define a `partnerId` input field,
+      // this locks in the invariant so it can't regress if one is ever added.
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: null,
+        partnerId: PARTNER_UUID
+      }));
+    });
+
+    it('allows a system-scope caller scoped to the same partner to read a partner-axis provider by id', async () => {
+      // canAccessProviderRow requires `auth.partnerId === row.partnerId` even
+      // for system scope (partner-axis rows are never globally world-readable
+      // by an unscoped system token) — this simulates a system caller acting
+      // with that partner context (e.g. support tooling), not the generic
+      // background-worker system scope (which carries partnerId: null).
+      setAuthContext({ scope: 'system', orgId: null, partnerId: PARTNER_UUID, accessibleOrgIds: null });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: null,
+              partnerId: PARTNER_UUID,
+              name: 'Partner Okta',
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              clientSecret: 'secret'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('denies an org-scope caller from reading a partner-axis provider', async () => {
+      setAuthContext({ scope: 'organization', orgId: ORG_UUID, partnerId: null, accessibleOrgIds: [ORG_UUID] });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: null,
+              partnerId: PARTNER_UUID,
+              name: 'Partner Okta',
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              clientSecret: 'secret'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('403s deleting a partner-axis provider when the caller lacks full partner org access', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID],
+        partnerOrgAccess: 'selected'
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: null, partnerId: PARTNER_UUID }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
     });
   });
 });

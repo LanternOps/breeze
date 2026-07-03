@@ -34,6 +34,7 @@ import {
 } from '../services/sso';
 import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
@@ -123,6 +124,7 @@ function isValidSsoStateCookie(state: string, cookieHeader: string | undefined):
 // ============================================
 
 const createProviderSchema = z.object({
+  ownerScope: z.enum(['organization', 'partner']).default('organization'),
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['oidc', 'saml']),
@@ -145,7 +147,7 @@ const createProviderSchema = z.object({
   trustsIdpMfa: z.boolean().optional()
 });
 
-const updateProviderSchema = createProviderSchema.omit({ orgId: true }).partial();
+const updateProviderSchema = createProviderSchema.omit({ orgId: true, ownerScope: true }).partial();
 const tokenExchangeSchema = z.object({
   code: z.string().min(1)
 });
@@ -355,6 +357,21 @@ function resolveOrgIdForProviderRoute(
   return { error: 'Organization ID required', status: 400 };
 }
 
+type ProviderOwnerRow = { orgId: string | null; partnerId: string | null };
+
+// Read access: org rows by org access; partner rows only for the same partner's
+// partner/system-scope callers (org tokens never see partner-axis providers).
+function canAccessProviderRow(auth: AuthContext, row: ProviderOwnerRow): boolean {
+  if (row.orgId) return auth.canAccessOrg(row.orgId);
+  return (auth.scope === 'system' || auth.scope === 'partner') && auth.partnerId === row.partnerId;
+}
+
+// Write access: partner-axis rows additionally require full partner org access.
+function canWriteProviderRow(auth: AuthContext, row: ProviderOwnerRow): boolean {
+  if (row.orgId) return auth.canAccessOrg(row.orgId);
+  return auth.partnerId === row.partnerId && canManagePartnerWidePolicies(auth);
+}
+
 const providerIdParamSchema = z.object({ id: z.string().guid() });
 const orgIdParamSchema = z.object({ orgId: z.string().guid() });
 
@@ -375,6 +392,31 @@ ssoRoutes.get('/presets', authMiddleware, requireScope('organization', 'partner'
 // List SSO providers for organization
 ssoRoutes.get('/providers', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
+
+  if (c.req.query('scope') === 'partner') {
+    if (!(auth.scope === 'partner' || auth.scope === 'system') || !auth.partnerId) {
+      return c.json({ error: 'Partner scope required' }, 400);
+    }
+
+    const partnerProviders = await db
+      .select({
+        id: ssoProviders.id,
+        name: ssoProviders.name,
+        type: ssoProviders.type,
+        status: ssoProviders.status,
+        issuer: ssoProviders.issuer,
+        autoProvision: ssoProviders.autoProvision,
+        enforceSSO: ssoProviders.enforceSSO,
+        trustsIdpMfa: ssoProviders.trustsIdpMfa,
+        createdAt: ssoProviders.createdAt,
+        partnerId: ssoProviders.partnerId
+      })
+      .from(ssoProviders)
+      .where(eq(ssoProviders.partnerId, auth.partnerId));
+
+    return c.json({ data: partnerProviders });
+  }
+
   const orgResult = resolveOrgIdForProviderRoute(auth, c.req.query('orgId'));
   if ('error' in orgResult) {
     return c.json({ error: orgResult.error }, orgResult.status);
@@ -413,7 +455,7 @@ ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'pa
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(provider.orgId)) {
+  if (!canAccessProviderRow(auth, provider)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
@@ -434,9 +476,36 @@ ssoRoutes.post(
   async (c) => {
   const auth = c.get('auth') as AuthContext;
   const body = c.req.valid('json');
-  const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
-  if ('error' in orgResult) {
-    return c.json({ error: orgResult.error }, orgResult.status);
+
+  let ownerColumns: { orgId: string | null; partnerId: string | null };
+  if (body.ownerScope === 'partner') {
+    if (auth.scope !== 'partner' || !auth.partnerId) {
+      return c.json({ error: 'Partner scope required for a partner-axis SSO provider' }, 400);
+    }
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    if (body.defaultRoleId) {
+      const [role] = await db
+        .select({ id: roles.id })
+        .from(roles)
+        .where(and(
+          eq(roles.id, body.defaultRoleId),
+          eq(roles.scope, 'partner'),
+          eq(roles.partnerId, auth.partnerId)
+        ))
+        .limit(1);
+      if (!role) {
+        return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+      }
+    }
+    ownerColumns = { orgId: null, partnerId: auth.partnerId };
+  } else {
+    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+    if ('error' in orgResult) {
+      return c.json({ error: orgResult.error }, orgResult.status);
+    }
+    ownerColumns = { orgId: orgResult.orgId, partnerId: null };
   }
 
   // Apply preset if specified
@@ -468,7 +537,7 @@ ssoRoutes.post(
   const [provider] = await db
     .insert(ssoProviders)
     .values({
-      orgId: orgResult.orgId,
+      ...ownerColumns,
       name: body.name,
       type: body.type,
       issuer: body.issuer,
@@ -500,7 +569,7 @@ ssoRoutes.post(
     resourceType: 'sso_provider',
     resourceId: provider.id,
     resourceName: provider.name,
-    details: { type: provider.type, status: provider.status }
+    details: { type: provider.type, status: provider.status, partnerId: provider.partnerId }
   });
 
     const { clientSecret, ...safeProvider } = provider;
@@ -523,7 +592,7 @@ ssoRoutes.patch(
   const body = c.req.valid('json');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -532,8 +601,23 @@ ssoRoutes.patch(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(existing.orgId)) {
+  if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
+  }
+
+  if (existing.partnerId && body.defaultRoleId) {
+    const [role] = await db
+      .select({ id: roles.id })
+      .from(roles)
+      .where(and(
+        eq(roles.id, body.defaultRoleId),
+        eq(roles.scope, 'partner'),
+        eq(roles.partnerId, existing.partnerId)
+      ))
+      .limit(1);
+    if (!role) {
+      return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+    }
   }
 
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
@@ -548,7 +632,7 @@ ssoRoutes.patch(
   const [updated] = await db
     .update(ssoProviders)
     .set(updates)
-    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
+    .where(eq(ssoProviders.id, providerId))
     .returning();
 
   if (!updated) {
@@ -561,7 +645,7 @@ ssoRoutes.patch(
     resourceType: 'sso_provider',
     resourceId: updated.id,
     resourceName: updated.name,
-    details: { changedFields: Object.keys(body) }
+    details: { changedFields: Object.keys(body), partnerId: updated.partnerId }
   });
 
     const { clientSecret, ...safeProvider } = updated;
@@ -582,7 +666,7 @@ ssoRoutes.delete(
   const { id: providerId } = c.req.valid('param');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -591,7 +675,7 @@ ssoRoutes.delete(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(existing.orgId)) {
+  if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
@@ -601,7 +685,7 @@ ssoRoutes.delete(
 
   const [deleted] = await db
     .delete(ssoProviders)
-    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
+    .where(eq(ssoProviders.id, providerId))
     .returning();
 
   if (!deleted) {
@@ -613,7 +697,8 @@ ssoRoutes.delete(
     action: 'sso.provider.delete',
     resourceType: 'sso_provider',
     resourceId: deleted.id,
-    resourceName: deleted.name
+    resourceName: deleted.name,
+    details: { partnerId: deleted.partnerId }
   });
 
     return c.json({ success: true });
@@ -635,7 +720,7 @@ ssoRoutes.post(
   const { status } = c.req.valid('json');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -644,14 +729,14 @@ ssoRoutes.post(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(existing.orgId)) {
+  if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
   const [updated] = await db
     .update(ssoProviders)
     .set({ status, updatedAt: new Date() })
-    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
+    .where(eq(ssoProviders.id, providerId))
     .returning();
 
   if (!updated) {
@@ -664,7 +749,7 @@ ssoRoutes.post(
     resourceType: 'sso_provider',
     resourceId: updated.id,
     resourceName: updated.name,
-    details: { status }
+    details: { status, partnerId: updated.partnerId }
   });
 
     return c.json({ data: updated });
@@ -693,7 +778,11 @@ ssoRoutes.post(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(provider.orgId)) {
+  // Test-configuration is org-axis only for now (partner-axis provider testing
+  // is deferred to a later #2183 task); a null orgId here fails closed for
+  // org/partner-scope callers via canAccessOrg's `.includes(null)` and is
+  // allowed for system scope, matching the pre-#2183 behavior for org rows.
+  if (!auth.canAccessOrg(provider.orgId as string)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
@@ -1031,6 +1120,17 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect('/login?error=provider_not_found');
   }
 
+  // This callback only ever completes an org-axis login today — sessions are
+  // only ever created by the org-scoped /login/:orgId lookup (partner-axis
+  // login is a later #2183 task), so orgId is expected to be set here. Narrow
+  // explicitly (rather than assert) so the type flows into the closures below,
+  // and fail closed defensively if that invariant is ever violated.
+  const providerOrgId = provider.orgId;
+  if (!providerOrgId) {
+    clearStateCookie();
+    return c.redirect('/login?error=provider_not_found');
+  }
+
   let validatedDefaultRoleId: string | null = null;
   if (provider.defaultRoleId) {
     const [defaultRole] = await db
@@ -1040,7 +1140,7 @@ ssoRoutes.get('/callback', async (c) => {
         and(
           eq(roles.id, provider.defaultRoleId),
           eq(roles.scope, 'organization'),
-          eq(roles.orgId, provider.orgId)
+          eq(roles.orgId, providerOrgId)
         )
       )
       .limit(1);
@@ -1162,11 +1262,11 @@ ssoRoutes.get('/callback', async (c) => {
     if (!user) {
       const assertedEmailDomain = attrs.email.split('@')[1]?.toLowerCase() ?? null;
       const domainBlocked = await withSystemDbAccessContext(() =>
-        isSsoProvisioningBlocked(provider.orgId, assertedEmailDomain)
+        isSsoProvisioningBlocked(providerOrgId, assertedEmailDomain)
       );
       if (domainBlocked) {
         console.warn(
-          `[sso/callback] domain verification blocked link/provision: org=${provider.orgId} provider=${provider.id} emailDomain=${assertedEmailDomain ?? 'none'}`
+          `[sso/callback] domain verification blocked link/provision: org=${providerOrgId} provider=${provider.id} emailDomain=${assertedEmailDomain ?? 'none'}`
         );
         clearStateCookie();
         return c.redirect('/login?error=sso_domain_unverified');
@@ -1225,7 +1325,7 @@ ssoRoutes.get('/callback', async (c) => {
         const [providerOrg] = await db
           .select({ partnerId: organizations.partnerId })
           .from(organizations)
-          .where(eq(organizations.id, provider.orgId))
+          .where(eq(organizations.id, providerOrgId))
           .limit(1);
         if (!providerOrg) {
           return null;
@@ -1235,7 +1335,7 @@ ssoRoutes.get('/callback', async (c) => {
           .insert(users)
           .values({
             partnerId: providerOrg.partnerId,
-            orgId: provider.orgId,
+            orgId: providerOrgId,
             email: attrs.email.toLowerCase(),
             name: attrs.name,
             status: 'active',
@@ -1248,7 +1348,7 @@ ssoRoutes.get('/callback', async (c) => {
         }
 
         await db.insert(organizationUsers).values({
-          orgId: provider.orgId,
+          orgId: providerOrgId,
           userId: created.id,
           roleId: validatedDefaultRoleId
         });
@@ -1276,7 +1376,7 @@ ssoRoutes.get('/callback', async (c) => {
       .where(
         and(
           eq(organizationUsers.userId, user.id),
-          eq(organizationUsers.orgId, provider.orgId)
+          eq(organizationUsers.orgId, providerOrgId)
         )
       )
       .limit(1);
@@ -1363,7 +1463,7 @@ ssoRoutes.get('/callback', async (c) => {
       sub: user.id,
       email: user.email,
       roleId: orgUser.roleId,
-      orgId: provider.orgId,
+      orgId: providerOrgId,
       partnerId: null,
       scope: 'organization' as const,
       mfa: ssoMfa
