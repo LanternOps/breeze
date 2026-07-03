@@ -196,6 +196,10 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // are direct org_id (Shape 1) and are auto-discovered — not listed here.
   ['unifi_integrations', 'partner_id'],
   ['unifi_sync_runs', 'partner_id'],
+  // partner_login_branding (#2183): login-page branding for the MSP's own
+  // technician login. Deliberately partner-ONLY (no org axis) — see
+  // 2026-07-03-sso-partner-axis-login-branding.sql. partner_id is the PK.
+  ['partner_login_branding', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -314,6 +318,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'notification_channels',
   'notification_routing_rules',
   'escalation_policies',
+  // sso_providers (#2183): org-axis (org_id set — customer-org SSO, the
+  // original shape) OR partner-axis (partner_id set, org_id NULL — MSP
+  // technician login). Converted in 2026-07-03-sso-partner-axis-login-branding.
+  // Org auto-discovery asserts the org branch; this entry asserts the
+  // breeze_has_partner_access branch. CHECK sso_providers_one_owner_chk
+  // enforces exactly one axis. Functional forge proof:
+  // ssoProvidersPartnerRls.integration.test.ts.
+  'sso_providers',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
