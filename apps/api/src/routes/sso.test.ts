@@ -57,7 +57,12 @@ vi.mock('../services', () => ({
   // Task 7 follow-up: SSO callback now mints a refresh-token family for
   // every completed sign-in so reuse-detection covers SSO sessions.
   mintRefreshTokenFamily: vi.fn().mockResolvedValue('sso-family-id-mock'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined)
+  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
+  // Partner-axis login rate limiting (#2183 spec §5) — default allowed so
+  // existing tests exercising the route body are unaffected; the dedicated
+  // 429 test overrides this per-call.
+  rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date(Date.now() + 60_000) }),
+  getRedis: vi.fn().mockReturnValue({})
 }));
 
 vi.mock('../db', () => ({
@@ -187,7 +192,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
-import { createTokenPair } from '../services';
+import { createTokenPair, rateLimiter } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import {
   discoverOIDCConfig,
@@ -247,6 +252,11 @@ describe('sso routes', () => {
     } as any);
     vi.mocked(db.update).mockReset().mockReturnValue({
       set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
+    } as any);
+    vi.mocked(rateLimiter).mockReset().mockResolvedValue({
+      allowed: true,
+      remaining: 9,
+      resetAt: new Date(Date.now() + 60_000)
     } as any);
     delete process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN;
     process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
@@ -1782,6 +1792,24 @@ describe('sso routes', () => {
       }));
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_sso_state=');
+    });
+
+    it('429s when the per-IP+partner rate limit is exceeded, without touching the DB', async () => {
+      const resetAt = new Date(Date.now() + 45_000);
+      vi.mocked(rateLimiter).mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt
+      } as any);
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(429);
+      const body = await res.json();
+      expect(body.error).toBe('Too many login attempts. Please try again later.');
+      expect(body.retryAfter).toBeGreaterThan(0);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 });

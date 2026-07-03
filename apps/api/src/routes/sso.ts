@@ -32,7 +32,7 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily } from '../services';
+import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -991,6 +991,13 @@ ssoRoutes.delete(
 
 const partnerIdParamSchema = z.object({ partnerId: z.string().guid() });
 
+// Design spec (#2183, "Security & error handling"): "login rate limits
+// (per-IP and per-IP+identity) apply to the new entry point." There's no
+// user identity at this pre-auth entry point, so the partnerId being
+// targeted stands in for "identity" — same shape as the password-login
+// per-(IP,email) bucket in routes/auth/login.ts.
+const PARTNER_SSO_LOGIN_RATE_LIMIT = { limit: 10, windowSeconds: 5 * 60 };
+
 // Initiate partner-axis SSO login (#2183) — the MSP's own technician login.
 // Public route: all DB access MUST run under system context (no request scope
 // exists yet; bare `db` silently returns 0 rows under RLS). Mounted ABOVE
@@ -1000,6 +1007,21 @@ const partnerIdParamSchema = z.object({ partnerId: z.string().guid() });
 ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSchema), async (c) => {
   const { partnerId } = c.req.valid('param');
   const redirectUrl = normalizeRedirectPath(c.req.query('redirect'));
+
+  const ip = getClientIP(c);
+  const redis = getRedis();
+  const rateCheck = await rateLimiter(
+    redis,
+    `sso:login:partner:${ip}:${partnerId}`,
+    PARTNER_SSO_LOGIN_RATE_LIMIT.limit,
+    PARTNER_SSO_LOGIN_RATE_LIMIT.windowSeconds
+  );
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many login attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
 
   const [provider] = await withSystemDbAccessContext(async () =>
     db
