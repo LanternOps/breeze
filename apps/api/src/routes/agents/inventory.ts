@@ -188,13 +188,29 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const now = new Date();
+
+  // Active-VPN-client presence snapshot (#2139). Stamp reportedAt server-side
+  // per entry (agents don't send it) and store the latest snapshot on the
+  // devices row. `[]` = reported with no active VPN (distinct from a null
+  // column = never reported). Written in the same txn as the adapter replace.
+  const activeVpns = (data.vpns ?? []).map((vpn) => ({
+    provider: vpn.provider,
+    active: vpn.active,
+    interfaceName: vpn.interfaceName,
+    ipv4: vpn.ipv4,
+    ipv6: vpn.ipv6,
+    dnsName: vpn.dnsName,
+    detectionSource: vpn.detectionSource,
+    reportedAt: now.toISOString()
+  }));
+
   await db.transaction(async (tx) => {
     await tx
       .delete(deviceNetwork)
       .where(eq(deviceNetwork.deviceId, device.id));
 
     if (data.adapters.length > 0) {
-      const now = new Date();
       await tx.insert(deviceNetwork).values(
         data.adapters.map((adapter) => ({
           deviceId: device.id,
@@ -208,9 +224,14 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
         }))
       );
     }
+
+    await tx
+      .update(devices)
+      .set({ activeVpns, updatedAt: now })
+      .where(eq(devices.id, device.id));
   });
 
-  return c.json({ success: true, count: data.adapters.length });
+  return c.json({ success: true, count: data.adapters.length, vpnCount: activeVpns.length });
 });
 
 // PUT /:id/warranty-info — agent reports locally-collected warranty data (e.g. Apple plist)

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { vpnPresenceIngestSchema } from '@breeze/shared';
 
 // ============================================
 // Enrollment
@@ -448,7 +449,10 @@ export const updateNetworkSchema = z.object({
     ipAddress: z.string().optional(),
     ipType: z.enum(['ipv4', 'ipv6']).optional(),
     isPrimary: z.boolean().optional()
-  })).max(100)
+  })).max(100),
+  // Active-VPN-client presence (#2139). Optional so older agents that don't
+  // report VPNs still validate. The API stamps reportedAt per entry on ingest.
+  vpns: z.array(vpnPresenceIngestSchema).max(50).optional()
 });
 
 // ============================================

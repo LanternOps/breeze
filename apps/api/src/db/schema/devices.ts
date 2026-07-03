@@ -1,7 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique } from 'drizzle-orm/pg-core';
 import { organizations, sites } from './orgs';
 import { users } from './users';
-import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions } from '@breeze/shared';
+import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
@@ -86,6 +86,13 @@ export const devices = pgTable('devices', {
   // no-battery desktop. Backs the optional "Power" list column and the
   // device-detail Power section.
   batteryStatus: jsonb('battery_status').$type<BatteryStatus | null>(),
+  // Active-VPN-client presence snapshot from the agent's periodic network
+  // inventory (#2139). Latest value only — fully replaced each network report,
+  // stored next to batteryStatus rather than in a time-series/child table.
+  // null when the agent has never reported (old agent); [] when reported with
+  // no active VPN. Backs the optional "VPN" list column and the device-detail
+  // VPN section. Read-only telemetry — no secrets/peers/keys.
+  activeVpns: jsonb('active_vpns').$type<VpnPresence[] | null>(),
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),

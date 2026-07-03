@@ -36,6 +36,7 @@ export const COLUMN_IDS = [
   'enrolled',
   'desktopAccess',
   'reliability',
+  'vpn',
 ] as const;
 
 export type ColumnId = (typeof COLUMN_IDS)[number];
@@ -70,6 +71,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   enrolled: 'Enrolled',
   desktopAccess: 'Desktop Access',
   reliability: 'Reliability',
+  vpn: 'VPN',
 };
 
 export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [

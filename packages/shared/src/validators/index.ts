@@ -447,6 +447,31 @@ export const commandResultSchema = z.object({
   durationMs: z.number()
 });
 
+// Active-VPN-client presence (#2139). This is the AGENT-sent wire shape for one
+// detected VPN — the API stamps `reportedAt` on ingest, so it is intentionally
+// absent here. Mirrors the VpnPresence type in ../types minus reportedAt.
+export const vpnProviderSchema = z.enum([
+  'wireguard',
+  'tailscale',
+  'netbird',
+  'zerotier',
+  'openvpn',
+  'cloudflare-warp',
+  'generic'
+]);
+
+export const vpnDetectionSourceSchema = z.enum(['interface', 'service', 'process', 'adapter']);
+
+export const vpnPresenceIngestSchema = z.object({
+  provider: vpnProviderSchema,
+  active: z.boolean(),
+  interfaceName: z.string().min(1).max(128),
+  ipv4: z.string().max(45).optional(),
+  ipv6: z.string().max(45).optional(),
+  dnsName: z.string().max(255).optional(),
+  detectionSource: vpnDetectionSourceSchema
+});
+
 // ============================================
 // Filter Validators
 // ============================================

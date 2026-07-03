@@ -1,11 +1,18 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ArrowUpDown, MoreHorizontal, MoreVertical, Filter, Terminal, FileCode, RotateCcw, Settings, Trash2, Zap, Columns3, Network, Cpu, Battery, BatteryCharging, BatteryWarning, Plug } from 'lucide-react';
-import type { BatteryStatus, DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
+import type { BatteryStatus, DesktopAccessState, RemoteAccessPolicy, VpnPresence } from '@breeze/shared';
 import ConnectDesktopButton from '../remote/ConnectDesktopButton';
 import { widthPercentClass, formatUptime } from '@/lib/utils';
 import { formatLastSeen } from '@/lib/formatTime';
 import { getDeviceRoleLabel, getDeviceRoleIcon, type DeviceRole } from '@/lib/deviceRoles';
+import {
+  activeVpnList,
+  getVpnProviderIcon,
+  getVpnProviderLabel,
+  getVpnProviderBadgeClass,
+  formatVpnTooltip,
+} from '@/lib/vpnProviders';
 import {
   PAGE_SIZE_OPTIONS,
   readPageSizePreference,
@@ -123,6 +130,13 @@ export type Device = {
    * dash. { present: false } = a real no-battery desktop → also a dash.
    */
   batteryStatus?: BatteryStatus | null;
+  /**
+   * Active-VPN-client presence snapshot (#2139). null/undefined = no data
+   * reported yet (old agent or network device) → the VPN column renders a
+   * dash. [] = reported with no active VPN → also a dash. Rendered purely
+   * from cached inventory — the list never fans out live commands.
+   */
+  activeVpns?: VpnPresence[] | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -311,6 +325,12 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // No computed score yet (newly enrolled / pre-worker, or a network device)
   // sorts as a blank-last null to match the dash the cell renders (#1284).
   reliability: d => (typeof d.reliabilityScore === 'number' ? d.reliabilityScore : null),
+  // Sort by the first active VPN's provider label; devices with no active VPN
+  // sort blanks-last (null) to match the dash the cell renders (#1284).
+  vpn: d => {
+    const active = activeVpnList(d.activeVpns);
+    return active.length > 0 ? getVpnProviderLabel(active[0].provider) : null;
+  },
 };
 
 export default function DeviceList({
@@ -342,6 +362,10 @@ export default function DeviceList({
   // Unified-list class facet (#1322): All / Agent-managed / Network. Kept
   // local to DeviceList (it lives next to the count, not in the toolbar).
   const [classFilter, setClassFilter] = useState<'all' | 'agent' | 'network'>('all');
+  // Client-side VPN facet (#2139): 'all' | 'any' (any active VPN) | a provider
+  // id. Operates on already-loaded cached inventory, mirroring the class facet
+  // — no server round-trip, no live command fan-out.
+  const [vpnFilter, setVpnFilter] = useState<'all' | 'any' | string>('all');
   const [currentPage, setCurrentPage] = useState(1);
   // Live, user-controllable page size. Initialized from localStorage; the
   // pageSize prop is just the fallback when no preference is stored.
@@ -464,7 +488,7 @@ export default function DeviceList({
   // lived on each filter input before the toolbar was extracted.
   useEffect(() => {
     setCurrentPage(1);
-  }, [query, classFilter, serverFilterIds]);
+  }, [query, classFilter, vpnFilter, serverFilterIds]);
 
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -486,14 +510,43 @@ export default function DeviceList({
       const deviceClass = device.deviceClass ?? 'agent';
       const matchesClass = classFilter === 'all' ? true : deviceClass === classFilter;
 
+      // VPN facet (#2139): 'all' passes everything; 'any' requires ≥1 active
+      // VPN; a provider id requires that provider to be active on the device.
+      let matchesVpn = true;
+      if (vpnFilter !== 'all') {
+        const active = activeVpnList(device.activeVpns);
+        matchesVpn = vpnFilter === 'any'
+          ? active.length > 0
+          : active.some(v => v.provider === vpnFilter);
+      }
+
       const matchesQuery = normalizedQuery.length === 0
         ? true
         : device.hostname.toLowerCase().includes(normalizedQuery) ||
           (device.displayName?.toLowerCase().includes(normalizedQuery) ?? false);
 
-      return matchesClass && matchesQuery;
+      return matchesClass && matchesVpn && matchesQuery;
     });
-  }, [devices, query, classFilter, serverFilterIds, includeDecommissioned]);
+  }, [devices, query, classFilter, vpnFilter, serverFilterIds, includeDecommissioned]);
+
+  // Providers present across the loaded set — drives the VPN facet options so
+  // techs only see providers that actually exist in their fleet.
+  const availableVpnProviders = useMemo(() => {
+    const set = new Set<string>();
+    for (const device of devices) {
+      for (const vpn of activeVpnList(device.activeVpns)) set.add(vpn.provider);
+    }
+    return Array.from(set).sort((a, b) => getVpnProviderLabel(a).localeCompare(getVpnProviderLabel(b)));
+  }, [devices]);
+
+  // Reset a by-provider VPN filter back to 'all' if that provider drops out of
+  // the loaded set (e.g. the device went offline) so the facet never gets stuck
+  // on an option that matches nothing.
+  useEffect(() => {
+    if (vpnFilter !== 'all' && vpnFilter !== 'any' && !availableVpnProviders.includes(vpnFilter)) {
+      setVpnFilter('all');
+    }
+  }, [vpnFilter, availableVpnProviders]);
 
   const handleSort = (field: ColumnId) => {
     if (sortField === field) {
@@ -1129,6 +1182,54 @@ export default function DeviceList({
         );
       },
     },
+    vpn: {
+      header: () => sortHeader('vpn', 'VPN', 'Sort by VPN provider'),
+      cell: (device) => {
+        // Rendered ONLY from cached inventory (device.activeVpns) — never a
+        // live command fan-out from the table (#2139).
+        const active = activeVpnList(device.activeVpns);
+        if (active.length === 0) {
+          return (
+            <td key="vpn" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-vpn`}>
+              {dash}
+            </td>
+          );
+        }
+        const VPN_CHIP_CAP = 2;
+        const shown = active.slice(0, VPN_CHIP_CAP);
+        const overflow = active.length - shown.length;
+        // Full list on the cell title so hover reveals every provider/IP/DNS.
+        const fullTitle = active.map(formatVpnTooltip).join('\n');
+        return (
+          <td key="vpn" className="px-3 py-3 text-sm whitespace-nowrap" data-testid={`device-${device.id}-vpn`}>
+            <span className="inline-flex items-center gap-1" title={fullTitle}>
+              {shown.map((vpn) => {
+                const Icon = getVpnProviderIcon(vpn.provider);
+                return (
+                  <span
+                    key={`${vpn.provider}:${vpn.interfaceName}`}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${getVpnProviderBadgeClass(vpn.provider)}`}
+                    title={formatVpnTooltip(vpn)}
+                    data-testid={`device-${device.id}-vpn-badge-${vpn.provider}`}
+                  >
+                    <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    {getVpnProviderLabel(vpn.provider)}
+                  </span>
+                );
+              })}
+              {overflow > 0 && (
+                <span
+                  className="inline-flex items-center rounded-full border border-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground"
+                  data-testid={`device-${device.id}-vpn-overflow`}
+                >
+                  +{overflow}
+                </span>
+              )}
+            </span>
+          </td>
+        );
+      },
+    },
   };
 
   return (
@@ -1176,6 +1277,23 @@ export default function DeviceList({
                   </button>
                 ))}
               </div>
+            )}
+            {visibleColumns.has('vpn') && (
+              <select
+                aria-label="Filter by VPN"
+                data-testid="device-vpn-filter"
+                value={vpnFilter}
+                onChange={(e) => setVpnFilter(e.target.value)}
+                className="h-10 rounded-md border bg-background px-2 text-sm text-muted-foreground"
+              >
+                <option value="all">All VPN</option>
+                <option value="any">Any active VPN</option>
+                {availableVpnProviders.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {getVpnProviderLabel(provider)}
+                  </option>
+                ))}
+              </select>
             )}
             {/* Interface density is now an account-wide control in the
                 top-bar theme/display menu (Header.tsx). The table still

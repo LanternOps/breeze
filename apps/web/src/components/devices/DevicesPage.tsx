@@ -320,6 +320,7 @@ export default function DevicesPage() {
           isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
           pendingReboot: d.pendingReboot === true,
           batteryStatus: (d.batteryStatus as Device['batteryStatus']) ?? null,
+          activeVpns: (d.activeVpns as Device['activeVpns']) ?? null,
           enrolledAt: d.enrolledAt as string | undefined,
           desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
           hardware: hardware ? {

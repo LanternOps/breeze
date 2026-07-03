@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Monitor, Cpu, Shield, Tag, Info, ListChecks, Pencil, Check, X, AlertTriangle, BatteryCharging } from 'lucide-react';
-import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
+import { Monitor, Cpu, Shield, Tag, Info, ListChecks, Pencil, Check, X, AlertTriangle, BatteryCharging, Lock } from 'lucide-react';
+import type { BatteryStatus, DesktopAccessState, TCCPermissions, VpnPresence } from '@breeze/shared';
+import { activeVpnList, getVpnProviderLabel, getVpnProviderIcon } from '@/lib/vpnProviders';
 import MacOSPermissionsCard from './MacOSPermissionsCard';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatUptime } from '../../lib/utils';
@@ -51,6 +52,7 @@ type DeviceInfo = {
   tccPermissions?: TCCPermissions | null;
   desktopAccess?: DesktopAccessState | null;
   batteryStatus?: BatteryStatus | null;
+  activeVpns?: VpnPresence[] | null;
   hardware?: {
     serialNumber?: string | null;
     manufacturer?: string | null;
@@ -744,6 +746,42 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           <InfoRow label="Last Reported" value={formatDate(info.batteryStatus.reportedAt)} />
         </Section>
       )}
+
+      {/* Active VPN clients (#2139) — full list from cached network inventory.
+          Only rendered when at least one active VPN was reported. */}
+      {(() => {
+        const vpns = activeVpnList(info?.activeVpns);
+        if (vpns.length === 0) return null;
+        return (
+          <Section title="VPN" icon={<Lock className="h-4 w-4 text-muted-foreground" />}>
+            <div className="space-y-4" data-testid="device-vpn-section">
+              {vpns.map((vpn) => {
+                const Icon = getVpnProviderIcon(vpn.provider);
+                return (
+                  <div
+                    key={`${vpn.provider}:${vpn.interfaceName}`}
+                    className="rounded-md border p-3"
+                    data-testid={`device-vpn-row-${vpn.provider}`}
+                  >
+                    <div className="mb-2 flex items-center gap-2">
+                      <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                      <span className="text-sm font-semibold">{getVpnProviderLabel(vpn.provider)}</span>
+                    </div>
+                    <dl className="divide-y">
+                      <InfoRow label="Interface" value={vpn.interfaceName} />
+                      {vpn.ipv4 && <InfoRow label="VPN IPv4" value={vpn.ipv4} />}
+                      {vpn.ipv6 && <InfoRow label="VPN IPv6" value={vpn.ipv6} />}
+                      {vpn.dnsName && <InfoRow label="VPN DNS Name" value={vpn.dnsName} />}
+                      <InfoRow label="Detection Source" value={vpn.detectionSource} />
+                      <InfoRow label="Last Reported" value={formatDate(vpn.reportedAt)} />
+                    </dl>
+                  </div>
+                );
+              })}
+            </div>
+          </Section>
+        );
+      })()}
 
       <Section title="Agent" icon={<Shield className="h-4 w-4 text-muted-foreground" />}>
         <InfoRow label="Agent Version" value={info?.agentVersion ?? '—'} />

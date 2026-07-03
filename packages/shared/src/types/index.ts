@@ -154,6 +154,7 @@ export interface Device {
   isHeadless: boolean;
   pendingReboot: boolean;
   batteryStatus: BatteryStatus | null;
+  activeVpns: VpnPresence[] | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -179,6 +180,46 @@ export interface BatteryStatus {
   timeRemainingMinutes?: number;
   /** Estimated time to full charge, in minutes, when the OS reports it. */
   timeToFullMinutes?: number;
+  /** ISO timestamp the API stamped when it ingested this snapshot. */
+  reportedAt: string;
+}
+
+// Active-VPN-client presence telemetry (#2139). Read-only current state: the
+// agent detects which VPN overlay clients have an active tunnel from local
+// interface / adapter-description heuristics plus per-OS service/process
+// signals, and the API stores the latest snapshot as a jsonb array on the
+// `devices` row (next to batteryStatus / pendingReboot). Fully replaced every
+// network-inventory report — a null column means the agent has never reported
+// (old agent); an empty array means "reported, no active VPN". No secrets, peer
+// lists, keys, or VPN management are ever collected — provider/state/interface/
+// IPs/DNS name only.
+export type VpnProvider =
+  | 'wireguard'
+  | 'tailscale'
+  | 'netbird'
+  | 'zerotier'
+  | 'openvpn'
+  | 'cloudflare-warp'
+  | 'generic';
+
+/** How the agent recognized the VPN — a raw signal, not a trust ranking. */
+export type VpnDetectionSource = 'interface' | 'service' | 'process' | 'adapter';
+
+export interface VpnPresence {
+  /** Normalized provider id; 'generic' = unknown tunnel adapter fallback. */
+  provider: VpnProvider;
+  /** Whether the tunnel interface is currently up / connected. */
+  active: boolean;
+  /** OS interface/adapter name backing the tunnel (e.g. utun3, wg0, ztabc123). */
+  interfaceName: string;
+  /** Overlay IPv4 assigned on the tunnel, when present. */
+  ipv4?: string;
+  /** Overlay IPv6 assigned on the tunnel, when present. */
+  ipv6?: string;
+  /** VPN DNS / device name when safely available (e.g. Tailscale MagicDNS). */
+  dnsName?: string;
+  /** Which local signal surfaced this VPN. */
+  detectionSource: VpnDetectionSource;
   /** ISO timestamp the API stamped when it ingested this snapshot. */
   reportedAt: string;
 }

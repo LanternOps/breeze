@@ -539,6 +539,7 @@ coreRoutes.get(
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
         batteryStatus: devices.batteryStatus,
+        activeVpns: devices.activeVpns,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -656,6 +657,7 @@ coreRoutes.get(
         uptimeSeconds: d.uptimeSeconds,
         isHeadless: d.isHeadless,
         batteryStatus: d.batteryStatus ?? null,
+        activeVpns: d.activeVpns ?? null,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
