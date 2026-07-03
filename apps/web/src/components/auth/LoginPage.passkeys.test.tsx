@@ -81,4 +81,49 @@ describe('LoginPage passkey MFA', () => {
     expect(apiVerifyPasskeyMFAMock).toHaveBeenCalledWith('temp-passkey');
     expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
   });
+
+  // #2153: when the primary method is TOTP but the account also has a passkey,
+  // the code form still renders AND an "or use a passkey" affordance appears.
+  it('offers a passkey alternate alongside the code form when login returns passkeyAvailable', async () => {
+    vi.mocked(apiLogin).mockResolvedValueOnce({
+      success: true,
+      mfaRequired: true,
+      tempToken: 'temp-totp',
+      mfaMethod: 'totp',
+      passkeyAvailable: true,
+    } as any);
+    apiVerifyPasskeyMFAMock.mockResolvedValueOnce(baseLoginSuccess);
+
+    render(<LoginPage next="/oauth/consent?uid=abc" />);
+
+    await fillAndSubmit();
+
+    // The authenticator-code form is still the primary prompt...
+    expect(await screen.findByTestId('mfa-digit-0')).toBeTruthy();
+    // ...and the passkey alternate is offered.
+    const alternate = await screen.findByTestId('mfa-passkey-alternate');
+    fireEvent.click(alternate);
+
+    await waitFor(() => expect(apiVerifyPasskeyMFAMock).toHaveBeenCalled());
+    expect(apiVerifyPasskeyMFAMock).toHaveBeenCalledWith('temp-totp');
+    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+  });
+
+  // Guard: no passkey alternate when the account has none.
+  it('does not offer a passkey alternate when passkeyAvailable is false', async () => {
+    vi.mocked(apiLogin).mockResolvedValueOnce({
+      success: true,
+      mfaRequired: true,
+      tempToken: 'temp-totp',
+      mfaMethod: 'totp',
+      passkeyAvailable: false,
+    } as any);
+
+    render(<LoginPage next="/" />);
+
+    await fillAndSubmit();
+
+    expect(await screen.findByTestId('mfa-digit-0')).toBeTruthy();
+    expect(screen.queryByTestId('mfa-passkey-alternate')).toBeNull();
+  });
 });

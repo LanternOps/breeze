@@ -77,7 +77,24 @@ const deletePasskeySchema = z.object({
 type PendingPasskeyMfa = {
   userId: string;
   mfaMethod: string;
+  // #2153: true when the account has a registered passkey usable as an
+  // alternate second factor, even if the PRIMARY mfaMethod is totp/sms.
+  // Set server-side at login (login.ts) from a system-scoped user_passkeys
+  // read. Absent on pre-#2153 pending tokens → treated as false (falls back
+  // to the old "primary method is passkey" gate, so in-flight sessions during
+  // a deploy don't regress).
+  passkeyAvailable?: boolean;
 };
+
+// A pending MFA session may use the passkey endpoints when passkey is either
+// the account's primary method OR an available alternate factor. Both /options
+// and /verify still independently re-verify that a matching, non-disabled
+// credential is owned by the user and that the WebAuthn assertion checks out,
+// so this gate only decides whether the passkey path is OFFERED — it never
+// substitutes for credential/assertion verification.
+function pendingAllowsPasskey(pending: PendingPasskeyMfa): boolean {
+  return pending.mfaMethod === 'passkey' || pending.passkeyAvailable === true;
+}
 
 type PasskeyRow = typeof userPasskeys.$inferSelect;
 
@@ -214,7 +231,7 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
   if (!pending) {
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
-  if (pending.mfaMethod !== 'passkey') {
+  if (!pendingAllowsPasskey(pending)) {
     return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
   }
 
@@ -261,7 +278,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   if (!pending) {
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
-  if (pending.mfaMethod !== 'passkey') {
+  if (!pendingAllowsPasskey(pending)) {
     return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
   }
 
@@ -488,12 +505,14 @@ async function readPendingPasskeyMfa(tempToken: string): Promise<PendingPasskeyM
     if (typeof parsed.userId !== 'string') return null;
     return {
       userId: parsed.userId,
-      mfaMethod: parsed.mfaMethod || 'totp'
+      mfaMethod: parsed.mfaMethod || 'totp',
+      passkeyAvailable: parsed.passkeyAvailable === true
     };
   } catch {
     return {
       userId: raw,
-      mfaMethod: 'totp'
+      mfaMethod: 'totp',
+      passkeyAvailable: false
     };
   }
 }

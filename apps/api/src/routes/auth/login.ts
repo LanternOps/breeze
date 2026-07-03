@@ -1,8 +1,8 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users } from '../../db/schema';
+import { userPasskeys, users } from '../../db/schema';
 import {
   createTokenPair,
   verifyToken,
@@ -414,9 +414,32 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
+
+    // #2153: a passkey is a valid ALTERNATE second factor even when the
+    // account's primary `mfaMethod` is totp/sms. Registering a passkey
+    // deliberately does NOT clobber an existing totp/sms `mfaMethod` (see
+    // passkeys.ts register/verify — that would strand the working
+    // authenticator and risk lockout), so login must independently detect
+    // whether the account has any usable passkey and offer it as a choice.
+    // This ADDS an option; it never removes the primary factor's prompt.
+    // Pre-auth read → system scope, or the RLS `user_passkeys` SELECT under
+    // breeze_app returns 0 rows and the option silently disappears.
+    const passkeyAvailable = (await withSystemDbAccessContext(async () =>
+      db
+        .select({ id: userPasskeys.id })
+        .from(userPasskeys)
+        .where(and(eq(userPasskeys.userId, user.id), isNull(userPasskeys.disabledAt)))
+        .limit(1)
+    )).length > 0;
+
     await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
       userId: user.id,
-      mfaMethod
+      mfaMethod,
+      // Server-authoritative: the passkey MFA endpoints gate on this flag, so
+      // the client can't self-elevate to the passkey path without an actually
+      // registered credential (and /verify still re-checks credential
+      // ownership + assertion regardless).
+      passkeyAvailable
     }));
 
     // Task 10: the password was verified correctly — clear the per-account
@@ -440,6 +463,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       mfaRequired: true,
       tempToken,
       mfaMethod,
+      // #2153: lets the login MFA screen offer "use a passkey instead" alongside
+      // the primary factor's prompt when the account has a registered passkey.
+      passkeyAvailable,
       phoneLast4: user.phoneNumber?.slice(-4) || null,
       user: null,
       tokens: null

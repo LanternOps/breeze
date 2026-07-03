@@ -638,6 +638,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   mfaRequired?: boolean;
   tempToken?: string;
   mfaMethod?: MfaMethod;
+  passkeyAvailable?: boolean;
   phoneLast4?: string;
   user?: User;
   tokens?: Tokens;
@@ -664,6 +665,9 @@ export async function apiLogin(email: string, password: string): Promise<{
         mfaRequired: true,
         tempToken: data.tempToken,
         mfaMethod: data.mfaMethod || 'totp',
+        // #2153: whether a passkey can be used as an alternate factor for this
+        // login even when the primary method is totp/sms.
+        passkeyAvailable: data.passkeyAvailable === true,
         phoneLast4: data.phoneLast4
       };
     }
