@@ -196,6 +196,30 @@ describe('partner login branding routes (#2183)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('PUT 400s a data:image subtype the login page will not render (svg) (#2195)', async () => {
+    // sanitizeImageSrc renders only png/jpeg/webp — accepting other subtypes
+    // here let a partner save a logo that silently never displayed.
+    const res = await makeApp().request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ logoUrl: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' })
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('PUT accepts a base64 data:image/png logoUrl', async () => {
+    resetAuth({ partnerOrgAccess: 'all' });
+    const applied = { logoUrl: 'data:image/png;base64,iVBORw0KGgo=', accentColor: null, headline: null };
+    dbUpsertReturning.mockResolvedValueOnce([applied]);
+
+    const res = await makeApp().request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ logoUrl: applied.logoUrl })
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('PUT 400s a headline over 120 chars', async () => {
     const res = await makeApp().request('/partners/me/login-branding', {
       method: 'PUT',

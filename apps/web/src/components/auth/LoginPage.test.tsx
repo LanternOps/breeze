@@ -199,6 +199,26 @@ describe('LoginPage partner SSO button', () => {
     Object.defineProperty(window, 'location', { configurable: true, value: realWindow });
   });
 
+  // #2195: callback bounces that previously landed with NO guidance at all.
+  it.each([
+    ['invite_required', /no account here is linked/i],
+    ['no_partner_access', /does not have access to this workspace/i],
+    ['identity_in_use', /already linked to a different account/i],
+  ])('renders guidance copy for ?error=%s', async (error, copy) => {
+    const realWindow = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realWindow, search: `?error=${error}` },
+    });
+
+    render(<LoginPage />);
+
+    const notice = await screen.findByRole('alert');
+    expect(notice).toHaveTextContent(copy);
+
+    Object.defineProperty(window, 'location', { configurable: true, value: realWindow });
+  });
+
   it('enforceSSO=true hides the password form initially and shows the SSO button', async () => {
     vi.mocked(getLoginContext).mockResolvedValue({
       branding: null,

@@ -330,6 +330,28 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE device_id IN (SELECT id FROM devices WHERE org_id = ${orgId})
     `,
   },
+  // SSO FK children with NO org_id/partner_id column (#2195): they hang off
+  // sso_providers/users, so without a pre-clear the cascade's DELETEs on
+  // those parents fail on FK for any org that ever exercised SSO.
+  // user_sso_identities keys off BOTH parents (its provider may be
+  // partner-axis while the user is org-bound, and vice versa).
+  {
+    table: 'user_sso_identities',
+    clearSql: (orgId) => sql`
+      DELETE FROM user_sso_identities
+      WHERE provider_id IN (SELECT id FROM sso_providers WHERE org_id = ${orgId})
+         OR user_id IN (SELECT id FROM users WHERE org_id = ${orgId})
+    `,
+  },
+  // sso_sessions.link_user_id already cascades on user delete; the provider
+  // FK does not.
+  {
+    table: 'sso_sessions',
+    clearSql: (orgId) => sql`
+      DELETE FROM sso_sessions
+      WHERE provider_id IN (SELECT id FROM sso_providers WHERE org_id = ${orgId})
+    `,
+  },
 ];
 
 /**
@@ -677,6 +699,48 @@ export async function cascadeDeletePartner(
   for (const row of orgRows) {
     const orgStats = await self.cascadeDeleteOrg(row.id, performedBy);
     totalRowsDeleted += orgStats.totalRowsDeleted;
+  }
+
+  // SSO FK children with NO partner_id column (#2195): the partner-axis sweep
+  // below only reaches tables that HAVE a partner_id column, so a canary
+  // partner that ever exercised SSO would fail the sweep on the
+  // sso_providers/users DELETEs (FK violation) without this pre-clear.
+  // Mirrors the ASSOCIATED_SYSTEM_SCOPED_TABLES step in cascadeDeleteOrg.
+  const partnerSsoPreClears: ReadonlyArray<{ table: string; clearSql: ReturnType<typeof sql> }> = [
+    {
+      table: 'user_sso_identities',
+      clearSql: sql`
+        DELETE FROM user_sso_identities
+        WHERE provider_id IN (SELECT id FROM sso_providers WHERE partner_id = ${partnerId})
+           OR user_id IN (SELECT id FROM users WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'sso_sessions',
+      clearSql: sql`
+        DELETE FROM sso_sessions
+        WHERE provider_id IN (SELECT id FROM sso_providers WHERE partner_id = ${partnerId})
+      `,
+    },
+  ];
+  for (const assoc of partnerSsoPreClears) {
+    try {
+      const count = await dbModule.withSystemDbAccessContext(async () => {
+        const result = await dbModule.db.execute(assoc.clearSql);
+        return extractRowCount(result);
+      });
+      tablesDeleted[assoc.table] = (tablesDeleted[assoc.table] ?? 0) + count;
+      totalRowsDeleted += count;
+    } catch (err) {
+      if (!isUndefinedTable(err)) {
+        await writePurgeFailedAudit(performedBy, partnerId, assoc.table, tablesDeleted, err);
+        throw new Error(
+          `[tenantCascade] DELETE from "${assoc.table}" failed for partner=${partnerId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   // information_schema is not RLS-protected — bare db.execute is fine here.

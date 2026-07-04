@@ -24,6 +24,15 @@ loginContextRoutes.get('/login-context', async (c) => {
     return c.json({ error: 'Too many requests' }, 429);
   }
 
+  // Hosted guard (#2195): the single-partner fast-path is a self-hosted
+  // convenience. A hosted region that happened to shrink to exactly one
+  // partner must not publicly serve that partner's branding/SSO entry —
+  // hosted discovery is the v2 slug path (#2183).
+  if (process.env.IS_HOSTED === 'true') {
+    c.header('Cache-Control', 'public, max-age=60');
+    return c.json({ branding: null, partnerSso: null } satisfies LoginContext);
+  }
+
   let context: LoginContext;
   try {
     context = await withSystemDbAccessContext(async () => {
@@ -43,6 +52,10 @@ loginContextRoutes.get('/login-context', async (c) => {
         .where(eq(partnerLoginBranding.partnerId, partnerId))
         .limit(1);
 
+      // Deterministic pick when several providers are active (#2195): oldest
+      // first, id as tiebreak — the same ORDER BY the SSO entry routes use,
+      // so the button on the login page always names the provider the entry
+      // route will actually start a flow with.
       const [provider] = await db
         .select({ name: ssoProviders.name, enforceSSO: ssoProviders.enforceSSO })
         .from(ssoProviders)
@@ -50,6 +63,7 @@ loginContextRoutes.get('/login-context', async (c) => {
           eq(ssoProviders.partnerId, partnerId),
           eq(ssoProviders.status, 'active')
         ))
+        .orderBy(ssoProviders.createdAt, ssoProviders.id)
         .limit(1);
 
       return {

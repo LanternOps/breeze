@@ -261,10 +261,25 @@ describe('sso routes', () => {
       where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
     } as any);
     vi.mocked(db.select).mockReset().mockReturnValue({
-      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) }))
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([])),
+          // Public entry routes order the provider pick deterministically
+          // (#2195): where().orderBy().limit().
+          orderBy: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) }))
+        }))
+      }))
     } as any);
     vi.mocked(db.insert).mockReset().mockReturnValue({
-      values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([])),
+        // Callback identity insert (#2195): values().onConflictDoNothing().returning().
+        // Defaults to a NON-empty result (= the insert landed, no conflict) so
+        // the conflict re-select branch doesn't consume per-test select queues.
+        onConflictDoNothing: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve([{ id: 'new-identity-id' }]))
+        }))
+      }))
     } as any);
     vi.mocked(db.update).mockReset().mockReturnValue({
       set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
@@ -1754,15 +1769,41 @@ describe('sso routes', () => {
     });
   });
 
+  // Public entry routes pick the provider with where().orderBy().limit()
+  // (#2195 deterministic pick), so provider-select mocks need the orderBy hop.
+  const providerSelectChain = (rows: unknown[]) => ({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    })
+  });
+
+  const ACTIVE_OIDC_PROVIDER_ROW = {
+    id: PROVIDER_UUID,
+    orgId: null as string | null,
+    partnerId: PARTNER_UUID as string | null,
+    type: 'oidc',
+    status: 'active',
+    issuer: 'https://issuer.example.com',
+    authorizationUrl: 'https://issuer.example.com/auth',
+    tokenUrl: 'https://issuer.example.com/token',
+    userInfoUrl: 'https://issuer.example.com/userinfo',
+    jwksUrl: 'https://issuer.example.com/jwks',
+    clientId: 'client-id',
+    clientSecret: 'client-secret',
+    scopes: 'openid profile email',
+    attributeMapping: { email: 'email', name: 'name' },
+    autoProvision: false,
+    allowedDomains: null,
+    defaultRoleId: null
+  };
+
   describe('GET /sso/login/partner/:partnerId (#2183)', () => {
     it('404s when the partner has no active partner-axis provider', async () => {
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValue(providerSelectChain([]) as any);
 
       const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
 
@@ -1771,31 +1812,7 @@ describe('sso routes', () => {
     });
 
     it('redirects to the IdP authorization URL and sets the state cookie for an active provider', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: PROVIDER_UUID,
-              orgId: null,
-              partnerId: PARTNER_UUID,
-              type: 'oidc',
-              status: 'active',
-              issuer: 'https://issuer.example.com',
-              authorizationUrl: 'https://issuer.example.com/auth',
-              tokenUrl: 'https://issuer.example.com/token',
-              userInfoUrl: 'https://issuer.example.com/userinfo',
-              jwksUrl: 'https://issuer.example.com/jwks',
-              clientId: 'client-id',
-              clientSecret: 'client-secret',
-              scopes: 'openid profile email',
-              attributeMapping: { email: 'email', name: 'name' },
-              autoProvision: false,
-              allowedDomains: null,
-              defaultRoleId: null
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValueOnce(providerSelectChain([ACTIVE_OIDC_PROVIDER_ROW]) as any);
 
       const valuesMock = vi.fn().mockResolvedValue(undefined);
       vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
@@ -1812,12 +1829,12 @@ describe('sso routes', () => {
       expect(setCookie).toContain('breeze_sso_state=');
     });
 
-    it('429s when the per-IP+partner rate limit is exceeded, without touching the DB', async () => {
-      const resetAt = new Date(Date.now() + 45_000);
+    it('429s when the shared pure-IP rate limit is exceeded, without touching the DB (#2195)', async () => {
+      // First bucket checked is the pure-IP one shared with /login/:orgId.
       vi.mocked(rateLimiter).mockResolvedValueOnce({
         allowed: false,
         remaining: 0,
-        resetAt
+        resetAt: new Date(Date.now() + 45_000)
       } as any);
 
       const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
@@ -1826,8 +1843,97 @@ describe('sso routes', () => {
       const body = await res.json();
       expect(body.error).toBe('Too many login attempts. Please try again later.');
       expect(body.retryAfter).toBeGreaterThan(0);
+      expect(vi.mocked(rateLimiter).mock.calls[0]?.[1]).toMatch(/^sso:login:ip:/);
       expect(db.select).not.toHaveBeenCalled();
       expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('429s when the per-IP+partner rate limit is exceeded, without touching the DB', async () => {
+      const resetAt = new Date(Date.now() + 45_000);
+      vi.mocked(rateLimiter)
+        .mockResolvedValueOnce({ allowed: true, remaining: 20, resetAt } as any) // pure-IP bucket
+        .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt } as any); // per-(ip,partner)
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(429);
+      const body = await res.json();
+      expect(body.error).toBe('Too many login attempts. Please try again later.');
+      expect(body.retryAfter).toBeGreaterThan(0);
+      expect(vi.mocked(rateLimiter).mock.calls[1]?.[1]).toMatch(/^sso:login:partner:/);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /sso/login/:orgId (#2195)', () => {
+    it('404s when the org has no active provider', async () => {
+      vi.mocked(db.select).mockReturnValue(providerSelectChain([]) as any);
+
+      const res = await app.request(`/sso/login/${ORG_UUID}`);
+
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('redirects to the IdP authorization URL and sets the state cookie for an active org provider', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        providerSelectChain([{ ...ACTIVE_OIDC_PROVIDER_ROW, orgId: ORG_UUID, partnerId: null }]) as any
+      );
+
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request(`/sso/login/${ORG_UUID}?redirect=/dashboard`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('https://idp.example.com/auth');
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        providerId: PROVIDER_UUID,
+        redirectUrl: '/dashboard'
+      }));
+      expect(res.headers.get('set-cookie') ?? '').toContain('breeze_sso_state=');
+    });
+
+    it('429s on the per-(IP, org) bucket without touching the DB', async () => {
+      const resetAt = new Date(Date.now() + 45_000);
+      vi.mocked(rateLimiter)
+        .mockResolvedValueOnce({ allowed: true, remaining: 20, resetAt } as any)
+        .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt } as any);
+
+      const res = await app.request(`/sso/login/${ORG_UUID}`);
+
+      expect(res.status).toBe(429);
+      expect(vi.mocked(rateLimiter).mock.calls[1]?.[1]).toMatch(/^sso:login:org:/);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /sso/check/:orgId (#2195)', () => {
+    it('returns ssoEnabled false when the org has no active provider', async () => {
+      vi.mocked(db.select).mockReturnValue(providerSelectChain([]) as any);
+
+      const res = await app.request(`/sso/check/${ORG_UUID}`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ssoEnabled: false });
+    });
+
+    it('returns the provider summary and login URL when an active provider exists', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        providerSelectChain([{ id: PROVIDER_UUID, name: 'Okta', type: 'oidc', enforceSSO: true }]) as any
+      );
+
+      const res = await app.request(`/sso/check/${ORG_UUID}`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ssoEnabled: true,
+        provider: { id: PROVIDER_UUID, name: 'Okta', type: 'oidc' },
+        enforceSSO: true,
+        loginUrl: `/api/v1/sso/login/${ORG_UUID}`
+      });
     });
   });
 
@@ -1907,6 +2013,55 @@ describe('sso routes', () => {
         .mockReturnValueOnce(sel([]))                                // no other-provider link → safe to link
         .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
         .mockReturnValueOnce(sel([]));                               // existingIdentity none → insert
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null }),
+        expect.any(Object)
+      );
+    });
+
+    it('redirects identity_in_use when the identity INSERT loses the unique-index race to a DIFFERENT user (#2195)', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no (provider, sub) link yet
+        .mockReturnValueOnce(sel([STAFF]))                           // byEmail (safe JIT link)
+        .mockReturnValueOnce(sel([]))                                // no other-provider link
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
+        .mockReturnValueOnce(sel([]))                                // existingIdentity none → insert path
+        .mockReturnValueOnce(sel([{ userId: '00000000-0000-4000-8000-0000000000aa' }])); // conflict row → someone else
+      // ON CONFLICT DO NOTHING returns no rows → a concurrent callback linked
+      // this (provider, sub) first.
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({
+          onConflictDoNothing: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+        }))
+      } as any);
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=identity_in_use');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the identity INSERT loses the race to the SAME user (parallel logins)', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no link yet
+        .mockReturnValueOnce(sel([STAFF]))                           // byEmail (safe JIT link)
+        .mockReturnValueOnce(sel([]))                                // no other-provider link
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
+        .mockReturnValueOnce(sel([]))                                // existingIdentity none → insert path
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]));          // conflict row → same user
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({
+          onConflictDoNothing: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) }))
+        }))
+      } as any);
 
       const res = await doCallback();
       expect(res.status).toBe(302);

@@ -1135,6 +1135,16 @@ const partnerIdParamSchema = z.object({ partnerId: z.string().guid() });
 // per-(IP,email) bucket in routes/auth/login.ts.
 const PARTNER_SSO_LOGIN_RATE_LIMIT = { limit: 10, windowSeconds: 5 * 60 };
 
+// Org-axis initiation gets the same per-(IP, target) bucket (#2195 — it
+// previously had none at all).
+const ORG_SSO_LOGIN_RATE_LIMIT = { limit: 10, windowSeconds: 5 * 60 };
+
+// Pure-IP bucket SHARED by both SSO initiation routes, mirroring password
+// login's `login:ip:` bucket (#2195): without it, one IP can rotate through
+// partnerIds/orgIds to dodge the per-target buckets while farming state
+// cookies / sso_sessions rows.
+const SSO_LOGIN_IP_RATE_LIMIT = { limit: 30, windowSeconds: 5 * 60 };
+
 // Initiate partner-axis SSO login (#2183) — the MSP's own technician login.
 // Public route: all DB access MUST run under system context (no request scope
 // exists yet; bare `db` silently returns 0 rows under RLS). Mounted ABOVE
@@ -1147,6 +1157,18 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
 
   const ip = getClientIP(c);
   const redis = getRedis();
+  const ipRateCheck = await rateLimiter(
+    redis,
+    `sso:login:ip:${ip}`,
+    SSO_LOGIN_IP_RATE_LIMIT.limit,
+    SSO_LOGIN_IP_RATE_LIMIT.windowSeconds
+  );
+  if (!ipRateCheck.allowed) {
+    return c.json({
+      error: 'Too many login attempts. Please try again later.',
+      retryAfter: Math.ceil((ipRateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
   const rateCheck = await rateLimiter(
     redis,
     `sso:login:partner:${ip}:${partnerId}`,
@@ -1160,6 +1182,9 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
     }, 429);
   }
 
+  // Deterministic pick when several providers are active: oldest first, id as
+  // tiebreak — the same order every SSO-discovery surface uses (login-context,
+  // /check/:orgId, /login/:orgId), so they always describe the same provider.
   const [provider] = await withSystemDbAccessContext(async () =>
     db
       .select()
@@ -1168,6 +1193,7 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
         eq(ssoProviders.partnerId, partnerId),
         eq(ssoProviders.status, 'active')
       ))
+      .orderBy(ssoProviders.createdAt, ssoProviders.id)
       .limit(1)
   );
 
@@ -1213,19 +1239,55 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
   return c.redirect(authUrl);
 });
 
-// Initiate SSO login
+// Initiate SSO login (org axis). Public pre-auth route: the provider read and
+// the session insert MUST run under system DB context — under breeze_app's
+// FORCED RLS with no request scope, a bare `db` read silently matches 0 rows,
+// which made this route 404 for EVERY org in production-shaped deployments
+// (#2195; same class as the callback reads fixed in #2194).
 ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) => {
   const { orgId } = c.req.valid('param');
   const redirectUrl = normalizeRedirectPath(c.req.query('redirect'));
 
-  const [provider] = await db
-    .select()
-    .from(ssoProviders)
-    .where(and(
-      eq(ssoProviders.orgId, orgId),
-      eq(ssoProviders.status, 'active')
-    ))
-    .limit(1);
+  // Same two-bucket shape as password login and the partner entry route
+  // (#2195 — this route previously had no rate limit at all).
+  const ip = getClientIP(c);
+  const redis = getRedis();
+  const ipRateCheck = await rateLimiter(
+    redis,
+    `sso:login:ip:${ip}`,
+    SSO_LOGIN_IP_RATE_LIMIT.limit,
+    SSO_LOGIN_IP_RATE_LIMIT.windowSeconds
+  );
+  if (!ipRateCheck.allowed) {
+    return c.json({
+      error: 'Too many login attempts. Please try again later.',
+      retryAfter: Math.ceil((ipRateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
+  const rateCheck = await rateLimiter(
+    redis,
+    `sso:login:org:${ip}:${orgId}`,
+    ORG_SSO_LOGIN_RATE_LIMIT.limit,
+    ORG_SSO_LOGIN_RATE_LIMIT.windowSeconds
+  );
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many login attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
+
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db
+      .select()
+      .from(ssoProviders)
+      .where(and(
+        eq(ssoProviders.orgId, orgId),
+        eq(ssoProviders.status, 'active')
+      ))
+      .orderBy(ssoProviders.createdAt, ssoProviders.id)
+      .limit(1)
+  );
 
   if (!provider) {
     return c.json({ error: 'No active SSO provider for this organization' }, 404);
@@ -1244,14 +1306,16 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
 
   // Store session for callback verification
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-  await db.insert(ssoSessions).values({
-    providerId: provider.id,
-    state,
-    nonce,
-    codeVerifier: pkce.codeVerifier,
-    redirectUrl,
-    expiresAt
-  });
+  await withSystemDbAccessContext(async () =>
+    db.insert(ssoSessions).values({
+      providerId: provider.id,
+      state,
+      nonce,
+      codeVerifier: pkce.codeVerifier,
+      redirectUrl,
+      expiresAt
+    })
+  );
 
   // Build callback URL
   const callbackUri = buildSsoCallbackUri();
@@ -1811,28 +1875,23 @@ ssoRoutes.get('/callback', async (c) => {
       };
     }
 
-    // Update or create SSO identity link (shared across both axes)
-    // KNOWN BUG (#2195): this read is not wrapped in withSystemDbAccessContext,
-    // so on this unauthenticated callback route (no request context has been
-    // established) FORCED RLS silently matches 0 rows here — existingIdentity
-    // is always undefined regardless of whether a link already exists. That
-    // makes the UPDATE branch below unreachable and every returning SSO login
-    // INSERTs a duplicate identity row instead of updating the existing one.
-    // Fix tracked in the #2195 follow-up — do not copy this pattern elsewhere.
-    const [existingIdentity] = await db
-      .select()
-      .from(userSsoIdentities)
-      .where(and(
-        eq(userSsoIdentities.userId, user.id),
-        eq(userSsoIdentities.providerId, provider.id)
-      ))
-      .limit(1);
+    // Update or create SSO identity link (shared across both axes). System DB
+    // context required for ALL of it: the callback is unauthenticated, so bare
+    // reads/writes silently match 0 rows under breeze_app RLS. The read below
+    // used to sit OUTSIDE the wrap (#2195) — existingIdentity was always
+    // undefined under FORCED RLS, so every returning login INSERTed a
+    // duplicate identity row instead of updating the existing one. Also stamps
+    // last_login_at (#1375).
+    const identityOutcome = await withSystemDbAccessContext(async () => {
+      const [existingIdentity] = await db
+        .select({ id: userSsoIdentities.id })
+        .from(userSsoIdentities)
+        .where(and(
+          eq(userSsoIdentities.userId, user.id),
+          eq(userSsoIdentities.providerId, provider.id)
+        ))
+        .limit(1);
 
-    // System DB context required: the SSO callback is unauthenticated, so these
-    // writes would silently match 0 rows under breeze_app RLS without it —
-    // dropping the SSO identity/token persistence AND the last_login_at stamp
-    // (#1375).
-    await withSystemDbAccessContext(async () => {
       if (existingIdentity) {
         await db
           .update(userSsoIdentities)
@@ -1849,19 +1908,47 @@ ssoRoutes.get('/callback', async (c) => {
           })
           .where(eq(userSsoIdentities.id, existingIdentity.id));
       } else {
-        await db.insert(userSsoIdentities).values({
-          userId: user.id,
-          providerId: provider.id,
-          externalId: externalSub,
-          email: attrs.email,
-          profile: userInfo,
-          accessToken: encryptSecret(tokens.access_token),
-          refreshToken: encryptSecret(tokens.refresh_token),
-          tokenExpiresAt: tokens.expires_in
-            ? new Date(Date.now() + tokens.expires_in * 1000)
-            : null,
-          lastLoginAt: new Date()
-        });
+        // Race-safe against the unique (provider_id, external_id) index
+        // (#2195): a concurrent callback that linked this subject first turns
+        // this INSERT into a no-op rather than a 23505 throw — postgres.js
+        // rethrows errors through the transaction wrapper even when caught,
+        // so ON CONFLICT is the only clean path here.
+        const inserted = await db
+          .insert(userSsoIdentities)
+          .values({
+            userId: user.id,
+            providerId: provider.id,
+            externalId: externalSub,
+            email: attrs.email,
+            profile: userInfo,
+            accessToken: encryptSecret(tokens.access_token),
+            refreshToken: encryptSecret(tokens.refresh_token),
+            tokenExpiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000)
+              : null,
+            lastLoginAt: new Date()
+          })
+          .onConflictDoNothing({
+            target: [userSsoIdentities.providerId, userSsoIdentities.externalId]
+          })
+          .returning({ id: userSsoIdentities.id });
+
+        if (inserted.length === 0) {
+          // Conflict row already exists. Same user (two parallel logins) →
+          // the link is in place, proceed. Different user → this (provider,
+          // sub) identity belongs to someone else; never mint tokens for it.
+          const [conflict] = await db
+            .select({ userId: userSsoIdentities.userId })
+            .from(userSsoIdentities)
+            .where(and(
+              eq(userSsoIdentities.providerId, provider.id),
+              eq(userSsoIdentities.externalId, externalSub)
+            ))
+            .limit(1);
+          if (conflict && conflict.userId !== user.id) {
+            return { error: 'identity_in_use' as const };
+          }
+        }
       }
 
       // Update last login
@@ -1869,7 +1956,13 @@ ssoRoutes.get('/callback', async (c) => {
         .update(users)
         .set({ lastLoginAt: new Date() })
         .where(eq(users.id, user.id));
+      return { ok: true as const };
     });
+
+    if ('error' in identityOutcome) {
+      clearStateCookie();
+      return c.redirect(`/login?error=${identityOutcome.error}`);
+    }
 
     // The SSO session row was already consumed atomically up-front
     // (delete().returning()), so there is nothing left to clean up here.
@@ -1957,23 +2050,29 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
   });
 });
 
-// Get SSO login URL for organization (public endpoint for login page)
+// Get SSO login URL for organization (public endpoint for login page).
+// System DB context required (#2195): this runs pre-auth, so a bare `db`
+// read 0-rows under breeze_app RLS and the login page never shows the SSO
+// button (`ssoEnabled` was always false in production-shaped deployments).
 ssoRoutes.get('/check/:orgId', zValidator('param', orgIdParamSchema), async (c) => {
   const { orgId } = c.req.valid('param');
 
-  const [provider] = await db
-    .select({
-      id: ssoProviders.id,
-      name: ssoProviders.name,
-      type: ssoProviders.type,
-      enforceSSO: ssoProviders.enforceSSO
-    })
-    .from(ssoProviders)
-    .where(and(
-      eq(ssoProviders.orgId, orgId),
-      eq(ssoProviders.status, 'active')
-    ))
-    .limit(1);
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db
+      .select({
+        id: ssoProviders.id,
+        name: ssoProviders.name,
+        type: ssoProviders.type,
+        enforceSSO: ssoProviders.enforceSSO
+      })
+      .from(ssoProviders)
+      .where(and(
+        eq(ssoProviders.orgId, orgId),
+        eq(ssoProviders.status, 'active')
+      ))
+      .orderBy(ssoProviders.createdAt, ssoProviders.id)
+      .limit(1)
+  );
 
   if (!provider) {
     return c.json({ ssoEnabled: false });
