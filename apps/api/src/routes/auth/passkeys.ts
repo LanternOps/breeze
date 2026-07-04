@@ -335,16 +335,24 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   }
 
   const updateFields = authenticationInfoToPasskeyUpdateFields(verification);
-  await db
-    .update(userPasskeys)
-    .set({
-      counter: updateFields.counter,
-      deviceType: updateFields.deviceType,
-      backedUp: updateFields.backedUp,
-      lastUsedAt: updateFields.lastUsedAt,
-      updatedAt: new Date()
-    })
-    .where(eq(userPasskeys.id, passkey.id));
+  // System DB context required: passkey MFA runs before the user is
+  // authenticated, so without it this `user_passkeys` RLS UPDATE silently
+  // matches 0 rows under breeze_app (Shape 6: user_id = breeze_current_user_id()
+  // OR scope = 'system'). last_used_at never moves AND the WebAuthn signature
+  // counter is never persisted — defeating clone detection. Same root cause as
+  // the users.last_login_at update below (#2210, #1375).
+  await withSystemDbAccessContext(() =>
+    db
+      .update(userPasskeys)
+      .set({
+        counter: updateFields.counter,
+        deviceType: updateFields.deviceType,
+        backedUp: updateFields.backedUp,
+        lastUsedAt: updateFields.lastUsedAt,
+        updatedAt: new Date()
+      })
+      .where(eq(userPasskeys.id, passkey.id))
+  );
 
   // Single-use: consume the pending token. `redis` is guarded non-null above,
   // so this can't silently no-op the way `getRedis()?.del(...)` would.
