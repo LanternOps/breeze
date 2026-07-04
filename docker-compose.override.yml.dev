@@ -93,7 +93,6 @@ services:
       - ./apps/web/package.json:/app/apps/web/package.json:ro
       - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
       - ./apps/web/astro.config.mjs:/app/apps/web/astro.config.mjs:ro
-      - ./apps/web/tailwind.config.mjs:/app/apps/web/tailwind.config.mjs:ro
       - ./packages/shared/package.json:/app/packages/shared/package.json:ro
       - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       # Exclude node_modules (use container's)
@@ -124,7 +123,6 @@ services:
       - ./apps/portal/package.json:/app/apps/portal/package.json:ro
       - ./apps/portal/tsconfig.json:/app/apps/portal/tsconfig.json:ro
       - ./apps/portal/astro.config.mjs:/app/apps/portal/astro.config.mjs:ro
-      - ./apps/portal/tailwind.config.mjs:/app/apps/portal/tailwind.config.mjs:ro
       # Exclude node_modules (use container's)
       - /app/node_modules
       - /app/apps/portal/node_modules
