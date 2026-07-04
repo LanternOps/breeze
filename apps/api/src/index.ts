@@ -173,6 +173,10 @@ import { initializeMlOutputRetention, shutdownMlOutputRetention } from './jobs/m
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
+import {
+  initializeEnrollmentKeyCleanupWorker,
+  shutdownEnrollmentKeyCleanupWorker,
+} from './jobs/enrollmentKeyCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -1155,6 +1159,7 @@ async function initializeWorkers(): Promise<void> {
     ['processSampleRetention', initializeProcessSampleRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
+    ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
@@ -1346,6 +1351,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownProcessSampleRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
+    shutdownEnrollmentKeyCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,
