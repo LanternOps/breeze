@@ -351,7 +351,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
       );
     });
 
-    it('returns deletedCount 0 and does not call delete when nothing matches', async () => {
+    it('returns deletedCount 0 when the delete matches nothing', async () => {
       const getCaptured = mockDeleteWhereReturningCapture([]);
 
       const res = await app.request('/enrollment-keys/purge-expired', {

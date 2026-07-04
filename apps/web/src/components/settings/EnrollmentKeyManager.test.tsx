@@ -122,11 +122,13 @@ describe('EnrollmentKeyManager — hide expired toggle', () => {
 });
 
 describe('EnrollmentKeyManager — delete expired', () => {
-  it('disables the button when no listed key is expired', async () => {
+  it('keeps the button enabled even when no listed key is expired', async () => {
+    // The button must stay enabled regardless of what's on the current page/filter,
+    // since expired keys may exist off-page or be hidden by the "Hide expired" toggle.
     routeFetch([makeRow({ expiresAt: FUTURE })]);
     render(<EnrollmentKeyManager />);
     await screen.findByText('Prod key');
-    expect((screen.getByTestId('delete-expired-keys') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('delete-expired-keys') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('purges via POST and refetches page 1 when an expired key is present', async () => {

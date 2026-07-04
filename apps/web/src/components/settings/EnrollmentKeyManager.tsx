@@ -292,8 +292,6 @@ export default function EnrollmentKeyManager() {
     return { label: 'Active', className: 'bg-green-500/10 text-green-400 border-green-500/30' };
   };
 
-  const hasExpiredKeys = keys.some((key) => isExpired(key));
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -391,7 +389,7 @@ export default function EnrollmentKeyManager() {
           type="button"
           data-testid="delete-expired-keys"
           onClick={() => setPurgeConfirmOpen(true)}
-          disabled={!hasExpiredKeys || submitting}
+          disabled={submitting}
           className="inline-flex h-9 items-center justify-center rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Delete expired
