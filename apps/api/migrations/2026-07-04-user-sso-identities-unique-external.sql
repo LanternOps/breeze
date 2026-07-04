@@ -6,6 +6,30 @@
 -- login in production-shaped deployments (bare read under FORCED RLS always
 -- 0-rowed, so the UPDATE branch was unreachable — see #2195).
 --
+-- Forensics BEFORE the dedupe: a duplicate whose rows span DIFFERENT users is
+-- not returning-login noise — it's evidence the TOCTOU race actually fired
+-- (two users linked to one IdP subject: identity confusion). The dedupe below
+-- resolves it by keeping the freshest row, which silently revokes the other
+-- user's link — so record exactly which identities collided, per row group,
+-- before anything is deleted. Idempotent: after the dedupe runs once, no
+-- group can span two users, so re-runs log nothing.
+DO $$
+DECLARE
+  rec record;
+BEGIN
+  FOR rec IN
+    SELECT provider_id, external_id,
+           array_agg(DISTINCT user_id) AS user_ids,
+           count(*) AS row_count
+    FROM user_sso_identities
+    GROUP BY provider_id, external_id
+    HAVING count(DISTINCT user_id) > 1
+  LOOP
+    RAISE WARNING 'user_sso_identities CROSS-USER identity collision (investigate, #2195): provider=% external_id=% user_ids=% rows=% — dedupe keeps the freshest row and revokes the other user''s link',
+      rec.provider_id, rec.external_id, rec.user_ids, rec.row_count;
+  END LOOP;
+END $$;
+
 -- Dedupe BEFORE adding the index: keep, per (provider_id, external_id), the
 -- row with the freshest tokens (last_login_at DESC NULLS LAST, then
 -- created_at DESC, then id as a stable tiebreak) and delete the rest,

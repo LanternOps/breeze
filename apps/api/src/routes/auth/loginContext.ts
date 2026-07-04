@@ -6,6 +6,7 @@ import { partners, ssoProviders, partnerLoginBranding } from '../../db/schema';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { getRedis, rateLimiter } from '../../services';
 import { captureException } from '../../services/sentry';
+import { envFlag } from '../../utils/envFlag';
 
 export const loginContextRoutes = new Hono();
 
@@ -27,8 +28,11 @@ loginContextRoutes.get('/login-context', async (c) => {
   // Hosted guard (#2195): the single-partner fast-path is a self-hosted
   // convenience. A hosted region that happened to shrink to exactly one
   // partner must not publicly serve that partner's branding/SSO entry —
-  // hosted discovery is the v2 slug path (#2183).
-  if (process.env.IS_HOSTED === 'true') {
+  // hosted discovery is the v2 slug path (#2183). envFlag (not a bare
+  // === 'true') so every hosted spelling the production config validator
+  // accepts (1/yes/on) trips the guard; production refuses to boot with
+  // IS_HOSTED unset, so unset here means a self-hosted dev instance.
+  if (envFlag('IS_HOSTED', false)) {
     c.header('Cache-Control', 'public, max-age=60');
     return c.json({ branding: null, partnerSso: null } satisfies LoginContext);
   }

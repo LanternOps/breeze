@@ -518,22 +518,32 @@ export async function cascadeDeleteOrg(
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
 
-  await dbModule.withSystemDbAccessContext(async () => {
-    // 1. Clear system-scoped associated tables (e.g. device_commands)
-    //    that hold FKs into the cascade set.
-    for (const assoc of ASSOCIATED_SYSTEM_SCOPED_TABLES) {
-      try {
+  // 1. Clear system-scoped associated tables (e.g. device_commands, the
+  //    SSO FK children) that hold FKs into the cascade set. One system
+  //    context per table so the audit write in the catch below never runs
+  //    inside an open DB context (nesting poisons the pool).
+  for (const assoc of ASSOCIATED_SYSTEM_SCOPED_TABLES) {
+    try {
+      const count = await dbModule.withSystemDbAccessContext(async () => {
         const result = await dbModule.db.execute(assoc.clearSql(orgId));
-        const count = extractRowCount(result);
-        stats.tablesDeleted[assoc.table] = (stats.tablesDeleted[assoc.table] ?? 0) + count;
-        stats.totalRowsDeleted += count;
-      } catch (err) {
-        // Tolerate missing tables (e.g. a deployment that doesn't have
-        // every optional table). Re-throw on anything else.
-        if (!isUndefinedTable(err)) throw err;
+        return extractRowCount(result);
+      });
+      stats.tablesDeleted[assoc.table] = (stats.tablesDeleted[assoc.table] ?? 0) + count;
+      stats.totalRowsDeleted += count;
+    } catch (err) {
+      // Tolerate missing tables (e.g. a deployment that doesn't have
+      // every optional table). Anything else aborts the erasure — record
+      // it forensically first (#2195), same as the main loop below.
+      if (!isUndefinedTable(err)) {
+        await writeErasureFailedAudit(orgId, performedBy, performedByEmail, assoc.table, stats, err);
+        throw new Error(
+          `[tenantCascade] DELETE from "${assoc.table}" failed for org=${orgId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
     }
-  });
+  }
 
   // 2. Walk the cascade list in FK-safe order, each table in its OWN
   //    system-context transaction so a failure on one table aborts
@@ -558,7 +568,10 @@ export async function cascadeDeleteOrg(
     } catch (err) {
       // A single table failure aborts the cascade — partial deletion is
       // worse than no deletion (the org sits in an inconsistent state).
-      // Re-throw with context.
+      // Best-effort forensic record of how far the erasure got (#2195 —
+      // mirrors the partner purge's purge_failed breadcrumb), then re-throw
+      // with context.
+      await writeErasureFailedAudit(orgId, performedBy, performedByEmail, table, stats, err);
       throw new Error(
         `[tenantCascade] DELETE from "${table}" failed for org=${orgId}: ${
           err instanceof Error ? err.message : String(err)
@@ -588,6 +601,41 @@ export async function cascadeDeleteOrg(
   });
 
   return stats;
+}
+
+/** Best-effort forensic breadcrumb when a tenant.erasure aborts mid-cascade
+ * (#2195): records the failed table and per-table progress so a partial
+ * erasure is reconstructable. org_id=NULL so the row survives regardless of
+ * how far the cascade got. Never throws — the original error is what the
+ * caller must see. */
+async function writeErasureFailedAudit(
+  orgId: string,
+  performedBy: string,
+  performedByEmail: string | undefined,
+  failedTable: string,
+  stats: CascadeStats,
+  err: unknown,
+): Promise<void> {
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: 'tenant.erasure.failed',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: {
+        failedTable,
+        tablesDeleted: stats.tablesDeleted,
+        totalRowsDeleted: stats.totalRowsDeleted,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      result: 'failure',
+    });
+  } catch (auditErr) {
+    console.warn('[tenantCascade] erasure-failed audit write failed:', auditErr);
+  }
 }
 
 function deleteOrgRows(

@@ -102,7 +102,7 @@ async function createPartnerAxisProvider(
 /** Org-axis sibling of createPartnerAxisProvider (#2195). */
 async function createOrgAxisProvider(
   orgId: string,
-  opts: { status?: 'active' | 'inactive' | 'testing'; enforceSSO?: boolean } = {},
+  opts: { status?: 'active' | 'inactive' | 'testing'; enforceSSO?: boolean; name?: string; createdAt?: Date } = {},
 ) {
   const db = getTestDb();
   const [row] = await db
@@ -110,9 +110,10 @@ async function createOrgAxisProvider(
     .values({
       orgId,
       partnerId: null,
-      name: 'Org Test IdP',
+      name: opts.name ?? 'Org Test IdP',
       type: 'oidc',
       status: opts.status ?? 'active',
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
       issuer: ISSUER,
       clientId: 'test-client-id',
       clientSecret: encryptSecret('test-client-secret'),
@@ -183,7 +184,17 @@ function buildTestSsoStateCookie(state: string): string {
 describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', () => {
   let app: Hono;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Flush the SSO login rate-limit buckets between tests: the pure-IP
+    // bucket (sso:login:ip:*, 30/5min) is shared across BOTH initiation
+    // routes and real Redis persists across test files — enough accumulated
+    // initiations in one CI window would start 429ing unrelated tests.
+    const { getRedis } = await import('../../services');
+    const redis = getRedis();
+    if (redis) {
+      const keys = await redis.keys('sso:login:*');
+      if (keys.length > 0) await redis.del(...keys);
+    }
     app = new Hono();
     app.route('/sso', ssoRoutes);
     // Mounted for the enforceSSO-non-suppression case below, which drives a
@@ -743,6 +754,25 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(rows).toHaveLength(1);
     expect(rows[0]?.userId).toBe(user.id);
     expect(rows[0]?.lastLoginAt).not.toBeNull();
+  });
+
+  it('#2195: with two active providers, /check and /login/:orgId agree on the OLDEST one (deterministic ORDER BY)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    // Insert the NEWER provider first so a "first row wins" accident (insert
+    // order / physical order) picks the wrong one without the ORDER BY.
+    await createOrgAxisProvider(org.id, { name: 'Newer IdP', createdAt: new Date('2026-02-01T00:00:00Z') });
+    const older = await createOrgAxisProvider(org.id, { name: 'Older IdP', createdAt: new Date('2026-01-01T00:00:00Z') });
+
+    const checkRes = await app.request(`/sso/check/${org.id}`);
+    expect(checkRes.status).toBe(200);
+    const checkBody = await checkRes.json();
+    expect(checkBody.provider?.id).toBe(older.id);
+
+    const { state } = await initiateOrgLogin(app, org.id);
+    const db = getTestDb();
+    const [sessionRow] = await db.select().from(ssoSessions).where(eq(ssoSessions.state, state)).limit(1);
+    expect(sessionRow?.providerId).toBe(older.id);
   });
 
   it('#2195: the DB unique index rejects a second (provider_id, external_id) link outright (23505)', async () => {

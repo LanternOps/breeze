@@ -37,6 +37,7 @@ import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiT
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
+import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
 import { envFlag } from '../utils/envFlag';
@@ -1948,6 +1949,16 @@ ssoRoutes.get('/callback', async (c) => {
           if (conflict && conflict.userId !== user.id) {
             return { error: 'identity_in_use' as const };
           }
+          if (!conflict) {
+            // Anomaly: the insert reported a conflict but the conflicting row
+            // vanished before the re-select (concurrent unlink/revocation).
+            // Proceeding is safe — the user was already resolved — but this
+            // login completes WITHOUT a persisted identity row, so leave a
+            // trace for anyone debugging a future linkage report.
+            console.warn(
+              `[sso/callback] identity insert conflicted but conflicting row vanished: provider=${provider.id} user=${user.id}`
+            );
+          }
         }
       }
 
@@ -2014,7 +2025,10 @@ ssoRoutes.get('/callback', async (c) => {
     // The session was already consumed atomically, so even on a failed IdP
     // token exchange the captured state cannot be replayed. Surface the error
     // to the login page exactly as before; the user simply re-initiates.
+    // Sentry too (#2195): this catch wraps the account-takeover-critical
+    // identity-linking path, so failures need more visibility than stderr.
     console.error('SSO callback error:', error);
+    captureException(error, c);
     clearStateCookie();
     return c.redirect(`/login?error=sso_error&message=${encodeURIComponent(error.message || 'Authentication failed')}`);
   }

@@ -89,6 +89,47 @@ describe('tenant cascades sweep SSO FK children (#2195)', () => {
     expect(sessionRows).toHaveLength(0);
   });
 
+  // The org pre-clear is `provider_id IN (org's providers) OR user_id IN
+  // (org's users)` — these two cases each make only ONE side of the OR true,
+  // so a regression that drops either clause (or turns OR into AND) fails
+  // here even though the both-sides-true case above still passes.
+
+  it('org cascade clears an org USER\'s link to a PARTNER-axis provider (user_id clause only)', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    // Provider belongs to the PARTNER (survives org erasure); the identity's
+    // user belongs to the org being erased.
+    const { provider, user } = await seedSsoRows({ partnerId: partner.id, userPartnerId: partner.id, userOrgId: org.id });
+
+    await cascadeDeleteOrg(org.id, randomUUID());
+
+    const identityRows = await db.select().from(userSsoIdentities).where(eq(userSsoIdentities.userId, user.id));
+    expect(identityRows).toHaveLength(0);
+    // The partner-axis provider is NOT the org's — it must survive.
+    const providerRows = await db.select().from(ssoProviders).where(eq(ssoProviders.id, provider.id));
+    expect(providerRows).toHaveLength(1);
+  });
+
+  it('org cascade clears a PARTNER STAFF link to the org\'s provider (provider_id clause only)', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    // Provider belongs to the org being erased; the identity's user is
+    // partner staff (org_id NULL — survives org erasure).
+    const { provider, user } = await seedSsoRows({ orgId: org.id, userPartnerId: partner.id, userOrgId: null });
+
+    await cascadeDeleteOrg(org.id, randomUUID());
+
+    const identityRows = await db.select().from(userSsoIdentities).where(eq(userSsoIdentities.providerId, provider.id));
+    expect(identityRows).toHaveLength(0);
+    const providerRows = await db.select().from(ssoProviders).where(eq(ssoProviders.id, provider.id));
+    expect(providerRows).toHaveLength(0);
+    // The staff user is not org-bound — it must survive.
+    const userRows = await db.select().from(users).where(eq(users.id, user.id));
+    expect(userRows).toHaveLength(1);
+  });
+
   it('cascadeDeletePartner completes for a partner whose staff exercised partner-axis SSO', async () => {
     const db = getTestDb();
     const partner = await createPartner();

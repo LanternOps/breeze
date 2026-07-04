@@ -71,17 +71,23 @@ describe('GET /auth/login-context (#2183)', () => {
     delete process.env.IS_HOSTED;
   });
 
-  it('short-circuits to all-null on a hosted instance without touching the DB (#2195)', async () => {
-    process.env.IS_HOSTED = 'true';
-    vi.mocked(db.select).mockReturnValueOnce(selectChain([{ id: PARTNER_UUID }]) as any);
+  // Every hosted spelling the production config validator accepts must trip
+  // the guard (envFlag, not a bare === 'true') — an IS_HOSTED=1 deploy that
+  // missed the guard would publicly serve a single-partner region's branding.
+  it.each(['true', '1', 'yes', 'on'])(
+    'short-circuits to all-null on a hosted instance (IS_HOSTED=%s) without touching the DB (#2195)',
+    async (spelling) => {
+      process.env.IS_HOSTED = spelling;
+      vi.mocked(db.select).mockReturnValueOnce(selectChain([{ id: PARTNER_UUID }]) as any);
 
-    const res = await getContext();
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ branding: null, partnerSso: null });
-    // The single-partner fast-path must never run on hosted — even a region
-    // with exactly one partner reveals nothing.
-    expect(db.select).not.toHaveBeenCalled();
-  });
+      const res = await getContext();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ branding: null, partnerSso: null });
+      // The single-partner fast-path must never run on hosted — even a region
+      // with exactly one partner reveals nothing.
+      expect(db.select).not.toHaveBeenCalled();
+    }
+  );
 
   it('returns branding + partnerSso on a single-partner instance with both configured', async () => {
     vi.mocked(db.select)
