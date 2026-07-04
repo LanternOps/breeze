@@ -51,7 +51,7 @@ const docsMapping: DocsEntry[] = [
 
   // Feature pages — specific sub-routes first
   { pattern: '/devices/groups', docsPath: '/features/device-groups/', label: 'Device Groups' },
-  { pattern: '/devices', docsPath: '/features/device-groups/', label: 'Device Management' },
+  { pattern: '/devices', docsPath: '/features/devices/', label: 'Devices' },
   { pattern: '/alerts/rules', docsPath: '/features/alert-templates/', label: 'Alert Rules' },
   { pattern: '/alerts/channels', docsPath: '/features/alerts/', label: 'Notification Channels' },
   { pattern: '/alerts/correlations', docsPath: '/features/ml-insights/', label: 'Alert Correlations' },

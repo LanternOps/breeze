@@ -3,10 +3,10 @@ import { getDocsForPath, DOCS_BASE_URL } from './docsMapping';
 
 describe('getDocsForPath', () => {
   describe('exact matches', () => {
-    it('/devices maps to device management docs', () => {
+    it('/devices maps to devices docs', () => {
       const result = getDocsForPath('/devices');
-      expect(result.label).toBe('Device Management');
-      expect(result.url).toBe(`${DOCS_BASE_URL}/features/device-groups/`);
+      expect(result.label).toBe('Devices');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/devices/`);
     });
 
     it('/alerts maps to alerts docs', () => {
@@ -82,10 +82,10 @@ describe('getDocsForPath', () => {
   });
 
   describe('prefix matches', () => {
-    it('/devices/abc-123 matches device management', () => {
+    it('/devices/abc-123 matches devices docs', () => {
       const result = getDocsForPath('/devices/abc-123');
-      expect(result.label).toBe('Device Management');
-      expect(result.url).toBe(`${DOCS_BASE_URL}/features/device-groups/`);
+      expect(result.label).toBe('Devices');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/devices/`);
     });
 
     it('/settings/users/some-id matches users entry', () => {
@@ -156,8 +156,14 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/deploy/antivirus-exceptions/');
     });
 
-    it('/devices/groups maps to device groups docs', () => {
+    it('/devices/groups maps to device groups docs, not the devices page', () => {
       const result = getDocsForPath('/devices/groups');
+      expect(result.label).toBe('Device Groups');
+      expect(result.url).toContain('/features/device-groups/');
+    });
+
+    it('/devices/groups/some-id still maps to device groups, not the devices page', () => {
+      const result = getDocsForPath('/devices/groups/some-id');
       expect(result.label).toBe('Device Groups');
       expect(result.url).toContain('/features/device-groups/');
     });

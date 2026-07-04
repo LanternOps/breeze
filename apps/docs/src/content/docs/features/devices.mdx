@@ -1,0 +1,116 @@
+---
+title: Devices
+description: Work with the device list and device Info tab — customizable columns, filters, VPN presence, and battery status.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, and discovered network devices across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
+
+---
+
+## The Device List
+
+### Columns
+
+The list shows a compact set of columns by default — hostname, class, organization, site, OS, role, status, CPU, RAM, and last seen. Many more columns are available but hidden until you enable them through the **column-visibility picker** in the list toolbar, including:
+
+- **OS version / OS build / architecture**
+- **Pending reboot** and **headless** indicators
+- **Power** — battery charge and charging state (see [Battery and Power Status](#battery-and-power-status))
+- **VPN** — active VPN/overlay clients (see [VPN Presence](#vpn-presence))
+- **CPU model, cores, total RAM, total disk**
+- **Agent version** and **watchdog version**
+- **Tags, last logged-in user, uptime, enrollment date**
+- **Desktop access** and **reliability score**
+
+Your column selection and order are remembered per browser, so each technician can tailor the list to their workflow. Most columns are sortable by clicking the header.
+
+### Filters
+
+Above the list you can:
+
+- **Search** by display name or hostname.
+- Build **structured filters** with the filter toolbar — status, OS, role, organization, site, group, hardware attributes, and more, combinable into saved filter conditions.
+- Switch the **class facet** between All, Agent (endpoints running the Breeze agent), and Network (devices found by network discovery).
+- Filter by **VPN** when the VPN column is enabled (see below).
+
+---
+
+## VPN Presence
+
+Agents on Windows, macOS, and Linux detect active VPN and overlay-network clients on the device and report them to Breeze. Recognized providers:
+
+- **WireGuard**
+- **Tailscale**
+- **NetBird**
+- **ZeroTier**
+- **OpenVPN**
+- **Cloudflare WARP**
+- A generic **VPN** fallback for active tunnel interfaces that don't match a known provider
+
+Detection works purely from **local signals on the device** — tunnel interface names and addresses, corroborated by the provider's running service or process. It is read-only telemetry: Breeze does not read keys, peer lists, or any VPN configuration, and cannot manage the VPN. For Tailscale, the device's own DNS name is also reported.
+
+<Aside type="note">
+  VPN data is the latest snapshot from the agent's periodic network inventory report (roughly every 15 minutes), not a live view. A blank value means either no VPN was detected or the agent is too old to report VPN presence.
+</Aside>
+
+### On the device list
+
+Enable the **VPN** column via the column picker (it is hidden by default). It shows a badge per active provider, is sortable, and adds a filter dropdown with:
+
+- **All VPN** — no VPN filtering
+- **Any active VPN** — only devices with at least one active VPN
+- One entry per provider seen in the current list (e.g. **Tailscale**), to show only devices running that provider
+
+Hovering a VPN badge shows the full detail — interface, addresses, and DNS name.
+
+### On the device Info tab
+
+When a device has at least one active VPN, its **Info** tab shows a **VPN** section with a card per active tunnel:
+
+| Field | Description |
+|-------|-------------|
+| **Interface** | The tunnel interface name on the device. |
+| **VPN IPv4 / VPN IPv6** | The device's overlay-network addresses. |
+| **VPN DNS Name** | The device's name on the overlay network (Tailscale). |
+| **Detection Source** | How the VPN was identified (interface, service, or process). |
+| **Last Reported** | When the agent last reported this VPN. |
+
+The section is hidden entirely when no VPN is active.
+
+---
+
+## Battery and Power Status
+
+For devices with a battery (laptops and other portables), the agent reports power status with every heartbeat:
+
+- **Battery charge** (percent)
+- **Charging state** (charging, discharging, full, or not charging)
+- **Power source** (plugged into AC or running on battery)
+- **Estimated time remaining** while on battery, or **time to full** while charging (where the platform reports it)
+
+This surfaces in two places:
+
+- **Device list** — an optional **Power** column (enable it via the column picker) showing the charge percent with a charging/plugged-in icon, sortable by charge level. Devices without a battery show a dash.
+- **Device Info tab** — a **Power** section with the battery charge, charging state, power source, time estimates, and when the status was last reported. The section only appears for devices that actually have a battery.
+
+---
+
+## The Device Info Tab
+
+Opening a device and selecting **Info** shows the device's identity and inventory at a glance:
+
+| Section | Contents |
+|---------|----------|
+| **System** | Hostname, display name (editable), serial number, manufacturer, model. |
+| **Device Role** | The device's assigned role and how it was determined. |
+| **Operating System** | OS type, version, build, and architecture. |
+| **Hardware Summary** | CPU model, cores/threads, RAM, disk, GPU, motherboard, BIOS version. |
+| **Power** | Battery and power status (portable devices only — see above). |
+| **VPN** | Active VPN/overlay clients (only when at least one is active — see above). |
+| **Agent** | Agent and watchdog versions, status, last seen, enrollment date, system uptime, logged-in user. |
+| **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
+| **Tags** and **Custom Fields** | Organizational metadata, when present. |
+
+Related pages: [Device Groups](/features/device-groups/) for organizing devices into collections, [Tags](/features/tags/) and [Custom Fields](/features/custom-fields/) for metadata, and [IP History](/features/ip-history/) for the timeline of a device's network addresses.
