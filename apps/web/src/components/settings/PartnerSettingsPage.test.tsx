@@ -175,7 +175,7 @@ describe('PartnerSettingsPage language control', () => {
 
     await screen.findByText('Partner Settings');
     // Company is the default tab now; switch to Regional to check the language copy.
-    const regionalTab = screen.getByRole('button', { name: /^regional$/i });
+    const regionalTab = screen.getByRole('link', { name: /^regional$/i });
     const user = userEvent.setup();
     await user.click(regionalTab);
 
@@ -299,14 +299,14 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
   });
 
-  it('exposes a Ticketing tab in the tab bar', async () => {
+  it('exposes a Ticketing tab in the settings nav', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
 
     render(<PartnerSettingsPage />);
 
     await screen.findByText('Partner Settings');
-    expect(screen.getByRole('button', { name: /^ticketing$/i })).not.toBeNull();
+    expect(screen.getByRole('link', { name: /^ticketing$/i })).not.toBeNull();
     // Not the active tab by default, so the embedded tabs are not mounted yet.
     expect(screen.queryByTestId('stub-ticketing-settings-tabs')).toBeNull();
   });
@@ -319,7 +319,7 @@ describe('PartnerSettingsPage Ticketing tab', () => {
 
     await screen.findByText('Partner Settings');
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: /^ticketing$/i }));
+    await user.click(screen.getByRole('link', { name: /^ticketing$/i }));
 
     expect(screen.getByTestId('stub-ticketing-settings-tabs')).not.toBeNull();
     // The hub owns the top-level tab hash, so the embedded group must NOT sync it.
@@ -338,6 +338,91 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     render(<PartnerSettingsPage />);
 
     expect(await screen.findByTestId('stub-ticketing-settings-tabs')).not.toBeNull();
+  });
+});
+
+describe('PartnerSettingsPage sidebar nav & save contract', () => {
+  const partnerResponse = {
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+  });
+
+  it('disables Save while clean and enables it (with a nav dirty dot) after an edit', async () => {
+    render(<PartnerSettingsPage />);
+
+    const nameInput = await screen.findByLabelText(/company name/i);
+    const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
+
+    const user = userEvent.setup();
+    await user.type(nameInput, ' Inc.');
+
+    expect(saveBtn.disabled).toBe(false);
+    // The Company nav item flags its unsaved changes for AT via the link name.
+    expect(screen.getByRole('link', { name: /^company \(unsaved changes\)$/i })).not.toBeNull();
+  });
+
+  it('replaces the global Save button with a note on self-saving tabs', async () => {
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ticketing$/i }));
+
+    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
+    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+  });
+
+  it('marks the active tab with aria-current and pushes the canonical kebab hash on click', async () => {
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    const user = userEvent.setup();
+    const eventLogsLink = screen.getByRole('link', { name: /^event logs$/i });
+    await user.click(eventLogsLink);
+
+    expect(window.location.hash).toBe('#event-logs');
+    expect(eventLogsLink.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: /^company$/i }).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('deep-links the legacy camelCase hash to the right tab', async () => {
+    window.location.hash = '#remoteAccess';
+
+    render(<PartnerSettingsPage />);
+
+    const link = await screen.findByRole('link', { name: /^remote access$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('deep-links the canonical kebab-case hash to the right tab', async () => {
+    window.location.hash = '#event-logs';
+
+    render(<PartnerSettingsPage />);
+
+    const link = await screen.findByRole('link', { name: /^event logs$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
   });
 });
 

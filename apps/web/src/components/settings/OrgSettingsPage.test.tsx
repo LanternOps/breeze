@@ -282,3 +282,65 @@ describe('OrgSettingsPage general tab — name editing', () => {
     });
   });
 });
+
+describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
+  const orgDetails = {
+    id: 'org-1',
+    name: 'Acme Systems',
+    slug: 'acme',
+    status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    settings: {}
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+  });
+
+  it('never shows a fabricated "Saved at" timestamp on load', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    expect(screen.queryByText(/saved at/i)).toBeNull();
+    expect(screen.queryByText(/unsaved changes/i)).toBeNull();
+  });
+
+  it('renders the sections as grouped links and marks the active one with aria-current', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    const general = screen.getByRole('link', { name: /^general$/i });
+    expect(general.getAttribute('aria-current')).toBe('page');
+    // Approval Security no longer shares Security's icon slot — both links exist.
+    expect(screen.getByRole('link', { name: /^approval security$/i })).not.toBeNull();
+
+    await userEvent.click(screen.getByRole('link', { name: /^branding$/i }));
+    expect(window.location.hash).toBe('#branding');
+    expect(screen.getByRole('link', { name: /^branding$/i }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('branding-editor')).not.toBeNull();
+  });
+
+  it('deep-links the hash to the right section on mount', async () => {
+    window.location.hash = '#remote-access';
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const link = await screen.findByRole('link', { name: /^remote access$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('remote-access')).not.toBeNull();
+  });
+
+  it('offers the compact section select for narrow viewports', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    const select = screen.getByLabelText('Settings section') as HTMLSelectElement;
+    expect(select.value).toBe('general');
+  });
+});

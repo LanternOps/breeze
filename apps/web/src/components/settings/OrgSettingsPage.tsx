@@ -8,6 +8,7 @@ import {
   Copy,
   Check,
   FileSignature,
+  Fingerprint,
   Globe,
   Monitor,
   Paintbrush,
@@ -16,6 +17,7 @@ import {
   Ticket
 } from 'lucide-react';
 import ContractsList from '../contracts/ContractsList';
+import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
@@ -32,83 +34,58 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 
-const tabs = [
-  {
-    id: 'general',
-    label: 'General',
-    description: 'Organization profile and defaults',
-    icon: Building2
-  },
-  {
-    id: 'branding',
-    label: 'Branding',
-    description: 'Portal theme and visuals',
-    icon: Paintbrush
-  },
-  {
-    id: 'portal',
-    label: 'Customer Portal',
-    description: 'Portal features and support contact',
-    icon: Globe
-  },
-  {
-    id: 'notifications',
-    label: 'Notifications',
-    description: 'Email, Slack, and webhooks',
-    icon: Bell
-  },
-  {
-    id: 'security',
-    label: 'Security',
-    description: 'Access policies and MFA',
-    icon: Shield
-  },
-  {
-    id: 'approval-security',
-    label: 'Approval Security',
-    description: 'Step-up verification for approvals',
-    icon: Shield
-  },
-  {
-    id: 'event-logs',
-    label: 'Event Logs',
-    description: 'Forwarding and retention',
-    icon: ScrollText
-  },
-  {
-    id: 'remote-access',
-    label: 'Remote Access',
-    description: 'VNC, proxy, and tunnel settings',
-    icon: Monitor
-  },
-  {
-    id: 'ticketing',
-    label: 'Ticketing',
-    description: 'SLA overrides and billing defaults',
-    icon: Ticket
-  },
-  {
-    id: 'contracts',
-    label: 'Contracts',
-    description: 'Recurring billing agreements',
-    icon: FileSignature
-  }
-] as const;
+type TabKey =
+  | 'general' | 'branding' | 'portal' | 'notifications' | 'security'
+  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts';
 
-type TabKey = (typeof tabs)[number]['id'];
+// Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
+// SettingsSectionNav). Hashes are the section keys (already kebab-case).
+const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup['items'][number] & { key: TabKey })[] })[] = [
+  {
+    label: 'Organization',
+    items: [
+      { key: 'general', hash: 'general', label: 'General', description: 'Profile and defaults', icon: Building2 },
+      { key: 'contracts', hash: 'contracts', label: 'Contracts', description: 'Recurring agreements', icon: FileSignature },
+    ],
+  },
+  {
+    label: 'Portal & Branding',
+    items: [
+      { key: 'branding', hash: 'branding', label: 'Branding', description: 'Portal theme and visuals', icon: Paintbrush },
+      { key: 'portal', hash: 'portal', label: 'Customer Portal', description: 'Features and support', icon: Globe },
+    ],
+  },
+  {
+    label: 'Security & Access',
+    items: [
+      { key: 'security', hash: 'security', label: 'Security', description: 'Access policies and MFA', icon: Shield },
+      { key: 'approval-security', hash: 'approval-security', label: 'Approval Security', description: 'Step-up verification', icon: Fingerprint },
+      { key: 'remote-access', hash: 'remote-access', label: 'Remote Access', description: 'VNC, proxy, tunnels', icon: Monitor },
+      { key: 'event-logs', hash: 'event-logs', label: 'Event Logs', description: 'Forwarding and retention', icon: ScrollText },
+    ],
+  },
+  {
+    label: 'Communications',
+    items: [
+      { key: 'notifications', hash: 'notifications', label: 'Notifications', description: 'Email, Slack, webhooks', icon: Bell },
+      { key: 'ticketing', hash: 'ticketing', label: 'Ticketing', description: 'SLA and billing overrides', icon: Ticket },
+    ],
+  },
+];
 
-const VALID_TABS = tabs.map(t => t.id) as unknown as TabKey[];
+const ALL_TABS = TAB_GROUPS.flatMap(g => g.items);
+const TAB_BY_KEY = Object.fromEntries(ALL_TABS.map(t => [t.key, t])) as Record<TabKey, (typeof ALL_TABS)[number]>;
 
-function getTabFromHash(): TabKey {
-  if (typeof window === 'undefined') return 'general';
+function getTabFromHash(): TabKey | null {
+  if (typeof window === 'undefined') return null;
   const hash = window.location.hash.replace('#', '');
-  if (VALID_TABS.includes(hash as TabKey)) return hash as TabKey;
-  return 'general';
+  return hash in TAB_BY_KEY ? (hash as TabKey) : null;
 }
 
 type SaveState = {
   hasUnsavedChanges: boolean;
-  lastSavedAt: string;
+  // null until a real save happens this session — never fabricate a timestamp.
+  lastSavedAt: string | null;
 };
 
 type OrgDetails = {
@@ -186,11 +163,8 @@ type OrgDetails = {
   updatedAt?: string;
 };
 
-// Fixed reference time for SSR hydration consistency
-const REFERENCE_TIME = '12:00';
-
 const formatTime = (date: Date) =>
-  formatUserTime(date, { locale: 'en-US', hour: 'numeric', minute: '2-digit' });
+  formatUserTime(date, { hour: 'numeric', minute: '2-digit' });
 
 type OrgSettingsPageProps = {
   orgId?: string;
@@ -215,23 +189,50 @@ export async function runOrgNameSave(
 }
 
 export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPageProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>(getTabFromHash);
+  // Seeded SSR-safe with the default tab; the hash is applied client-side in
+  // the effect below to avoid a hydration mismatch (same pattern as
+  // PartnerSettingsPage). Also tracks back/forward via hashchange.
+  const [activeTab, setActiveTab] = useState<TabKey>('general');
 
   useEffect(() => {
-    const onHashChange = () => setActiveTab(getTabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    const applyHash = () => {
+      const tab = getTabFromHash();
+      if (tab) setActiveTab(tab);
+    };
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
   }, []);
-
-  const switchTab = (tab: TabKey) => {
-    window.location.hash = tab;
-    setActiveTab(tab);
-  };
 
   const [saveState, setSaveState] = useState<SaveState>({
     hasUnsavedChanges: false,
-    lastSavedAt: REFERENCE_TIME
+    lastSavedAt: null
   });
+
+  // Editors hold their own draft state and unmount on tab switch, so switching
+  // away from a dirty section genuinely discards the edits — never do that
+  // silently. (Dirty state always belongs to the ACTIVE tab: onDirty only
+  // fires from the mounted editor, and we clear it here on a confirmed switch.)
+  const switchTab = (tab: TabKey) => {
+    if (tab === activeTab) return;
+    if (saveState.hasUnsavedChanges) {
+      const proceed = window.confirm(
+        'You have unsaved changes in this section. Switching will discard them. Continue?'
+      );
+      if (!proceed) return;
+      setSaveState(prev => ({ ...prev, hasUnsavedChanges: false }));
+    }
+    setActiveTab(tab);
+    if (window.location.hash !== `#${tab}`) window.location.hash = tab;
+  };
+
+  // Warn before a full navigation away discards unsaved edits.
+  useEffect(() => {
+    if (!saveState.hasUnsavedChanges) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [saveState.hasUnsavedChanges]);
   const [orgDetails, setOrgDetails] = useState<OrgDetails | null>(null);
   const [locked, setLocked] = useState<string[]>([]);
   // Issue #2124: registered versions for the pin selectors + the partner's
@@ -324,15 +325,16 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         [section]: data
       };
 
-      const response = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ settings: updatedSettings })
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ settings: updatedSettings })
+          }),
+        successMessage: 'Settings saved',
+        errorFallback: 'Failed to save settings',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || body.message || 'Failed to save settings');
-      }
 
       await fetchOrgDetails();
       setSaveState({
@@ -340,7 +342,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         lastSavedAt: formatTime(new Date())
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
+      // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'Failed to save settings');
+      }
     }
   }, [effectiveOrgId, orgDetails, fetchOrgDetails]);
 
@@ -373,34 +378,37 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     try {
       setSavingType(true);
       setError(undefined);
-      const response = await fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ type: typeDraft })
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/orgs/organizations/${effectiveOrgId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ type: typeDraft })
+          }),
+        successMessage: 'Organization type saved',
+        errorFallback: 'Failed to save organization type',
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || body.message || 'Failed to save organization type');
-      }
 
       await fetchOrgDetails();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save organization type');
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : 'Failed to save organization type');
+      }
     } finally {
       setSavingType(false);
     }
-  }, [effectiveOrgId, typeDraft, orgDetails, fetchOrgDetails]);
+  }, [effectiveOrgId, typeDraft, fetchOrgDetails]);
 
   // Fallback display data — prefer fetched orgDetails; when accessed via URL prop the org
   // might not be in the store's organizations array, so fall back to a minimal object.
   const displayOrg = orgDetails || organizations.find(org => org.id === effectiveOrgId) || { id: effectiveOrgId, name: 'Organization' } as OrgDetails;
 
+  // No fabricated timestamps: the pill only appears once there is something
+  // true to say — unsaved edits exist, or a save actually happened.
   const statusLabel = useMemo(() => {
-    if (saveState.hasUnsavedChanges) {
-      return 'Unsaved changes';
-    }
-
-    return `Saved at ${saveState.lastSavedAt}`;
+    if (saveState.hasUnsavedChanges) return 'Unsaved changes';
+    if (saveState.lastSavedAt) return `Saved at ${saveState.lastSavedAt}`;
+    return null;
   }, [saveState.hasUnsavedChanges, saveState.lastSavedAt]);
 
   const handleDirty = () => {
@@ -443,8 +451,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     );
   }
 
-  // Error state
-  if (error) {
+  // Full-page error only when there is nothing to show yet (initial load
+  // failed). Later failures (e.g. a section save) render an inline banner
+  // below instead — replacing the page here would destroy the user's form state.
+  if (error && !orgDetails) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
@@ -628,6 +638,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       type="button"
                       className="inline-flex items-center rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
                       title="Copy Organization ID"
+                      aria-label="Copy Organization ID"
                       onClick={() => {
                         navigator.clipboard.writeText(displayOrg.id);
                         setCopiedOrgId(true);
@@ -680,61 +691,53 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             Configure preferences for {displayOrg.name}.
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-full border bg-card px-4 py-2 text-sm">
-          {saveState.hasUnsavedChanges ? (
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-          ) : (
-            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-          )}
-          <span className="text-xs font-medium">{statusLabel}</span>
-        </div>
+        {statusLabel && (
+          <div className="flex items-center gap-2 rounded-full border bg-card px-4 py-2 text-sm">
+            {saveState.hasUnsavedChanges ? (
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+            )}
+            <span className="text-xs font-medium">{statusLabel}</span>
+          </div>
+        )}
       </header>
 
       {saveState.hasUnsavedChanges ? (
         <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-900">
           <AlertTriangle className="mt-0.5 h-5 w-5" />
           <div>
-            <p className="text-sm font-medium">You have unsaved changes</p>
+            <p className="text-sm font-medium">
+              You have unsaved changes in {TAB_BY_KEY[activeTab].label}
+            </p>
             <p className="text-xs text-amber-800">
-              Review each section and save to keep your updates.
+              Save in that section to keep your updates.
             </p>
           </div>
         </div>
       ) : null}
 
-      <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
-        <aside className="space-y-2 rounded-lg border bg-card p-4 shadow-xs">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Settings
-          </p>
-          <nav className="space-y-1">
-            {tabs.map(tab => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
+      {error && orgDetails && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-destructive">
+          <p className="text-sm">{error}</p>
+        </div>
+      )}
 
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => switchTab(tab.id)}
-                  className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition ${
-                    isActive
-                      ? 'bg-muted font-semibold text-foreground'
-                      : 'text-muted-foreground hover:bg-muted/60'
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  <div>
-                    <p>{tab.label}</p>
-                    <p className="text-xs text-muted-foreground">{tab.description}</p>
-                  </div>
-                </button>
-              );
-            })}
-          </nav>
-        </aside>
+      <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <SettingsSectionNav
+          groups={TAB_GROUPS.map(group => ({
+            label: group.label,
+            items: group.items.map(item => ({
+              ...item,
+              dirty: saveState.hasUnsavedChanges && item.key === activeTab,
+            })),
+          }))}
+          activeKey={activeTab}
+          onNavigate={key => switchTab(key as TabKey)}
+          selectId="org-settings-section"
+        />
 
-        <main className="space-y-6">{renderContent()}</main>
+        <div className="min-w-0 space-y-6">{renderContent()}</div>
       </div>
     </div>
   );
