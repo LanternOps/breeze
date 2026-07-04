@@ -6,6 +6,7 @@ import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
+import { runAction, ActionError } from '../../lib/runAction';
 
 interface EnrollmentKey {
   id: string;
@@ -13,6 +14,7 @@ interface EnrollmentKey {
   siteId: string | null;
   name: string;
   key?: string | null;
+  shortCode?: string | null;
   usageCount: number;
   maxUsage: number | null;
   expiresAt: string | null;
@@ -44,6 +46,8 @@ export default function EnrollmentKeyManager() {
   const [rotateTarget, setRotateTarget] = useState<EnrollmentKey | null>(null);
   const [downloadDropdownId, setDownloadDropdownId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [hideExpired, setHideExpired] = useState(false);
+  const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
 
   // Create form state
   const [formName, setFormName] = useState('');
@@ -54,7 +58,9 @@ export default function EnrollmentKeyManager() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth(`/enrollment-keys?page=${page}`);
+      const params = new URLSearchParams({ page: String(page) });
+      if (hideExpired) params.set('expired', 'false');
+      const response = await fetchWithAuth(`/enrollment-keys?${params.toString()}`);
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -73,7 +79,7 @@ export default function EnrollmentKeyManager() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [hideExpired]);
 
   useEffect(() => {
     fetchKeys();
@@ -213,6 +219,35 @@ export default function EnrollmentKeyManager() {
     }
   };
 
+  const handleConfirmPurgeExpired = async () => {
+    setPurgeConfirmOpen(false);
+    setSubmitting(true);
+    try {
+      await runAction<{ success: boolean; deletedCount: number }>({
+        request: () =>
+          fetchWithAuth('/enrollment-keys/purge-expired', {
+            method: 'POST',
+            body: JSON.stringify({})
+          }),
+        errorFallback: 'Failed to delete expired enrollment keys',
+        successMessage: (data) =>
+          `Deleted ${data.deletedCount} expired enrollment ${data.deletedCount === 1 ? 'key' : 'keys'}`,
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
+      });
+      await fetchKeys(1);
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Failed to delete expired enrollment keys'
+        });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleDownloadInstaller = async (keyId: string, platform: 'windows' | 'macos') => {
     if (downloading) return;
     setDownloading(true);
@@ -256,6 +291,8 @@ export default function EnrollmentKeyManager() {
     if (isExhausted(key)) return { label: 'Exhausted', className: 'bg-amber-500/10 text-amber-400 border-amber-500/30' };
     return { label: 'Active', className: 'bg-green-500/10 text-green-400 border-green-500/30' };
   };
+
+  const hasExpiredKeys = keys.some((key) => isExpired(key));
 
   if (loading) {
     return (
@@ -338,6 +375,29 @@ export default function EnrollmentKeyManager() {
         </div>
       )}
 
+      {/* Table toolbar: hide-expired toggle + purge-expired action */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            data-testid="hide-expired-toggle"
+            checked={hideExpired}
+            onChange={(e) => setHideExpired(e.target.checked)}
+            className="h-4 w-4 rounded border"
+          />
+          Hide expired
+        </label>
+        <button
+          type="button"
+          data-testid="delete-expired-keys"
+          onClick={() => setPurgeConfirmOpen(true)}
+          disabled={!hasExpiredKeys || submitting}
+          className="inline-flex h-9 items-center justify-center rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Delete expired
+        </button>
+      </div>
+
       {/* Keys Table */}
       <div className="rounded-lg border bg-card">
         <div className="overflow-x-auto">
@@ -345,7 +405,7 @@ export default function EnrollmentKeyManager() {
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Key</th>
+                <th className="px-4 py-3">Short code</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Usage</th>
                 <th className="px-4 py-3">Expires</th>
@@ -367,16 +427,16 @@ export default function EnrollmentKeyManager() {
                     <tr key={key.id} className="border-b last:border-b-0 hover:bg-muted/50">
                       <td className="px-4 py-3 font-medium">{key.name}</td>
                       <td className="px-4 py-3">
-                        {key.key ? (
+                        {key.shortCode ? (
                           <div className="flex items-center gap-2">
                             <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
-                              {key.key.slice(0, 12)}...
+                              {key.shortCode}
                             </code>
                             <button
                               type="button"
-                              onClick={() => handleCopyKey(key.key as string, key.id)}
+                              onClick={() => handleCopyKey(key.shortCode as string, key.id)}
                               className="text-muted-foreground hover:text-foreground"
-                              title="Copy full key"
+                              title="Copy short code"
                             >
                               {copiedId === key.id ? (
                                 <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -390,7 +450,7 @@ export default function EnrollmentKeyManager() {
                             </button>
                           </div>
                         ) : (
-                          <span className="text-xs text-muted-foreground">Hidden</span>
+                          <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
                       <td className="px-4 py-3">
@@ -612,6 +672,17 @@ export default function EnrollmentKeyManager() {
         confirmLabel="Rotate Key"
         variant="warning"
         isLoading={submitting}
+      />
+      <ConfirmDialog
+        open={purgeConfirmOpen}
+        onClose={() => setPurgeConfirmOpen(false)}
+        onConfirm={handleConfirmPurgeExpired}
+        title="Delete expired enrollment keys"
+        message="Delete all expired enrollment keys? This cannot be undone."
+        confirmLabel="Delete expired"
+        variant="destructive"
+        isLoading={submitting}
+        confirmTestId="confirm-delete-expired-keys"
       />
     </div>
   );
