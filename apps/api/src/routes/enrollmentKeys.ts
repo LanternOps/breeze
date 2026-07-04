@@ -722,6 +722,79 @@ enrollmentKeyRoutes.post(
   },
 );
 
+// POST /enrollment-keys/purge-expired - Bulk hard-delete all expired
+// enrollment keys visible to the caller (org/partner/system scoped, same as
+// the GET / list route). Keys with expiresAt IS NULL are never matched by
+// the `lt` condition below and are therefore never deleted. Hard delete is
+// safe here: installer_bootstrap_tokens and deployment_invites both carry
+// ON DELETE CASCADE against enrollment_keys.
+//
+// Registered BEFORE the /:id-parameterized routes (GET /:id, POST
+// /:id/rotate, DELETE /:id, etc.) so "purge-expired" is never captured as an
+// :id param.
+enrollmentKeyRoutes.post(
+  "/purge-expired",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-write", 10, 60),
+  requireMfa(),
+  async (c) => {
+    const auth = c.get("auth");
+
+    const conditions: ReturnType<typeof eq>[] = [];
+
+    if (auth.scope === "organization") {
+      if (!auth.orgId) {
+        return c.json({ error: "Organization context required" }, 403);
+      }
+      conditions.push(eq(enrollmentKeys.orgId, auth.orgId));
+    } else if (auth.scope === "partner") {
+      const orgIds = auth.accessibleOrgIds ?? [];
+      if (orgIds.length === 0) {
+        return c.json({ success: true, deletedCount: 0 });
+      }
+      conditions.push(
+        inArray(enrollmentKeys.orgId, orgIds) as ReturnType<typeof eq>,
+      );
+    }
+    // scope === "system": no org restriction — purge across all orgs.
+
+    // Same expired condition the list route builds for ?expired=true
+    // (line ~575 above). expiresAt IS NULL never satisfies `lt`, so
+    // never-expiring keys are never touched.
+    conditions.push(
+      lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
+    );
+
+    const deletedRows = await db
+      .delete(enrollmentKeys)
+      .where(and(...conditions))
+      .returning({ id: enrollmentKeys.id });
+    const deletedCount = deletedRows.length;
+
+    // Bulk purge can span multiple orgs (partner/system scope), so this
+    // calls createAuditLogAsync directly rather than the writeEnrollmentKeyAudit
+    // helper, which requires a single event.orgId (mirrors the direct-call
+    // pattern already used for enrollment_key.installer_build_failed above).
+    createAuditLogAsync({
+      orgId: auth.scope === "organization" ? auth.orgId : null,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: "enrollment_key.purge_expired",
+      resourceType: "enrollment_key",
+      details: { deletedCount },
+      ipAddress: getTrustedClientIpOrUndefined(c),
+      userAgent: c.req.header("user-agent"),
+      result: "success",
+    });
+
+    return c.json({ success: true, deletedCount });
+  },
+);
+
 // GET /enrollment-keys/:id - Get enrollment key details
 enrollmentKeyRoutes.get(
   "/:id",

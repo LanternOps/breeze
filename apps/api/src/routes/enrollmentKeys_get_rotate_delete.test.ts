@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// Shared mutable gates so individual tests can flip MFA/permission denial at
+// request time — the route registers `requireMfa()` / `requirePermission()`
+// once at import time, so the returned middleware must re-check a gate on
+// every invocation rather than baking in a decision at registration.
+const { mfaGate, permissionGate } = vi.hoisted(() => ({
+  mfaGate: { deny: false },
+  permissionGate: { deny: false },
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -42,8 +51,14 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (permissionGate.deny) return c.json({ error: 'Forbidden' }, 403);
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (mfaGate.deny) return c.json({ error: 'MFA required' }, 403);
+    return next();
+  }),
 }));
 
 vi.mock('../services/auditService', () => ({
@@ -122,11 +137,31 @@ function mockDeleteWhere() {
   } as any);
 }
 
+/**
+ * Mock for db.delete().where().returning() that captures the exact `where`
+ * condition passed in, so a test can assert on the composed scope + expired
+ * condition (via its JSON-serialized SQL chunks — drizzle SQL objects stringify
+ * to their operator/column/value shape, e.g. `"enrollmentKeys.orgId"`, `" = "`,
+ * `"enrollmentKeys.expiresAt"`, `" < "`) without needing a real DB.
+ */
+function mockDeleteWhereReturningCapture(rows: any[]): () => any {
+  let captured: any;
+  vi.mocked(db.delete).mockReturnValueOnce({
+    where: vi.fn((cond: any) => {
+      captured = cond;
+      return { returning: vi.fn().mockResolvedValue(rows) };
+    }),
+  } as any);
+  return () => captured;
+}
+
 describe('enrollment key routes — get, rotate, delete', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mfaGate.deny = false;
+    permissionGate.deny = false;
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
   });
@@ -278,6 +313,188 @@ describe('enrollment key routes — get, rotate, delete', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+  });
+
+  // ============================================
+  // POST /purge-expired — Bulk-delete expired enrollment keys in caller scope
+  // ============================================
+  describe('POST /enrollment-keys/purge-expired', () => {
+    it('purges expired keys within the org-scoped caller\'s org and returns the count', async () => {
+      const getCaptured = mockDeleteWhereReturningCapture([
+        { id: 'key-1' },
+        { id: 'key-2' },
+      ]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ success: true, deletedCount: 2 });
+
+      // Composed condition scopes to the caller's org AND filters expired —
+      // asserted via the serialized SQL chunk shape (see helper docstring).
+      const conditionJson = JSON.stringify(getCaptured());
+      expect(conditionJson).toContain('enrollmentKeys.orgId');
+      expect(conditionJson).toContain(ORG_ID);
+      expect(conditionJson).toContain('enrollmentKeys.expiresAt');
+      expect(conditionJson).toContain(' < ');
+
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'enrollment_key.purge_expired',
+          details: { deletedCount: 2 },
+        }),
+      );
+    });
+
+    it('returns deletedCount 0 and does not call delete when nothing matches', async () => {
+      const getCaptured = mockDeleteWhereReturningCapture([]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ success: true, deletedCount: 0 });
+      expect(getCaptured()).toBeDefined();
+      expect(createAuditLogAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ details: { deletedCount: 0 } }),
+      );
+    });
+
+    it('returns 403 when org-scoped caller has no orgId', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'test@example.com' },
+          scope: 'organization',
+          orgId: null,
+          accessibleOrgIds: [],
+          canAccessOrg: () => false,
+        });
+        return next();
+      });
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('scopes to all accessible orgs for a partner-scoped caller', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'test@example.com' },
+          scope: 'partner',
+          orgId: null,
+          accessibleOrgIds: ['org-a', 'org-b'],
+          canAccessOrg: (id: string) => ['org-a', 'org-b'].includes(id),
+        });
+        return next();
+      });
+      const getCaptured = mockDeleteWhereReturningCapture([{ id: 'key-1' }]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ success: true, deletedCount: 1 });
+      const conditionJson = JSON.stringify(getCaptured());
+      expect(conditionJson).toContain('org-a');
+      expect(conditionJson).toContain('org-b');
+    });
+
+    it('returns deletedCount 0 without querying when partner caller has no accessible orgs', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'test@example.com' },
+          scope: 'partner',
+          orgId: null,
+          accessibleOrgIds: [],
+          canAccessOrg: () => false,
+        });
+        return next();
+      });
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ success: true, deletedCount: 0 });
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('purges across all orgs (no org restriction) for a system-scoped caller', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'admin-1', email: 'admin@example.com' },
+          scope: 'system',
+          orgId: null,
+          accessibleOrgIds: null,
+          canAccessOrg: () => true,
+        });
+        return next();
+      });
+      const getCaptured = mockDeleteWhereReturningCapture([
+        { id: 'key-1' },
+        { id: 'key-2' },
+        { id: 'key-3' },
+      ]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ success: true, deletedCount: 3 });
+      const conditionJson = JSON.stringify(getCaptured());
+      // No org-scoping column present — only the expired condition.
+      expect(conditionJson).not.toContain('enrollmentKeys.orgId');
+      expect(conditionJson).toContain('enrollmentKeys.expiresAt');
+    });
+
+    it('is blocked without MFA (requireMfa)', async () => {
+      mfaGate.deny = true;
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('is blocked without the required permission (requirePermission)', async () => {
+      permissionGate.deny = true;
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
     });
   });
 });
