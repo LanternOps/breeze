@@ -28,10 +28,11 @@
  * meaning `partners`/`organizations` rows actually accumulate across every
  * integration test that has ever run against this container. No existing
  * suite notices because they all scope assertions to a specific ID; this is
- * the first that counts rows globally. Reset both tables ourselves below,
- * using the same `breeze.allow_audit_retention` bypass setup.ts's own
- * ml_feedback_events cleanup uses (audit_logs DOES allow a real DELETE under
- * that GUC — only TRUNCATE is blocked unconditionally).
+ * the first that counts rows globally. Reset both tables ourselves below with
+ * TRUNCATE ... CASCADE, temporarily disabling the audit_logs trigger (the
+ * test-DB user owns the table) — plain DELETEs are not order-independent:
+ * whatever FK-child rows earlier suites left behind (backup_configs, etc.)
+ * make them fail with 23503.
  *
  * Run:
  *   pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
@@ -42,18 +43,25 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
-import { ssoProviders, partnerLoginBranding, organizations, partners } from '../../db/schema';
+import { ssoProviders, partnerLoginBranding } from '../../db/schema';
 import { createPartner } from './db-utils';
 import { loginContextRoutes } from '../../routes/auth/loginContext';
 
 beforeEach(async () => {
   const testDb = getTestDb();
-  await testDb.transaction(async (tx) => {
-    await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-    await tx.execute(sql`DELETE FROM audit_logs`);
-  });
-  await testDb.delete(organizations);
-  await testDb.delete(partners);
+  // Bare `DELETE FROM organizations/partners` is not enough here: earlier
+  // suites in the same run leave rows in FK-child tables without ON DELETE
+  // CASCADE (backup_configs bit us in CI, 23503). TRUNCATE ... CASCADE is the
+  // only order-independent reset, and the audit_logs BEFORE TRUNCATE trigger
+  // (append-only enforcement) is the one thing blocking it — the test-DB user
+  // owns the table, so disable it just for this statement and re-enable in a
+  // finally so a failed truncate can't leave the guard off.
+  await testDb.execute(sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_log_block_truncate`);
+  try {
+    await testDb.execute(sql`TRUNCATE TABLE partners, organizations CASCADE`);
+  } finally {
+    await testDb.execute(sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_log_block_truncate`);
+  }
 });
 
 async function createPartnerAxisProvider(
