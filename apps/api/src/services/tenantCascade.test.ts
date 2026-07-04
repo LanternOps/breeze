@@ -229,7 +229,11 @@ describe('cascadeDeleteOrg', () => {
   });
 
   it('re-throws and aborts cascade on a non-42P01 error', async () => {
-    // FK edge query returns []; the next DELETE call throws a non-42P01.
+    // FK edge query returns []; the first DELETE call AFTER the associated
+    // pre-clears (device_commands + the two SSO FK children, #2195) throws a
+    // non-42P01 — i.e. the first ordered cascade-table DELETE, which is the
+    // path that wraps errors with `DELETE from "<table>"` context.
+    const associatedCount = __testOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES.length;
     let callIdx = 0;
     vi.mocked(db.execute).mockImplementation(((q: unknown) => {
       const text = sqlToText(q);
@@ -237,7 +241,7 @@ describe('cascadeDeleteOrg', () => {
         return Promise.resolve([]);
       }
       callIdx += 1;
-      if (callIdx === 2) {
+      if (callIdx === associatedCount + 1) {
         return Promise.reject(new Error('boom'));
       }
       return Promise.resolve({ rowCount: 0 });

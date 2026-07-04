@@ -29,7 +29,17 @@ function getRegistrationDisabledNotice(): string | undefined {
 // session instead (Profile → Security → Connect SSO).
 const SSO_LOGIN_ERROR_COPY: Record<string, string> = {
   sso_link_required:
-    'This account already has a password. Sign in with your password, then connect SSO under Profile → Security.'
+    'This account already has a password. Sign in with your password, then connect SSO under Profile → Security.',
+  // Partner axis (#2183): identity-first, no JIT — an unrecognized identity
+  // needs an out-of-band invite before SSO can sign it in.
+  invite_required:
+    'Your sign-in succeeded, but no account here is linked to that identity yet. Ask your administrator for an invite, then try again.',
+  no_partner_access:
+    'That account does not have access to this workspace. Contact your administrator.',
+  // The verified IdP identity is already linked to a DIFFERENT account
+  // (#2195 unique-index race guard in the callback).
+  identity_in_use:
+    'That sign-in identity is already linked to a different account. Contact your administrator.'
 };
 
 function getSsoLoginNotice(): string | undefined {

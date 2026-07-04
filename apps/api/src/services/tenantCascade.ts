@@ -330,6 +330,28 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE device_id IN (SELECT id FROM devices WHERE org_id = ${orgId})
     `,
   },
+  // SSO FK children with NO org_id/partner_id column (#2195): they hang off
+  // sso_providers/users, so without a pre-clear the cascade's DELETEs on
+  // those parents fail on FK for any org that ever exercised SSO.
+  // user_sso_identities keys off BOTH parents (its provider may be
+  // partner-axis while the user is org-bound, and vice versa).
+  {
+    table: 'user_sso_identities',
+    clearSql: (orgId) => sql`
+      DELETE FROM user_sso_identities
+      WHERE provider_id IN (SELECT id FROM sso_providers WHERE org_id = ${orgId})
+         OR user_id IN (SELECT id FROM users WHERE org_id = ${orgId})
+    `,
+  },
+  // sso_sessions.link_user_id already cascades on user delete; the provider
+  // FK does not.
+  {
+    table: 'sso_sessions',
+    clearSql: (orgId) => sql`
+      DELETE FROM sso_sessions
+      WHERE provider_id IN (SELECT id FROM sso_providers WHERE org_id = ${orgId})
+    `,
+  },
 ];
 
 /**
@@ -496,22 +518,32 @@ export async function cascadeDeleteOrg(
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
 
-  await dbModule.withSystemDbAccessContext(async () => {
-    // 1. Clear system-scoped associated tables (e.g. device_commands)
-    //    that hold FKs into the cascade set.
-    for (const assoc of ASSOCIATED_SYSTEM_SCOPED_TABLES) {
-      try {
+  // 1. Clear system-scoped associated tables (e.g. device_commands, the
+  //    SSO FK children) that hold FKs into the cascade set. One system
+  //    context per table so the audit write in the catch below never runs
+  //    inside an open DB context (nesting poisons the pool).
+  for (const assoc of ASSOCIATED_SYSTEM_SCOPED_TABLES) {
+    try {
+      const count = await dbModule.withSystemDbAccessContext(async () => {
         const result = await dbModule.db.execute(assoc.clearSql(orgId));
-        const count = extractRowCount(result);
-        stats.tablesDeleted[assoc.table] = (stats.tablesDeleted[assoc.table] ?? 0) + count;
-        stats.totalRowsDeleted += count;
-      } catch (err) {
-        // Tolerate missing tables (e.g. a deployment that doesn't have
-        // every optional table). Re-throw on anything else.
-        if (!isUndefinedTable(err)) throw err;
+        return extractRowCount(result);
+      });
+      stats.tablesDeleted[assoc.table] = (stats.tablesDeleted[assoc.table] ?? 0) + count;
+      stats.totalRowsDeleted += count;
+    } catch (err) {
+      // Tolerate missing tables (e.g. a deployment that doesn't have
+      // every optional table). Anything else aborts the erasure — record
+      // it forensically first (#2195), same as the main loop below.
+      if (!isUndefinedTable(err)) {
+        await writeErasureFailedAudit(orgId, performedBy, performedByEmail, assoc.table, stats, err);
+        throw new Error(
+          `[tenantCascade] DELETE from "${assoc.table}" failed for org=${orgId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
     }
-  });
+  }
 
   // 2. Walk the cascade list in FK-safe order, each table in its OWN
   //    system-context transaction so a failure on one table aborts
@@ -536,7 +568,10 @@ export async function cascadeDeleteOrg(
     } catch (err) {
       // A single table failure aborts the cascade — partial deletion is
       // worse than no deletion (the org sits in an inconsistent state).
-      // Re-throw with context.
+      // Best-effort forensic record of how far the erasure got (#2195 —
+      // mirrors the partner purge's purge_failed breadcrumb), then re-throw
+      // with context.
+      await writeErasureFailedAudit(orgId, performedBy, performedByEmail, table, stats, err);
       throw new Error(
         `[tenantCascade] DELETE from "${table}" failed for org=${orgId}: ${
           err instanceof Error ? err.message : String(err)
@@ -566,6 +601,41 @@ export async function cascadeDeleteOrg(
   });
 
   return stats;
+}
+
+/** Best-effort forensic breadcrumb when a tenant.erasure aborts mid-cascade
+ * (#2195): records the failed table and per-table progress so a partial
+ * erasure is reconstructable. org_id=NULL so the row survives regardless of
+ * how far the cascade got. Never throws — the original error is what the
+ * caller must see. */
+async function writeErasureFailedAudit(
+  orgId: string,
+  performedBy: string,
+  performedByEmail: string | undefined,
+  failedTable: string,
+  stats: CascadeStats,
+  err: unknown,
+): Promise<void> {
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: 'tenant.erasure.failed',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: {
+        failedTable,
+        tablesDeleted: stats.tablesDeleted,
+        totalRowsDeleted: stats.totalRowsDeleted,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      result: 'failure',
+    });
+  } catch (auditErr) {
+    console.warn('[tenantCascade] erasure-failed audit write failed:', auditErr);
+  }
 }
 
 function deleteOrgRows(
@@ -677,6 +747,48 @@ export async function cascadeDeletePartner(
   for (const row of orgRows) {
     const orgStats = await self.cascadeDeleteOrg(row.id, performedBy);
     totalRowsDeleted += orgStats.totalRowsDeleted;
+  }
+
+  // SSO FK children with NO partner_id column (#2195): the partner-axis sweep
+  // below only reaches tables that HAVE a partner_id column, so a canary
+  // partner that ever exercised SSO would fail the sweep on the
+  // sso_providers/users DELETEs (FK violation) without this pre-clear.
+  // Mirrors the ASSOCIATED_SYSTEM_SCOPED_TABLES step in cascadeDeleteOrg.
+  const partnerSsoPreClears: ReadonlyArray<{ table: string; clearSql: ReturnType<typeof sql> }> = [
+    {
+      table: 'user_sso_identities',
+      clearSql: sql`
+        DELETE FROM user_sso_identities
+        WHERE provider_id IN (SELECT id FROM sso_providers WHERE partner_id = ${partnerId})
+           OR user_id IN (SELECT id FROM users WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'sso_sessions',
+      clearSql: sql`
+        DELETE FROM sso_sessions
+        WHERE provider_id IN (SELECT id FROM sso_providers WHERE partner_id = ${partnerId})
+      `,
+    },
+  ];
+  for (const assoc of partnerSsoPreClears) {
+    try {
+      const count = await dbModule.withSystemDbAccessContext(async () => {
+        const result = await dbModule.db.execute(assoc.clearSql);
+        return extractRowCount(result);
+      });
+      tablesDeleted[assoc.table] = (tablesDeleted[assoc.table] ?? 0) + count;
+      totalRowsDeleted += count;
+    } catch (err) {
+      if (!isUndefinedTable(err)) {
+        await writePurgeFailedAudit(performedBy, partnerId, assoc.table, tablesDeleted, err);
+        throw new Error(
+          `[tenantCascade] DELETE from "${assoc.table}" failed for partner=${partnerId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   // information_schema is not RLS-protected — bare db.execute is fine here.

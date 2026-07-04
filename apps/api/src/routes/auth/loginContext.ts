@@ -6,6 +6,7 @@ import { partners, ssoProviders, partnerLoginBranding } from '../../db/schema';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { getRedis, rateLimiter } from '../../services';
 import { captureException } from '../../services/sentry';
+import { envFlag } from '../../utils/envFlag';
 
 export const loginContextRoutes = new Hono();
 
@@ -22,6 +23,18 @@ loginContextRoutes.get('/login-context', async (c) => {
   const check = await rateLimiter(redis, `login-context:${getTrustedClientIp(c)}`, 30, 60);
   if (!check.allowed) {
     return c.json({ error: 'Too many requests' }, 429);
+  }
+
+  // Hosted guard (#2195): the single-partner fast-path is a self-hosted
+  // convenience. A hosted region that happened to shrink to exactly one
+  // partner must not publicly serve that partner's branding/SSO entry —
+  // hosted discovery is the v2 slug path (#2183). envFlag (not a bare
+  // === 'true') so every hosted spelling the production config validator
+  // accepts (1/yes/on) trips the guard; production refuses to boot with
+  // IS_HOSTED unset, so unset here means a self-hosted dev instance.
+  if (envFlag('IS_HOSTED', false)) {
+    c.header('Cache-Control', 'public, max-age=60');
+    return c.json({ branding: null, partnerSso: null } satisfies LoginContext);
   }
 
   let context: LoginContext;
@@ -43,6 +56,10 @@ loginContextRoutes.get('/login-context', async (c) => {
         .where(eq(partnerLoginBranding.partnerId, partnerId))
         .limit(1);
 
+      // Deterministic pick when several providers are active (#2195): oldest
+      // first, id as tiebreak — the same ORDER BY the SSO entry routes use,
+      // so the button on the login page always names the provider the entry
+      // route will actually start a flow with.
       const [provider] = await db
         .select({ name: ssoProviders.name, enforceSSO: ssoProviders.enforceSSO })
         .from(ssoProviders)
@@ -50,6 +67,7 @@ loginContextRoutes.get('/login-context', async (c) => {
           eq(ssoProviders.partnerId, partnerId),
           eq(ssoProviders.status, 'active')
         ))
+        .orderBy(ssoProviders.createdAt, ssoProviders.id)
         .limit(1);
 
       return {

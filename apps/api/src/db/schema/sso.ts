@@ -61,7 +61,9 @@ export const ssoProviders = pgTable('sso_providers', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
-// User SSO identity links
+// User SSO identity links. Unique (provider_id, external_id): one IdP subject
+// maps to at most one Breeze user — enforced at the DB layer (#2195) so the
+// callback's code-only identity-in-use check can't be raced (TOCTOU).
 export const userSsoIdentities = pgTable('user_sso_identities', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id),
@@ -82,7 +84,9 @@ export const userSsoIdentities = pgTable('user_sso_identities', {
   lastLoginAt: timestamp('last_login_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (t) => ({
+  providerExternalUnique: uniqueIndex('user_sso_identities_provider_external_idx').on(t.providerId, t.externalId),
+}));
 
 // SSO Login sessions (for CSRF protection)
 export const ssoSessions = pgTable('sso_sessions', {

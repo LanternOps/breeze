@@ -14,10 +14,15 @@ import { writeRouteAudit } from '../services/auditEvents';
 // final URL is /api/v1/partners/me/login-branding.
 export const partnerLoginBrandingRoutes = new Hono();
 
+// Only the subtypes the login page will actually render (see
+// apps/web/src/lib/safeImageSrc.ts) — accepting any data:image/* here let a
+// partner save an SVG/GIF logo that then silently never displayed (#2195).
+const LOGO_DATA_URI_PATTERN = /^data:image\/(png|jpeg|webp);base64,/;
+
 const brandingSchema = z.object({
   logoUrl: z.string().max(400_000)
-    .refine((v) => v.startsWith('https://') || v.startsWith('data:image/'), {
-      message: 'logoUrl must be an https:// URL or a data:image/ URI'
+    .refine((v) => v.startsWith('https://') || LOGO_DATA_URI_PATTERN.test(v), {
+      message: 'logoUrl must be an https:// URL or a base64 data:image/png, jpeg, or webp URI'
     })
     .nullable().optional(),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'accentColor must be a #rrggbb hex color')

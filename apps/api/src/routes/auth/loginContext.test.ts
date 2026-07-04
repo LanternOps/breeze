@@ -39,15 +39,20 @@ import { captureException } from '../../services/sentry';
 const PARTNER_UUID = '00000000-0000-4000-8000-000000000030';
 const PARTNER_UUID_2 = '00000000-0000-4000-8000-000000000031';
 
-// Builds a select() return value that supports both call shapes used by the
-// route: `.from(t).limit(n)` (the partner-count probe, no filter) and
-// `.from(t).where(cond).limit(n)` (the branding/provider lookups).
+// Builds a select() return value that supports the call shapes used by the
+// route: `.from(t).limit(n)` (the partner-count probe, no filter),
+// `.from(t).where(cond).limit(n)` (the branding lookup), and
+// `.from(t).where(cond).orderBy(...).limit(n)` (the deterministic provider
+// pick, #2195).
 function selectChain(rows: unknown[]) {
   return {
     from: vi.fn().mockReturnValue({
       limit: vi.fn().mockResolvedValue(rows),
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(rows),
+        }),
       }),
     }),
   };
@@ -63,7 +68,26 @@ describe('GET /auth/login-context (#2183)', () => {
     vi.mocked(getRedis).mockReturnValue({} as any);
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 29, resetAt: new Date() } as any);
     vi.mocked(db.select).mockReset().mockReturnValue(selectChain([]) as any);
+    delete process.env.IS_HOSTED;
   });
+
+  // Every hosted spelling the production config validator accepts must trip
+  // the guard (envFlag, not a bare === 'true') — an IS_HOSTED=1 deploy that
+  // missed the guard would publicly serve a single-partner region's branding.
+  it.each(['true', '1', 'yes', 'on'])(
+    'short-circuits to all-null on a hosted instance (IS_HOSTED=%s) without touching the DB (#2195)',
+    async (spelling) => {
+      process.env.IS_HOSTED = spelling;
+      vi.mocked(db.select).mockReturnValueOnce(selectChain([{ id: PARTNER_UUID }]) as any);
+
+      const res = await getContext();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ branding: null, partnerSso: null });
+      // The single-partner fast-path must never run on hosted — even a region
+      // with exactly one partner reveals nothing.
+      expect(db.select).not.toHaveBeenCalled();
+    }
+  );
 
   it('returns branding + partnerSso on a single-partner instance with both configured', async () => {
     vi.mocked(db.select)

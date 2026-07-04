@@ -11,15 +11,17 @@
  * limiting) is real, the same pattern used by routes/sso.test.ts's mocked-db
  * unit suite but here against the genuine `breeze_app` RLS-enforced pool.
  *
- * Also includes ONE org-axis callback case (see "org-axis callback" test
- * below) to regression-lock the TWO `withSystemDbAccessContext` fixes to
- * the callback's shared plumbing (the provider read, and the org-membership
- * read in the org branch of the token-payload switch) — both are shared by
- * BOTH axes, so a partner-only suite wouldn't catch a regression on the org
- * side. That case seeds `sso_sessions` directly rather than going through
- * `GET /sso/login/:orgId`, because that route's own provider read is a
- * SEPARATE, still-pre-existing, unfixed bare-db bug (see PR description)
- * that always 404s independent of the callback fixes.
+ * Also includes org-axis coverage: ONE callback-only case (see "org-axis
+ * callback" test below) regression-locking the TWO `withSystemDbAccessContext`
+ * fixes to the callback's shared plumbing (the provider read, and the
+ * org-membership read in the org branch of the token-payload switch) — both
+ * shared by BOTH axes, so a partner-only suite wouldn't catch a regression on
+ * the org side. That case seeds `sso_sessions` directly to keep the callback
+ * isolated from the initiation route. The FULL org path — GET /sso/check/:orgId
+ * → GET /sso/login/:orgId → callback — is covered by the #2195 tests below,
+ * which regression-lock the initiation/check system-context fixes (those
+ * routes' bare reads 0-rowed under breeze_app RLS, so org SSO could never
+ * even start in production-shaped deployments).
  *
  * Prerequisites:
  *   docker compose -f docker-compose.test.yml up -d
@@ -32,7 +34,7 @@ import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { decodeJwt } from 'jose';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { createHmac } from 'crypto';
 import { getTestDb } from './setup';
 import { ssoProviders, ssoSessions, userSsoIdentities, users } from '../../db/schema';
@@ -97,6 +99,36 @@ async function createPartnerAxisProvider(
   return row;
 }
 
+/** Org-axis sibling of createPartnerAxisProvider (#2195). */
+async function createOrgAxisProvider(
+  orgId: string,
+  opts: { status?: 'active' | 'inactive' | 'testing'; enforceSSO?: boolean; name?: string; createdAt?: Date } = {},
+) {
+  const db = getTestDb();
+  const [row] = await db
+    .insert(ssoProviders)
+    .values({
+      orgId,
+      partnerId: null,
+      name: opts.name ?? 'Org Test IdP',
+      type: 'oidc',
+      status: opts.status ?? 'active',
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+      issuer: ISSUER,
+      clientId: 'test-client-id',
+      clientSecret: encryptSecret('test-client-secret'),
+      authorizationUrl: `${ISSUER}/authorize`,
+      tokenUrl: `${ISSUER}/token`,
+      userInfoUrl: `${ISSUER}/userinfo`,
+      jwksUrl: `${ISSUER}/jwks`,
+      enforceSSO: opts.enforceSSO ?? false,
+      autoProvision: false,
+    })
+    .returning();
+  if (!row) throw new Error('failed to create org-axis provider fixture');
+  return row;
+}
+
 /** Insert a user row directly (bypassing db-utils' createUser, which always
  * hashes a password) so passwordHash can be left null for SSO-only staff. */
 async function createPasswordlessUser(opts: { partnerId: string; orgId?: string | null; email: string; name?: string }) {
@@ -140,11 +172,9 @@ function extractSsoCodeFromLocation(location: string): string {
 }
 
 /** Reproduces routes/sso.ts's buildSsoStateCookieValue (not exported) so a
- * directly-seeded session (see the org-axis test) can present a
+ * directly-seeded session (see the callback-only org-axis test) can present a
  * browser-binding cookie the callback will accept without going through the
- * real /login/:orgId route — whose OWN provider read is a separate,
- * pre-existing, unfixed bare-db bug that always 404s regardless of this
- * suite's fix (see PR description). */
+ * initiation route — keeping that case a pure callback regression lock. */
 function buildTestSsoStateCookie(state: string): string {
   const secret = process.env.APP_ENCRYPTION_KEY!;
   const value = createHmac('sha256', secret).update(`sso-login-state:${state}`).digest('hex');
@@ -154,7 +184,17 @@ function buildTestSsoStateCookie(state: string): string {
 describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', () => {
   let app: Hono;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Flush the SSO login rate-limit buckets between tests: the pure-IP
+    // bucket (sso:login:ip:*, 30/5min) is shared across BOTH initiation
+    // routes and real Redis persists across test files — enough accumulated
+    // initiations in one CI window would start 429ing unrelated tests.
+    const { getRedis } = await import('../../services');
+    const redis = getRedis();
+    if (redis) {
+      const keys = await redis.keys('sso:login:*');
+      if (keys.length > 0) await redis.del(...keys);
+    }
     app = new Hono();
     app.route('/sso', ssoRoutes);
     // Mounted for the enforceSSO-non-suppression case below, which drives a
@@ -448,13 +488,11 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     // `provider_not_found`; reverting the membership-read fix yields
     // `no_org_access` — neither matches the asserted `#ssoCode=` success path.
     //
-    // We can't reach this via GET /sso/login/:orgId — that route's OWN
-    // provider read is a separate, still-pre-existing, unfixed bare-db bug
-    // (see PR description) that always 404s. So the sso_sessions row is
-    // seeded directly instead (that table carries no RLS policy at all —
-    // confirmed empirically and via migration grep — so a direct insert is a
-    // faithful stand-in for what a working initiation route would have
-    // written).
+    // The sso_sessions row is seeded directly (rather than via
+    // GET /sso/login/:orgId) to keep this case a PURE callback regression
+    // lock, independent of the initiation route. The full
+    // check → initiation → callback org path is exercised by the #2195
+    // tests below.
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const role = await createRole({ scope: 'organization', orgId: org.id });
@@ -619,6 +657,146 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(body.tokens?.accessToken).toBeDefined();
     expect(body.mfaRequired).toBe(false);
   });
+
+  // ── #2195: the org-axis PUBLIC entry surface (check + initiation) ────────
+  // GET /sso/check/:orgId and GET /sso/login/:orgId read the provider (and
+  // the initiation INSERTs the sso_sessions row) with bare `db` calls until
+  // #2195: under the real breeze_app FORCED-RLS pool they silently 0-rowed,
+  // so /check always answered ssoEnabled:false and /login/:orgId always
+  // 404'd — org SSO could never even START in production-shaped deployments.
+  // These cases drive the REAL routes end-to-end against that pool.
+
+  it('#2195 org-axis: /sso/check reports the provider and /sso/login/:orgId starts a flow that completes to a minted token', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const role = await createRole({ scope: 'organization', orgId: org.id });
+    const user = await createPasswordlessUser({
+      partnerId: partner.id,
+      orgId: org.id,
+      email: `org-e2e-${Date.now()}@example.com`,
+    });
+    await assignUserToOrganization(user.id, org.id, role.id);
+    const provider = await createOrgAxisProvider(org.id);
+
+    // The login page's "show the SSO button?" probe.
+    const checkRes = await app.request(`/sso/check/${org.id}`);
+    expect(checkRes.status).toBe(200);
+    const checkBody = await checkRes.json();
+    expect(checkBody.ssoEnabled).toBe(true);
+    expect(checkBody.provider?.id).toBe(provider.id);
+    expect(checkBody.loginUrl).toBe(`/api/v1/sso/login/${org.id}`);
+
+    // Initiation through the real route: 302 to the IdP, session persisted,
+    // binding cookie set.
+    const { state, nonce, cookiePair } = await initiateOrgLogin(app, org.id);
+
+    vi.mocked(verifyIdTokenSignature).mockResolvedValue(idClaimsFor('external-sub-org-e2e', user.email, nonce));
+    vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-sub-org-e2e', email: user.email, name: 'Org User' });
+
+    const callbackRes = await app.request(`/sso/callback?code=idp-auth-code&state=${state}`, {
+      headers: { cookie: cookiePair },
+    });
+    expect(callbackRes.status).toBe(302);
+    const location = callbackRes.headers.get('location');
+    expect(location).toContain('#ssoCode=');
+
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: extractSsoCodeFromLocation(location!) }),
+    });
+    expect(exchangeRes.status).toBe(200);
+    const payload = decodeJwt((await exchangeRes.json()).accessToken);
+    expect(payload.scope).toBe('organization');
+    expect(payload.orgId).toBe(org.id);
+    expect(payload.sub).toBe(user.id);
+  });
+
+  it('#2195: a returning SSO login UPDATEs the identity row instead of inserting a duplicate', async () => {
+    // Shared identity block (both axes) — before #2195 the existingIdentity
+    // read sat outside the system context, always 0-rowed under RLS, and
+    // every returning login INSERTed a duplicate (provider, sub) row. The
+    // unique index added in 2026-07-04-user-sso-identities-unique-external
+    // would turn that duplicate into a hard failure; with the fix the second
+    // login must take the UPDATE branch — exactly one row, refreshed stamp.
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const user = await createPasswordlessUser({
+      partnerId: partner.id,
+      email: `returning-${Date.now()}@example.com`,
+    });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const provider = await createPartnerAxisProvider(partner.id);
+    const externalSub = `returning-sub-${Date.now()}`;
+
+    const doFullLogin = async () => {
+      const { state, nonce, cookiePair } = await initiatePartnerLogin(app, partner.id);
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue(idClaimsFor(externalSub, user.email, nonce));
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: externalSub, email: user.email, name: 'Tech' });
+      const res = await app.request(`/sso/callback?code=idp-auth-code&state=${state}`, {
+        headers: { cookie: cookiePair },
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('#ssoCode=');
+    };
+
+    await doFullLogin();
+    await doFullLogin();
+
+    const db = getTestDb();
+    const rows = await db
+      .select()
+      .from(userSsoIdentities)
+      .where(and(
+        eq(userSsoIdentities.providerId, provider.id),
+        eq(userSsoIdentities.externalId, externalSub)
+      ));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.userId).toBe(user.id);
+    expect(rows[0]?.lastLoginAt).not.toBeNull();
+  });
+
+  it('#2195: with two active providers, /check and /login/:orgId agree on the OLDEST one (deterministic ORDER BY)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    // Insert the NEWER provider first so a "first row wins" accident (insert
+    // order / physical order) picks the wrong one without the ORDER BY.
+    await createOrgAxisProvider(org.id, { name: 'Newer IdP', createdAt: new Date('2026-02-01T00:00:00Z') });
+    const older = await createOrgAxisProvider(org.id, { name: 'Older IdP', createdAt: new Date('2026-01-01T00:00:00Z') });
+
+    const checkRes = await app.request(`/sso/check/${org.id}`);
+    expect(checkRes.status).toBe(200);
+    const checkBody = await checkRes.json();
+    expect(checkBody.provider?.id).toBe(older.id);
+
+    const { state } = await initiateOrgLogin(app, org.id);
+    const db = getTestDb();
+    const [sessionRow] = await db.select().from(ssoSessions).where(eq(ssoSessions.state, state)).limit(1);
+    expect(sessionRow?.providerId).toBe(older.id);
+  });
+
+  it('#2195: the DB unique index rejects a second (provider_id, external_id) link outright (23505)', async () => {
+    const partner = await createPartner();
+    const provider = await createPartnerAxisProvider(partner.id);
+    const userA = await createPasswordlessUser({ partnerId: partner.id, email: `uniq-a-${Date.now()}@example.com` });
+    const userB = await createPasswordlessUser({ partnerId: partner.id, email: `uniq-b-${Date.now()}@example.com` });
+
+    const db = getTestDb();
+    await db.insert(userSsoIdentities).values({
+      userId: userA.id,
+      providerId: provider.id,
+      externalId: 'uniq-sub',
+      email: userA.email,
+    });
+    await expect(
+      db.insert(userSsoIdentities).values({
+        userId: userB.id,
+        providerId: provider.id,
+        externalId: 'uniq-sub',
+        email: userB.email,
+      })
+    ).rejects.toMatchObject({ cause: { code: '23505' } }); // DrizzleQueryError wraps the PostgresError
+  });
 });
 
 // ── shared helpers ──────────────────────────────────────────────────────────
@@ -637,9 +815,18 @@ function idClaimsFor(sub: string, email: string, nonce: string) {
 }
 
 async function initiatePartnerLogin(app: Hono, partnerId: string): Promise<{ state: string; nonce: string; cookiePair: string }> {
-  const loginRes = await app.request(`/sso/login/partner/${partnerId}`);
+  return initiateLoginVia(app, `/sso/login/partner/${partnerId}`);
+}
+
+// Org-axis sibling (#2195): drives the real GET /sso/login/:orgId route.
+async function initiateOrgLogin(app: Hono, orgId: string): Promise<{ state: string; nonce: string; cookiePair: string }> {
+  return initiateLoginVia(app, `/sso/login/${orgId}`);
+}
+
+async function initiateLoginVia(app: Hono, path: string): Promise<{ state: string; nonce: string; cookiePair: string }> {
+  const loginRes = await app.request(path);
   if (loginRes.status !== 302) {
-    throw new Error(`expected 302 from /sso/login/partner/${partnerId}, got ${loginRes.status}: ${await loginRes.text()}`);
+    throw new Error(`expected 302 from ${path}, got ${loginRes.status}: ${await loginRes.text()}`);
   }
   const location = loginRes.headers.get('location');
   const setCookie = loginRes.headers.get('set-cookie');
