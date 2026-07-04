@@ -27,6 +27,13 @@ vi.mock('./ApproverDevicesSection', () => ({
   default: () => null,
 }));
 
+// ConnectSsoCard (#2183) fetches /sso/link/options on mount; stub it so it
+// doesn't consume from this file's ordered fetchWithAuth mock sequence. Its own
+// behavior is covered by ConnectSsoCard.test.tsx.
+vi.mock('./ConnectSsoCard', () => ({
+  default: () => null,
+}));
+
 import ProfilePage from './ProfilePage';
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

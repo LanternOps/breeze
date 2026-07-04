@@ -64,6 +64,7 @@ import { apiKeyRoutes } from './routes/apiKeys';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
 import { ssoRoutes } from './routes/sso';
+import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
 import { docsRoutes } from './routes/docs';
 import { accessReviewRoutes } from './routes/accessReviews';
 import { webhookRoutes } from './routes/webhooks';
@@ -823,6 +824,10 @@ api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no au
 api.route('/enrollment-keys', enrollmentKeyRoutes);
 api.route('/installer', installerRoutes);
 api.route('/sso', ssoRoutes);
+// Mounted directly at /partners (not nested under /orgs' /partners/me or the
+// legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
+// per Task 11's consumed contract (#2183).
+api.route('/partners', partnerLoginBrandingRoutes);
 api.route('/docs', docsRoutes);
 api.route('/access-reviews', accessReviewRoutes);
 api.route('/webhooks', webhookRoutes);

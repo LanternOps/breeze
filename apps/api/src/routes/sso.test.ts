@@ -57,7 +57,12 @@ vi.mock('../services', () => ({
   // Task 7 follow-up: SSO callback now mints a refresh-token family for
   // every completed sign-in so reuse-detection covers SSO sessions.
   mintRefreshTokenFamily: vi.fn().mockResolvedValue('sso-family-id-mock'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined)
+  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
+  // Partner-axis login rate limiting (#2183 spec §5) — default allowed so
+  // existing tests exercising the route body are unaffected; the dedicated
+  // 429 test overrides this per-call.
+  rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date(Date.now() + 60_000) }),
+  getRedis: vi.fn().mockReturnValue({})
 }));
 
 vi.mock('../db', () => ({
@@ -95,12 +100,14 @@ vi.mock('../db/schema', () => ({
   ssoProviders: {
     id: 'id',
     orgId: 'orgId',
+    partnerId: 'partnerId',
     name: 'name',
     type: 'type',
     status: 'status',
     issuer: 'issuer',
     autoProvision: 'autoProvision',
     enforceSSO: 'enforceSSO',
+    trustsIdpMfa: 'trustsIdpMfa',
     createdAt: 'createdAt',
     authorizationUrl: 'authorizationUrl',
     tokenUrl: 'tokenUrl',
@@ -124,17 +131,26 @@ vi.mock('../db/schema', () => ({
   },
   users: {
     id: 'id',
-    email: 'email'
+    email: 'email',
+    orgId: 'orgId',
+    partnerId: 'partnerId'
   },
   organizationUsers: {
     orgId: 'orgId',
     roleId: 'roleId',
     userId: 'userId'
   },
+  partnerUsers: {
+    userId: 'userId',
+    partnerId: 'partnerId',
+    roleId: 'roleId'
+  },
   roles: {
     id: 'id',
     name: 'name',
-    scope: 'scope'
+    scope: 'scope',
+    orgId: 'orgId',
+    partnerId: 'partnerId'
   }
 }));
 
@@ -145,6 +161,14 @@ vi.mock('../services/ssoDomainVerification', () => ({
   recordValueFor: vi.fn((token: string) => `breeze-domain-verify=${token}`),
   isSsoProvisioningBlocked: vi.fn().mockResolvedValue(false),
 }));
+
+// Partial-mock auth/helpers: keep the real cookie helpers the callback uses,
+// but stub auditLogin so partner-axis login tests can assert the audit call
+// (method: 'sso-partner') without invoking the real async audit-log writer.
+vi.mock('./auth/helpers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./auth/helpers')>();
+  return { ...actual, auditLogin: vi.fn() };
+});
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -183,7 +207,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
-import { createTokenPair } from '../services';
+import { createTokenPair, rateLimiter } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import {
   discoverOIDCConfig,
@@ -193,6 +217,8 @@ import {
   verifyIdTokenSignature,
 } from '../services/sso';
 import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { auditLogin } from './auth/helpers';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -209,6 +235,7 @@ describe('sso routes', () => {
     partnerId: string | null;
     accessibleOrgIds: string[] | null;
     canAccessOrg: (orgId: string) => boolean;
+    partnerOrgAccess: 'all' | 'selected' | 'none' | null;
   }> = {}) => {
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
@@ -217,6 +244,7 @@ describe('sso routes', () => {
         partnerId: 'partnerId' in overrides ? overrides.partnerId : null,
         accessibleOrgIds: 'accessibleOrgIds' in overrides ? overrides.accessibleOrgIds : [ORG_UUID],
         canAccessOrg: overrides.canAccessOrg ?? (() => true),
+        partnerOrgAccess: 'partnerOrgAccess' in overrides ? overrides.partnerOrgAccess : null,
         user: { id: USER_UUID, email: 'test@example.com' }
       });
       return next();
@@ -240,6 +268,11 @@ describe('sso routes', () => {
     } as any);
     vi.mocked(db.update).mockReset().mockReturnValue({
       set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
+    } as any);
+    vi.mocked(rateLimiter).mockReset().mockResolvedValue({
+      allowed: true,
+      remaining: 9,
+      resetAt: new Date(Date.now() + 60_000)
     } as any);
     delete process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN;
     process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
@@ -505,6 +538,7 @@ describe('sso routes', () => {
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
             id: PROVIDER_UUID,
+            orgId: ORG_UUID,
             type: 'saml'
           }])
         })
@@ -525,6 +559,7 @@ describe('sso routes', () => {
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
             id: PROVIDER_UUID,
+            orgId: ORG_UUID,
             type: 'oidc',
             issuer: 'https://issuer.example.com'
           }])
@@ -1457,6 +1492,755 @@ describe('sso routes', () => {
       expect(body.data[0].verified).toBe(false);
       expect(body.data[0].recordName).toBeDefined();
       expect(body.data[0].recordValue).toBeDefined();
+    });
+  });
+
+  describe('partner-axis provider CRUD (#2183)', () => {
+    it('creates a partner-axis provider for ownerScope=partner with orgAccess=all', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [],
+        partnerOrgAccess: 'all'
+      });
+
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: PROVIDER_UUID,
+          name: 'Partner Okta',
+          orgId: null,
+          partnerId: PARTNER_UUID
+        }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner Okta',
+          type: 'oidc'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: null,
+        partnerId: PARTNER_UUID
+      }));
+    });
+
+    it('403s ownerScope=partner when partnerOrgAccess is not all', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID],
+        partnerOrgAccess: 'selected'
+      });
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner Okta',
+          type: 'oidc'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('400s a partner-axis defaultRoleId that is not a partner-scoped role of the caller partner', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [],
+        partnerOrgAccess: 'all'
+      });
+
+      // No matching partner-scoped role for this partner.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'Partner Okta',
+          type: 'oidc',
+          defaultRoleId: '00000000-0000-4000-8000-000000000099'
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-scoped role/);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects ownerScope on update (schema omits it)', async () => {
+      // Existing provider is org-axis; a PATCH body carrying `ownerScope` must
+      // be stripped by the schema (createProviderSchema.omit({ownerScope:true}))
+      // so the axis is never touched by an update.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: PROVIDER_UUID,
+            orgId: ORG_UUID,
+            partnerId: null,
+            name: 'Okta Renamed'
+          }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerScope: 'partner', name: 'Okta Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      const setArg = setMock.mock.calls[0]?.[0];
+      expect(setArg).not.toHaveProperty('ownerScope');
+      expect(setArg).not.toHaveProperty('orgId');
+    });
+
+    it('does not accept partnerId from the request body', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [],
+        partnerOrgAccess: 'all'
+      });
+
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: PROVIDER_UUID,
+          name: 'Partner Okta',
+          orgId: null,
+          partnerId: PARTNER_UUID
+        }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          partnerId: 'p-EVIL',
+          name: 'Partner Okta',
+          type: 'oidc'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      // partnerId always comes from the caller's token, never the body — even
+      // though createProviderSchema doesn't define a `partnerId` input field,
+      // this locks in the invariant so it can't regress if one is ever added.
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: null,
+        partnerId: PARTNER_UUID
+      }));
+    });
+
+    it('allows a system-scope caller scoped to the same partner to read a partner-axis provider by id', async () => {
+      // canAccessProviderRow requires `auth.partnerId === row.partnerId` even
+      // for system scope (partner-axis rows are never globally world-readable
+      // by an unscoped system token) — this simulates a system caller acting
+      // with that partner context (e.g. support tooling), not the generic
+      // background-worker system scope (which carries partnerId: null).
+      setAuthContext({ scope: 'system', orgId: null, partnerId: PARTNER_UUID, accessibleOrgIds: null });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: null,
+              partnerId: PARTNER_UUID,
+              name: 'Partner Okta',
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              clientSecret: 'secret'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('denies an org-scope caller from reading a partner-axis provider', async () => {
+      setAuthContext({ scope: 'organization', orgId: ORG_UUID, partnerId: null, accessibleOrgIds: [ORG_UUID] });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: null,
+              partnerId: PARTNER_UUID,
+              name: 'Partner Okta',
+              type: 'oidc',
+              issuer: 'https://issuer.example.com',
+              clientSecret: 'secret'
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('403s deleting a partner-axis provider when the caller lacks full partner org access', async () => {
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID],
+        partnerOrgAccess: 'selected'
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: null, partnerId: PARTNER_UUID }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /sso/login/partner/:partnerId (#2183)', () => {
+    it('404s when the partner has no active partner-axis provider', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('redirects to the IdP authorization URL and sets the state cookie for an active provider', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PROVIDER_UUID,
+              orgId: null,
+              partnerId: PARTNER_UUID,
+              type: 'oidc',
+              status: 'active',
+              issuer: 'https://issuer.example.com',
+              authorizationUrl: 'https://issuer.example.com/auth',
+              tokenUrl: 'https://issuer.example.com/token',
+              userInfoUrl: 'https://issuer.example.com/userinfo',
+              jwksUrl: 'https://issuer.example.com/jwks',
+              clientId: 'client-id',
+              clientSecret: 'client-secret',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: false,
+              allowedDomains: null,
+              defaultRoleId: null
+            }])
+          })
+        })
+      } as any);
+
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}?redirect=/dashboard`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('https://idp.example.com/auth');
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        providerId: PROVIDER_UUID,
+        redirectUrl: '/dashboard'
+      }));
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).toContain('breeze_sso_state=');
+    });
+
+    it('429s when the per-IP+partner rate limit is exceeded, without touching the DB', async () => {
+      const resetAt = new Date(Date.now() + 45_000);
+      vi.mocked(rateLimiter).mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt
+      } as any);
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(429);
+      const body = await res.json();
+      expect(body.error).toBe('Too many login attempts. Please try again later.');
+      expect(body.retryAfter).toBeGreaterThan(0);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('SSO callback — partner axis (#2183)', () => {
+    // A partner-axis provider: partnerId set, orgId null (DB CHECK: org XOR partner).
+    const PARTNER_PROVIDER = {
+      id: PROVIDER_UUID,
+      orgId: null,
+      partnerId: PARTNER_UUID,
+      type: 'oidc',
+      issuer: 'https://issuer.example.com',
+      authorizationUrl: 'https://issuer.example.com/auth',
+      tokenUrl: 'https://issuer.example.com/token',
+      userInfoUrl: 'https://issuer.example.com/userinfo',
+      jwksUrl: 'https://issuer.example.com/jwks',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      scopes: 'openid profile email',
+      attributeMapping: { email: 'email', name: 'name' },
+      autoProvision: false,
+      allowedDomains: null,
+      defaultRoleId: null,
+      trustsIdpMfa: false
+    };
+    const STAFF = {
+      id: USER_UUID,
+      email: 'tech@msp.example',
+      name: 'Tech',
+      orgId: null,
+      partnerId: PARTNER_UUID,
+      passwordHash: null
+    };
+    const sel = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+    const selJoin = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }) })
+    } as any);
+    const prime = () => {
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@msp.example', name: 'Tech' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@msp.example', name: 'Tech' } as any);
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-p', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/dashboard' }]) })
+      } as any);
+    };
+    const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
+
+    it('logs in linked partner staff with scope partner and null orgId', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))                 // provider by id
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))           // (provider, sub) identity link
+        .mockReturnValueOnce(sel([STAFF]))                           // linked user by id
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }])) // partner_users membership
+        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));           // existingIdentity → update
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: USER_UUID, roleId: 'prole-1', orgId: null, partnerId: PARTNER_UUID, scope: 'partner' }),
+        expect.any(Object)
+      );
+      expect(auditLogin).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ scope: 'partner', method: 'sso-partner', orgId: null, userId: USER_UUID })
+      );
+    });
+
+    it('auto-links by email ONLY for passwordless unlinked partner staff', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no (provider, sub) link
+        .mockReturnValueOnce(sel([STAFF]))                           // byEmail (partnerId match, orgId IS NULL)
+        .mockReturnValueOnce(sel([]))                                // no other-provider link → safe to link
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
+        .mockReturnValueOnce(sel([]));                               // existingIdentity none → insert
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null }),
+        expect.any(Object)
+      );
+    });
+
+    it('redirects sso_link_required for a password-holding email match', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no link
+        .mockReturnValueOnce(sel([{ ...STAFF, passwordHash: '$argon2id$hash' }])) // byEmail w/ password
+        .mockReturnValueOnce(sel([]));                               // otherProviderLink — still denied (has password)
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_link_required');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('never resolves an org-bound user through a partner provider', async () => {
+      prime();
+      // The email-match lookup is axis-restricted to `partnerId = provider.partnerId
+      // AND orgId IS NULL`, so an org-bound user sharing the email is filtered out
+      // at the DB layer → the mock returns [] → falls through to invite_required.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no link
+        .mockReturnValueOnce(sel([]));                               // byEmail excludes org-bound user
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=invite_required');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('redirects invite_required for unknown identities (no JIT)', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no link
+        .mockReturnValueOnce(sel([]));                               // no email match
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=invite_required');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects a linked user whose row is org-bound even with a partner membership (mint-gate re-assert)', async () => {
+      prime();
+      // Pre-existing (provider, sub) link resolves an ORG-BOUND user (orgId set).
+      // The mint-gate orgId IS NULL re-assert must reject before minting, even
+      // though a partner membership could exist.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))           // link exists
+        .mockReturnValueOnce(sel([{ ...STAFF, orgId: ORG_UUID }]));  // resolved user is org-bound
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=no_partner_access');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('redirects no_partner_access when the user has no partner_users membership', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))           // linked
+        .mockReturnValueOnce(sel([STAFF]))
+        .mockReturnValueOnce(selJoin([]));                           // NO partner_users membership
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=no_partner_access');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects a partner provider whose defaultRoleId is not partner-scoped', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([{ ...PARTNER_PROVIDER, defaultRoleId: 'bad-role' }]))
+        .mockReturnValueOnce(sel([]));                               // role not partner-scoped in this partner → not found
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=invalid_provider_configuration');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    const wireMfa = (opts: { trustsIdpMfa: boolean; amr?: string[] }) => {
+      prime();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([{ ...PARTNER_PROVIDER, trustsIdpMfa: opts.trustsIdpMfa }]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))
+        .mockReturnValueOnce(sel([STAFF]))
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+    };
+
+    it('sets mfa true only with trustsIdpMfa AND amr mfa', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: true }),
+        expect.any(Object)
+      );
+    });
+
+    it('sets mfa false when trustsIdpMfa is set but amr does not attest mfa', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: false }),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('POST /sso/providers/:id/test — partner axis (#2183)', () => {
+    const OTHER_PARTNER = '00000000-0000-4000-8000-0000000000ff';
+    // Partner-axis provider WITHOUT an issuer → skips discovery, returns the
+    // "appears valid" success path once access is granted.
+    const partnerProviderRow = {
+      id: PROVIDER_UUID, orgId: null, partnerId: PARTNER_UUID, type: 'oidc', name: 'MSP IdP', issuer: null
+    };
+
+    it('allows a partner-scope caller to test their own partner-axis provider', async () => {
+      setAuthContext({ scope: 'partner', orgId: null, partnerId: PARTNER_UUID, accessibleOrgIds: [], partnerOrgAccess: 'all' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([partnerProviderRow]) }) })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+    });
+
+    it('denies a cross-partner caller (no canAccessOrg fall-through on the partner axis)', async () => {
+      // canAccessOrg defaults to () => true — the deny MUST come from the
+      // axis-aware provider check, not an org fall-through.
+      setAuthContext({ scope: 'partner', orgId: null, partnerId: OTHER_PARTNER, accessibleOrgIds: [], partnerOrgAccess: 'all' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([partnerProviderRow]) }) })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // ============================================================
+  // Self-service "Connect SSO" identity linking (#2183, Task 6)
+  // ============================================================
+  describe('Connect SSO link flow (#2183)', () => {
+    const OTHER_PARTNER = '00000000-0000-4000-8000-0000000000ff';
+    const sel = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+    // /link/options uses a leftJoin then a where that resolves directly (no limit).
+    const selLeftJoin = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+
+    const ORG_PROVIDER = {
+      id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, status: 'active', type: 'oidc',
+      name: 'Okta', issuer: 'https://issuer.example.com',
+      authorizationUrl: 'https://issuer.example.com/auth', tokenUrl: 'https://issuer.example.com/token',
+      userInfoUrl: 'https://issuer.example.com/userinfo', jwksUrl: 'https://issuer.example.com/jwks',
+      clientId: 'client-id', clientSecret: 'client-secret', scopes: 'openid profile email',
+      attributeMapping: { email: 'email', name: 'name' }, defaultRoleId: null
+    };
+    const PARTNER_PROVIDER = { ...ORG_PROVIDER, orgId: null, partnerId: PARTNER_UUID, name: 'MSP IdP' };
+
+    it('GET /sso/link/options lists org-axis providers with linked flags', async () => {
+      // org user (scope organization, orgId set) → org-axis providers.
+      vi.mocked(db.select).mockReturnValueOnce(selLeftJoin([
+        { id: 'p-1', name: 'Okta', type: 'oidc', linkedId: 'link-1' },
+        { id: 'p-2', name: 'Entra', type: 'oidc', linkedId: null }
+      ]));
+
+      const res = await app.request('/sso/link/options', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([
+        { id: 'p-1', name: 'Okta', type: 'oidc', linked: true },
+        { id: 'p-2', name: 'Entra', type: 'oidc', linked: false }
+      ]);
+    });
+
+    it('GET /sso/link/options lists partner-axis providers for partner staff', async () => {
+      setAuthContext({ scope: 'partner', orgId: null, partnerId: PARTNER_UUID, accessibleOrgIds: [] });
+      vi.mocked(db.select).mockReturnValueOnce(selLeftJoin([
+        { id: 'pp-1', name: 'MSP IdP', type: 'oidc', linkedId: null }
+      ]));
+
+      const res = await app.request('/sso/link/options', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([{ id: 'pp-1', name: 'MSP IdP', type: 'oidc', linked: false }]);
+    });
+
+    it('POST /sso/link/start/:providerId returns authUrl, sets state cookie, and stamps linkUserId', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(sel([ORG_PROVIDER]));
+      const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.authUrl).toMatch(/^https:\/\/idp\.example\.com\/auth/);
+      const setCookie = res.headers.get('set-cookie') ?? '';
+      expect(setCookie).toContain('breeze_sso_state');
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ linkUserId: USER_UUID }));
+    });
+
+    it('POST /sso/link/start 401s an unauthenticated caller', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any) => c.json({ error: 'Unauthorized' }, 401));
+
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, { method: 'POST' });
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /sso/link/start is blocked without MFA (requireMfa)', async () => {
+      mfaGate.deny = true;
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('POST /sso/link/start 403s a provider outside the user axis pool', async () => {
+      // org user attempting to link a PARTNER-axis provider → 403.
+      vi.mocked(db.select).mockReturnValueOnce(sel([PARTNER_PROVIDER]));
+      const orgRes = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(orgRes.status).toBe(403);
+
+      // partner staff attempting to link ANOTHER partner's provider → 403.
+      setAuthContext({ scope: 'partner', orgId: null, partnerId: OTHER_PARTNER, accessibleOrgIds: [] });
+      vi.mocked(db.select).mockReturnValueOnce(sel([PARTNER_PROVIDER]));
+      const partnerRes = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(partnerRes.status).toBe(403);
+    });
+
+    // ── Callback link-mode branch ──────────────────────────────────────────
+    const primeLinkCallback = (linkUserId: string) => {
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@example.com', name: 'Tech' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@example.com', name: 'Tech' } as any);
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-link', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/settings/profile', linkUserId }]) })
+      } as any);
+    };
+    const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
+
+    it('callback link mode creates the identity for the SESSION user after verification', async () => {
+      primeLinkCallback(USER_UUID);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))                                        // provider by id
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }])) // linking user
+        .mockReturnValueOnce(sel([]));                                                    // (provider, sub) not in use
+      const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinked=1');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        userId: USER_UUID, providerId: PROVIDER_UUID, externalId: 'external-user-1'
+      }));
+    });
+
+    it('callback link mode rejects an email mismatch (no insert)', async () => {
+      primeLinkCallback(USER_UUID);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'someone-else@corp.com', name: 'Other' }]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('ssoLinkError=email_mismatch');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('callback link mode rejects a (provider, sub) already linked to another user (no insert)', async () => {
+      primeLinkCallback(USER_UUID);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-x', userId: '00000000-0000-4000-8000-0000000000aa' }]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('ssoLinkError=identity_in_use');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
   });
 });

@@ -166,6 +166,7 @@ async function evaluateEligibility(user: UserLookupRow): Promise<ResetEligibilit
     const ssoBlocked = await isPasswordAuthDisabledBySso({
       scope: 'organization',
       orgId: user.orgId,
+      partnerId: null,
     });
     if (ssoBlocked) {
       return { allowed: false, reason: 'sso_required', userId: user.id, email: user.email };

@@ -24,7 +24,6 @@ export interface Partner {
   /** First-class partner timezone (#1318); canonical tz default. */
   timezone?: string;
   settings: Record<string, unknown>;
-  ssoConfig: Record<string, unknown> | null;
   billingEmail: string;
   createdAt: Date;
   updatedAt: Date;
@@ -40,7 +39,6 @@ export interface Organization {
   status: OrgStatus;
   maxDevices: number | null;
   settings: Record<string, unknown>;
-  ssoConfig: Record<string, unknown> | null;
   contractStart: Date | null;
   contractEnd: Date | null;
   billingContact: Record<string, unknown> | null;

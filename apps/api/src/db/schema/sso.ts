@@ -1,14 +1,17 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 
 export const ssoProviderTypeEnum = pgEnum('sso_provider_type', ['oidc', 'saml']);
 export const ssoProviderStatusEnum = pgEnum('sso_provider_status', ['active', 'inactive', 'testing']);
 
-// SSO Provider Configuration per Organization
+// SSO Provider Configuration — dual ownership (#2183): org-axis (orgId set,
+// partnerId NULL — customer-org SSO) XOR partner-axis (partnerId set, orgId
+// NULL — the MSP's own technician login). Enforced by sso_providers_one_owner_chk.
 export const ssoProviders = pgTable('sso_providers', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
 
   // Provider identification
   name: varchar('name', { length: 255 }).notNull(),
@@ -90,6 +93,13 @@ export const ssoSessions = pgTable('sso_sessions', {
   nonce: varchar('nonce', { length: 64 }).notNull(),
   codeVerifier: varchar('code_verifier', { length: 128 }), // for PKCE
   redirectUrl: varchar('redirect_url', { length: 500 }),
+
+  // Link-mode marker (#2183 Connect SSO): when set, the callback links the
+  // verified identity to this user instead of minting login tokens.
+  // ON DELETE CASCADE: an abandoned link session (never completed, so never
+  // deleted by the callback) must not block a hard user delete — sso_sessions
+  // has no partner_id/org_id, so the tenant-cascade sweep never reaches it.
+  linkUserId: uuid('link_user_id').references(() => users.id, { onDelete: 'cascade' }),
 
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()

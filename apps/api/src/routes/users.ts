@@ -617,7 +617,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
       // ordering; additionally allow MFA step-up for passwordless users
       // (change-password rejects them with 400), BEFORE any write.
       // (a) SSO-enforced org: email is managed at the IdP.
-      if (await isPasswordAuthDisabledBySso({ scope: auth.scope, orgId: auth.orgId })) {
+      if (await isPasswordAuthDisabledBySso({ scope: auth.scope, orgId: auth.orgId, partnerId: auth.partnerId })) {
         return c.json({ error: 'Email changes for this organization are managed through your SSO provider.' }, 403);
       }
 

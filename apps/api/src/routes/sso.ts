@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, and, gt, ne } from 'drizzle-orm';
+import { eq, and, gt, ne, isNull } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
@@ -13,6 +13,7 @@ import {
   users,
   organizations,
   organizationUsers,
+  partnerUsers,
   roles
 } from '../db/schema';
 import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
@@ -32,13 +33,14 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily } from '../services';
+import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
 import { envFlag } from '../utils/envFlag';
-import { setRefreshTokenCookie, getCookieValue } from './auth/helpers';
+import { setRefreshTokenCookie, getCookieValue, auditLogin } from './auth/helpers';
 
 export const ssoRoutes = new Hono();
 
@@ -123,6 +125,7 @@ function isValidSsoStateCookie(state: string, cookieHeader: string | undefined):
 // ============================================
 
 const createProviderSchema = z.object({
+  ownerScope: z.enum(['organization', 'partner']).default('organization'),
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['oidc', 'saml']),
@@ -145,7 +148,7 @@ const createProviderSchema = z.object({
   trustsIdpMfa: z.boolean().optional()
 });
 
-const updateProviderSchema = createProviderSchema.omit({ orgId: true }).partial();
+const updateProviderSchema = createProviderSchema.omit({ orgId: true, ownerScope: true }).partial();
 const tokenExchangeSchema = z.object({
   code: z.string().min(1)
 });
@@ -355,6 +358,21 @@ function resolveOrgIdForProviderRoute(
   return { error: 'Organization ID required', status: 400 };
 }
 
+type ProviderOwnerRow = { orgId: string | null; partnerId: string | null };
+
+// Read access: org rows by org access; partner rows only for the same partner's
+// partner/system-scope callers (org tokens never see partner-axis providers).
+function canAccessProviderRow(auth: AuthContext, row: ProviderOwnerRow): boolean {
+  if (row.orgId) return auth.canAccessOrg(row.orgId);
+  return (auth.scope === 'system' || auth.scope === 'partner') && auth.partnerId === row.partnerId;
+}
+
+// Write access: partner-axis rows additionally require full partner org access.
+function canWriteProviderRow(auth: AuthContext, row: ProviderOwnerRow): boolean {
+  if (row.orgId) return auth.canAccessOrg(row.orgId);
+  return auth.partnerId === row.partnerId && canManagePartnerWidePolicies(auth);
+}
+
 const providerIdParamSchema = z.object({ id: z.string().guid() });
 const orgIdParamSchema = z.object({ orgId: z.string().guid() });
 
@@ -375,6 +393,31 @@ ssoRoutes.get('/presets', authMiddleware, requireScope('organization', 'partner'
 // List SSO providers for organization
 ssoRoutes.get('/providers', authMiddleware, requireScope('organization', 'partner', 'system'), async (c) => {
   const auth = c.get('auth') as AuthContext;
+
+  if (c.req.query('scope') === 'partner') {
+    if (!(auth.scope === 'partner' || auth.scope === 'system') || !auth.partnerId) {
+      return c.json({ error: 'Partner scope required' }, 400);
+    }
+
+    const partnerProviders = await db
+      .select({
+        id: ssoProviders.id,
+        name: ssoProviders.name,
+        type: ssoProviders.type,
+        status: ssoProviders.status,
+        issuer: ssoProviders.issuer,
+        autoProvision: ssoProviders.autoProvision,
+        enforceSSO: ssoProviders.enforceSSO,
+        trustsIdpMfa: ssoProviders.trustsIdpMfa,
+        createdAt: ssoProviders.createdAt,
+        partnerId: ssoProviders.partnerId
+      })
+      .from(ssoProviders)
+      .where(eq(ssoProviders.partnerId, auth.partnerId));
+
+    return c.json({ data: partnerProviders });
+  }
+
   const orgResult = resolveOrgIdForProviderRoute(auth, c.req.query('orgId'));
   if ('error' in orgResult) {
     return c.json({ error: orgResult.error }, orgResult.status);
@@ -413,7 +456,7 @@ ssoRoutes.get('/providers/:id', authMiddleware, requireScope('organization', 'pa
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(provider.orgId)) {
+  if (!canAccessProviderRow(auth, provider)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
@@ -434,9 +477,36 @@ ssoRoutes.post(
   async (c) => {
   const auth = c.get('auth') as AuthContext;
   const body = c.req.valid('json');
-  const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
-  if ('error' in orgResult) {
-    return c.json({ error: orgResult.error }, orgResult.status);
+
+  let ownerColumns: { orgId: string | null; partnerId: string | null };
+  if (body.ownerScope === 'partner') {
+    if (auth.scope !== 'partner' || !auth.partnerId) {
+      return c.json({ error: 'Partner scope required for a partner-axis SSO provider' }, 400);
+    }
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    if (body.defaultRoleId) {
+      const [role] = await db
+        .select({ id: roles.id })
+        .from(roles)
+        .where(and(
+          eq(roles.id, body.defaultRoleId),
+          eq(roles.scope, 'partner'),
+          eq(roles.partnerId, auth.partnerId)
+        ))
+        .limit(1);
+      if (!role) {
+        return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+      }
+    }
+    ownerColumns = { orgId: null, partnerId: auth.partnerId };
+  } else {
+    const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
+    if ('error' in orgResult) {
+      return c.json({ error: orgResult.error }, orgResult.status);
+    }
+    ownerColumns = { orgId: orgResult.orgId, partnerId: null };
   }
 
   // Apply preset if specified
@@ -468,7 +538,7 @@ ssoRoutes.post(
   const [provider] = await db
     .insert(ssoProviders)
     .values({
-      orgId: orgResult.orgId,
+      ...ownerColumns,
       name: body.name,
       type: body.type,
       issuer: body.issuer,
@@ -500,7 +570,7 @@ ssoRoutes.post(
     resourceType: 'sso_provider',
     resourceId: provider.id,
     resourceName: provider.name,
-    details: { type: provider.type, status: provider.status }
+    details: { type: provider.type, status: provider.status, partnerId: provider.partnerId }
   });
 
     const { clientSecret, ...safeProvider } = provider;
@@ -523,7 +593,7 @@ ssoRoutes.patch(
   const body = c.req.valid('json');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -532,8 +602,23 @@ ssoRoutes.patch(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(existing.orgId)) {
+  if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
+  }
+
+  if (existing.partnerId && body.defaultRoleId) {
+    const [role] = await db
+      .select({ id: roles.id })
+      .from(roles)
+      .where(and(
+        eq(roles.id, body.defaultRoleId),
+        eq(roles.scope, 'partner'),
+        eq(roles.partnerId, existing.partnerId)
+      ))
+      .limit(1);
+    if (!role) {
+      return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+    }
   }
 
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
@@ -548,7 +633,7 @@ ssoRoutes.patch(
   const [updated] = await db
     .update(ssoProviders)
     .set(updates)
-    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
+    .where(eq(ssoProviders.id, providerId))
     .returning();
 
   if (!updated) {
@@ -561,7 +646,7 @@ ssoRoutes.patch(
     resourceType: 'sso_provider',
     resourceId: updated.id,
     resourceName: updated.name,
-    details: { changedFields: Object.keys(body) }
+    details: { changedFields: Object.keys(body), partnerId: updated.partnerId }
   });
 
     const { clientSecret, ...safeProvider } = updated;
@@ -582,7 +667,7 @@ ssoRoutes.delete(
   const { id: providerId } = c.req.valid('param');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -591,7 +676,7 @@ ssoRoutes.delete(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(existing.orgId)) {
+  if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
@@ -601,7 +686,7 @@ ssoRoutes.delete(
 
   const [deleted] = await db
     .delete(ssoProviders)
-    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
+    .where(eq(ssoProviders.id, providerId))
     .returning();
 
   if (!deleted) {
@@ -613,7 +698,8 @@ ssoRoutes.delete(
     action: 'sso.provider.delete',
     resourceType: 'sso_provider',
     resourceId: deleted.id,
-    resourceName: deleted.name
+    resourceName: deleted.name,
+    details: { partnerId: deleted.partnerId }
   });
 
     return c.json({ success: true });
@@ -635,7 +721,7 @@ ssoRoutes.post(
   const { status } = c.req.valid('json');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId })
+    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -644,14 +730,14 @@ ssoRoutes.post(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(existing.orgId)) {
+  if (!canWriteProviderRow(auth, existing)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
   const [updated] = await db
     .update(ssoProviders)
     .set({ status, updatedAt: new Date() })
-    .where(and(eq(ssoProviders.id, providerId), eq(ssoProviders.orgId, existing.orgId)))
+    .where(eq(ssoProviders.id, providerId))
     .returning();
 
   if (!updated) {
@@ -664,7 +750,7 @@ ssoRoutes.post(
     resourceType: 'sso_provider',
     resourceId: updated.id,
     resourceName: updated.name,
-    details: { status }
+    details: { status, partnerId: updated.partnerId }
   });
 
     return c.json({ data: updated });
@@ -693,7 +779,11 @@ ssoRoutes.post(
     return c.json({ error: 'Provider not found' }, 404);
   }
 
-  if (!auth.canAccessOrg(provider.orgId)) {
+  // Axis-aware access (#2183): org rows resolve via org access; partner-axis
+  // rows (orgId NULL) are decided on the provider's OWN partner — a system- or
+  // partner-scope caller must match provider.partnerId and never falls through
+  // a canAccessOrg(null) org check.
+  if (!canAccessProviderRow(auth, provider)) {
     return c.json({ error: 'Access denied' }, 403);
   }
 
@@ -897,8 +987,228 @@ ssoRoutes.delete(
 );
 
 // ============================================
+// Self-service "Connect SSO" — authenticated identity linking (#2183)
+// ============================================
+//
+// Password-holding users are NEVER auto-linked at login (Task 5 refuses to
+// JIT-link an assertion to an account that has a password or another provider
+// link). This is the sanctioned path for those users to adopt SSO: an
+// already-authenticated user connects their own IdP identity, from their own
+// security settings. It works on BOTH axes — an org member links an org-axis
+// provider, partner staff link a partner-axis provider.
+//
+// Axis determinant: the caller's TOKEN scope, not the provider. An
+// organization-scope token means an org member (auth.orgId = their org); a
+// partner-scope token means partner staff (auth.partnerId = their partner).
+// `AuthContext.user` carries no orgId/partnerId, so we key off the token's
+// scope/orgId/partnerId. This is exactly what keeps an org-bound user from ever
+// linking a partner-axis provider (an org-bound user can only ever hold an
+// organization-scope token), preserving the Task-5 mint-gate invariant.
+
+// Providers the current user may link, each with its linked status.
+ssoRoutes.get('/link/options', authMiddleware, async (c) => {
+  const auth = c.get('auth') as AuthContext;
+
+  const axisCondition =
+    auth.scope === 'organization' && auth.orgId
+      ? eq(ssoProviders.orgId, auth.orgId)
+      : auth.scope === 'partner' && auth.partnerId
+        ? eq(ssoProviders.partnerId, auth.partnerId)
+        : null;
+  if (!axisCondition) {
+    return c.json({ data: [] });
+  }
+
+  const providers = await db
+    .select({
+      id: ssoProviders.id,
+      name: ssoProviders.name,
+      type: ssoProviders.type,
+      linkedId: userSsoIdentities.id
+    })
+    .from(ssoProviders)
+    .leftJoin(userSsoIdentities, and(
+      eq(userSsoIdentities.providerId, ssoProviders.id),
+      eq(userSsoIdentities.userId, auth.user.id)
+    ))
+    .where(and(axisCondition, ne(ssoProviders.status, 'inactive')));
+
+  return c.json({
+    data: providers.map((p) => ({ id: p.id, name: p.name, type: p.type, linked: !!p.linkedId }))
+  });
+});
+
+// Start a link-mode IdP round-trip. requireMfa(): connecting an SSO identity
+// adds a login credential, so it is a security-sensitive account change and an
+// unMFA'd session must not be able to bind a new login method.
+ssoRoutes.post(
+  '/link/start/:providerId',
+  authMiddleware,
+  requireMfa(),
+  zValidator('param', z.object({ providerId: z.string().guid() })),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { providerId } = c.req.valid('param');
+
+    const [provider] = await db
+      .select()
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, providerId))
+      .limit(1);
+
+    if (!provider || provider.status === 'inactive') {
+      return c.json({ error: 'Provider not found' }, 404);
+    }
+
+    // Axis-pool check: the provider must be plausible for the linking user.
+    // Org-axis → the caller must be a member of that org (organization-scope
+    // token, matching orgId). Partner-axis → the caller must be staff of that
+    // partner (partner-scope token, matching partnerId). An org-bound user
+    // (organization scope) can therefore NEVER pass the partner branch, so a
+    // link Task-5's resolution would later reject can never be created.
+    const inPool = provider.orgId
+      ? auth.scope === 'organization' && auth.orgId === provider.orgId
+      : auth.scope === 'partner' && auth.partnerId === provider.partnerId;
+    if (!inPool) {
+      return c.json({ error: 'You cannot link this SSO provider' }, 403);
+    }
+
+    if (provider.type !== 'oidc') {
+      return c.json({ error: 'Only OIDC linking is currently supported' }, 400);
+    }
+
+    const config = getOIDCConfig(provider);
+    const pkce = generatePKCEChallenge();
+    const state = generateState();
+    const nonce = generateNonce();
+
+    await db.insert(ssoSessions).values({
+      providerId: provider.id,
+      state,
+      nonce,
+      codeVerifier: pkce.codeVerifier,
+      redirectUrl: '/settings/profile',
+      linkUserId: auth.user.id,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000)
+    });
+
+    const authUrl = buildAuthorizationUrl({
+      config,
+      state,
+      nonce,
+      redirectUri: buildSsoCallbackUri(),
+      pkce
+    });
+
+    const stateCookie = buildSsoStateCookie(state);
+    if (!stateCookie) {
+      return c.json({ error: 'SSO login binding secret is not configured on this instance' }, 500);
+    }
+    c.header('Set-Cookie', stateCookie, { append: true });
+
+    writeRouteAudit(c, {
+      orgId: provider.orgId,
+      action: 'sso.identity.link_started',
+      resourceType: 'sso_provider',
+      resourceId: provider.id,
+      resourceName: provider.name,
+      details: { partnerId: provider.partnerId, userId: auth.user.id }
+    });
+
+    return c.json({ authUrl });
+  }
+);
+
+// ============================================
 // SSO Login Flow (Public)
 // ============================================
+
+const partnerIdParamSchema = z.object({ partnerId: z.string().guid() });
+
+// Design spec (#2183, "Security & error handling"): "login rate limits
+// (per-IP and per-IP+identity) apply to the new entry point." There's no
+// user identity at this pre-auth entry point, so the partnerId being
+// targeted stands in for "identity" — same shape as the password-login
+// per-(IP,email) bucket in routes/auth/login.ts.
+const PARTNER_SSO_LOGIN_RATE_LIMIT = { limit: 10, windowSeconds: 5 * 60 };
+
+// Initiate partner-axis SSO login (#2183) — the MSP's own technician login.
+// Public route: all DB access MUST run under system context (no request scope
+// exists yet; bare `db` silently returns 0 rows under RLS). Mounted ABOVE
+// `/login/:orgId` so the literal `partner` path segment is never parsed as
+// an orgId (Hono would also disambiguate correctly by segment count, but
+// ordering here documents the intent).
+ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSchema), async (c) => {
+  const { partnerId } = c.req.valid('param');
+  const redirectUrl = normalizeRedirectPath(c.req.query('redirect'));
+
+  const ip = getClientIP(c);
+  const redis = getRedis();
+  const rateCheck = await rateLimiter(
+    redis,
+    `sso:login:partner:${ip}:${partnerId}`,
+    PARTNER_SSO_LOGIN_RATE_LIMIT.limit,
+    PARTNER_SSO_LOGIN_RATE_LIMIT.windowSeconds
+  );
+  if (!rateCheck.allowed) {
+    return c.json({
+      error: 'Too many login attempts. Please try again later.',
+      retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
+    }, 429);
+  }
+
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db
+      .select()
+      .from(ssoProviders)
+      .where(and(
+        eq(ssoProviders.partnerId, partnerId),
+        eq(ssoProviders.status, 'active')
+      ))
+      .limit(1)
+  );
+
+  if (!provider) {
+    return c.json({ error: 'No active SSO provider for this partner' }, 404);
+  }
+
+  if (provider.type !== 'oidc') {
+    return c.json({ error: 'Only OIDC login is currently supported' }, 400);
+  }
+
+  const config = getOIDCConfig(provider);
+  const pkce = generatePKCEChallenge();
+  const state = generateState();
+  const nonce = generateNonce();
+
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  await withSystemDbAccessContext(async () =>
+    db.insert(ssoSessions).values({
+      providerId: provider.id,
+      state,
+      nonce,
+      codeVerifier: pkce.codeVerifier,
+      redirectUrl,
+      expiresAt
+    })
+  );
+
+  const authUrl = buildAuthorizationUrl({
+    config,
+    state,
+    nonce,
+    redirectUri: buildSsoCallbackUri(),
+    pkce
+  });
+
+  const stateCookie = buildSsoStateCookie(state);
+  if (!stateCookie) {
+    return c.json({ error: 'SSO login binding secret is not configured on this instance' }, 500);
+  }
+  c.header('Set-Cookie', stateCookie, { append: true });
+
+  return c.redirect(authUrl);
+});
 
 // Initiate SSO login
 ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) => {
@@ -1019,31 +1329,59 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect('/login?error=session_expired');
   }
 
-  // Get provider
-  const [provider] = await db
-    .select()
-    .from(ssoProviders)
-    .where(eq(ssoProviders.id, session.providerId))
-    .limit(1);
+  // Get provider. System context required: the callback is unauthenticated
+  // (no request scope exists yet), so a bare `db` read here silently 0-rows
+  // under RLS — the same class of bug as the other pre-auth reads in this
+  // handler (session claim, membership resolution, etc), all of which are
+  // already wrapped. Without this wrap the callback 404s to
+  // provider_not_found for EVERY SSO login, org-axis or partner-axis alike
+  // (#2183 real-DB e2e test caught this — see ssoPartnerLogin.integration.test.ts).
+  const [provider] = await withSystemDbAccessContext(async () =>
+    db
+      .select()
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, session.providerId))
+      .limit(1)
+  );
 
   if (!provider) {
     clearStateCookie();
     return c.redirect('/login?error=provider_not_found');
   }
 
+  // A provider is bound to exactly one axis (DB CHECK: org_id XOR partner_id):
+  // org-axis sessions come from /login/:orgId, partner-axis from
+  // /login/partner/:partnerId (#2183). Fail closed only if NEITHER axis is set
+  // (should be impossible). `providerOrgId` stays the org-axis handle; the
+  // partner branch below keys off `provider.partnerId` instead.
+  const providerOrgId = provider.orgId;
+  if (!providerOrgId && !provider.partnerId) {
+    clearStateCookie();
+    return c.redirect('/login?error=provider_not_found');
+  }
+
+  // Default-role validation is axis-aware: partner-axis providers require a
+  // partner-scoped role in the provider's OWN partner; org-axis providers an
+  // organization-scoped role in the provider's org. NOTE: on the partner axis
+  // this is config validation ONLY — v1 never APPLIES a default role at login
+  // (identity-first, membership-required), so a defaultRoleId can never grant
+  // access to a membershipless user.
   let validatedDefaultRoleId: string | null = null;
   if (provider.defaultRoleId) {
-    const [defaultRole] = await db
-      .select({ id: roles.id })
-      .from(roles)
-      .where(
-        and(
+    const roleCondition = provider.partnerId
+      ? and(
+          eq(roles.id, provider.defaultRoleId),
+          eq(roles.scope, 'partner'),
+          eq(roles.partnerId, provider.partnerId)
+        )
+      : and(
           eq(roles.id, provider.defaultRoleId),
           eq(roles.scope, 'organization'),
-          eq(roles.orgId, provider.orgId)
-        )
-      )
-      .limit(1);
+          eq(roles.orgId, provider.orgId!)
+        );
+    const [defaultRole] = await withSystemDbAccessContext(async () =>
+      db.select({ id: roles.id }).from(roles).where(roleCondition).limit(1)
+    );
 
     if (!defaultRole) {
       clearStateCookie();
@@ -1137,6 +1475,75 @@ ssoRoutes.get('/callback', async (c) => {
       return c.redirect('/login?error=sso_no_subject');
     }
 
+    // ── Link mode (#2183 Connect SSO): this round-trip belongs to an
+    // already-authenticated user connecting their identity — never a login.
+    // Placed AFTER the full id_token signature/nonce verification, the atomic
+    // session claim, the userinfo `sub` binding, and the allowedDomains check,
+    // and BEFORE the login-path user resolution. Link mode NEVER mints tokens,
+    // NEVER creates users, and NEVER touches login's identity resolution.
+    if (session.linkUserId) {
+      const outcome = await withSystemDbAccessContext(async () => {
+        const [linkingUser] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, session.linkUserId!))
+          .limit(1);
+        if (!linkingUser) return { error: 'user_gone' as const };
+
+        // The verified assertion must be for the SAME person: the asserted
+        // email must equal the linking user's email. Without this a user could
+        // bind an arbitrary IdP account (or a phished consent) to their session.
+        if (attrs.email.toLowerCase() !== linkingUser.email.toLowerCase()) {
+          return { error: 'email_mismatch' as const };
+        }
+
+        // (provider, sub) must not already belong to someone else — a link must
+        // never overwrite or hijack another user's identity.
+        const [existing] = await db
+          .select({ id: userSsoIdentities.id, userId: userSsoIdentities.userId })
+          .from(userSsoIdentities)
+          .where(and(
+            eq(userSsoIdentities.providerId, provider.id),
+            eq(userSsoIdentities.externalId, externalSub)
+          ))
+          .limit(1);
+        if (existing && existing.userId !== linkingUser.id) {
+          return { error: 'identity_in_use' as const };
+        }
+
+        if (!existing) {
+          await db.insert(userSsoIdentities).values({
+            userId: linkingUser.id,
+            providerId: provider.id,
+            externalId: externalSub,
+            email: attrs.email,
+            profile: userInfo,
+            accessToken: encryptSecret(tokens.access_token),
+            refreshToken: encryptSecret(tokens.refresh_token),
+            tokenExpiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000)
+              : null,
+            lastLoginAt: null
+          });
+        }
+        return { ok: true as const };
+      });
+
+      clearStateCookie();
+      if ('error' in outcome) {
+        return c.redirect(`/settings/profile?ssoLinkError=${outcome.error}`);
+      }
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.identity.linked',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        details: { partnerId: provider.partnerId, userId: session.linkUserId }
+      });
+      return c.redirect('/settings/profile?ssoLinked=1');
+    }
+
     let user = await withSystemDbAccessContext(async () => {
       const [link] = await db
         .select({ userId: userSsoIdentities.userId })
@@ -1159,10 +1566,14 @@ ssoRoutes.get('/callback', async (c) => {
     // identities (resolved above by provider+sub) are intentionally exempt, so
     // turning enforcement on never locks out existing SSO users. System scope:
     // the public callback is unauthenticated.
-    if (!user) {
+    // Org-axis only: the DNS domain-ownership gate protects JIT link/provision
+    // into an ORG. The partner axis has no JIT and its email-match is already
+    // restricted to the partner's own staff pool (partnerId + orgId IS NULL)
+    // below, so it doesn't consult verified org domains.
+    if (!user && provider.orgId) {
       const assertedEmailDomain = attrs.email.split('@')[1]?.toLowerCase() ?? null;
       const domainBlocked = await withSystemDbAccessContext(() =>
-        isSsoProvisioningBlocked(provider.orgId, assertedEmailDomain)
+        isSsoProvisioningBlocked(provider.orgId!, assertedEmailDomain)
       );
       if (domainBlocked) {
         console.warn(
@@ -1180,8 +1591,19 @@ ssoRoutes.get('/callback', async (c) => {
       // can assert a victim's email). Only auto-link when it is SAFE: the
       // account has no password AND no link to a DIFFERENT provider. Otherwise
       // the user must opt into SSO linking from an authenticated session.
+      // Partner axis restricts the email-match to the provider's OWN staff pool
+      // (partnerId match AND orgId IS NULL). This is what guarantees an
+      // org-bound user (orgId set) can NEVER be resolved through a partner
+      // provider — the row is filtered out at the DB layer, never matched.
+      const emailCondition = provider.partnerId
+        ? and(
+            eq(users.email, attrs.email.toLowerCase()),
+            eq(users.partnerId, provider.partnerId),
+            isNull(users.orgId)
+          )
+        : eq(users.email, attrs.email.toLowerCase());
       const [byEmail] = await withSystemDbAccessContext(async () =>
-        db.select().from(users).where(eq(users.email, attrs.email.toLowerCase())).limit(1)
+        db.select().from(users).where(emailCondition).limit(1)
       );
 
       if (byEmail) {
@@ -1205,6 +1627,15 @@ ssoRoutes.get('/callback', async (c) => {
       }
     }
 
+    // Partner axis: identity-first, NO JIT. A user was neither linked by
+    // (provider, sub) nor matched to an existing passwordless staff account, so
+    // there is no account to log in — the tech must be invited/provisioned out
+    // of band. Never auto-provision on the partner axis.
+    if (!user && provider.partnerId) {
+      clearStateCookie();
+      return c.redirect('/login?error=invite_required');
+    }
+
     if (!user) {
       if (!provider.autoProvision) {
         clearStateCookie();
@@ -1216,6 +1647,11 @@ ssoRoutes.get('/callback', async (c) => {
         return c.redirect('/login?error=default_role_required');
       }
 
+      // Reachable on the ORG axis ONLY — the partner axis returned
+      // invite_required above. The org XOR partner invariant guarantees
+      // org_id is set here.
+      const provisionOrgId = provider.orgId!;
+
       // SSO callback runs without authMiddleware; wrap the provisioning
       // in system scope so users + organization_users writes pass RLS.
       // SSO-provisioned users are customer-org members: partner_id is
@@ -1225,7 +1661,7 @@ ssoRoutes.get('/callback', async (c) => {
         const [providerOrg] = await db
           .select({ partnerId: organizations.partnerId })
           .from(organizations)
-          .where(eq(organizations.id, provider.orgId))
+          .where(eq(organizations.id, provisionOrgId))
           .limit(1);
         if (!providerOrg) {
           return null;
@@ -1235,7 +1671,7 @@ ssoRoutes.get('/callback', async (c) => {
           .insert(users)
           .values({
             partnerId: providerOrg.partnerId,
-            orgId: provider.orgId,
+            orgId: provisionOrgId,
             email: attrs.email.toLowerCase(),
             name: attrs.name,
             status: 'active',
@@ -1248,7 +1684,7 @@ ssoRoutes.get('/callback', async (c) => {
         }
 
         await db.insert(organizationUsers).values({
-          orgId: provider.orgId,
+          orgId: provisionOrgId,
           userId: created.id,
           roleId: validatedDefaultRoleId
         });
@@ -1264,34 +1700,115 @@ ssoRoutes.get('/callback', async (c) => {
       user = newUser;
     }
 
-    const [orgUser] = await db
-      .select({
-        orgId: organizationUsers.orgId,
-        roleId: organizationUsers.roleId,
-        roleName: roles.name,
-        roleScope: roles.scope
-      })
-      .from(organizationUsers)
-      .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
-      .where(
-        and(
-          eq(organizationUsers.userId, user.id),
-          eq(organizationUsers.orgId, provider.orgId)
-        )
-      )
-      .limit(1);
+    // IdP-asserted MFA (security review #2 H-1) — axis-independent, so it is
+    // computed here (above the membership branch) and shared by both the org
+    // and partner token payloads. When the provider opts in via `trustsIdpMfa`
+    // AND the verified id_token's `amr` attests multi-factor, propagate
+    // mfa:true so the tenant can satisfy Breeze's MFA-gated routes via their
+    // IdP. Fail-safe: any provider that hasn't opted in, or an assertion
+    // without the `mfa` amr, yields mfa:false. This claim never satisfies the
+    // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
+    const ssoMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
 
-    if (!orgUser) {
-      clearStateCookie();
-      return c.redirect('/login?error=no_org_access');
+    // Membership resolution + token payload, keyed on the provider's axis.
+    let tokenPayload: Parameters<typeof createTokenPair>[0];
+    if (provider.partnerId) {
+      // Defense-in-depth: a partner token is ONLY for partner STAFF
+      // (users.orgId IS NULL). Re-assert the invariant at the MINT gate, not
+      // just at link/email-resolution time — so even a resolved user reached
+      // via a pre-existing (provider, sub) link cannot mint a scope:'partner'
+      // / orgId:null token if their row is org-bound. Org-bound users never
+      // authenticate through a partner provider.
+      if (user.orgId != null) {
+        clearStateCookie();
+        return c.redirect('/login?error=no_partner_access');
+      }
+
+      // Partner axis (#2183): the tech's role membership lives in partner_users
+      // and MUST be partner-scoped. A user with NO partner_users membership is
+      // REJECTED (no_partner_access) — it never falls back to the provider
+      // defaultRoleId, which would recreate the membershipless-user
+      // system-scope-token bug class. defaultRoleId is NEVER applied at login in
+      // v1. orgId is always null on a partner token.
+      const providerPartnerId = provider.partnerId;
+      const [partnerMembership] = await withSystemDbAccessContext(async () =>
+        db
+          .select({ roleId: partnerUsers.roleId, roleScope: roles.scope })
+          .from(partnerUsers)
+          .innerJoin(roles, eq(roles.id, partnerUsers.roleId))
+          .where(and(
+            eq(partnerUsers.userId, user.id),
+            eq(partnerUsers.partnerId, providerPartnerId)
+          ))
+          .limit(1)
+      );
+      if (!partnerMembership) {
+        clearStateCookie();
+        return c.redirect('/login?error=no_partner_access');
+      }
+      if (partnerMembership.roleScope !== 'partner') {
+        clearStateCookie();
+        return c.redirect('/login?error=invalid_role_scope');
+      }
+      tokenPayload = {
+        sub: user.id,
+        email: user.email,
+        roleId: partnerMembership.roleId,
+        orgId: null,
+        partnerId: providerPartnerId,
+        scope: 'partner' as const,
+        mfa: ssoMfa
+      };
+    } else {
+      // System context required: same class of bug as the "Get provider"
+      // fix above — the callback is unauthenticated (no request scope), so a
+      // bare `db` read here silently 0-rows under RLS and every org-axis
+      // login would fail with no_org_access regardless of real membership.
+      // Pre-existing (predates #2183, confirmed via git blame); fixed here
+      // alongside the provider-read fix since both are shared callback
+      // plumbing and the org-axis e2e regression case now exercises this
+      // exact path (see ssoPartnerLogin.integration.test.ts).
+      const [orgUser] = await withSystemDbAccessContext(async () =>
+        db
+          .select({
+            orgId: organizationUsers.orgId,
+            roleId: organizationUsers.roleId,
+            roleName: roles.name,
+            roleScope: roles.scope
+          })
+          .from(organizationUsers)
+          .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
+          .where(
+            and(
+              eq(organizationUsers.userId, user.id),
+              eq(organizationUsers.orgId, provider.orgId!)
+            )
+          )
+          .limit(1)
+      );
+
+      if (!orgUser) {
+        clearStateCookie();
+        return c.redirect('/login?error=no_org_access');
+      }
+
+      if (orgUser.roleScope !== 'organization') {
+        clearStateCookie();
+        return c.redirect('/login?error=invalid_role_scope');
+      }
+
+      tokenPayload = {
+        sub: user.id,
+        email: user.email,
+        roleId: orgUser.roleId,
+        orgId: provider.orgId!,
+        partnerId: null,
+        scope: 'organization' as const,
+        mfa: ssoMfa
+      };
     }
 
-    if (orgUser.roleScope !== 'organization') {
-      clearStateCookie();
-      return c.redirect('/login?error=invalid_role_scope');
-    }
-
-    // Update or create SSO identity link
+    // Update or create SSO identity link (shared across both axes)
     const [existingIdentity] = await db
       .select()
       .from(userSsoIdentities)
@@ -1347,27 +1864,10 @@ ssoRoutes.get('/callback', async (c) => {
     // The SSO session row was already consumed atomically up-front
     // (delete().returning()), so there is nothing left to clean up here.
 
-    // Create session and tokens
+    // Create session and tokens. `tokenPayload` (and its mfa claim) was already
+    // built by the axis branch above.
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
-
-    // IdP-asserted MFA (security review #2 H-1): when the org opts in via
-    // `trustsIdpMfa` AND the verified id_token's `amr` attests multi-factor,
-    // propagate mfa:true so the org can satisfy Breeze's MFA-gated routes via
-    // their IdP. Fail-safe: any provider that hasn't opted in, or an assertion
-    // without the `mfa` amr, yields mfa:false. This claim never satisfies the
-    // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
-    const ssoMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
-
-    const tokenPayload = {
-      sub: user.id,
-      email: user.email,
-      roleId: orgUser.roleId,
-      orgId: provider.orgId,
-      partnerId: null,
-      scope: 'organization' as const,
-      mfa: ssoMfa
-    };
 
     // Mint a fresh refresh-token family for the SSO-completed session so
     // SSO logins get the same reuse-detection coverage as password/MFA
@@ -1385,6 +1885,22 @@ ssoRoutes.get('/callback', async (c) => {
       ipAddress: ip,
       userAgent
     });
+
+    // Partner-axis logins are audited as user.login with method 'sso-partner'
+    // (org-axis SSO keeps its existing audit path). orgId is null on a partner
+    // token, matching the audit row's tenancy.
+    if (provider.partnerId) {
+      auditLogin(c, {
+        orgId: null,
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        mfa: ssoMfa,
+        scope: 'partner',
+        ip,
+        method: 'sso-partner'
+      });
+    }
 
     const tokenExchangeCode = createSsoTokenExchangeGrant(accessToken, refreshToken, expiresInSeconds);
     const redirectPath = normalizeRedirectPath(session.redirectUrl ?? '/');

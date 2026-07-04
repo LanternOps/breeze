@@ -10,6 +10,7 @@ import { accountDeletionRoutes } from './accountDeletion';
 import { testApprovalRoutes } from './testApproval';
 import { cfAccessRedirectLoginRoutes } from './cfAccessRedirectLogin';
 import { passkeyRoutes } from './passkeys';
+import { loginContextRoutes } from './loginContext';
 
 export const authRoutes = new Hono();
 
@@ -27,3 +28,4 @@ authRoutes.route('/', verifyEmailRoutes);
 authRoutes.route('/', accountDeletionRoutes);
 authRoutes.route('/', testApprovalRoutes);
 authRoutes.route('/', cfAccessRedirectLoginRoutes);
+authRoutes.route('/', loginContextRoutes);

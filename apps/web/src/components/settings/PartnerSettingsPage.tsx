@@ -21,6 +21,7 @@ import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
+import LoginBrandingCard from './LoginBrandingCard';
 import type {
   PartnerSettings,
   BusinessHoursPreset,
@@ -40,7 +41,7 @@ import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@bre
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'remoteAccess' | 'ticketing';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'remoteAccess' | 'ticketing';
 
 type Partner = {
   id: string;
@@ -62,6 +63,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'eventLogs', label: 'Event Logs' },
   { key: 'defaults', label: 'Defaults' },
   { key: 'branding', label: 'Branding' },
+  { key: 'loginBranding', label: 'Login Branding' },
   { key: 'aiBudgets', label: 'AI Budgets' },
   { key: 'remoteAccess', label: 'Remote' },
   { key: 'ticketing', label: 'Ticketing' },
@@ -452,7 +454,7 @@ export default function PartnerSettingsPage() {
         ))}
       </div>
 
-      {activeTab !== 'regional' && activeTab !== 'company' && activeTab !== 'ticketing' && (
+      {activeTab !== 'regional' && activeTab !== 'company' && activeTab !== 'ticketing' && activeTab !== 'loginBranding' && (
         <div className="rounded-md border bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
           Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.
         </div>
@@ -623,6 +625,10 @@ export default function PartnerSettingsPage() {
           <PartnerBrandingTab data={brandingData} onChange={setBrandingData} />
         </section>
       )}
+
+      {/* Login Branding: self-contained card with its own load/save (the
+          top-level "Save Settings" button does not apply here). */}
+      {activeTab === 'loginBranding' && <LoginBrandingCard />}
 
       {activeTab === 'aiBudgets' && (
         <section className="rounded-lg border bg-card p-6 shadow-xs">

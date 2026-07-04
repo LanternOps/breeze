@@ -21,6 +21,13 @@ vi.mock('../../lib/navigation', () => ({
   navigateTo: vi.fn(),
 }));
 
+// Partner SSO button (#2183): LoginPage reads the memoized login context to
+// decide whether to surface a "Sign in with {provider}" button. Default to the
+// empty shape so existing password-form tests are unaffected.
+vi.mock('../../lib/loginContext', () => ({
+  getLoginContext: vi.fn(async () => ({ branding: null, partnerSso: null })),
+}));
+
 // LoginPage now fetches /api/v1/config at mount to decide whether to redirect
 // the browser to the Cloudflare Access login endpoint. The default mock here
 // answers "feature disabled" so the existing happy-path tests render the
@@ -40,6 +47,7 @@ beforeEach(() => {
 import LoginPage from './LoginPage';
 import { apiLogin, apiVerifyMFA } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+import { getLoginContext } from '../../lib/loginContext';
 
 const baseLoginSuccess = {
   success: true,
@@ -127,6 +135,65 @@ describe('LoginPage navigation after login', () => {
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/');
+  });
+});
+
+describe('LoginPage partner SSO button', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Restore the default empty-context resolution cleared above.
+    vi.mocked(getLoginContext).mockResolvedValue({ branding: null, partnerSso: null });
+  });
+
+  it('renders a "Sign in with {provider}" button when partner SSO is available', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { available: true, providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1' },
+    });
+
+    render(<LoginPage />);
+
+    const btn = await screen.findByTestId('partner-sso-button');
+    expect(btn).toHaveTextContent('Sign in with Okta');
+    // safeNext defaults to '/', so the redirect param is always appended.
+    expect(btn.getAttribute('href')).toBe('/api/v1/sso/login/partner/p1?redirect=%2F');
+    // Password form remains visible.
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+  });
+
+  it('appends the safe next as a redirect param on the SSO button href', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { available: true, providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1' },
+    });
+
+    render(<LoginPage next="/devices" />);
+
+    const btn = await screen.findByTestId('partner-sso-button');
+    expect(btn.getAttribute('href')).toBe(
+      '/api/v1/sso/login/partner/p1?redirect=%2Fdevices'
+    );
+  });
+
+  it('omits the SSO button when partner SSO is unavailable', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { available: false, providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1' },
+    });
+
+    render(<LoginPage />);
+
+    await waitFor(() => screen.getByLabelText(/email/i));
+    expect(screen.queryByTestId('partner-sso-button')).not.toBeInTheDocument();
+  });
+
+  it('omits the SSO button when the login-context fetch degrades to null', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({ branding: null, partnerSso: null });
+
+    render(<LoginPage />);
+
+    await waitFor(() => screen.getByLabelText(/email/i));
+    expect(screen.queryByTestId('partner-sso-button')).not.toBeInTheDocument();
   });
 });
 

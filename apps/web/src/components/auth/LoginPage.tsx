@@ -13,6 +13,7 @@ import {
 import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
+import { getLoginContext } from '../../lib/loginContext';
 
 function getRegistrationDisabledNotice(): string | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -20,6 +21,22 @@ function getRegistrationDisabledNotice(): string | undefined {
   if (params.get('reason') === 'registration-disabled') {
     return 'New registrations are currently disabled. Please contact your administrator.';
   }
+}
+
+// Copy for SSO callback `?error=<reason>` bounces that land back on /login.
+// `sso_link_required` (#2183): a password-holding user tried to sign in via SSO
+// and was refused auto-linking — they must connect SSO from an authenticated
+// session instead (Profile → Security → Connect SSO).
+const SSO_LOGIN_ERROR_COPY: Record<string, string> = {
+  sso_link_required:
+    'This account already has a password. Sign in with your password, then connect SSO under Profile → Security.'
+};
+
+function getSsoLoginNotice(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const error = params.get('error');
+  return error ? SSO_LOGIN_ERROR_COPY[error] : undefined;
 }
 
 function shouldSkipCfAccessRedirect(): boolean {
@@ -65,6 +82,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const safeNext = getSafeNext(next);
   const [error, setError] = useState<string>();
   const registrationNotice = getRegistrationDisabledNotice();
+  const ssoLoginNotice = getSsoLoginNotice();
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string>();
@@ -81,8 +99,24 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // entirely in the effect (client-only), keeping SSR and CSR initial output
   // identical (both render the placeholder).
   const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(false);
+  const [partnerSso, setPartnerSso] = useState<{ providerName: string; loginUrl: string } | null>(null);
 
   const login = useAuthStore((state) => state.login);
+
+  // Partner SSO: the (memoized) login context tells us whether this deployment
+  // resolves to a single partner with an enforced/available SSO provider. If so,
+  // surface a "Sign in with {provider}" button above the password form. Fetch
+  // failure / null response leaves the button absent (password-only login).
+  useEffect(() => {
+    let cancelled = false;
+    getLoginContext().then((ctx) => {
+      if (cancelled) return;
+      if (ctx.partnerSso?.available) {
+        setPartnerSso({ providerName: ctx.partnerSso.providerName, loginUrl: ctx.partnerSso.loginUrl });
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // CF Access trust mode: if the deployment has it on AND we're not already
   // in the post-redirect bounce (which AuthOverlay handles), top-level
@@ -251,6 +285,23 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
         <div className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200">
           {registrationNotice}
         </div>
+      )}
+      {ssoLoginNotice && (
+        <div
+          role="alert"
+          className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200"
+        >
+          {ssoLoginNotice}
+        </div>
+      )}
+      {partnerSso && (
+        <a
+          href={`${partnerSso.loginUrl}${safeNext ? `?redirect=${encodeURIComponent(safeNext)}` : ''}`}
+          data-testid="partner-sso-button"
+          className="mb-4 flex w-full items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+        >
+          Sign in with {partnerSso.providerName}
+        </a>
       )}
       <LoginForm
         onSubmit={handleLogin}

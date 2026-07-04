@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { getJwtClaims } from '../../lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
@@ -31,26 +32,67 @@ export default function SsoProvidersPage() {
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
+  // Partner-scope viewers additionally own partner-wide (technician-login)
+  // providers. Gate on the JWT scope, never partners.length (known-broken).
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+
   const fetchProviders = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
+
+      // Track fetch failures separately from rows: a partial failure must still
+      // render whatever loaded AND surface the error — never silently swallow it.
+      let hadError = false;
+
       const response = await fetchWithAuth('/sso/providers');
-      if (!response.ok) {
-        if (response.status === 401) {
+      if (response.status === 401) {
+        void navigateTo('/login', { replace: true });
+        return;
+      }
+      let orgProviders: SsoProvider[] = [];
+      if (response.ok) {
+        orgProviders = (await response.json()).data ?? [];
+      } else if (isPartnerScope && response.status === 400) {
+        // Expected: a partner viewer with no single-org context can't resolve an
+        // org for the org-scoped list (API returns 400 "Organization ID
+        // required"). Their partner-wide providers still load below — not an
+        // error worth surfacing. Any OTHER non-ok status is a real failure.
+      } else {
+        hadError = true;
+      }
+
+      // Also pull partner-wide providers for partner-scope viewers and merge
+      // them in (deduped by id). Additive: a failure here must not wipe the
+      // org list, and vice-versa — but it MUST surface, not vanish.
+      let partnerProviders: SsoProvider[] = [];
+      if (isPartnerScope) {
+        const partnerRes = await fetchWithAuth('/sso/providers?scope=partner');
+        if (partnerRes.status === 401) {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch SSO providers');
+        if (partnerRes.ok) {
+          partnerProviders = (await partnerRes.json()).data ?? [];
+        } else {
+          hadError = true;
+        }
       }
-      const data = await response.json();
-      setProviders(data.data ?? []);
+
+      const byId = new Map<string, SsoProvider>();
+      for (const p of [...orgProviders, ...partnerProviders]) byId.set(p.id, p);
+      setProviders(Array.from(byId.values()));
+
+      if (hadError) {
+        setError('Failed to fetch SSO providers');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isPartnerScope]);
 
   const fetchPresets = useCallback(async () => {
     try {
@@ -191,8 +233,10 @@ export default function SsoProvidersPage() {
 
       // Don't send empty client secret on edit
       const payload = { ...values };
-      if (modalMode === 'edit' && !payload.clientSecret) {
-        delete payload.clientSecret;
+      if (modalMode === 'edit') {
+        if (!payload.clientSecret) delete payload.clientSecret;
+        // ownerScope is create-only (the update schema omits it); never PATCH it.
+        delete payload.ownerScope;
       }
 
       const response = await fetchWithAuth(url, {
@@ -343,6 +387,7 @@ export default function SsoProvidersPage() {
               testingConnection={testingConnection}
               isEditing={modalMode === 'edit'}
               hasClientSecret={selectedProviderDetails?.hasClientSecret}
+              showOwnerScope={isPartnerScope}
             />
           </div>
         </div>

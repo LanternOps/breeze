@@ -90,7 +90,6 @@ const createPartnerSchema = z.object({
   // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
   settings: z.any().optional(),
-  ssoConfig: z.any().optional(),
   billingEmail: z.string().email().optional()
 });
 
@@ -150,7 +149,6 @@ const createOrganizationSchema = z.object({
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
   // maxDevices is managed by the billing service — excluded from API schema
   settings: z.any().optional(),
-  ssoConfig: z.any().optional(),
   contractStart: z.string().nullable().optional(),
   contractEnd: z.string().nullable().optional(),
   billingContact: z.any().optional()
@@ -315,7 +313,6 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         type: data.type,
         maxOrganizations: data.maxOrganizations,
         settings: data.settings,
-        ssoConfig: data.ssoConfig,
         billingEmail: data.billingEmail
       })
       .returning();
@@ -1149,7 +1146,6 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     type: data.type,
     status: data.status,
     settings: data.settings,
-    ssoConfig: data.ssoConfig,
     contractStart: data.contractStart ? new Date(data.contractStart) : null,
     contractEnd: data.contractEnd ? new Date(data.contractEnd) : null,
     billingContact: data.billingContact
@@ -1290,7 +1286,6 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     // before writing organizations.settings. See encryptedColumnRegistry.
     updates.settings = encryptColumnValueForWrite('organizations', 'settings', data.settings);
   }
-  if (data.ssoConfig !== undefined) updates.ssoConfig = data.ssoConfig;
   if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
   if (data.contractStart !== undefined) {
     updates.contractStart = data.contractStart ? new Date(data.contractStart) : null;
