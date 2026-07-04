@@ -233,7 +233,7 @@ export default function AssetDetailModal({
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error || 'Failed to save asset info');
+        throw new Error(extractApiError(body, 'Failed to save asset info'));
       }
       setSaveSuccess(true);
       onUpdated?.(asset.id);
@@ -256,7 +256,7 @@ export default function AssetDetailModal({
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error || 'Failed to reset type');
+        throw new Error(extractApiError(body, 'Failed to reset type'));
       }
       setSaveSuccess(true);
       onUpdated?.(asset.id);

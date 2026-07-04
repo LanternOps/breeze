@@ -416,6 +416,44 @@ describe('AssetDetailModal — server error surfaced on save/reset (#1424)', () 
     expect(await screen.findByText('Asset not found')).toBeInTheDocument();
   });
 
+  // @hono/zod-validator's default 400 hook emits the bare ZodError object as
+  // `error`. zod v4 hides `issues` from JSON.stringify, so the wire shape is
+  // {name:'ZodError', message:'<stringified issues>'} — the exact body behind
+  // the "[object Object]" report in #2198.
+  const zodErrorBody = {
+    success: false,
+    error: {
+      name: 'ZodError',
+      message: JSON.stringify([
+        { message: 'Invalid input: expected string, received null', path: ['label'] }
+      ])
+    }
+  };
+
+  it('renders readable validation text, not [object Object], when save returns a ZodError body (#2198)', async () => {
+    failPatchWith(zodErrorBody);
+    render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(
+      await screen.findByText(/Invalid input: expected string, received null/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText('[object Object]')).not.toBeInTheDocument();
+  });
+
+  it('renders readable validation text, not [object Object], when reset-type returns a ZodError body (#2198)', async () => {
+    failPatchWith(zodErrorBody);
+    render(<AssetDetailModal open asset={manualAsset} devices={devices} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('asset-modal-type-reset'));
+
+    expect(
+      await screen.findByText(/Invalid input: expected string, received null/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText('[object Object]')).not.toBeInTheDocument();
+  });
+
   it('falls back to the generic message when the error body has no error field', async () => {
     failPatchWith({});
     render(<AssetDetailModal open asset={asset} devices={devices} onClose={() => {}} />);

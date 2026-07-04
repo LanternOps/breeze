@@ -334,7 +334,9 @@ const bulkDismissSchema = z.object({
 });
 
 const updateAssetSchema = z.object({
-  label: z.string().max(255).optional(),
+  // null clears the display name — the edit form sends `label: null` for an
+  // empty Display Name field, so this must be nullable, not just optional.
+  label: z.string().max(255).nullish(),
   notes: z.string().nullish(),
   tags: z.string().array().optional(),
   // NOTE: keep this list literal — do NOT derive it from `discoveredAssetTypeEnum.enumValues`.

@@ -1646,6 +1646,40 @@ describe('discovery routes', () => {
       expect(body.typeSource).toBe('manual');
     });
 
+    it('accepts label:null (empty Display Name) and clears the label (#2198)', async () => {
+      let capturedSetPayload: any;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn((payload) => {
+          capturedSetPayload = payload;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG,
+                assetType: 'camera',
+                typeSource: 'manual',
+                detectedAssetType: null,
+                hostname: null,
+                label: null,
+                ipAddress: '10.0.0.1',
+              }])
+            })
+          };
+        })
+      } as any);
+
+      // Exact body AssetDetailModal sends for an asset with an empty Display
+      // Name — label must be nullable, not just optional.
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ label: null, notes: null, tags: [], assetType: 'camera' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedSetPayload).toMatchObject({ label: null, assetType: 'camera', typeSource: 'manual' });
+    });
+
     it('rejects an invalid assetType value', async () => {
       const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
         method: 'PATCH',
