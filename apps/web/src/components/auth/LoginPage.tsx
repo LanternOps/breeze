@@ -99,20 +99,29 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // entirely in the effect (client-only), keeping SSR and CSR initial output
   // identical (both render the placeholder).
   const [cfAccessRedirectChecked, setCfAccessRedirectChecked] = useState(false);
-  const [partnerSso, setPartnerSso] = useState<{ providerName: string; loginUrl: string } | null>(null);
+  const [partnerSso, setPartnerSso] = useState<{ providerName: string; loginUrl: string; enforceSSO: boolean } | null>(null);
+  // Only meaningful once enforceSSO is true: lets the user reveal the password
+  // form that's collapsed behind it (see the enforceSSO comment below).
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
 
   const login = useAuthStore((state) => state.login);
 
   // Partner SSO: the (memoized) login context tells us whether this deployment
-  // resolves to a single partner with an enforced/available SSO provider. If so,
-  // surface a "Sign in with {provider}" button above the password form. Fetch
-  // failure / null response leaves the button absent (password-only login).
+  // resolves to a single partner with an active SSO provider. Presence of
+  // partnerSso IS the availability signal (no separate `available` flag). If
+  // present, surface a "Sign in with {provider}" button above the password
+  // form. Fetch failure / null response leaves the button absent
+  // (password-only login).
   useEffect(() => {
     let cancelled = false;
     getLoginContext().then((ctx) => {
       if (cancelled) return;
-      if (ctx.partnerSso?.available) {
-        setPartnerSso({ providerName: ctx.partnerSso.providerName, loginUrl: ctx.partnerSso.loginUrl });
+      if (ctx.partnerSso) {
+        setPartnerSso({
+          providerName: ctx.partnerSso.providerName,
+          loginUrl: ctx.partnerSso.loginUrl,
+          enforceSSO: ctx.partnerSso.enforceSSO,
+        });
       }
     });
     return () => { cancelled = true; };
@@ -303,11 +312,30 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           Sign in with {partnerSso.providerName}
         </a>
       )}
-      <LoginForm
-        onSubmit={handleLogin}
-        errorMessage={error}
-        loading={loading}
-      />
+      {/*
+        enforceSSO only de-emphasizes the UI here — it collapses the password
+        form behind a reveal toggle so the SSO button reads as the primary
+        path. The password form must stay reachable: org-axis users (customer
+        techs) on this same single-partner instance are NOT SSO-gated —
+        `enforceSSO` is a partner-provider setting enforced per-user at login
+        time server-side (ssoPolicy), never by hiding the form client-side.
+      */}
+      {partnerSso?.enforceSSO && !showPasswordForm ? (
+        <button
+          type="button"
+          data-testid="show-password-form"
+          onClick={() => setShowPasswordForm(true)}
+          className="w-full text-center text-sm text-muted-foreground hover:text-foreground hover:underline"
+        >
+          Sign in with password instead
+        </button>
+      ) : (
+        <LoginForm
+          onSubmit={handleLogin}
+          errorMessage={error}
+          loading={loading}
+        />
+      )}
       <McpUrlCard variant="compact" requireOAuth className="mt-8" />
     </div>
   );

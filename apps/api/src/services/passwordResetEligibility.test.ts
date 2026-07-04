@@ -194,6 +194,60 @@ describe('getPasswordResetEligibility', () => {
     const result = await getPasswordResetEligibility('   ');
     expect(result).toEqual({ allowed: false, reason: 'unknown_user' });
   });
+
+  it('blocks reset for partner-axis-only users when the partner enforces SSO', async () => {
+    setupSelects(
+      [{ id: 'u-1', email: 'staff@acme.com', status: 'active', partnerId: 'p-1', orgId: null }],
+      [{ status: 'active', deletedAt: null }],
+    );
+    isSsoDisabledMock.mockResolvedValue(true);
+
+    const result = await getPasswordResetEligibility('staff@acme.com');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('sso_required');
+    expect(isSsoDisabledMock).toHaveBeenCalledWith({
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'p-1',
+    });
+  });
+
+  it('allows reset for partner-axis-only users when the partner does not enforce SSO', async () => {
+    setupSelects(
+      [{ id: 'u-1', email: 'staff2@acme.com', status: 'active', partnerId: 'p-1', orgId: null }],
+      [{ status: 'active', deletedAt: null }],
+    );
+    isSsoDisabledMock.mockResolvedValue(false);
+
+    const result = await getPasswordResetEligibility('staff2@acme.com');
+
+    expect(result.allowed).toBe(true);
+    expect(isSsoDisabledMock).toHaveBeenCalledWith({
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'p-1',
+    });
+  });
+
+  it('does not consult the partner SSO branch for org-scoped users (org branch unchanged)', async () => {
+    setupSelects(
+      [{ id: 'u-1', email: 'orguser@acme.com', status: 'active', partnerId: 'p-1', orgId: 'o-1' }],
+      [{ status: 'active', deletedAt: null }],
+      [{ status: 'active', deletedAt: null }],
+    );
+    isSsoDisabledMock.mockResolvedValue(false);
+
+    const result = await getPasswordResetEligibility('orguser@acme.com');
+
+    expect(result.allowed).toBe(true);
+    expect(isSsoDisabledMock).toHaveBeenCalledTimes(1);
+    expect(isSsoDisabledMock).toHaveBeenCalledWith({
+      scope: 'organization',
+      orgId: 'o-1',
+      partnerId: null,
+    });
+  });
 });
 
 describe('getPasswordResetEligibilityForUser', () => {

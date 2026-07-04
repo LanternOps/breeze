@@ -767,3 +767,9 @@ export * from './billing-enums';
 
 export * from './postureReport';
 export * from './executiveSummaryReport';
+
+// ============================================
+// Public login-context wire contract (#2183)
+// ============================================
+
+export * from './loginContext';

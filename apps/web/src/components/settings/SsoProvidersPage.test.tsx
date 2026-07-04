@@ -116,4 +116,54 @@ describe('SsoProvidersPage partner-axis behavior', () => {
     // The partner-scoped role loads into the default-role dropdown.
     expect(screen.getByRole('option', { name: 'Partner Technician' })).toBeTruthy();
   });
+
+  it('PATCHes an edited provider without ownerScope in the body (create-only field)', async () => {
+    fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+      if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [PARTNER_PROVIDER] }));
+      if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/sso/providers/pp-1' && (!opts || !opts.method)) {
+        return Promise.resolve(
+          jsonRes({
+            data: {
+              name: 'Team Login',
+              type: 'oidc',
+              preset: '',
+              issuer: 'https://idp.example.com',
+              clientId: 'client-1',
+              scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: true,
+              defaultRoleId: '',
+              allowedDomains: '',
+              enforceSSO: false,
+              hasClientSecret: true,
+            },
+          })
+        );
+      }
+      if (url === '/sso/providers/pp-1' && opts?.method === 'PATCH') {
+        return Promise.resolve(jsonRes({ data: PARTNER_PROVIDER }));
+      }
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+
+    render(<SsoProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    await screen.findByRole('button', { name: /save changes/i });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      const patchCall = fetchWithAuth.mock.calls.find(
+        (c) => c[0] === '/sso/providers/pp-1' && (c[1] as { method?: string })?.method === 'PATCH'
+      );
+      expect(patchCall).toBeTruthy();
+      const body = JSON.parse((patchCall![1] as { body: string }).body);
+      expect(body).not.toHaveProperty('ownerScope');
+    });
+  });
 });

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import SsoProviderForm, { type Role } from './SsoProviderForm';
 
 const ROLES: Role[] = [
@@ -38,5 +38,28 @@ describe('SsoProviderForm ownership selector', () => {
     fireEvent.click(screen.getByTestId('sso-provider-owner-partner'));
     expect(screen.getByRole('option', { name: 'Partner Technician' })).toBeTruthy();
     expect(screen.queryByRole('option', { name: 'Org Technician' })).toBeNull();
+  });
+
+  it('submits ownerScope: "partner" in the payload when the partner radio is selected', async () => {
+    const onSubmit = vi.fn();
+    render(<SsoProviderForm showOwnerScope roles={ROLES} onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText(/Provider name/i), { target: { value: 'Acme Okta' } });
+    fireEvent.click(screen.getByTestId('sso-provider-owner-partner'));
+    fireEvent.click(screen.getByRole('button', { name: /save provider/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ ownerScope: 'partner' }));
+  });
+
+  it('submits ownerScope: "organization" on the default (unchanged) path', async () => {
+    const onSubmit = vi.fn();
+    render(<SsoProviderForm showOwnerScope roles={ROLES} onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText(/Provider name/i), { target: { value: 'Acme Okta' } });
+    fireEvent.click(screen.getByRole('button', { name: /save provider/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ ownerScope: 'organization' }));
   });
 });

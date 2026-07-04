@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
+import type { LoginContext } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, ssoProviders, partnerLoginBranding } from '../../db/schema';
 import { getTrustedClientIp } from '../../services/clientIp';
@@ -23,7 +24,7 @@ loginContextRoutes.get('/login-context', async (c) => {
     return c.json({ error: 'Too many requests' }, 429);
   }
 
-  let context: { branding: unknown; partnerSso: unknown };
+  let context: LoginContext;
   try {
     context = await withSystemDbAccessContext(async () => {
       const partnerRows = await db.select({ id: partners.id }).from(partners).limit(2);
@@ -43,7 +44,7 @@ loginContextRoutes.get('/login-context', async (c) => {
         .limit(1);
 
       const [provider] = await db
-        .select({ name: ssoProviders.name })
+        .select({ name: ssoProviders.name, enforceSSO: ssoProviders.enforceSSO })
         .from(ssoProviders)
         .where(and(
           eq(ssoProviders.partnerId, partnerId),
@@ -55,9 +56,9 @@ loginContextRoutes.get('/login-context', async (c) => {
         branding: brandingRow ?? null,
         partnerSso: provider
           ? {
-              available: true as const,
               providerName: provider.name,
-              loginUrl: `/api/v1/sso/login/partner/${partnerId}`
+              loginUrl: `/api/v1/sso/login/partner/${partnerId}`,
+              enforceSSO: Boolean(provider.enforceSSO)
             }
           : null
       };

@@ -148,7 +148,7 @@ describe('LoginPage partner SSO button', () => {
   it('renders a "Sign in with {provider}" button when partner SSO is available', async () => {
     vi.mocked(getLoginContext).mockResolvedValue({
       branding: null,
-      partnerSso: { available: true, providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1' },
+      partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: false },
     });
 
     render(<LoginPage />);
@@ -164,7 +164,7 @@ describe('LoginPage partner SSO button', () => {
   it('appends the safe next as a redirect param on the SSO button href', async () => {
     vi.mocked(getLoginContext).mockResolvedValue({
       branding: null,
-      partnerSso: { available: true, providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1' },
+      partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: false },
     });
 
     render(<LoginPage next="/devices" />);
@@ -175,18 +175,6 @@ describe('LoginPage partner SSO button', () => {
     );
   });
 
-  it('omits the SSO button when partner SSO is unavailable', async () => {
-    vi.mocked(getLoginContext).mockResolvedValue({
-      branding: null,
-      partnerSso: { available: false, providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1' },
-    });
-
-    render(<LoginPage />);
-
-    await waitFor(() => screen.getByLabelText(/email/i));
-    expect(screen.queryByTestId('partner-sso-button')).not.toBeInTheDocument();
-  });
-
   it('omits the SSO button when the login-context fetch degrades to null', async () => {
     vi.mocked(getLoginContext).mockResolvedValue({ branding: null, partnerSso: null });
 
@@ -194,6 +182,62 @@ describe('LoginPage partner SSO button', () => {
 
     await waitFor(() => screen.getByLabelText(/email/i));
     expect(screen.queryByTestId('partner-sso-button')).not.toBeInTheDocument();
+  });
+
+  it('renders the SSO link banner from ?error=sso_link_required', async () => {
+    const realWindow = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realWindow, search: '?error=sso_link_required' },
+    });
+
+    render(<LoginPage />);
+
+    const notice = await screen.findByRole('alert');
+    expect(notice).toHaveTextContent(/This account already has a password/i);
+
+    Object.defineProperty(window, 'location', { configurable: true, value: realWindow });
+  });
+
+  it('enforceSSO=true hides the password form initially and shows the SSO button', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: true },
+    });
+
+    render(<LoginPage />);
+
+    await screen.findByTestId('partner-sso-button');
+    expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('show-password-form')).toBeInTheDocument();
+  });
+
+  it('clicking "Sign in with password instead" reveals the password form', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: true },
+    });
+
+    render(<LoginPage />);
+
+    const toggle = await screen.findByTestId('show-password-form');
+    fireEvent.click(toggle);
+
+    expect(await screen.findByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('show-password-form')).not.toBeInTheDocument();
+  });
+
+  it('enforceSSO=false leaves the password form visible as before', async () => {
+    vi.mocked(getLoginContext).mockResolvedValue({
+      branding: null,
+      partnerSso: { providerName: 'Okta', loginUrl: '/api/v1/sso/login/partner/p1', enforceSSO: false },
+    });
+
+    render(<LoginPage />);
+
+    await screen.findByTestId('partner-sso-button');
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('show-password-form')).not.toBeInTheDocument();
   });
 });
 

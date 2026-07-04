@@ -96,4 +96,38 @@ describe('ConnectSsoCard (#2183)', () => {
 
     expect(await screen.findByText(/different email/i)).toBeInTheDocument();
   });
+
+  it('shows an error banner for ?ssoLinkError=identity_in_use', async () => {
+    setLocation('?ssoLinkError=identity_in_use');
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    render(<ConnectSsoCard />);
+
+    expect(await screen.findByText(/already linked to a different Breeze user/i)).toBeInTheDocument();
+  });
+
+  it('shows an error banner for ?ssoLinkError=user_gone', async () => {
+    setLocation('?ssoLinkError=user_gone');
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    render(<ConnectSsoCard />);
+
+    expect(await screen.findByText(/could not be found/i)).toBeInTheDocument();
+  });
+
+  it('renders an inline error line (not null) when the options fetch returns a server error', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, false, 500));
+
+    render(<ConnectSsoCard />);
+
+    expect(await screen.findByTestId('connect-sso-load-error')).toBeInTheDocument();
+  });
+
+  it('renders an inline error line (not null) when the options fetch throws', async () => {
+    fetchWithAuthMock.mockRejectedValueOnce(new Error('network down'));
+
+    render(<ConnectSsoCard />);
+
+    expect(await screen.findByTestId('connect-sso-load-error')).toBeInTheDocument();
+  });
 });

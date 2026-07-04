@@ -1,13 +1,6 @@
-export type LoginContextBranding = {
-  logoUrl: string | null;
-  accentColor: string | null;
-  headline: string | null;
-};
+import type { LoginContext, LoginContextBranding, LoginContextPartnerSso } from '@breeze/shared';
 
-export type LoginContext = {
-  branding: LoginContextBranding | null;
-  partnerSso: { available: boolean; providerName: string; loginUrl: string } | null;
-};
+export type { LoginContext, LoginContextBranding, LoginContextPartnerSso };
 
 const EMPTY: LoginContext = { branding: null, partnerSso: null };
 
@@ -22,7 +15,7 @@ export function getLoginContext(): Promise<LoginContext> {
 async function fetchLoginContext(): Promise<LoginContext> {
   try {
     const apiHost = import.meta.env.PUBLIC_API_URL || '';
-    // Same timeout rationale as the CF Access check (LoginPage.tsx:38-58):
+    // Same timeout rationale as checkCfAccessLoginEnabled (LoginPage.tsx):
     // a hung request must not stall the login page.
     const res = await fetch(`${apiHost}/api/v1/auth/login-context`, {
       signal: AbortSignal.timeout(4000)
@@ -30,7 +23,11 @@ async function fetchLoginContext(): Promise<LoginContext> {
     if (!res.ok) return EMPTY;
     const body = (await res.json()) as Partial<LoginContext>;
     return { branding: body.branding ?? null, partnerSso: body.partnerSso ?? null };
-  } catch {
-    return EMPTY; // fail open to stock Breeze branding
+  } catch (err) {
+    // Fail open to stock Breeze branding — but leave a trace, or a
+    // deployment-wide config/CORS regression silently disables the feature
+    // fleet-wide with no signal.
+    console.warn('[login] login-context fetch failed; falling back to stock branding', err);
+    return EMPTY;
   }
 }

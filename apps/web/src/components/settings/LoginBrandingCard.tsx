@@ -1,16 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Loader2, Palette, Save } from 'lucide-react';
+import type { LoginContextBranding } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { navigateTo } from '@/lib/navigation';
-
-type LoginBranding = {
-  logoUrl: string | null;
-  accentColor: string | null;
-  headline: string | null;
-};
 
 // Fallback swatch when no accent has been set yet, so the color picker and the
 // preview have something sensible to render. Not persisted unless the user saves.
@@ -20,13 +15,15 @@ const HEADLINE_MAX = 120;
 const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm';
 
 /**
- * Partner "Login Branding" settings card (#2183). Lets a partner admin brand the
- * technician login screen (logo, accent color, headline) shown at
- * `/login?partner=<slug>`. Reads/writes GET/PUT /api/v1/partners/me/login-branding.
+ * Partner "Login Branding" settings card (#2183). Lets a partner admin brand
+ * the technician login screen (logo, accent color, headline). The login page
+ * shows the branding automatically when the instance resolves to exactly one
+ * partner (typical self-hosted setup) — there is no `?partner=` route or
+ * query param, and multi-partner instances show no branding (v2 slug
+ * discovery). Reads/writes GET/PUT /api/v1/partners/me/login-branding.
  *
  * PUT is FULL-REPLACE: we always send all three fields on every save, so an
- * omitted field is not treated as "unchanged" — it is nulled server-side. That
- * matches the server contract (Task 9) and keeps the UI the single source of truth.
+ * omitted field is not treated as "unchanged" — it is nulled server-side.
  */
 export default function LoginBrandingCard() {
   const [logoUrl, setLogoUrl] = useState('');
@@ -34,6 +31,10 @@ export default function LoginBrandingCard() {
   const [headline, setHeadline] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Set when the initial GET fails (non-401 error response or thrown fetch
+  // error). The PUT is full-replace, so saving over an unloaded form would
+  // silently wipe any real saved branding — Save is disabled until this clears.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,14 +46,23 @@ export default function LoginBrandingCard() {
           return;
         }
         if (res.ok) {
-          const body = (await res.json().catch(() => null)) as { data?: LoginBranding | null } | null;
+          const body = (await res.json().catch(() => null)) as { data?: LoginContextBranding | null } | null;
           const data = body?.data ?? null;
-          if (!cancelled && data) {
-            setLogoUrl(data.logoUrl ?? '');
-            setAccentColor(data.accentColor ?? '');
-            setHeadline(data.headline ?? '');
+          if (!cancelled) {
+            if (data) {
+              setLogoUrl(data.logoUrl ?? '');
+              setAccentColor(data.accentColor ?? '');
+              setHeadline(data.headline ?? '');
+            }
+            setLoadFailed(false);
           }
+        } else {
+          console.error('[login-branding] failed to load current branding', res.status);
+          if (!cancelled) setLoadFailed(true);
         }
+      } catch (err) {
+        console.error('[login-branding] failed to load current branding', err);
+        if (!cancelled) setLoadFailed(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -65,7 +75,7 @@ export default function LoginBrandingCard() {
   const save = async () => {
     setSaving(true);
     try {
-      await runAction<{ data: LoginBranding }>({
+      await runAction<{ data: LoginContextBranding }>({
         // Full-replace: always send all three fields. A blank field goes as null
         // (cleared), never omitted — omitting would NULL it server-side anyway,
         // but sending explicit null keeps request intent unambiguous.
@@ -117,10 +127,20 @@ export default function LoginBrandingCard() {
           <h2 className="text-lg font-semibold">Login Branding</h2>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Brand the technician login screen your team sees at <code>/login?partner=…</code>. Applies to
-          all of your organizations.
+          Brand the technician login screen. Shown automatically when this deployment resolves to a
+          single partner (typical self-hosted setup).
         </p>
       </div>
+
+      {loadFailed && (
+        <div
+          role="alert"
+          className="mb-6 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          Couldn't load your current branding — reload the page before saving, or you may overwrite
+          existing settings.
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Fields */}
@@ -221,7 +241,7 @@ export default function LoginBrandingCard() {
         <button
           type="button"
           onClick={save}
-          disabled={saving}
+          disabled={saving || loadFailed}
           data-testid="login-branding-save"
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >

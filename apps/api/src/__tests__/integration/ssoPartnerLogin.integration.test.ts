@@ -40,11 +40,13 @@ import {
   createPartner,
   createOrganization,
   createRole,
+  createUser,
   assignUserToPartner,
   assignUserToOrganization,
 } from './db-utils';
 import { encryptSecret } from '../../services/secretCrypto';
 import { createAccessToken } from '../../services/jwt';
+import { loginRoutes } from '../../routes/auth/login';
 
 vi.mock('../../services/sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sso')>();
@@ -66,7 +68,10 @@ process.env.APP_ENCRYPTION_KEY = 'integration-test-app-encryption-key-32-bytes!'
 
 const ISSUER = 'https://idp.example.test';
 
-async function createPartnerAxisProvider(partnerId: string, opts: { trustsIdpMfa?: boolean } = {}) {
+async function createPartnerAxisProvider(
+  partnerId: string,
+  opts: { trustsIdpMfa?: boolean; status?: 'active' | 'inactive' | 'testing'; enforceSSO?: boolean } = {},
+) {
   const db = getTestDb();
   const [row] = await db
     .insert(ssoProviders)
@@ -75,7 +80,7 @@ async function createPartnerAxisProvider(partnerId: string, opts: { trustsIdpMfa
       partnerId,
       name: 'Partner IdP',
       type: 'oidc',
-      status: 'active',
+      status: opts.status ?? 'active',
       issuer: ISSUER,
       clientId: 'test-client-id',
       clientSecret: encryptSecret('test-client-secret'),
@@ -84,6 +89,7 @@ async function createPartnerAxisProvider(partnerId: string, opts: { trustsIdpMfa
       userInfoUrl: `${ISSUER}/userinfo`,
       jwksUrl: `${ISSUER}/jwks`,
       trustsIdpMfa: opts.trustsIdpMfa ?? false,
+      enforceSSO: opts.enforceSSO ?? false,
       autoProvision: false,
     })
     .returning();
@@ -151,6 +157,10 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
   beforeEach(() => {
     app = new Hono();
     app.route('/sso', ssoRoutes);
+    // Mounted for the enforceSSO-non-suppression case below, which drives a
+    // real POST /auth/login to prove a status='testing' provider never gates
+    // password auth (only status='active' + enforceSSO does, via ssoPolicy.ts).
+    app.route('/auth', loginRoutes);
     vi.mocked(exchangeCodeForTokens).mockReset().mockResolvedValue({
       access_token: 'idp-access-token',
       token_type: 'Bearer',
@@ -568,6 +578,46 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       .where(eq(ssoSessions.linkUserId, user.id))
       .limit(1);
     expect(afterDelete).toBeUndefined();
+  });
+
+  // ── review follow-up: status='active' provider-selection gate (real-DB) ──
+  // The WHERE eq(ssoProviders.status, 'active') filter that both the login-
+  // initiation route and ssoPolicy.ts's enforcement check rely on was, until
+  // now, verified only against a mocked db. These two cases exercise the real
+  // Postgres row so a status='testing' provider genuinely behaves like "not
+  // there yet" on both surfaces.
+
+  it('GET /sso/login/partner/:partnerId 404s when the partner\'s only provider is status=testing', async () => {
+    const partner = await createPartner();
+    await createPartnerAxisProvider(partner.id, { status: 'testing' });
+
+    const res = await app.request(`/sso/login/partner/${partner.id}`);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toContain('No active SSO provider');
+  });
+
+  it('enforceSSO on a status=testing provider does NOT suppress password login for the partner\'s staff', async () => {
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const password = 'TestPass123!';
+    const user = await createUser({ partnerId: partner.id, password, withMembership: false });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    // enforceSSO:true would suppress password login IF this provider were
+    // status='active' (see ssoPolicy.ts's isPasswordAuthDisabledBySso, which
+    // filters on both status='active' AND enforceSSO=true) — status='testing'
+    // must leave password login untouched even with enforceSSO set.
+    await createPartnerAxisProvider(partner.id, { status: 'testing', enforceSSO: true });
+
+    const res = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: user.email, password }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.tokens?.accessToken).toBeDefined();
+    expect(body.mfaRequired).toBe(false);
   });
 });
 

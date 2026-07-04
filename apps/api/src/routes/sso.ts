@@ -990,12 +990,13 @@ ssoRoutes.delete(
 // Self-service "Connect SSO" — authenticated identity linking (#2183)
 // ============================================
 //
-// Password-holding users are NEVER auto-linked at login (Task 5 refuses to
-// JIT-link an assertion to an account that has a password or another provider
-// link). This is the sanctioned path for those users to adopt SSO: an
-// already-authenticated user connects their own IdP identity, from their own
-// security settings. It works on BOTH axes — an org member links an org-axis
-// provider, partner staff link a partner-axis provider.
+// Password-holding users are NEVER auto-linked at login (the identity-
+// resolution step below refuses to JIT-link an assertion to an account that
+// has a password or another provider link). This is the sanctioned path for
+// those users to adopt SSO: an already-authenticated user connects their own
+// IdP identity, from their own security settings. It works on BOTH axes — an
+// org member links an org-axis provider, partner staff link a partner-axis
+// provider.
 //
 // Axis determinant: the caller's TOKEN scope, not the provider. An
 // organization-scope token means an org member (auth.orgId = their org); a
@@ -1003,7 +1004,8 @@ ssoRoutes.delete(
 // `AuthContext.user` carries no orgId/partnerId, so we key off the token's
 // scope/orgId/partnerId. This is exactly what keeps an org-bound user from ever
 // linking a partner-axis provider (an org-bound user can only ever hold an
-// organization-scope token), preserving the Task-5 mint-gate invariant.
+// organization-scope token), preserving the invariant that no link can be
+// created here that the login-path identity resolution would later reject.
 
 // Providers the current user may link, each with its linked status.
 ssoRoutes.get('/link/options', authMiddleware, async (c) => {
@@ -1065,7 +1067,8 @@ ssoRoutes.post(
     // token, matching orgId). Partner-axis → the caller must be staff of that
     // partner (partner-scope token, matching partnerId). An org-bound user
     // (organization scope) can therefore NEVER pass the partner branch, so a
-    // link Task-5's resolution would later reject can never be created.
+    // link the login-path identity resolution would later reject can never be
+    // created here.
     const inPool = provider.orgId
       ? auth.scope === 'organization' && auth.orgId === provider.orgId
       : auth.scope === 'partner' && auth.partnerId === provider.partnerId;
@@ -1406,7 +1409,7 @@ ssoRoutes.get('/callback', async (c) => {
     // SSO is an account-takeover-critical entry point, so the id_token MUST be
     // cryptographically verified and the identity used for account linking must
     // be bound to that verified token — never the old unsigned claim-decode
-    // path. (security review #2: C-1/C-2)
+    // path.
     //
     // 1) An id_token is required, and a JWKS URL is required to verify it. The
     //    previous code fell back to decode-only (NO signature check) when
@@ -1462,7 +1465,7 @@ ssoRoutes.get('/callback', async (c) => {
       }
     }
 
-    // ── Identity resolution (security review #2: identity-first + safe JIT link)
+    // ── Identity resolution (identity-first + safe JIT link) ──────────────────
     // The authoritative key is the (provider, external subject) pair recorded in
     // user_sso_identities — NOT the global-unique email. Once a user is linked to
     // a provider, only that provider asserting that exact `sub` can authenticate
@@ -1558,7 +1561,7 @@ ssoRoutes.get('/callback', async (c) => {
       return linkedUser ?? null;
     });
 
-    // ── SSO domain-verification gate (security review #2, H-2 / Plan B) ──────
+    // ── SSO domain-verification gate ──────────────────────────────────────────
     // Before JIT-linking-by-email or provisioning a NEW account, require the
     // asserted email's domain to be one the org proved it owns (DNS TXT). Blocks
     // a malicious/compromised org-admin from pointing the org at an attacker IdP
@@ -1700,7 +1703,7 @@ ssoRoutes.get('/callback', async (c) => {
       user = newUser;
     }
 
-    // IdP-asserted MFA (security review #2 H-1) — axis-independent, so it is
+    // IdP-asserted MFA — axis-independent, so it is
     // computed here (above the membership branch) and shared by both the org
     // and partner token payloads. When the provider opts in via `trustsIdpMfa`
     // AND the verified id_token's `amr` attests multi-factor, propagate
@@ -1809,6 +1812,13 @@ ssoRoutes.get('/callback', async (c) => {
     }
 
     // Update or create SSO identity link (shared across both axes)
+    // KNOWN BUG (#2195): this read is not wrapped in withSystemDbAccessContext,
+    // so on this unauthenticated callback route (no request context has been
+    // established) FORCED RLS silently matches 0 rows here — existingIdentity
+    // is always undefined regardless of whether a link already exists. That
+    // makes the UPDATE branch below unreachable and every returning SSO login
+    // INSERTs a duplicate identity row instead of updating the existing one.
+    // Fix tracked in the #2195 follow-up — do not copy this pattern elsewhere.
     const [existingIdentity] = await db
       .select()
       .from(userSsoIdentities)

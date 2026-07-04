@@ -159,14 +159,27 @@ async function evaluateEligibility(user: UserLookupRow): Promise<ResetEligibilit
   }
 
   // SSO check: defer to the existing helper so password reset and login share
-  // one definition of "SSO is mandatory for this org". `isPasswordAuthDisabledBySso`
-  // only flags `scope='organization'` users whose org has an active enforced
-  // provider — partner-scope users are never SSO-gated here.
+  // one definition of "SSO is mandatory for this org/partner". Org-axis users
+  // (orgId set) are gated against their org's active enforced provider;
+  // partner-axis-only users (orgId null, partnerId set) are gated against
+  // their partner's active enforced provider via the same helper's
+  // `scope: 'partner'` branch — both axes must be checked, or a partner-only
+  // account keeps a live password-reset path even after its partner turns on
+  // enforced SSO.
   if (user.orgId) {
     const ssoBlocked = await isPasswordAuthDisabledBySso({
       scope: 'organization',
       orgId: user.orgId,
       partnerId: null,
+    });
+    if (ssoBlocked) {
+      return { allowed: false, reason: 'sso_required', userId: user.id, email: user.email };
+    }
+  } else if (user.partnerId) {
+    const ssoBlocked = await isPasswordAuthDisabledBySso({
+      scope: 'partner',
+      orgId: null,
+      partnerId: user.partnerId,
     });
     if (ssoBlocked) {
       return { allowed: false, reason: 'sso_required', userId: user.id, email: user.email };

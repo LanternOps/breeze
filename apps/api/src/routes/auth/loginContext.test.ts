@@ -12,6 +12,7 @@ vi.mock('../../db/schema', () => ({
     partnerId: 'ssoProviders.partnerId',
     name: 'ssoProviders.name',
     status: 'ssoProviders.status',
+    enforceSSO: 'ssoProviders.enforceSSO',
   },
   partnerLoginBranding: {
     partnerId: 'partnerLoginBranding.partnerId',
@@ -72,7 +73,7 @@ describe('GET /auth/login-context (#2183)', () => {
         accentColor: '#112233',
         headline: 'Welcome back'
       }]) as any)
-      .mockReturnValueOnce(selectChain([{ name: 'Okta' }]) as any);
+      .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: true }]) as any);
 
     const res = await getContext();
     expect(res.status).toBe(200);
@@ -84,9 +85,28 @@ describe('GET /auth/login-context (#2183)', () => {
         headline: 'Welcome back'
       },
       partnerSso: {
-        available: true,
         providerName: 'Okta',
-        loginUrl: `/api/v1/sso/login/partner/${PARTNER_UUID}`
+        loginUrl: `/api/v1/sso/login/partner/${PARTNER_UUID}`,
+        enforceSSO: true
+      }
+    });
+  });
+
+  it('passes through enforceSSO: false when the provider does not enforce SSO', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([{ id: PARTNER_UUID }]) as any)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: false }]) as any);
+
+    const res = await getContext();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      branding: null,
+      partnerSso: {
+        providerName: 'Okta',
+        loginUrl: `/api/v1/sso/login/partner/${PARTNER_UUID}`,
+        enforceSSO: false
       }
     });
   });
@@ -128,15 +148,15 @@ describe('GET /auth/login-context (#2183)', () => {
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 
-  it('omits provider config beyond name + loginUrl', async () => {
+  it('omits provider config beyond name + loginUrl + enforceSSO', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([{ id: PARTNER_UUID }]) as any)
       .mockReturnValueOnce(selectChain([]) as any)
-      .mockReturnValueOnce(selectChain([{ name: 'Okta' }]) as any);
+      .mockReturnValueOnce(selectChain([{ name: 'Okta', enforceSSO: true }]) as any);
 
     const res = await getContext();
     const body = await res.json();
-    expect(Object.keys(body.partnerSso).sort()).toEqual(['available', 'loginUrl', 'providerName']);
+    expect(Object.keys(body.partnerSso).sort()).toEqual(['enforceSSO', 'loginUrl', 'providerName']);
   });
 
   it('429s past the rate limit', async () => {

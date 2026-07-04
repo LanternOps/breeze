@@ -11,7 +11,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 // Partner admin read/write for the MSP's own technician-login branding
 // (#2183). Deliberately NOT under orgRoutes' /orgs/partners/me or the
 // legacy singular /partner router — mounted directly at /partners so the
-// final URL matches Task 11's contract: /api/v1/partners/me/login-branding.
+// final URL is /api/v1/partners/me/login-branding.
 export const partnerLoginBrandingRoutes = new Hono();
 
 const brandingSchema = z.object({

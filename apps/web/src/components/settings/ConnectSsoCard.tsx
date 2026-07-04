@@ -17,16 +17,29 @@ export default function ConnectSsoCard() {
   const [options, setOptions] = useState<LinkOption[]>([]);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  // Track fetch failures separately from "genuinely no SSO to link" so a
+  // backend outage doesn't read as an empty state — mirrors how
+  // SsoProvidersPage separates `hadError` from a legitimately-empty list.
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     fetchWithAuth('/sso/link/options')
-      .then((r) => (r.ok ? r.json() : { data: [] }))
+      .then((r) => {
+        if (r.ok) return r.json();
+        console.error('[connect-sso] failed to load link options', r.status);
+        if (!cancelled) setLoadError(true);
+        return { data: [] };
+      })
       .then((body) => {
         if (!cancelled) setOptions(Array.isArray(body?.data) ? body.data : []);
       })
-      .catch(() => {
-        if (!cancelled) setOptions([]);
+      .catch((err) => {
+        console.error('[connect-sso] failed to load link options', err);
+        if (!cancelled) {
+          setLoadError(true);
+          setOptions([]);
+        }
       });
     return () => {
       cancelled = true;
@@ -67,7 +80,9 @@ export default function ConnectSsoCard() {
     }
   }
 
-  if (options.length === 0 && !notice) return null;
+  // Genuinely empty (no error) — nothing to show. A load failure with an
+  // empty list still renders below so the failure isn't invisible.
+  if (options.length === 0 && !notice && !loadError) return null;
 
   return (
     <section className="space-y-4 rounded-lg border bg-card p-6 shadow-xs" data-testid="connect-sso-card">
@@ -77,6 +92,12 @@ export default function ConnectSsoCard() {
           Connect your identity provider account so you can sign in with SSO.
         </p>
       </div>
+
+      {loadError && options.length === 0 && (
+        <p className="text-sm text-muted-foreground" data-testid="connect-sso-load-error">
+          Couldn't check for available SSO providers.
+        </p>
+      )}
 
       {notice && (
         <div

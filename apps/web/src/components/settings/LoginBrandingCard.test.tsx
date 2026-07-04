@@ -104,4 +104,40 @@ describe('LoginBrandingCard', () => {
     expect(body.accentColor).toBe('#112233');
     expect(body.headline).toBeNull();
   });
+
+  it('shows a warning banner and disables Save when the GET returns a server error', async () => {
+    fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+      if (url === '/partners/me/login-branding' && (!opts || !opts.method || opts.method === 'GET')) {
+        return Promise.resolve(jsonRes({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(jsonRes({ data: null }));
+    });
+    render(<LoginBrandingCard />);
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/Couldn't load your current branding/i);
+    expect(screen.getByTestId('login-branding-save')).toBeDisabled();
+  });
+
+  it('shows a warning banner and disables Save when the GET throws', async () => {
+    fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+      if (url === '/partners/me/login-branding' && (!opts || !opts.method || opts.method === 'GET')) {
+        return Promise.reject(new Error('network down'));
+      }
+      return Promise.resolve(jsonRes({ data: null }));
+    });
+    render(<LoginBrandingCard />);
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByTestId('login-branding-save')).toBeDisabled();
+  });
+
+  it('enables Save and shows no banner on a successful load', async () => {
+    routeFetch({ logoUrl: null, accentColor: null, headline: null });
+    render(<LoginBrandingCard />);
+
+    await waitFor(() => expect(screen.getByTestId('login-branding-logo-url')).toBeTruthy());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByTestId('login-branding-save')).not.toBeDisabled();
+  });
 });
