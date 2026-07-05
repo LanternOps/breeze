@@ -3,10 +3,13 @@ package tools
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/patching"
 )
 
 // updateAttempt mirrors uninstallAttempt — each is a single package-manager
@@ -96,12 +99,31 @@ func updateSoftwareOS(name, version, packageID string) error {
 }
 
 func updateSoftwareWindows(name, version, packageID string) error {
-	return runUpdateAttempts(name, buildWindowsUpdateAttempts(name, version, packageID))
+	return runUpdateAttempts(name, buildWindowsUpdateAttempts(resolveWingetCommand(), name, version, packageID))
+}
+
+// resolveWingetCommand returns the command to invoke winget with in the
+// current process context. Under an interactive user the per-user MSIX
+// execution alias puts "winget" on PATH, but under the SYSTEM service that
+// alias does not exist, so fall back to the versioned WindowsApps path
+// resolved by the patching locator (the same resolution the SYSTEM winget
+// patch provider uses). When neither resolves, return "winget" unchanged so
+// the attempt runner reports the usual "no supported update command" error.
+func resolveWingetCommand() string {
+	if _, err := exec.LookPath("winget"); err == nil {
+		return "winget"
+	}
+	if path, _, err := patching.LocateSystemWinget(); err == nil {
+		return path
+	} else {
+		slog.Warn("resolveWingetCommand: winget not found via PATH or WindowsApps locate", "error", err.Error())
+	}
+	return "winget"
 }
 
 // wingetUpgradeAttempt builds a single `winget upgrade` attempt selecting the
 // package by the given flag (--name or --id), optionally version-pinned.
-func wingetUpgradeAttempt(selector, value, version string) updateAttempt {
+func wingetUpgradeAttempt(wingetCmd, selector, value, version string) updateAttempt {
 	args := []string{"upgrade", selector, value}
 	if version != "" {
 		args = append(args, "--version", version)
@@ -112,7 +134,7 @@ func wingetUpgradeAttempt(selector, value, version string) updateAttempt {
 		"--accept-package-agreements",
 		"--disable-interactivity",
 	)
-	return updateAttempt{command: "winget", args: args}
+	return updateAttempt{command: wingetCmd, args: args}
 }
 
 // buildWindowsUpdateAttempts returns the ordered list of winget attempts.
@@ -126,22 +148,26 @@ func wingetUpgradeAttempt(selector, value, version string) updateAttempt {
 //
 // A version-pinned variant is prepended within each tier when a target version
 // is supplied (winget treats --version as "upgrade to this exact version").
-func buildWindowsUpdateAttempts(name, version, packageID string) []updateAttempt {
+//
+// wingetCmd is the invocable winget command (see resolveWingetCommand) —
+// passed in rather than resolved here so the ordering logic stays pure and
+// table-testable.
+func buildWindowsUpdateAttempts(wingetCmd, name, version, packageID string) []updateAttempt {
 	var attempts []updateAttempt
 
 	if packageID != "" {
 		if version != "" {
-			attempts = append(attempts, wingetUpgradeAttempt("--id", packageID, version))
+			attempts = append(attempts, wingetUpgradeAttempt(wingetCmd, "--id", packageID, version))
 		}
-		attempts = append(attempts, wingetUpgradeAttempt("--id", packageID, ""))
+		attempts = append(attempts, wingetUpgradeAttempt(wingetCmd, "--id", packageID, ""))
 	}
 
 	if version != "" {
-		attempts = append(attempts, wingetUpgradeAttempt("--name", name, version))
+		attempts = append(attempts, wingetUpgradeAttempt(wingetCmd, "--name", name, version))
 	}
 	attempts = append(attempts,
-		wingetUpgradeAttempt("--name", name, ""),
-		wingetUpgradeAttempt("--id", name, ""),
+		wingetUpgradeAttempt(wingetCmd, "--name", name, ""),
+		wingetUpgradeAttempt(wingetCmd, "--id", name, ""),
 	)
 
 	return attempts

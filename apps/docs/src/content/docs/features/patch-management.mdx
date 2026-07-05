@@ -64,6 +64,18 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 
 Beyond operating-system updates, Breeze patches third-party applications detected via **winget** on Windows devices — browsers, runtimes, and productivity tools such as Chrome, Firefox, Edge, Zoom, Teams, Git, Node.js, Python, and Visual Studio Code. These patches flow through the same approval, deployment, and rollback workflow as OS patches.
 
+### How Windows Third-Party Patching Runs
+
+The Breeze agent runs winget directly, in the agent's own **SYSTEM** process, against **machine scope** — there is no dependency on a user being logged in, and no separate helper process in the loop. Scanning, installing, and uninstalling third-party patches all happen the same way regardless of whether anyone is signed in to the device, consistent with how OS patches are already applied.
+
+Scope is machine-wide installs only. Per-user (per-profile) winget installs are not scanned or patched by this engine.
+
+<Aside type="note">
+This requires winget (the **App Installer**) to already be present on the device. It ships by default on Windows 10, Windows 11, and Windows Server 2025. On Windows Server 2019 and 2022, winget is often missing, and automatic provisioning of winget on those servers is a planned follow-up rather than something Breeze does today. Until it ships, a Server 2019/2022 device without winget reports the third-party engine as unavailable and simply detects no third-party patches — expected behavior, since servers of that vintage typically aren't running desktop apps like browsers or Zoom in the first place.
+</Aside>
+
+This is purely an agent execution-path change: approval rings, patch policies, and compliance reporting are unaffected, and third-party patches continue to flow through the same `third_party` source described below.
+
 ### The Package Catalog
 
 A curated **package catalog** standardises metadata for known third-party applications. It ships pre-seeded with around 20 common applications, and platform admins manage it at **Admin → Third-Party Catalog**.
