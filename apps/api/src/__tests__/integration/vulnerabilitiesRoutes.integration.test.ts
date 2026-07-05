@@ -180,13 +180,16 @@ describe('vulnerabilityRoutes', () => {
           epssScore: number | null;
           riskScore: number | null;
           deviceCount: number;
+          patchAvailable: boolean;
+          statuses: string[];
         }>;
       };
 
       // Only org A's two CVEs returned
       expect(body.items).toHaveLength(2);
 
-      // Fleet rows have EXACTLY the aggregated shape — no status, no deviceId, no patchAvailable
+      // Fleet rows have the aggregated shape — CVE metadata plus deviceCount,
+      // patchAvailable, and aggregated statuses; never a per-device deviceId or singular status
       const firstItem = body.items[0]!;
       expect(firstItem).toHaveProperty('id');
       expect(firstItem).toHaveProperty('cveId');
@@ -196,8 +199,9 @@ describe('vulnerabilityRoutes', () => {
       expect(firstItem).toHaveProperty('epssScore');
       expect(firstItem).toHaveProperty('riskScore');
       expect(firstItem).toHaveProperty('deviceCount');
+      expect(firstItem).toHaveProperty('patchAvailable');
+      expect(firstItem).toHaveProperty('statuses');
       expect(firstItem).not.toHaveProperty('deviceId');
-      expect(firstItem).not.toHaveProperty('patchAvailable');
       expect(firstItem).not.toHaveProperty('status');
 
       // criticalVuln (riskScore 9.8) sorts first
