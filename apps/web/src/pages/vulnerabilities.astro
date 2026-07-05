@@ -1,6 +1,6 @@
 ---
 import DashboardLayout from '../layouts/DashboardLayout.astro';
-import VulnerabilityTable from '../components/vulnerabilities/VulnerabilityTable';
+import VulnerabilityFleetPage from '../components/vulnerabilities/VulnerabilityFleetPage';
 ---
 
 <DashboardLayout title="Vulnerabilities">
@@ -8,9 +8,9 @@ import VulnerabilityTable from '../components/vulnerabilities/VulnerabilityTable
     <div>
       <h1 class="text-2xl font-semibold">Vulnerabilities</h1>
       <p class="text-sm text-muted-foreground">
-        CVEs detected across your fleet, prioritized by risk (CVSS, with KEV/EPSS modifiers).
+        Fleet-wide CVE exposure grouped into remediation actions — triage, remediate, accept, or ticket from here.
       </p>
     </div>
-    <VulnerabilityTable client:load />
+    <VulnerabilityFleetPage client:load />
   </div>
 </DashboardLayout>
