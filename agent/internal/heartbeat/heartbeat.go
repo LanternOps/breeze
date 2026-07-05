@@ -1955,6 +1955,21 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any,
 		installedItems := h.installedPatchesToMaps(installed)
 		coveredSources := h.coveredPatchSources(h.patchMgr.ProviderIDs(), coveredProviders)
 
+		// Surface the coverage decision so a field operator can correlate a
+		// narrowed full-scan sweep on the server with which providers actually
+		// ran on the agent (#2217). When some registered source buckets weren't
+		// covered (a provider was skipped/failed — e.g. winget with no helper
+		// session), log at Info which buckets will NOT be swept this scan, so the
+		// chronically-unswept-bucket case is explainable in the field rather than
+		// mute on the happy path. Full coverage stays at Debug.
+		if uncovered := h.uncoveredPatchSources(h.patchMgr.ProviderIDs(), coveredSources); len(uncovered) > 0 {
+			log.Info("patch scan partial coverage; these source buckets will not be swept to missing this scan",
+				"coveredSources", coveredSources,
+				"uncoveredSources", uncovered)
+		} else {
+			log.Debug("patch scan full coverage", "coveredSources", coveredSources)
+		}
+
 		if scanErr != nil && installedErr != nil {
 			return pendingItems, installedItems, coveredSources, fmt.Errorf("patch scan failed: %v; installed scan failed: %v", scanErr, installedErr)
 		}
@@ -1980,6 +1995,16 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any,
 // this guards against (#2217). Always returns a non-nil slice so a scan where
 // everything was skipped serializes as an empty coveredSources array (sweep
 // nothing) rather than being omitted (legacy sweep-all).
+//
+// INTERIM LIMITATION (until #2216 lands): the coverage mechanism keys off
+// providers returning patching.ErrScanSkipped, but the current winget provider
+// still returns (nil, nil) when it can't run (no connected user helper session)
+// instead of the sentinel. So a skipped winget is counted as "scanned and found
+// nothing" and its third_party bucket is treated as COVERED — the coverage guard
+// is inert-but-correct for winget: it never wrongly narrows the sweep, it just
+// can't yet protect winget's own rows. #2216 splits winget.go and has its SYSTEM
+// provider adopt ErrScanSkipped, at which point this mechanism becomes fully
+// effective for winget with no change here. Do not edit winget.go for #2217.
 func (h *Heartbeat) coveredPatchSources(providerIDs, coveredProviders []string) []string {
 	coveredSet := make(map[string]bool, len(coveredProviders))
 	for _, id := range coveredProviders {
@@ -2005,6 +2030,30 @@ func (h *Heartbeat) coveredPatchSources(providerIDs, coveredProviders []string) 
 	}
 	slices.Sort(sources)
 	return sources
+}
+
+// uncoveredPatchSources returns the source buckets that the registered
+// providers map to but that coveredSources does NOT include — i.e. buckets a
+// full scan will leave untouched because a provider feeding them was skipped or
+// failed. Used purely for operator-facing logging (#2217).
+func (h *Heartbeat) uncoveredPatchSources(providerIDs, coveredSources []string) []string {
+	coveredSet := make(map[string]bool, len(coveredSources))
+	for _, s := range coveredSources {
+		coveredSet[s] = true
+	}
+
+	seen := make(map[string]bool)
+	uncovered := make([]string, 0)
+	for _, id := range providerIDs {
+		source := h.mapPatchProviderSource(id)
+		if coveredSet[source] || seen[source] {
+			continue
+		}
+		seen[source] = true
+		uncovered = append(uncovered, source)
+	}
+	slices.Sort(uncovered)
+	return uncovered
 }
 
 func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []map[string]any {

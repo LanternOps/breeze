@@ -34,6 +34,14 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 		log.Error("patch scan failed", "source", source, "error", err.Error())
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
+	if err != nil {
+		// Partial success: at least one provider produced items but another
+		// scan errored. The failed provider is excluded from coveredSources, so
+		// its bucket won't be swept — surface the error so that tombstoning
+		// change is explainable rather than silently swallowed (#2217).
+		log.Warn("patch scan partial failure; some providers did not scan",
+			"source", source, "error", err.Error())
+	}
 	if source != "" {
 		// A targeted upload sweeps the source's pending rows before re-upserting.
 		// If this source's provider didn't actually scan (skipped or failed),

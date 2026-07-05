@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -251,6 +252,61 @@ func TestSendPatchInventoryDataFullOmitsNilCoveredSources(t *testing.T) {
 	}
 }
 
+func TestSendPatchInventoryDataFullIncludesEmptyCoveredSources(t *testing.T) {
+	// A scan where every provider was skipped yields a non-nil but empty covered
+	// set. It MUST serialize as coveredSources: [] (present, empty) so the API
+	// scopes the sweep to nothing — distinct from nil/omitted, which the API
+	// treats as a legacy sweep-all. This is the exact schema-contract distinction
+	// the coverage mechanism depends on (#2217).
+	var requests []patchInventoryRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requests = append(requests, patchInventoryRequest{path: r.URL.Path, body: body})
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	h := New(&config.Config{AgentID: "agent-1", ServerURL: ts.URL, AuthToken: "token"})
+	h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
+
+	pendingErr, installedErr := h.sendPatchInventoryData(
+		nil,
+		nil,
+		"",
+		true,
+		[]string{}, // non-nil, empty: every provider skipped
+	)
+	if pendingErr != nil {
+		t.Fatalf("pendingErr = %v", pendingErr)
+	}
+	if installedErr != nil {
+		t.Fatalf("installedErr = %v", installedErr)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requests))
+	}
+
+	// Assert the raw JSON carries "coveredSources":[] — not omitted, not null.
+	if !strings.Contains(string(requests[0].body), `"coveredSources":[]`) {
+		t.Fatalf("payload should contain empty coveredSources array, got %s", requests[0].body)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(requests[0].body, &payload); err != nil {
+		t.Fatalf("pending JSON error = %v", err)
+	}
+	covered, ok := payload["coveredSources"].([]any)
+	if !ok {
+		t.Fatalf("coveredSources = %#v, want present empty array", payload["coveredSources"])
+	}
+	if len(covered) != 0 {
+		t.Fatalf("coveredSources = %#v, want empty", covered)
+	}
+}
+
 func TestCoveredPatchSources(t *testing.T) {
 	h := &Heartbeat{}
 
@@ -310,6 +366,50 @@ func TestCoveredPatchSources(t *testing.T) {
 			for i := range tt.want {
 				if got[i] != tt.want[i] {
 					t.Fatalf("coveredPatchSources = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestUncoveredPatchSources(t *testing.T) {
+	h := &Heartbeat{}
+
+	tests := []struct {
+		name        string
+		providerIDs []string
+		covered     []string
+		want        []string
+	}{
+		{
+			name:        "full coverage yields no uncovered buckets",
+			providerIDs: []string{"windows-update", "winget"},
+			covered:     []string{"microsoft", "third_party"},
+			want:        []string{},
+		},
+		{
+			name:        "skipped winget leaves third_party uncovered",
+			providerIDs: []string{"windows-update", "winget"},
+			covered:     []string{"microsoft"},
+			want:        []string{"third_party"},
+		},
+		{
+			name:        "nothing covered reports every mapped bucket once",
+			providerIDs: []string{"windows-update", "winget", "chocolatey"},
+			covered:     []string{},
+			want:        []string{"microsoft", "third_party"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := h.uncoveredPatchSources(tt.providerIDs, tt.covered)
+			if len(got) != len(tt.want) {
+				t.Fatalf("uncoveredPatchSources = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("uncoveredPatchSources = %v, want %v", got, tt.want)
 				}
 			}
 		})
