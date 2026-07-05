@@ -11,7 +11,7 @@ import (
 
 var errWingetNotFound = errors.New("winget.exe not found under WindowsApps")
 
-var appInstallerDirRe = regexp.MustCompile(`^Microsoft\.DesktopAppInstaller_([0-9]+(?:\.[0-9]+)*)_x64__8wekyb3d8bbwe$`)
+var appInstallerDirRe = regexp.MustCompile(`^Microsoft\.DesktopAppInstaller_([0-9]+(?:\.[0-9]+)*)_(?:x64|arm64)__8wekyb3d8bbwe$`)
 
 // wingetLocator finds the SYSTEM-usable winget.exe under the versioned
 // WindowsApps folder, since the per-user PATH shim isn't reachable from the
@@ -32,7 +32,10 @@ func newWingetLocator() *wingetLocator {
 // Locate returns the path and version of the highest-version winget.exe
 // found under root, or errWingetNotFound if none match.
 func (l *wingetLocator) Locate() (string, string, error) {
-	matches, err := l.glob(filepath.Join(l.root, "Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe", "winget.exe"))
+	// The wildcard spans both `<version>_x64` and `<version>_arm64`; the
+	// stricter appInstallerDirRe filter below rejects anything else the glob
+	// happens to match (e.g. neutral/split language packages).
+	matches, err := l.glob(filepath.Join(l.root, "Microsoft.DesktopAppInstaller_*__8wekyb3d8bbwe", "winget.exe"))
 	if err != nil {
 		return "", "", err
 	}
@@ -61,8 +64,16 @@ func (l *wingetLocator) Locate() (string, string, error) {
 	return bestPath, bestVer, nil
 }
 
+// LocateSystemWinget resolves the SYSTEM-usable winget.exe (highest version
+// under WindowsApps) for callers outside this package — e.g. the remote
+// software-update tool, which runs in the same SYSTEM service process where
+// the per-user "winget" PATH shim does not exist.
+func LocateSystemWinget() (path, version string, err error) {
+	return newWingetLocator().Locate()
+}
+
 // parseAppInstallerVersion extracts the version string from a
-// Microsoft.DesktopAppInstaller_<ver>_x64__8wekyb3d8bbwe directory name.
+// Microsoft.DesktopAppInstaller_<ver>_<x64|arm64>__8wekyb3d8bbwe directory name.
 func parseAppInstallerVersion(dir string) (string, bool) {
 	m := appInstallerDirRe.FindStringSubmatch(dir)
 	if m == nil {

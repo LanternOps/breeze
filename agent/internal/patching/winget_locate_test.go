@@ -12,6 +12,8 @@ func TestParseAppInstallerVersion(t *testing.T) {
 	}{
 		{`Microsoft.DesktopAppInstaller_1.22.10661.0_x64__8wekyb3d8bbwe`, "1.22.10661.0", true},
 		{`Microsoft.DesktopAppInstaller_1.16.12653.0_x64__8wekyb3d8bbwe`, "1.16.12653.0", true},
+		{`Microsoft.DesktopAppInstaller_1.22.10661.0_arm64__8wekyb3d8bbwe`, "1.22.10661.0", true},
+		{`Microsoft.DesktopAppInstaller_1.22.10661.0_neutral_split.language-en__8wekyb3d8bbwe`, "", false},
 		{`Microsoft.SomethingElse_1.0.0.0_x64__abc`, "", false},
 		{`garbage`, "", false},
 	}
@@ -50,6 +52,24 @@ func TestLocateHighestVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ver != "1.22.10661.0" || !strings.Contains(path, "1.22.10661.0") {
+		t.Fatalf("got %q %q", path, ver)
+	}
+}
+
+func TestLocateArm64(t *testing.T) {
+	l := &wingetLocator{
+		root: `C:\Program Files\WindowsApps`,
+		glob: func(pattern string) ([]string, error) {
+			return []string{
+				`C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.22.10661.0_arm64__8wekyb3d8bbwe\winget.exe`,
+			}, nil
+		},
+	}
+	path, ver, err := l.Locate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ver != "1.22.10661.0" || !strings.Contains(path, "arm64") {
 		t.Fatalf("got %q %q", path, ver)
 	}
 }

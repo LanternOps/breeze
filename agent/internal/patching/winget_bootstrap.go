@@ -166,6 +166,12 @@ func EnsureWinget(deps EnsureDeps) EnsureResult {
 		return EnsureResult{Available: false, Reason: "winget absent and Appx provisioning unavailable"}
 	case actionProvision:
 		if perr := deps.Provision(); perr != nil {
+			if err == nil && path != "" {
+				// Provisioning a newer winget failed, but an older install was
+				// located — old winget beats nothing, mirroring decideBootstrap's
+				// no-Appx-stack fallback.
+				return EnsureResult{WingetPath: path, Version: ver, Available: true}
+			}
 			return EnsureResult{Available: false, Reason: "winget provisioning failed: " + perr.Error()}
 		}
 		path, ver, err = deps.Locate()
