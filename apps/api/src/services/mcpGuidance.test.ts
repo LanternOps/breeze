@@ -38,6 +38,9 @@ describe('MCP prompts', () => {
   it('the two destructive prompts embed the confirm-and-echo pattern', () => {
     expect(getMcpPrompt('breeze-patch-remediate', { target: 'org-x' }).messages[0]!.content.text)
       .toMatch(/echo|confirm/i);
+    const turnkeyText = getMcpPrompt('breeze-turnkey-setup', { scope: 'acme' }).messages[0]!.content.text;
+    expect(turnkeyText).toMatch(/echo/i);
+    expect(turnkeyText).toMatch(/confirm/i);
   });
 
   it('throws on an unknown prompt name', () => {

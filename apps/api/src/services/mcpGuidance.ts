@@ -83,7 +83,7 @@ If the user wants customer-facing tracking, open or link a ticket with manage_ti
     description: 'Opinionated baseline configuration wizard — partner-wide by default.',
     arguments: [{ name: 'scope', description: 'partner (all orgs) or a specific org; defaults to partner-wide', required: false }],
     referencedTools: ['manage_configuration_policy', 'manage_update_rings', 'manage_backup_configs', 'manage_peripheral_policies', 'manage_dns_policy', 'manage_policy_feature_link', 'apply_configuration_policy'],
-    render: (a) => `Set up a recommended baseline configuration in Breeze RMM${a.scope ? ` for ${a.scope}` : ''}. DEFAULT to partner-wide ownership (ownerScope=partner) so one policy applies to all of the MSP's organizations — CONFIRM the ownerScope with the user before creating anything, and PREVIEW each policy before applying it.
+    render: (a) => `Set up a recommended baseline configuration in Breeze RMM${a.scope ? ` for ${a.scope}` : ''}. DEFAULT to partner-wide ownership (ownerScope=partner) so one policy applies to all of the MSP's organizations — ECHO the resolved organization/partner scope back to the user, CONFIRM the ownerScope=partner default, and PREVIEW each policy before applying it.
 
 Walk through these categories, creating each via a Configuration Policy (manage_configuration_policy) with the appropriate prerequisite policy + feature link (manage_policy_feature_link), then assign with apply_configuration_policy:
 1. Patch rings/cadence (manage_update_rings): pilot ring patches on release; production ring 7-day deferral; security/critical auto-approve at 3-day deferral; feature updates deferred 30 days; reboots in an off-hours maintenance window.
