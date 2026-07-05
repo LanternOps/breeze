@@ -341,6 +341,10 @@ export async function resolveApprovedPatchesForDevice(
       source: patches.source,
       packageId: patches.packageId,
       version: patches.version,
+      // First-seen timestamp for this device+patch. Third-party entries have no
+      // vendor releaseDate, so deferral windows anchor on when we first saw the
+      // patch instead of failing closed (#2218).
+      firstSeenAt: devicePatches.createdAt,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -497,6 +501,12 @@ interface PatchCandidate {
   source: string;
   packageId: string | null;
   version: string | null;
+  /**
+   * device_patches.createdAt — when this device first reported the patch as
+   * pending. Deferral fallback anchor for third-party patches, which carry no
+   * vendor releaseDate (#2218).
+   */
+  firstSeenAt?: Date | string | null;
 }
 
 function evaluatePatchApproval(
@@ -563,7 +573,24 @@ function evaluatePatchApproval(
       // Enabled but no severities selected = approve nothing (fail-closed).
       return null;
     }
-    if (!patch.severity || !ringAutoApprove.severities.includes(patch.severity)) {
+    // Third-party severity exemption (#2218): winget/chocolatey/homebrew
+    // updates have no vendor severity concept — the agent/API ingest them with
+    // severity='unknown' — so requiring membership in the ring's severity set
+    // made third-party auto-approval dead configuration. When the policy has
+    // EXPLICITLY opted into third-party sources ('third_party' in sources; the
+    // default is ['os']) and this candidate is a third-party patch, skip the
+    // severity MEMBERSHIP check only. Everything else stays fail-closed: the
+    // empty-severities kill-switch above still approves nothing (a malformed
+    // `{ enabled: true }` row stays inert), OS patches keep full severity
+    // gating, and the source, category, app-rule, and deferral gates all still
+    // apply to third-party candidates.
+    const severityExempt =
+      isThirdPartyPatchSource(patch.source) &&
+      (ringConfig.sources ?? []).includes('third_party');
+    if (
+      !severityExempt &&
+      (!patch.severity || !ringAutoApprove.severities.includes(patch.severity))
+    ) {
       return null;
     }
     if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
@@ -583,17 +610,29 @@ function isHeldByDeferral(
 ): boolean {
   if (deferralDays <= 0) return false;
 
-  if (!patch.releaseDate) {
+  let ageAnchor: Date | null = patch.releaseDate ? new Date(patch.releaseDate) : null;
+
+  if (!ageAnchor && isThirdPartyPatchSource(patch.source) && patch.firstSeenAt) {
+    // Third-party fallback (#2218): winget/homebrew entries carry no vendor
+    // releaseDate, so a configured deferral window used to hold them forever.
+    // Anchor the window on when this device first reported the patch
+    // (device_patches.createdAt) instead — a conservative proxy (never earlier
+    // than the vendor release), so the patch is held at least as long as the
+    // window intends. OS patches keep the fail-closed posture below.
+    ageAnchor = new Date(patch.firstSeenAt);
+  }
+
+  if (!ageAnchor || Number.isNaN(ageAnchor.getTime())) {
     // Fail closed: with a deferral window configured, a patch without a
-    // release date cannot prove its age, consistent with pin rules.
+    // release date (or usable first-seen fallback) cannot prove its age,
+    // consistent with pin rules.
     console.warn(
       `[PatchApproval] patch ${patch.patchId} held: ${source} deferral of ${deferralDays} day(s) configured but the patch has no releaseDate, so it cannot prove its age`
     );
     return true;
   }
 
-  const releaseDate = new Date(patch.releaseDate);
-  const deferralEnd = new Date(releaseDate.getTime() + deferralDays * 24 * 60 * 60 * 1000);
+  const deferralEnd = new Date(ageAnchor.getTime() + deferralDays * 24 * 60 * 60 * 1000);
   return deferralEnd > now;
 }
 

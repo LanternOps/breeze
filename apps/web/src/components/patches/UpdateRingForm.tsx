@@ -372,6 +372,15 @@ export default function UpdateRingForm({
                   {errors.autoApprove?.severities && (
                     <p className="mt-1.5 text-xs text-destructive">{errors.autoApprove.severities.message}</p>
                   )}
+                  <p
+                    className="mt-1.5 max-w-md text-xs text-muted-foreground"
+                    data-testid="ring-third-party-severity-note"
+                  >
+                    Severities apply to OS updates. Third-party app updates (winget, Homebrew)
+                    have no vendor severity — when a policy enables other-software sources, they
+                    auto-approve on this ring&apos;s cadence regardless of the severities selected
+                    here.
+                  </p>
                 </div>
                 <HoldField field={register('autoApprove.deferralDays')} testId="ring-auto-approve-deferral" />
               </div>
