@@ -116,6 +116,12 @@ function mockSelectRows(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce(chain);
 }
 
+/** db.select().from().where() → rows (awaited on .where, no .limit) */
+function mockSelectWhereRows(rows: unknown[]) {
+  const chain: any = { from: vi.fn(() => chain), where: vi.fn().mockResolvedValue(rows) };
+  vi.mocked(db.select).mockReturnValueOnce(chain);
+}
+
 describe('configuration policy AI tools', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -326,6 +332,27 @@ describe('configuration policy AI tools', () => {
     expect(policyAccessConditionMock).toHaveBeenCalledWith(partnerAuth);
     expect(parsed.showing).toBe(1);
     expect(parsed.policies[0]).toMatchObject({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID });
+  });
+
+  // configuration_policy_compliance summary was changed identically to the list
+  // reader (orgWhere → policyAccessCondition); guard against a revert that would
+  // silently drop partner-owned policies from the compliance overview (#1724).
+  it('configuration_policy_compliance summary uses the dual-axis reader and includes partner-owned policies', async () => {
+    const partnerAuth = makePartnerAuth();
+    // policies query awaits .where() directly → one partner-owned policy
+    mockSelectWhereRows([{ id: POLICY_ID, name: 'All-Orgs Baseline', status: 'active' }]);
+    // feature-links query awaits .where() directly → none
+    mockSelectWhereRows([]);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('configuration_policy_compliance')!.handler({ action: 'summary' }, partnerAuth);
+    const parsed = JSON.parse(output);
+
+    expect(policyAccessConditionMock).toHaveBeenCalledWith(partnerAuth);
+    expect(parsed.summary).toHaveLength(1);
+    expect(parsed.summary[0]).toMatchObject({ policyId: POLICY_ID, policyName: 'All-Orgs Baseline' });
   });
 
   it('apply_configuration_policy denies a partner-level assignment without partner-wide capability', async () => {

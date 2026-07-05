@@ -58,7 +58,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'list_configuration_policies',
-      description: 'List available configuration policies (bundled feature settings) in the organization. Shows policy name, status, and linked feature types.',
+      description: 'List available configuration policies (bundled feature settings) visible to the caller — organization-owned policies plus, for partner-scoped callers, partner-wide ("all orgs") policies. Shows policy name, status, and linked feature types.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -195,12 +195,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         properties: {
           configPolicyId: { type: 'string', description: 'Configuration policy UUID' },
           level: { type: 'string', enum: ['partner', 'organization', 'site', 'device_group', 'device'], description: 'Assignment level' },
-          targetId: { type: 'string', description: 'Target UUID at the given level' },
+          targetId: { type: 'string', description: 'Target UUID at the given level. Required for organization/site/device_group/device; omit for the "partner" level, where the target is derived server-side (the policy\'s own partner).' },
           priority: { type: 'number', description: 'Priority (lower = higher priority, default 0)' },
           roleFilter: { type: 'array', items: { type: 'string' }, description: 'Only apply to devices with these roles (e.g. ["workstation","server"]). Omit for all roles.' },
           osFilter: { type: 'array', items: { type: 'string' }, description: 'Only apply to devices with these OS types (e.g. ["windows","macos","linux"]). Omit for all OS.' },
         },
-        required: ['configPolicyId', 'level', 'targetId'],
+        required: ['configPolicyId', 'level'],
       },
     },
     handler: safeHandler('apply_configuration_policy', async (input, auth) => {
@@ -213,9 +213,13 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const [policy] = await db.select().from(configurationPolicies).where(and(...conditions)).limit(1);
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
-      // Partner-level assignments are only valid for partner-OWNED policies and
-      // the target is the partner itself, derived server-side — never from a
-      // client-supplied value (#1724). They push config to ALL orgs under the
+      // At the partner level the target is the partner itself, derived
+      // server-side — never from a client-supplied value (#1724). It's the
+      // policy's own partner (or the caller's, for a fresh partner-owned
+      // policy). An org-owned policy also reaches this block, but its
+      // auth.partnerId fallback target is rejected downstream by
+      // validateAssignmentTarget, so the fallback only ever serves partner-owned
+      // policies. Partner-level assignments push config to ALL orgs under the
       // partner, so they carry the same capability gate as the HTTP route.
       let targetId = input.targetId as string;
       if (input.level === 'partner') {
@@ -416,7 +420,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           // Seed the partner-level assignment so the policy applies immediately —
           // ownership and the assignment that drives resolution stay in lockstep,
           // mirroring the HTTP create route (otherwise it resolves to no devices
-          // until the user separately finds the Assignments tab).
+          // until it is separately assigned via apply_configuration_policy).
           await assignPolicy(policy.id, 'partner', auth.partnerId, 0, auth.user.id);
 
           return JSON.stringify({ success: true, policy });
