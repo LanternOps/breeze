@@ -418,6 +418,100 @@ describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
   });
 });
 
+function mockBulkSelects(findingRows: unknown[], deviceRows: unknown[]) {
+  const selectMock = vi.mocked(db.select);
+  selectMock.mockReset();
+  selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(findingRows) }),
+  } as never);
+  selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deviceRows) }),
+  } as never);
+}
+
+const DV1 = '11111111-1111-1111-8111-111111111111';
+const DV2 = '22222222-2222-2222-8222-222222222222';
+
+describe('POST /vulnerabilities/bulk/accept-risk', () => {
+  beforeEach(() => {
+    vi.mocked(writeRouteAudit).mockClear();
+  });
+
+  it('403s without vulnerabilities:accept_risk', async () => {
+    const res = await post('/bulk/accept-risk', { deviceVulnerabilityIds: [DV1], reason: 'x', acceptedUntil: future });
+    expect(res.status).toBe(403);
+  });
+
+  it('400s on validation failures (empty ids, >200 ids, past acceptedUntil)', async () => {
+    granted.add('vulnerabilities:accept_risk');
+    expect((await post('/bulk/accept-risk', { deviceVulnerabilityIds: [], reason: 'x', acceptedUntil: future })).status).toBe(400);
+    expect((await post('/bulk/accept-risk', {
+      deviceVulnerabilityIds: Array.from({ length: 201 }, () => DV1),
+      reason: 'x',
+      acceptedUntil: future,
+    })).status).toBe(400);
+    expect((await post('/bulk/accept-risk', {
+      deviceVulnerabilityIds: [DV1],
+      reason: 'x',
+      acceptedUntil: new Date(Date.now() - 864e5).toISOString(),
+    })).status).toBe(400);
+  });
+
+  it('updates valid findings, skips unknown ids per-item, audits each success', async () => {
+    granted.add('vulnerabilities:accept_risk');
+    mockBulkSelects(
+      [{ id: DV1, orgId: 'org-1', deviceId: 'dev-1', status: 'open' }],
+      [{ id: 'dev-1', siteId: 'site-1' }],
+    );
+    const res = await post('/bulk/accept-risk', { deviceVulnerabilityIds: [DV1, DV2], reason: 'compensating control', acceptedUntil: future });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      success: true,
+      succeeded: 1,
+      skipped: [{ id: DV2, reason: 'finding not found' }],
+    });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'vulnerability.accept_risk', resourceId: DV1 }),
+    );
+  });
+
+  it('reports success:false when every item is skipped', async () => {
+    granted.add('vulnerabilities:accept_risk');
+    mockBulkSelects([], []);
+    const res = await post('/bulk/accept-risk', { deviceVulnerabilityIds: [DV1], reason: 'x', acceptedUntil: future });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.skipped).toHaveLength(1);
+  });
+});
+
+describe('POST /vulnerabilities/bulk/mitigate', () => {
+  it('403s for a caller without devices:write', async () => {
+    const res = await post('/bulk/mitigate', { deviceVulnerabilityIds: [DV1], note: 'firewalled' });
+    expect(res.status).toBe(403);
+  });
+
+  it('mitigates valid findings with per-item audit', async () => {
+    granted.add('devices:write');
+    mockBulkSelects(
+      [{ id: DV1, orgId: 'org-1', deviceId: 'dev-1', status: 'open' }],
+      [{ id: 'dev-1', siteId: 'site-1' }],
+    );
+    vi.mocked(writeRouteAudit).mockClear();
+    const res = await post('/bulk/mitigate', { deviceVulnerabilityIds: [DV1], note: 'firewalled' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, succeeded: 1, skipped: [] });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'vulnerability.mitigate', resourceId: DV1 }),
+    );
+  });
+});
+
 describe('GET /vulnerabilities/stats', () => {
   beforeEach(() => {
     vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);

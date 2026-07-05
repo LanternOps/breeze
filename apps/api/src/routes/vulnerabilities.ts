@@ -71,6 +71,17 @@ const mitigateSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });
 
+const bulkAcceptRiskSchema = z.object({
+  deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(200),
+  reason: z.string().trim().min(1).max(2000),
+  acceptedUntil: z.string().datetime(),
+});
+
+const bulkMitigateSchema = z.object({
+  deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(200),
+  note: z.string().trim().min(1).max(2000),
+});
+
 const softwareQuerySchema = z.object({
   status: statusSchema.default('open'),
   severity: severitySchema.optional(),
@@ -154,6 +165,62 @@ async function loadFindingForWrite(id: string, auth: AuthContext): Promise<Findi
     };
   }
   return { ok: true, row };
+}
+
+type BulkFindingRow = { id: string; orgId: string; deviceId: string; status: string };
+type BulkAccess = { valid: BulkFindingRow[]; skipped: Array<{ id: string; reason: string }> };
+
+/**
+ * Batch analogue of loadFindingForWrite: resolves each id to a finding the
+ * caller may write (org via RLS + orgCondition on the device row, site via
+ * canAccessSite), collecting per-item skip reasons instead of failing the
+ * batch. Duplicate ids are collapsed.
+ */
+async function loadFindingsForBulkWrite(ids: string[], auth: AuthContext): Promise<BulkAccess> {
+  const unique = [...new Set(ids)];
+  const rows = await db
+    .select({
+      id: deviceVulnerabilities.id,
+      orgId: deviceVulnerabilities.orgId,
+      deviceId: deviceVulnerabilities.deviceId,
+      status: deviceVulnerabilities.status,
+    })
+    .from(deviceVulnerabilities)
+    .where(inArray(deviceVulnerabilities.id, unique));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+
+  const deviceIds = [...new Set(rows.map((r) => r.deviceId))];
+  const orgCond = auth.orgCondition(devices.orgId);
+  const deviceRows =
+    deviceIds.length > 0
+      ? await db
+          .select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(orgCond ? and(inArray(devices.id, deviceIds), orgCond) : inArray(devices.id, deviceIds))
+      : [];
+  const deviceById = new Map(deviceRows.map((d) => [d.id, d]));
+
+  const valid: BulkFindingRow[] = [];
+  const skipped: Array<{ id: string; reason: string }> = [];
+  for (const id of unique) {
+    const row = byId.get(id);
+    if (!row) {
+      skipped.push({ id, reason: 'finding not found' });
+      continue;
+    }
+    const device = deviceById.get(row.deviceId);
+    if (!device) {
+      // Device outside the caller's org scope reads as not-found (no existence leak).
+      skipped.push({ id, reason: 'finding not found' });
+      continue;
+    }
+    if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
+      skipped.push({ id, reason: 'site access denied' });
+      continue;
+    }
+    valid.push(row);
+  }
+  return { valid, skipped };
 }
 
 type DeviceVulnerabilityRow = {
@@ -523,6 +590,80 @@ vulnerabilityRoutes.post(
       success: result.scheduled > 0 || deviceVulnerabilityIds.length === 0,
       ...result,
     });
+  },
+);
+
+// POST /bulk/accept-risk — accept risk for many findings at once, fault-tolerant
+// per item. MUST be registered before /:id/accept-risk below: Hono's router
+// matches in registration order, so a param route registered first would
+// otherwise shadow this static path (bound as id="bulk").
+vulnerabilityRoutes.post(
+  '/bulk/accept-risk',
+  requirePermission(PERMISSIONS.VULN_RISK_ACCEPT.resource, PERMISSIONS.VULN_RISK_ACCEPT.action),
+  zValidator('json', bulkAcceptRiskSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceVulnerabilityIds, reason, acceptedUntil } = c.req.valid('json');
+
+    if (new Date(acceptedUntil).getTime() <= Date.now()) {
+      return c.json({ success: false, error: 'acceptedUntil must be in the future' }, 400);
+    }
+
+    const { valid, skipped } = await loadFindingsForBulkWrite(deviceVulnerabilityIds, auth);
+    if (valid.length > 0) {
+      await db
+        .update(deviceVulnerabilities)
+        .set({
+          status: 'accepted',
+          acceptedBy: auth.user.id,
+          acceptedUntil: new Date(acceptedUntil),
+          // Acceptance rationale reuses mitigation_note — same as the
+          // per-finding accept-risk endpoint (no dedicated reason column).
+          mitigationNote: reason,
+          updatedAt: new Date(),
+        })
+        .where(inArray(deviceVulnerabilities.id, valid.map((v) => v.id)));
+      for (const row of valid) {
+        writeRouteAudit(c, {
+          orgId: row.orgId,
+          action: 'vulnerability.accept_risk',
+          resourceType: 'device_vulnerability',
+          resourceId: row.id,
+          details: { acceptedUntil, reason, bulk: true },
+        });
+      }
+    }
+    return c.json({ success: valid.length > 0, succeeded: valid.length, skipped });
+  },
+);
+
+// POST /bulk/mitigate — mitigate many findings at once, fault-tolerant per item.
+// MUST be registered before /:id/mitigate below (same shadowing reason as above).
+vulnerabilityRoutes.post(
+  '/bulk/mitigate',
+  requireVulnerabilityWrite,
+  zValidator('json', bulkMitigateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceVulnerabilityIds, note } = c.req.valid('json');
+
+    const { valid, skipped } = await loadFindingsForBulkWrite(deviceVulnerabilityIds, auth);
+    if (valid.length > 0) {
+      await db
+        .update(deviceVulnerabilities)
+        .set({ status: 'mitigated', mitigationNote: note, resolvedAt: new Date(), updatedAt: new Date() })
+        .where(inArray(deviceVulnerabilities.id, valid.map((v) => v.id)));
+      for (const row of valid) {
+        writeRouteAudit(c, {
+          orgId: row.orgId,
+          action: 'vulnerability.mitigate',
+          resourceType: 'device_vulnerability',
+          resourceId: row.id,
+          details: { note, bulk: true },
+        });
+      }
+    }
+    return c.json({ success: valid.length > 0, succeeded: valid.length, skipped });
   },
 );
 
