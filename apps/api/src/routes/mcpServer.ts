@@ -37,6 +37,7 @@ import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToo
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
+import { MCP_SERVER_INSTRUCTIONS } from '../services/mcpGuidance';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
@@ -778,6 +779,21 @@ mcpServerRoutes.delete('/sse', (c) => {
 // JSON-RPC Method Dispatcher
 // ============================================
 
+export function buildInitializeResult() {
+  return {
+    protocolVersion: '2024-11-05',
+    capabilities: {
+      tools: { listChanged: false },
+      resources: { subscribe: false, listChanged: false },
+    },
+    serverInfo: {
+      name: 'breeze-rmm',
+      version: '1.0.0',
+    },
+    instructions: MCP_SERVER_INSTRUCTIONS,
+  };
+}
+
 async function handleJsonRpc(
   req: JsonRpcRequest,
   auth: AuthContext,
@@ -789,17 +805,7 @@ async function handleJsonRpc(
   try {
     switch (req.method) {
       case 'initialize':
-        return jsonRpcResult(req.id, {
-          protocolVersion: '2024-11-05',
-          capabilities: {
-            tools: { listChanged: false },
-            resources: { subscribe: false, listChanged: false }
-          },
-          serverInfo: {
-            name: 'breeze-rmm',
-            version: '1.0.0'
-          }
-        });
+        return jsonRpcResult(req.id, buildInitializeResult());
 
       case 'notifications/initialized':
         // Client acknowledgment — no response needed but return empty result
