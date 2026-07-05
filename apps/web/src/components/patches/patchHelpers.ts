@@ -139,6 +139,10 @@ export type DevicePatchRow = {
   lastInstalledAt?: string;
   lastScannedAt?: string;
   pendingReboot: boolean;
+  /** Device status from the /devices API ('online' | 'offline' | ...). Used to
+   *  mute the pending-reboot badge for offline devices, whose reboot flag is
+   *  frozen at the last heartbeat and may be stale (#2219). */
+  status?: string;
   /** The org this device belongs to, as returned by the /devices API. Used to
    *  derive the true target scope for bulk-action confirmation messages. */
   orgId?: string;
