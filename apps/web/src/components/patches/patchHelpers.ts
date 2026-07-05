@@ -26,7 +26,10 @@ const approvalMap: Record<string, PatchApprovalStatus> = {
 const osLabels: Record<string, string> = {
   windows: 'Windows',
   macos: 'macOS',
-  linux: 'Linux'
+  linux: 'Linux',
+  // The API's inferPatchOs returns the literal 'unknown' when it can't
+  // resolve an OS — render it with the same casing as the no-value label.
+  unknown: 'Unknown'
 };
 
 function formatSourceLabel(value: unknown): string {

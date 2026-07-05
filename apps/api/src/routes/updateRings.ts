@@ -457,7 +457,9 @@ updateRingRoutes.get(
         osTypes: patches.osTypes,
         // Same device-derived OS hint as GET /patches (list.ts): the most
         // recently checked device reporting this patch. Feeds inferPatchOs so
-        // third_party/custom patches with empty osTypes still resolve an OS.
+        // third_party/custom patches with empty osTypes can still resolve an
+        // OS when a reporting device exists (otherwise inferPatchOs falls
+        // back to the source mapping, then 'unknown').
         inferredOs: sql<string | null>`(
           SELECT "devices"."os_type"
           FROM "device_patches"

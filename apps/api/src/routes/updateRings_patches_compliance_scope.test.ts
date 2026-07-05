@@ -312,6 +312,150 @@ describe('updateRings routes', () => {
       expect(body.counts.apple).toBe(1);
     });
 
+    it('derives os from the device-derived inferredOs hint when osTypes is empty (#2215)', async () => {
+      vi.mocked(db.select)
+        // ring lookup
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+            })
+          })
+        } as any)
+        // patches list — third_party (no source mapping) but a device reported it
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([
+                    {
+                      id: PATCH_ID,
+                      title: 'Chrome 130 Update',
+                      source: 'third_party',
+                      severity: 'moderate',
+                      osTypes: [],
+                      inferredOs: 'windows',
+                      createdAt: new Date('2026-01-01')
+                    }
+                  ])
+                })
+              })
+            })
+          })
+        } as any)
+        // count
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        // per-source counts
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ source: 'third_party', count: 1 }])
+            })
+          })
+        } as any)
+        // approval statuses
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([])
+          })
+        } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Proves the route threads the inferredOs SELECT column into inferPatchOs.
+      expect(body.data[0].os).toBe('windows');
+    });
+
+    it('counts ignore the active source filter so chips show the full breakdown (#2215)', async () => {
+      // where() spy for the per-source counts query: with only ?source= set,
+      // the source predicate must be excluded, leaving NO conditions at all —
+      // i.e. where(undefined). Reusing the filtered whereClause here would
+      // reintroduce the #2215 bug class (chips collapsing under a filter).
+      const sourceCountsWhere = vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockResolvedValue([
+          { source: 'apple', count: 2 },
+          { source: 'microsoft', count: 3 }
+        ])
+      });
+      vi.mocked(db.select)
+        // ring lookup
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+            })
+          })
+        } as any)
+        // patches list (source-filtered)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([
+                    {
+                      id: PATCH_ID,
+                      title: 'macOS Update',
+                      source: 'apple',
+                      severity: 'important',
+                      osTypes: ['macos'],
+                      inferredOs: null,
+                      createdAt: new Date('2026-01-01')
+                    }
+                  ])
+                })
+              })
+            })
+          })
+        } as any)
+        // count (source-filtered)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 2 }])
+          })
+        } as any)
+        // per-source counts (must NOT be source-filtered)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: sourceCountsWhere })
+        } as any)
+        // approval statuses
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([])
+          })
+        } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}/patches?source=apple`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      // Only the source condition existed, and it must be dropped from the
+      // counts query → no where clause at all.
+      expect(sourceCountsWhere).toHaveBeenCalledWith(undefined);
+      const body = await res.json();
+      expect(body.counts).toEqual({
+        microsoft: 3,
+        apple: 2,
+        linux: 0,
+        third_party: 0,
+        custom: 0,
+      });
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].source).toBe('apple');
+    });
+
     // Pagination regression (#1316 follow-up): the ring endpoint must share the
     // /patches getPagination — default 50, capped at 200 (not the old local 100).
     // Selecting a ring previously collapsed the visible list because the web sent

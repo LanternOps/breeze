@@ -25,6 +25,12 @@ describe('normalizePatch — os resolution (#2215)', () => {
     expect(normalizePatch({ id: 'p1', title: 'KB1', osTypes: [] }, 0).os).toBe('Unknown');
     expect(normalizePatch({ id: 'p1', title: 'KB1' }, 0).os).toBe('Unknown');
   });
+
+  it("renders the API's literal 'unknown' with Unknown casing", () => {
+    // inferPatchOs returns the literal string 'unknown' when it can't resolve
+    // an OS — it must not leak through lowercase.
+    expect(normalizePatch({ id: 'p1', title: 'KB1', os: 'unknown' }, 0).os).toBe('Unknown');
+  });
 });
 
 // #1317: normalizeRing must coerce the ring's stored autoApprove JSONB into the
