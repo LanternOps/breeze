@@ -92,7 +92,7 @@ export const testAlertRuleSchema = z.object({
 });
 
 export const bulkAlertActionSchema = z.object({
-  action: z.enum(['acknowledge', 'resolve', 'suppress']),
+  action: z.enum(['acknowledge', 'resolve', 'suppress', 'dismiss']),
   alertIds: z.array(z.string().guid()).min(1).max(100),
   // Absolute deadline the alerts stay muted until (ISO date string), mirroring
   // POST /alerts/:id/suppress. Optional even for `suppress`: omit for indefinite
@@ -101,11 +101,22 @@ export const bulkAlertActionSchema = z.object({
 });
 
 // Alerts schemas
+export const ALERT_STATUS_VALUES = ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'] as const;
+export type AlertStatusValue = (typeof ALERT_STATUS_VALUES)[number];
+
 export const listAlertsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
   orgId: z.string().guid().optional(),
-  status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
+  // Single status or comma-separated list (e.g. 'active,acknowledged' for the
+  // dashboard's open-alerts view). Omitted => every status EXCEPT 'dismissed'.
+  status: z
+    .string()
+    .refine(
+      (v) => v.split(',').every((s) => (ALERT_STATUS_VALUES as readonly string[]).includes(s)),
+      { message: `status must be a comma-separated list of: ${ALERT_STATUS_VALUES.join(', ')}` }
+    )
+    .optional(),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
   deviceId: z.string().guid().optional(),
   startDate: z.string().optional(),

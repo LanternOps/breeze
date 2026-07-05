@@ -129,6 +129,7 @@ export default defineConfig({
             {
               label: 'Fleet & Configuration',
               items: [
+                { slug: 'features/devices' },
                 { slug: 'features/device-groups' },
                 { slug: 'features/tags' },
                 { slug: 'features/custom-fields' },

@@ -452,7 +452,7 @@ export interface Policy {
 import { NOTIFICATION_CHANNEL_TYPES } from '../constants';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
-export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
+export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
 export type NotificationChannelType = (typeof NOTIFICATION_CHANNEL_TYPES)[number];
 
 export interface AlertRule {

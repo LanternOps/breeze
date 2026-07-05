@@ -44,6 +44,8 @@ All configuration is done through environment variables, defined in your `.env.p
 | `ENROLLMENT_KEY_PEPPER` | — | Yes | HMAC pepper for enrollment key hashing |
 | `MFA_RECOVERY_CODE_PEPPER` | — | Yes | HMAC pepper for recovery code hashing |
 | `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | | Default enrollment key expiry |
+| `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | | Set to `false` to disable the daily sweep that purges expired enrollment keys |
+| `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | | Grace period (days past expiry) before an expired enrollment key is purged |
 | `SESSION_SECRET` | — | Yes | Express session signing secret |
 | `SESSION_MAX_AGE` | `86400000` | | Session max age in ms (24h) |
 

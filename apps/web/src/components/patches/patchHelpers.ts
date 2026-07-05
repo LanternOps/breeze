@@ -26,7 +26,10 @@ const approvalMap: Record<string, PatchApprovalStatus> = {
 const osLabels: Record<string, string> = {
   windows: 'Windows',
   macos: 'macOS',
-  linux: 'Linux'
+  linux: 'Linux',
+  // The API's inferPatchOs returns the literal 'unknown' when it can't
+  // resolve an OS — render it with the same casing as the no-value label.
+  unknown: 'Unknown'
 };
 
 function formatSourceLabel(value: unknown): string {
@@ -60,7 +63,12 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
   const id = raw.id ?? raw.patchId ?? raw.patch_id ?? `patch-${index}`;
   const title = raw.title ?? raw.name ?? raw.patchTitle ?? 'Untitled patch';
   const source = raw.source ?? raw.sourceName ?? raw.source_label;
-  const os = raw.os ?? raw.osType ?? raw.os_type ?? raw.platform;
+  // Prefer a scalar os field; fall back to the first entry of an osTypes
+  // array (the raw patch-catalog shape) so endpoints that omit the derived
+  // scalar don't render every row as "Unknown" (#2215).
+  const osTypesRaw = raw.osTypes ?? raw.os_types;
+  const os = raw.os ?? raw.osType ?? raw.os_type ?? raw.platform
+    ?? (Array.isArray(osTypesRaw) && osTypesRaw.length > 0 ? osTypesRaw[0] : undefined);
   const releaseDate = raw.releaseDate ?? raw.releasedAt ?? raw.release_date ?? raw.createdAt ?? '';
   const approvalStatus = raw.approvalStatus ?? raw.approval_status ?? raw.status;
   const vendor = raw.vendor ?? null;
@@ -139,6 +147,10 @@ export type DevicePatchRow = {
   lastInstalledAt?: string;
   lastScannedAt?: string;
   pendingReboot: boolean;
+  /** Device status from the /devices API ('online' | 'offline' | ...). Used to
+   *  mute the pending-reboot badge for offline devices, whose reboot flag is
+   *  frozen at the last heartbeat and may be stale (#2219). */
+  status?: string;
   /** The org this device belongs to, as returned by the /devices API. Used to
    *  derive the true target scope for bulk-action confirmation messages. */
   orgId?: string;

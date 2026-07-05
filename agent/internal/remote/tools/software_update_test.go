@@ -87,7 +87,7 @@ func argsHave(a updateAttempt, flag, value string) bool {
 
 func TestBuildWindowsUpdateAttemptsPrefersPackageID(t *testing.T) {
 	t.Parallel()
-	attempts := buildWindowsUpdateAttempts("Mozilla Firefox", "", "Mozilla.Firefox")
+	attempts := buildWindowsUpdateAttempts("winget", "Mozilla Firefox", "", "Mozilla.Firefox")
 	if len(attempts) == 0 {
 		t.Fatal("expected at least one attempt")
 	}
@@ -111,15 +111,31 @@ func TestBuildWindowsUpdateAttemptsPrefersPackageID(t *testing.T) {
 
 func TestBuildWindowsUpdateAttemptsVersionPinnedIDFirst(t *testing.T) {
 	t.Parallel()
-	attempts := buildWindowsUpdateAttempts("Mozilla Firefox", "131.0", "Mozilla.Firefox")
+	attempts := buildWindowsUpdateAttempts("winget", "Mozilla Firefox", "131.0", "Mozilla.Firefox")
 	if !argsHave(attempts[0], "--id", "Mozilla.Firefox") || !argsHave(attempts[0], "--version", "131.0") {
 		t.Fatalf("expected first attempt to be version-pinned --id, got %v", attempts[0].args)
 	}
 }
 
+func TestBuildWindowsUpdateAttemptsUsesResolvedWingetCommand(t *testing.T) {
+	t.Parallel()
+	// Under the SYSTEM service "winget" isn't on PATH; the caller resolves the
+	// versioned WindowsApps path and every attempt must invoke it verbatim.
+	resolved := `C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.22.10661.0_x64__8wekyb3d8bbwe\winget.exe`
+	attempts := buildWindowsUpdateAttempts(resolved, "Mozilla Firefox", "131.0", "Mozilla.Firefox")
+	if len(attempts) == 0 {
+		t.Fatal("expected at least one attempt")
+	}
+	for _, a := range attempts {
+		if a.command != resolved {
+			t.Fatalf("expected all attempts to use resolved winget path, got %q", a.command)
+		}
+	}
+}
+
 func TestBuildWindowsUpdateAttemptsNameFirstWithoutPackageID(t *testing.T) {
 	t.Parallel()
-	attempts := buildWindowsUpdateAttempts("Mozilla Firefox", "", "")
+	attempts := buildWindowsUpdateAttempts("winget", "Mozilla Firefox", "", "")
 	// Without a packageID, behavior is unchanged: --name is tried first.
 	if !argsHave(attempts[0], "--name", "Mozilla Firefox") {
 		t.Fatalf("expected first attempt to select --name when no packageID, got %v", attempts[0].args)

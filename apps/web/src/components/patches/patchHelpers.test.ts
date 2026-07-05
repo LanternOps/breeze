@@ -1,6 +1,37 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeRing } from './patchHelpers';
+import { normalizePatch, normalizeRing } from './patchHelpers';
+
+// #2215: rows from endpoints that omit the derived scalar `os` (historically
+// the ring-scoped patches endpoint) must fall back to the raw osTypes[] array
+// instead of rendering every row as "Unknown".
+describe('normalizePatch — os resolution (#2215)', () => {
+  it('prefers the scalar os field when present', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB1', os: 'windows', osTypes: ['linux'] }, 0);
+    expect(patch.os).toBe('Windows');
+  });
+
+  it('falls back to osTypes[0] when no scalar os field is present', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB1', osTypes: ['macos'] }, 0);
+    expect(patch.os).toBe('macOS');
+  });
+
+  it('falls back to snake_case os_types[0] as well', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB1', os_types: ['linux'] }, 0);
+    expect(patch.os).toBe('Linux');
+  });
+
+  it('renders Unknown when osTypes is empty and no scalar os exists', () => {
+    expect(normalizePatch({ id: 'p1', title: 'KB1', osTypes: [] }, 0).os).toBe('Unknown');
+    expect(normalizePatch({ id: 'p1', title: 'KB1' }, 0).os).toBe('Unknown');
+  });
+
+  it("renders the API's literal 'unknown' with Unknown casing", () => {
+    // inferPatchOs returns the literal string 'unknown' when it can't resolve
+    // an OS — it must not leak through lowercase.
+    expect(normalizePatch({ id: 'p1', title: 'KB1', os: 'unknown' }, 0).os).toBe('Unknown');
+  });
+});
 
 // #1317: normalizeRing must coerce the ring's stored autoApprove JSONB into the
 // typed editor shape, tolerant of legacy values the API may still return.

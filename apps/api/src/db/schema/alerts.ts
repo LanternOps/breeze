@@ -19,7 +19,10 @@ import { devices } from './devices';
 import { users } from './users';
 
 export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', 'medium', 'low', 'info']);
-export const alertStatusEnum = pgEnum('alert_status', ['active', 'acknowledged', 'resolved', 'suppressed']);
+// 'dismissed' is terminal: hidden from list views by default and honored by
+// synthetic-alert evaluators (warranty expiry) so a dismissed alert is never
+// re-created for the same underlying condition.
+export const alertStatusEnum = pgEnum('alert_status', ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed']);
 export const notificationChannelTypeEnum = pgEnum('notification_channel_type', NOTIFICATION_CHANNEL_TYPES);
 
 export const alertTemplates = pgTable('alert_templates', {
@@ -85,6 +88,8 @@ export const alerts = pgTable('alerts', {
   resolvedBy: uuid('resolved_by').references(() => users.id),
   resolutionNote: text('resolution_note'),
   suppressedUntil: timestamp('suppressed_until'),
+  dismissedAt: timestamp('dismissed_at'),
+  dismissedBy: uuid('dismissed_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // Backs the `alerts.critical` device-filter field (#968).

@@ -1574,4 +1574,103 @@ describe('MCP bootstrap carve-out', () => {
     expect(body.error?.message).toContain('Unable to evaluate tool guardrails');
     expect(executeTool).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // Task 7 — wire-level integration test for MCP instructions + prompts.
+  //
+  // Earlier tasks added an `instructions` field on the `initialize` result, a
+  // `prompts` capability, and `prompts/list` + `prompts/get` handlers backed
+  // by the pure functions in `../services/mcpGuidance` (unit-tested there).
+  // Nothing previously exercised these over the real JSON-RPC transport
+  // (HTTP → apiKeyAuthMiddleware → handleJsonRpc dispatch → handler →
+  // response). These tests close that gap using the same /message harness
+  // (mockKeyWithScopes + dynamic import) as the rest of this describe block.
+  // -------------------------------------------------------------------------
+  describe('MCP instructions + prompts over the wire', () => {
+    it('initialize returns non-trivial instructions, the prompts capability, and the protocol version', async () => {
+      delete process.env.IS_HOSTED;
+      mockKeyWithScopes(['ai:read']);
+
+      const { mcpServerRoutes } = await import('./mcpServer');
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBeUndefined();
+      expect(typeof body.result.instructions).toBe('string');
+      expect(body.result.instructions.length).toBeGreaterThan(100);
+      expect(body.result.capabilities.prompts).toEqual({ listChanged: false });
+      expect(body.result.protocolVersion).toBe('2024-11-05');
+    });
+
+    it('prompts/list surfaces all 5 guided workflow prompts', async () => {
+      delete process.env.IS_HOSTED;
+      mockKeyWithScopes(['ai:read']);
+
+      const { mcpServerRoutes } = await import('./mcpServer');
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'prompts/list' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result.prompts).toHaveLength(5);
+      const names = body.result.prompts.map((p: any) => p.name);
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'breeze-fleet-triage',
+          'breeze-device-investigate',
+          'breeze-patch-remediate',
+          'breeze-incident-kickoff',
+          'breeze-turnkey-setup',
+        ]),
+      );
+    });
+
+    it('prompts/get renders breeze-device-investigate with the supplied device argument', async () => {
+      delete process.env.IS_HOSTED;
+      mockKeyWithScopes(['ai:read']);
+
+      const { mcpServerRoutes } = await import('./mcpServer');
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'prompts/get',
+          params: { name: 'breeze-device-investigate', arguments: { device: 'HOST-7' } },
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result.messages[0].content.text).toContain('HOST-7');
+    });
+
+    it('prompts/get with an unknown prompt name returns a JSON-RPC invalid-params error', async () => {
+      delete process.env.IS_HOSTED;
+      mockKeyWithScopes(['ai:read']);
+
+      const { mcpServerRoutes } = await import('./mcpServer');
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'prompts/get',
+          params: { name: 'does-not-exist' },
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error?.code).toBe(-32602);
+    });
+  });
 });

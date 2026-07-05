@@ -5,7 +5,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  devicePatches: { id: 'id', patchId: 'patchId', deviceId: 'deviceId', status: 'status' },
+  devicePatches: { id: 'id', patchId: 'patchId', deviceId: 'deviceId', status: 'status', createdAt: 'createdAt' },
   patches: {
     id: 'id', externalId: 'externalId', title: 'title', category: 'category',
     severity: 'severity', releaseDate: 'releaseDate', requiresReboot: 'requiresReboot',
@@ -158,6 +158,7 @@ type PendingRow = {
   source: string;
   packageId: string | null;
   version: string | null;
+  firstSeenAt: Date | null;
 };
 
 function pendingRow(overrides: Partial<PendingRow>): PendingRow {
@@ -173,6 +174,7 @@ function pendingRow(overrides: Partial<PendingRow>): PendingRow {
     source: 'microsoft',
     packageId: null,
     version: null,
+    firstSeenAt: null,
     ...overrides,
   };
 }
@@ -1137,5 +1139,307 @@ describe('ring category include/exclude filtering in resolveApprovedPatchesForDe
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, baseRing);
 
     expect(approved).toHaveLength(2);
+  });
+});
+
+// ---- Third-party severity exemption for ring auto-approve (#2218) ----
+describe('third-party severity exemption for ring auto-approve (#2218)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  /** Winget-shaped patch: no vendor severity, no release date. */
+  const wingetRow = (overrides: Partial<PendingRow> = {}) =>
+    pendingRow({
+      patchId: P1,
+      source: 'third_party',
+      category: 'application',
+      severity: 'unknown',
+      releaseDate: null,
+      packageId: 'Mozilla.Firefox',
+      version: '121.0',
+      ...overrides,
+    });
+
+  const thirdPartyRing: RingConfig = {
+    ringId: RING_ID,
+    categoryRules: [],
+    autoApprove: { enabled: true, severities: ['critical', 'important'], deferralDays: 0 },
+    deferralDays: 0,
+    sources: ['os', 'third_party'],
+  };
+
+  it('auto-approves a winget-shaped patch (severity=unknown, releaseDate=null) on a third_party-enabled ring', async () => {
+    mockPendingAndApprovals([wingetRow()], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, thirdPartyRing);
+
+    expect(result.map((r) => r.patchId)).toEqual([P1]);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('also exempts a custom-source patch (third_party bucket)', async () => {
+    mockPendingAndApprovals([wingetRow({ source: 'custom' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, thirdPartyRing);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('does NOT approve the same patch when sources is ["os"] (source gate still applies)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPendingAndApprovals([wingetRow()], []);
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+        ...thirdPartyRing,
+        sources: ['os'],
+      });
+
+      expect(result).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does NOT exempt third-party severity when sources is absent (legacy: no explicit third_party opt-in)', async () => {
+    mockPendingAndApprovals([wingetRow()], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...thirdPartyRing,
+      sources: undefined,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('does NOT exempt severity when sources is ["custom"] without an explicit "third_party" selection', async () => {
+    // A custom-source patch passes the source gate on sources:['custom']
+    // (buildAllowedPatchSources admits explicit 'custom'), but the exemption
+    // reads the RAW policy array for the literal 'third_party', which is
+    // absent here — so the unknown-severity custom patch stays held. This pins
+    // the raw-array vs expanded-bucket lockstep documented in the source.
+    mockPendingAndApprovals([wingetRow({ source: 'custom' })], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...thirdPartyRing,
+      sources: ['custom'],
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('OS patch severity gating is unchanged on a third_party-enabled ring', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', source: 'microsoft', severity: 'unknown' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'microsoft', severity: 'critical' }),
+      ],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, thirdPartyRing);
+
+    // Only the in-list OS severity approves; 'unknown' stays held.
+    expect(result.map((r) => r.patchId)).toEqual([P2]);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('empty-severities kill-switch still approves nothing, even for exempt third-party patches', async () => {
+    mockPendingAndApprovals([wingetRow()], []);
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...thirdPartyRing,
+      autoApprove: { enabled: true, severities: [], deferralDays: 0 },
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('app block rules still apply to exempt third-party patches', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPendingAndApprovals([wingetRow()], []);
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+        ...thirdPartyRing,
+        apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
+      });
+
+      expect(result).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ---- Deferral fallback to first-seen for third-party patches (#2218) ----
+describe('deferral first-seen fallback for third-party patches (#2218)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  const deferredRing: RingConfig = {
+    ringId: RING_ID,
+    categoryRules: [],
+    autoApprove: { enabled: true, severities: ['critical'], deferralDays: 7 },
+    deferralDays: 0,
+    sources: ['third_party'],
+  };
+
+  it('holds a third-party patch first seen inside the deferral window', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: yesterday })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+    expect(result).toEqual([]);
+  });
+
+  it('approves a third-party patch first seen past the deferral window', async () => {
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: tenDaysAgo })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('prefers releaseDate over first-seen when releaseDate is past the window', async () => {
+    // Released 10 days ago but only first seen yesterday: releaseDate anchors
+    // the window, so the patch is past the 7-day hold.
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: tenDaysAgo, firstSeenAt: yesterday })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('prefers releaseDate over first-seen when releaseDate is inside the window (held)', async () => {
+    // Complementary direction: released yesterday (inside the 7-day hold) but
+    // first seen 10 days ago. releaseDate must win, so the patch is HELD — a
+    // bug that anchored on the older/more-permissive first-seen would approve.
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: yesterday, firstSeenAt: tenDaysAgo })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+    expect(result).toEqual([]);
+  });
+
+  it('fails closed for a third-party patch with an unparseable releaseDate (does NOT fall through to first-seen)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // A present-but-garbage releaseDate is a truthy Invalid Date, so the
+      // first-seen fallback is skipped; the Number.isNaN guard then holds it.
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: 'not-a-date', firstSeenAt: tenDaysAgo })],
+        []
+      );
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+      expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('its releaseDate value is unparseable'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('still fails closed for a third-party patch with neither releaseDate nor firstSeenAt', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: null })],
+        []
+      );
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, deferredRing);
+
+      expect(result).toEqual([]);
+      // Assert the specific reason so the anchor-differentiation feature can't
+      // silently regress to the generic message.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('it has no releaseDate and no first-seen fallback timestamp')
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does NOT extend the first-seen fallback to OS patches (fail-closed unchanged)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: P1, source: 'microsoft', severity: 'critical', releaseDate: null, firstSeenAt: tenDaysAgo })],
+        []
+      );
+
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+        ...deferredRing,
+        sources: ['os'],
+      });
+
+      expect(result).toEqual([]);
+      // OS path never mentions a first-seen fallback: bare "it has no releaseDate".
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('but it has no releaseDate, so it cannot prove its age')
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('applies the first-seen fallback on a third_party_app category deferral too', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: yesterday, category: 'homebrew' })],
+      []
+    );
+
+    const held = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
+      autoApprove: {},
+      deferralDays: 0,
+      sources: ['third_party'],
+    });
+    expect(held).toEqual([]);
+
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: tenDaysAgo, category: 'homebrew' })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
+      autoApprove: {},
+      deferralDays: 0,
+      sources: ['third_party'],
+    });
+    expect(approved).toHaveLength(1);
+    expect(approved[0]?.approvalReason).toBe('category_rule');
   });
 });

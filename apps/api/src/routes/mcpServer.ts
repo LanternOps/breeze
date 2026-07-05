@@ -13,6 +13,8 @@
  *   - tools/call
  *   - resources/list
  *   - resources/read
+ *   - prompts/list
+ *   - prompts/get
  */
 
 import { randomBytes } from 'node:crypto';
@@ -37,6 +39,7 @@ import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToo
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
+import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import {
   beginMcpToolExecutionLedger,
   completeMcpToolExecutionLedger,
@@ -778,6 +781,22 @@ mcpServerRoutes.delete('/sse', (c) => {
 // JSON-RPC Method Dispatcher
 // ============================================
 
+export function buildInitializeResult() {
+  return {
+    protocolVersion: '2024-11-05',
+    capabilities: {
+      tools: { listChanged: false },
+      resources: { subscribe: false, listChanged: false },
+      prompts: { listChanged: false },
+    },
+    serverInfo: {
+      name: 'breeze-rmm',
+      version: '1.0.0',
+    },
+    instructions: MCP_SERVER_INSTRUCTIONS,
+  };
+}
+
 async function handleJsonRpc(
   req: JsonRpcRequest,
   auth: AuthContext,
@@ -789,17 +808,7 @@ async function handleJsonRpc(
   try {
     switch (req.method) {
       case 'initialize':
-        return jsonRpcResult(req.id, {
-          protocolVersion: '2024-11-05',
-          capabilities: {
-            tools: { listChanged: false },
-            resources: { subscribe: false, listChanged: false }
-          },
-          serverInfo: {
-            name: 'breeze-rmm',
-            version: '1.0.0'
-          }
-        });
+        return jsonRpcResult(req.id, buildInitializeResult());
 
       case 'notifications/initialized':
         // Client acknowledgment — no response needed but return empty result
@@ -816,6 +825,12 @@ async function handleJsonRpc(
 
       case 'resources/read':
         return await handleResourcesRead(req.id, req.params ?? {}, auth);
+
+      case 'prompts/list':
+        return handlePromptsList(req.id);
+
+      case 'prompts/get':
+        return handlePromptsGet(req.id, req.params ?? {});
 
       default:
         return jsonRpcError(req.id, -32601, `Method not found: ${req.method}`);
@@ -1319,6 +1334,27 @@ function handleResourcesList(id: string | number): JsonRpcResponse {
       }
     ]
   });
+}
+
+// ============================================
+// prompts/list, prompts/get
+// ============================================
+
+export function handlePromptsList(id: string | number): JsonRpcResponse {
+  return jsonRpcResult(id, { prompts: listMcpPrompts() });
+}
+
+export function handlePromptsGet(id: string | number, params: Record<string, unknown>): JsonRpcResponse {
+  const name = params.name as string | undefined;
+  if (!name) return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  if (!hasMcpPrompt(name)) return jsonRpcError(id, -32602, `Unknown prompt: ${name}`);
+  const args = (params.arguments as Record<string, string>) ?? {};
+  try {
+    return jsonRpcResult(id, getMcpPrompt(name, args));
+  } catch {
+    // The prompt exists but rendering blew up — that's an internal fault, not a bad request.
+    return jsonRpcError(id, -32603, `Failed to render prompt: ${name}`);
+  }
 }
 
 // ============================================

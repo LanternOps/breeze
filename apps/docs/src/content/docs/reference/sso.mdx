@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Breeze RMM supports organization-level single sign-on through OpenID Connect (OIDC) and SAML 2.0. SSO allows users to authenticate with their existing identity provider (IdP) instead of managing separate Breeze passwords. Each organization can configure one active SSO provider and optionally enforce SSO-only login to disable password-based authentication entirely.
+Breeze RMM supports single sign-on through OpenID Connect (OIDC) and SAML 2.0, at both the organization and the partner level. SSO allows users to authenticate with their existing identity provider (IdP) instead of managing separate Breeze passwords. Each organization can configure one active SSO provider for its own users, and a partner (MSP) can configure a partner-owned provider for its own technicians (see [Partner-Wide SSO](#partner-wide-sso-technician-login)). Either kind of provider can optionally enforce SSO-only login to disable password-based authentication.
 
 ---
 
@@ -16,7 +16,8 @@ Breeze RMM supports organization-level single sign-on through OpenID Connect (OI
 
 | Concept | Description |
 |---------|-------------|
-| **SSO Provider** | A configured identity provider (IdP) record tied to a single organization. |
+| **SSO Provider** | A configured identity provider (IdP) record tied to a single owner (an organization or the partner). |
+| **Owner scope** | A provider is owned by either an **organization** (customer SSO) or the **partner** (MSP technician SSO) — exactly one of the two, never both. |
 | **Provider type** | `oidc` (OpenID Connect) or `saml` (SAML 2.0). |
 | **Provider status** | `inactive` (default on creation), `testing`, or `active`. Only `active` providers are used for login. |
 | **Auto-provisioning** | When enabled (default), users who authenticate via SSO are automatically created in Breeze if they do not already exist. |
@@ -261,7 +262,8 @@ Browser          Breeze API          Identity Provider
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `orgId` | `uuid` | Depends | Inferred for org-scoped users | Target organization. |
+| `ownerScope` | `organization` or `partner` | No | `organization` | Who owns the provider. `organization` creates a customer SSO provider; `partner` creates a partner-wide provider for the MSP's own technicians. |
+| `orgId` | `uuid` | Depends | Inferred for org-scoped users | Target organization. Ignored when `ownerScope` is `partner` — a partner provider is owned by the caller's partner, never an organization. |
 | `name` | `string` | Yes | -- | Display name (1--255 characters). |
 | `type` | `oidc` or `saml` | Yes | -- | Provider protocol. |
 | `preset` | `string` | No | -- | Preset ID (e.g., `azure-ad`, `okta`). Pre-fills scopes and attribute mapping. |
@@ -271,12 +273,16 @@ Browser          Breeze API          Identity Provider
 | `scopes` | `string` | No | From preset or `openid profile email` | Space-separated OAuth scopes. |
 | `attributeMapping` | `object` | No | From preset or `{ email: "email", name: "name" }` | Maps IdP claims to Breeze fields. |
 | `autoProvision` | `boolean` | No | `true` | Create Breeze users on first SSO login. |
-| `defaultRoleId` | `uuid` | No | -- | Role assigned to auto-provisioned users. Must be an org-scoped role in the target org. |
+| `defaultRoleId` | `uuid` | No | -- | Role assigned to auto-provisioned users. Must be an org-scoped role in the target org (or, for partner providers, a partner-scoped role belonging to your partner). |
 | `allowedDomains` | `string` | No | -- | Comma-separated email domains. Empty means all domains are allowed. |
 | `enforceSSO` | `boolean` | No | `false` | Disable password login for the organization. |
 
 <Aside type="caution">
   The `clientSecret` is encrypted before storage using the server's encryption key. It is never returned in API responses. The `hasClientSecret` boolean field indicates whether a secret is configured.
+</Aside>
+
+<Aside type="note">
+  Creating a provider with `ownerScope: "partner"` requires a **partner-scope session** with partner-wide policy management rights (access to all of the partner's organizations). Organization-scoped sessions can only create organization providers.
 </Aside>
 
 ### Provider Statuses
@@ -354,6 +360,62 @@ When `enforceSSO` is set to `true` on a provider, the organization's login page 
 
 ---
 
+## Partner-Wide SSO (Technician Login)
+
+While an organization provider signs in a customer's users, a **partner-owned provider** authenticates the MSP's own technicians. Create one with `ownerScope: "partner"` (see [Create Provider Schema](#create-provider-schema)).
+
+### Login Entry Point
+
+When an active partner provider exists, the main login page shows a **"Sign in with \{provider\}"** button — before any organization is chosen. The button appears only on **self-hosted deployments that resolve to exactly one partner** (`IS_HOSTED` not set to `true`). Hosted and multi-partner instances never show it: exposing one tenant's IdP on a shared login page would leak tenant information, so those deployments continue to use per-organization SSO entry points.
+
+If more than one partner provider is active, the button deterministically targets the **oldest active** provider (by creation time), so activating a second provider never silently changes the login page. The button starts the standard OIDC flow via `GET /api/v1/sso/login/partner/:partnerId`.
+
+### Identity-First Sign-In (No Auto-Provisioning)
+
+Partner-axis sign-in is **identity-first** and never provisions accounts. An IdP identity that Breeze does not recognize is rejected and told to request an invite from an administrator — unlike organization providers, there is no just-in-time user creation on the partner axis. Technician accounts must exist (via invite) before they can sign in with SSO.
+
+A partner provider's `defaultRoleId`, when set, must be a **partner-scoped role** belonging to your partner.
+
+### Enforcement on the Login Page
+
+When a partner provider has `enforceSSO: true`, the login page **collapses** the password form behind a **"Sign in with password instead"** toggle rather than removing it. Actual enforcement happens server-side per user at login time — a technician governed by the enforcing provider cannot sign in with a password even if the form is revealed, while organization users on the same instance are unaffected.
+
+### Password Reset and SSO Enforcement
+
+The forgot-password and reset-password flows honor SSO enforcement. A partner-scoped technician whose partner provider has `enforceSSO: true` cannot reset a password: the request still returns the generic success response (so account existence is never revealed), but **no reset email is sent**. The same rule applies to organization users under an enforcing organization provider.
+
+---
+
+## Login Page Branding
+
+Partner administrators can brand the login screen itself — separate from any SSO configuration. Under **Settings → Partner Settings → Branding → Login Branding**, you can set:
+
+| Field | Constraints |
+|-------|-------------|
+| **Logo** | An HTTPS URL, or a base64 `data:` URI containing a PNG, JPEG, or WebP image. |
+| **Accent color** | A `#rrggbb` hex color (enforced by the database as well as the API). |
+| **Headline** | Free text, maximum 120 characters. |
+
+The API surface is `GET`/`PUT /api/v1/partners/me/login-branding`. The `PUT` is a **full replace**: any field omitted from the request is cleared, not preserved.
+
+Login branding renders under the same rule as the partner SSO button: only on self-hosted deployments that resolve to exactly one partner. It is distinct from [organization and portal branding](/features/branding/), which covers post-login surfaces (dashboard, end-user portal, and email templates).
+
+---
+
+## Linking Your SSO Identity
+
+Users can link an SSO identity to their existing Breeze account themselves, from **Settings → Profile → Connect SSO**. Linking runs the normal sign-in round trip at the IdP and then attaches the resulting identity to the signed-in account, so future SSO logins match by identity rather than email.
+
+If linking fails, the profile page surfaces one of these errors:
+
+| Error | Meaning |
+|-------|---------|
+| `email_mismatch` | The email asserted by the IdP does not match your Breeze account's email. |
+| `identity_in_use` | This IdP identity is already linked to a different Breeze user. |
+| `user_gone` | Your account was removed while the linking flow was in progress. |
+
+---
+
 ## Database Schema
 
 ### `sso_providers` Table
@@ -361,7 +423,8 @@ When `enforceSSO` is set to `true` on a provider, the organization's login page 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `uuid` | Primary key. |
-| `org_id` | `uuid` | Organization this provider belongs to (foreign key). |
+| `org_id` | `uuid` | Organization this provider belongs to (foreign key, nullable). Set for organization providers. |
+| `partner_id` | `uuid` | Partner this provider belongs to (foreign key, nullable). Set for partner-wide providers. Exactly one of `org_id`/`partner_id` must be set — enforced by a database CHECK constraint. |
 | `name` | `varchar(255)` | Display name. |
 | `type` | `sso_provider_type` enum | `oidc` or `saml`. |
 | `status` | `sso_provider_status` enum | `active`, `inactive`, or `testing`. |
@@ -419,31 +482,46 @@ When `enforceSSO` is set to `true` on a provider, the organization's login page 
   The `nonce`, `code_verifier`, and `redirect_url` are intentionally kept server-side in this table and are never placed in the browser cookie — only the `state`-binding HMAC travels to the client. The session row is consumed (deleted) atomically on the first valid callback, so it cannot be replayed even within the TTL window.
 </Aside>
 
+### `partner_login_branding` Table
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `partner_id` | `uuid` | Primary key (foreign key to `partners`). One row per partner. |
+| `logo_url` | `text` | HTTPS URL or base64 image data URI for the login logo. |
+| `accent_color` | `varchar(7)` | `#rrggbb` hex accent color (CHECK-constrained). |
+| `headline` | `varchar(120)` | Login page headline text. |
+| `created_at` | `timestamp` | Creation timestamp. |
+| `updated_at` | `timestamp` | Last update timestamp. |
+
 ---
 
 ## API Reference
 
-All routes are prefixed with `/api/v1/sso`.
+All routes are prefixed with `/api/v1/sso`, except where a full path starting with `/api/v1/` is shown.
 
 ### Provider Management (Authenticated)
 
 | Method | Path | Permission | Description |
 |--------|------|------------|-------------|
 | `GET` | `/sso/presets` | Authenticated | List available provider presets with their default configurations. |
-| `GET` | `/sso/providers` | Authenticated | List SSO providers for the organization. Accepts `orgId` query parameter. |
+| `GET` | `/sso/providers` | Authenticated | List SSO providers for the organization. Accepts `orgId` query parameter. Pass `?scope=partner` (partner-scope session required) to list the partner's own providers instead. |
 | `GET` | `/sso/providers/:id` | Authenticated | Get provider details. The `clientSecret` is not returned; `hasClientSecret` indicates if one is set. |
 | `POST` | `/sso/providers` | `organizations:write` + MFA | Create a new SSO provider. Returns with `status: inactive`. |
 | `PATCH` | `/sso/providers/:id` | `organizations:write` + MFA | Update provider configuration. |
 | `DELETE` | `/sso/providers/:id` | `organizations:write` + MFA | Delete a provider and all associated sessions and identity links. |
 | `POST` | `/sso/providers/:id/status` | `organizations:write` + MFA | Set provider status (`active`, `inactive`, `testing`). |
 | `POST` | `/sso/providers/:id/test` | `organizations:write` + MFA | Test OIDC provider configuration by running discovery. |
+| `GET` | `/api/v1/partners/me/login-branding` | Partner scope | Get the partner's login page branding. |
+| `PUT` | `/api/v1/partners/me/login-branding` | Partner scope + partner-wide policy rights | Replace the partner's login page branding. Omitted fields are cleared. |
 
 ### Login Flow (Public)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/sso/check/:orgId` | None | Check if SSO is enabled for an organization. Returns provider name, type, enforcement status, and login URL. |
-| `GET` | `/sso/login/:orgId` | None | Initiate SSO login. Generates PKCE + state and redirects to the IdP. |
+| `GET` | `/sso/login/:orgId` | None | Initiate SSO login for an organization. Generates PKCE + state and redirects to the IdP. |
+| `GET` | `/sso/login/partner/:partnerId` | None | Initiate partner-wide SSO login (technician sign-in). Uses the oldest active partner provider. |
+| `GET` | `/api/v1/auth/login-context` | None | Login-page context: partner login branding and the partner SSO button target. Returns empty values on hosted or multi-partner deployments. |
 | `GET` | `/sso/callback` | None | IdP callback. Exchanges code for tokens, provisions user, creates session. Redirects to the app with a token exchange code. |
 | `POST` | `/sso/exchange` | None | Exchange a one-time SSO code for JWT access and refresh tokens. |
 

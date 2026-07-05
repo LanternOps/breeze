@@ -24,6 +24,7 @@ const BULK_PAST_TENSE: Record<string, string> = {
   acknowledge: 'acknowledged',
   resolve: 'resolved',
   suppress: 'suppressed',
+  dismiss: 'dismissed',
 };
 
 function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
@@ -76,7 +77,11 @@ export default function AlertsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/alerts');
+      // Ask for every status BY NAME: the API's default (no status param) hides
+      // dismissed alerts, but this page's status dropdown includes a "Dismissed"
+      // option — filtering happens client-side in AlertList, whose "All Status"
+      // view excludes dismissed so they only show when explicitly selected.
+      const response = await fetchWithAuth('/alerts?status=active,acknowledged,resolved,suppressed,dismissed');
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -362,12 +367,19 @@ export default function AlertsPage() {
     if (action === 'suppress') {
       // Open the duration picker; executeBulkAction fires on confirm with `until`.
       setBulkSuppressTarget(selectedAlerts);
-    } else if (selectedAlerts.length >= 3) {
-      // Inline confirmation for larger ack/resolve batches.
+    } else if (action === 'dismiss' || selectedAlerts.length >= 3) {
+      // Dismiss is permanent (there is no un-dismiss), so it ALWAYS confirms —
+      // even for a single alert. Ack/resolve only confirm for larger batches.
       setPendingBulk({ action, alerts: selectedAlerts });
     } else {
       await executeBulkAction(action, selectedAlerts);
     }
+  };
+
+  // Single-alert dismiss routes through the same confirm bar + bulk endpoint:
+  // the permanence warning and outcome-count toast come for free.
+  const handleDismiss = (alert: Alert) => {
+    setPendingBulk({ action: 'dismiss', alerts: [alert] });
   };
 
   const handleFilterBySeverity = (severity: AlertSeverity) => {
@@ -448,8 +460,20 @@ export default function AlertsPage() {
       {pendingBulk && (
         <div className="flex items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3">
           <span className="text-sm font-medium">
-            {pendingBulk.action === 'suppress' ? 'Suppress' : pendingBulk.action === 'resolve' ? 'Resolve' : 'Update'}{' '}
+            {pendingBulk.action === 'dismiss'
+              ? 'Permanently dismiss'
+              : pendingBulk.action === 'suppress'
+                ? 'Suppress'
+                : pendingBulk.action === 'resolve'
+                  ? 'Resolve'
+                  : 'Update'}{' '}
             {pendingBulk.alerts.length} alert{pendingBulk.alerts.length > 1 ? 's' : ''}?
+            {pendingBulk.action === 'dismiss' && (
+              <span className="ml-1 font-normal text-muted-foreground">
+                Dismissed alerts are hidden for good. Warranty expiry won't re-alert for the
+                same end date; other alerts can still fire fresh if their condition recurs.
+              </span>
+            )}
           </span>
           <div className="flex items-center gap-2 ml-auto">
             <button
@@ -499,6 +523,7 @@ export default function AlertsPage() {
             setDetailOpen(true);
           }}
           onSuppress={handleSuppress}
+          onDismiss={handleDismiss}
           onBulkAction={handleBulkAction}
           submittingId={submittingId}
           alertCorrelationDisabled={alertCorrelationDisabled}
@@ -515,6 +540,10 @@ export default function AlertsPage() {
           onAcknowledge={handleAcknowledge}
           onResolve={handleResolve}
           onSuppress={handleSuppress}
+          onDismiss={alert => {
+            handleCloseDetail();
+            handleDismiss(alert);
+          }}
           submitting={submitting}
         />
       )}

@@ -9,7 +9,7 @@
 import { db } from '../db';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { alerts, devices, notificationChannels } from '../db/schema';
-import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
@@ -60,7 +60,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         properties: {
           action: { type: 'string', enum: ['list', 'get', 'acknowledge', 'resolve', 'suppress'], description: 'The action to perform' },
           alertId: { type: 'string', description: 'Alert UUID (required for get/acknowledge/resolve/suppress)' },
-          status: { type: 'string', enum: ['active', 'acknowledged', 'resolved', 'suppressed'], description: 'Filter by status (for list)' },
+          status: { type: 'string', enum: ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'], description: 'Filter by status (for list)' },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'], description: 'Filter by severity (for list)' },
           deviceId: { type: 'string', description: 'Filter by device UUID (for list)' },
           limit: { type: 'number', description: 'Max results (for list, default 25)' },
@@ -77,7 +77,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const conditions: SQL[] = [];
         const orgCondition = auth.orgCondition(alerts.orgId);
         if (orgCondition) conditions.push(orgCondition);
-        if (input.status) conditions.push(eq(alerts.status, input.status as typeof alerts.status.enumValues[number]));
+        if (input.status) {
+          conditions.push(eq(alerts.status, input.status as typeof alerts.status.enumValues[number]));
+        } else {
+          // Dismissed alerts are permanently closed — hidden unless asked for by name.
+          conditions.push(ne(alerts.status, 'dismissed'));
+        }
         if (input.severity) conditions.push(eq(alerts.severity, input.severity as typeof alerts.severity.enumValues[number]));
         if (input.deviceId) conditions.push(eq(alerts.deviceId, input.deviceId as string));
 
@@ -145,6 +150,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const alert = await findAlertWithAccess(input.alertId as string, auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
+        // Mirror POST /alerts/:id/acknowledge: only an active alert can be acked
+        // (in particular, never pull a resolved/dismissed alert back to acknowledged).
+        if (alert.status !== 'active') {
+          return JSON.stringify({ error: `Cannot acknowledge alert with status: ${alert.status}` });
+        }
+
         const acknowledgedAt = new Date();
         await db
           .update(alerts)
@@ -195,6 +206,16 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         const alert = await findAlertWithAccess(input.alertId as string, auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
+
+        // Mirror POST /alerts/:id/resolve: already-resolved is a no-op error and
+        // dismissed is terminal (resolving it would let synthetic evaluators
+        // re-create the alert the user permanently dismissed).
+        if (alert.status === 'resolved') {
+          return JSON.stringify({ error: 'Alert is already resolved' });
+        }
+        if (alert.status === 'dismissed') {
+          return JSON.stringify({ error: 'Cannot resolve a dismissed alert' });
+        }
 
         const resolvedAt = new Date();
         const resolutionNote = (input.resolutionNote as string) ?? 'Resolved via AI assistant';
@@ -251,10 +272,11 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const alert = await findAlertWithAccess(input.alertId as string, auth);
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
-        // Mirror the REST endpoints (POST /alerts/:id/suppress): a resolved alert
-        // has nothing to silence, so refuse rather than silently re-open it.
-        if (alert.status === 'resolved') {
-          return JSON.stringify({ error: 'Cannot suppress a resolved alert' });
+        // Mirror the REST endpoints (POST /alerts/:id/suppress): a resolved or
+        // dismissed alert has nothing to silence, so refuse rather than silently
+        // re-open it (dismissed is terminal).
+        if (alert.status === 'resolved' || alert.status === 'dismissed') {
+          return JSON.stringify({ error: `Cannot suppress a ${alert.status} alert` });
         }
 
         // suppressDuration: 0 => indefinite ("Forever") suppression, leaving

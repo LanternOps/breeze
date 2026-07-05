@@ -1742,6 +1742,124 @@
         "features/mcp-server.mdx",
         "features/ticketing.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/sso.ts",
+      "docs": [
+        "reference/sso.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auth/ssoPolicy.ts",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/sso.ts",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/partnerLoginBranding.ts",
+      "docs": [
+        "reference/sso.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/partnerLoginBranding.ts",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auth/loginContext.ts",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/passwordResetEligibility.ts",
+      "docs": [
+        "reference/sso.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/auth/LoginPage.tsx",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/Sso*.tsx",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/LoginBrandingCard.tsx",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/ConnectSsoCard.tsx",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/AgentVersionPinSelectors.tsx",
+      "docs": [
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/agentVersionPins.ts",
+      "docs": [
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/enrollmentKeyCleanup.ts",
+      "docs": [
+        "agents/enrollment-keys.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/EnrollmentKeyManager.tsx",
+      "docs": [
+        "agents/enrollment-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/vpn*.go",
+      "docs": [
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/lib/vpnProviders.ts",
+      "docs": [
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceInfoTab.tsx",
+      "docs": [
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceList.tsx",
+      "docs": [
+        "features/devices.mdx"
+      ]
     }
   ]
 }

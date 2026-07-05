@@ -164,9 +164,12 @@ func uninstallSoftwareOS(name, version string) error {
 }
 
 func uninstallSoftwareWindows(name, version string) error {
+	// Resolve winget once for all attempts: under the SYSTEM service the
+	// per-user "winget" PATH alias doesn't exist (see resolveWingetCommand).
+	wingetCmd := resolveWingetCommand()
 	attempts := []uninstallAttempt{
 		{
-			command: "winget",
+			command: wingetCmd,
 			args: []string{
 				"uninstall",
 				"--name", name,
@@ -191,7 +194,7 @@ func uninstallSoftwareWindows(name, version string) error {
 	if version != "" {
 		attempts = append([]uninstallAttempt{
 			{
-				command: "winget",
+				command: wingetCmd,
 				args: []string{
 					"uninstall",
 					"--name", name,

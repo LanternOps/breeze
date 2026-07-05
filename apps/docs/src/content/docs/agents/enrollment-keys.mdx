@@ -90,6 +90,8 @@ Public installer links are also issued with a short, human-friendly URL of the f
 
 Short codes are convenient for sharing in email, chat, or printed runbooks. The platform is selected per-request from the User-Agent and can be overridden with a `?platform=windows` or `?platform=macos` query parameter.
 
+In the dashboard, the enrollment key list shows each key's short code in a **Short code** column with a copy-to-clipboard button — this replaces the previous always-masked KEY column, which never revealed anything useful. A **Hide expired** toggle above the list filters out keys that have already expired.
+
 ---
 
 ## Enrollment Key Lifecycle
@@ -219,6 +221,25 @@ curl -X DELETE https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+### Automatic Purge of Expired Keys
+
+Expired enrollment keys are hard-deleted automatically by a daily sweep that runs at **04:00 UTC**. A key is only purged once it has been expired for a grace period of `ENROLLMENT_KEY_PURGE_AFTER_DAYS` days (default **7**), so a recently expired key remains visible long enough to audit or rotate. Keys with no expiration date are never auto-purged. Set `ENROLLMENT_KEY_CLEANUP_ENABLED=false` to disable the sweep entirely.
+
+Installer bootstrap tokens and deployment invites that reference a purged key are cascade-deleted along with it.
+
+### Bulk-Deleting Expired Keys
+
+You can also delete all expired keys on demand, without waiting for the grace period:
+
+```bash
+curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys/purge-expired \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The endpoint requires the same `organizations:write` permission + MFA as single-key deletion, deletes every expired key in the caller's scope (the caller's org, all accessible orgs for partner scope, or all orgs for system scope), and returns `{ "success": true, "deletedCount": N }`. Keys without an expiration are never matched.
+
+In the dashboard, this is surfaced as a **Delete expired** button above the key list, with a confirmation dialog before anything is removed.
+
 ---
 
 ## How Agent Enrollment Uses the Key
@@ -305,6 +326,7 @@ Every enrollment key operation is recorded in the audit log:
 | `enrollment_key.create` | New key created. |
 | `enrollment_key.rotate` | Key material regenerated. Includes previous and new `maxUsage`, `expiresAt`, and `usageCount`. |
 | `enrollment_key.delete` | Key permanently deleted. |
+| `enrollment_key.purge_expired` | Bulk deletion of expired keys. Includes the `deletedCount`. |
 | `agent.enroll` | Agent successfully enrolls using a key. Logged with `actorType: agent`. |
 
 ---
@@ -330,6 +352,8 @@ All management endpoints require `organizations:read` for listing/viewing and `o
 | `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | Default time-to-live for new enrollment keys when `expiresAt` is not specified. |
 | `ENROLLMENT_KEY_PEPPER` | -- | Pepper used for SHA-256 hashing of enrollment keys. Falls back to `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET`. |
 | `AGENT_ENROLLMENT_SECRET` | -- | Static secret that gates the enrollment endpoint in production. If empty or unset, the gate is skipped in non-production environments. |
+| `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | Set to `false` to disable the daily sweep that purges expired keys. |
+| `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | Grace period (in days past expiry) before the daily sweep hard-deletes an expired key. |
 
 ---
 
@@ -344,6 +368,7 @@ All routes are prefixed with `/api/v1/enrollment-keys` and require JWT authentic
 | `GET` | `/enrollment-keys/:id` | `organizations:read` | Get metadata for a single enrollment key (raw key not included). |
 | `POST` | `/enrollment-keys/:id/rotate` | `organizations:write` + MFA | Regenerate key material, reset usage count. Returns the new raw key. |
 | `DELETE` | `/enrollment-keys/:id` | `organizations:write` + MFA | Permanently delete an enrollment key. |
+| `POST` | `/enrollment-keys/purge-expired` | `organizations:write` + MFA | Delete all expired enrollment keys in the caller's scope. Returns the number of keys deleted. |
 | `GET` | `/enrollment-keys/:id/installer/:platform` | `organizations:read` | Download a pre-configured MSI or PKG installer. |
 | `POST` | `/enrollment-keys/:id/installer-link` | `organizations:write` | Generate a public download link for an installer. |
 | `GET` | `/enrollment-keys/public-download/:platform` | Token (public) | Download an installer via a public link token. |

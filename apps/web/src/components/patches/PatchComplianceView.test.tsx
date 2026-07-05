@@ -384,6 +384,155 @@ describe('PatchComplianceView', () => {
     expect(dialogText).not.toMatch(/on \d+ device[s]? in Acme Corp/i);
   });
 
+  it('mutes the pending-reboot badge with an "as of" qualifier for offline devices and explains the column semantics (#2219)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/patches/compliance') {
+        return makeJsonResponse({
+          data: {
+            totalDevices: 2,
+            compliantDevices: 0,
+            devicesNeedingPatches: [
+              {
+                id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                name: 'Online-Box',
+                os: 'windows',
+                missingCount: 1,
+                approvedMissing: 0,
+                unapprovedMissing: 1,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 1,
+                thirdPartyMissing: 0,
+                pendingReboot: true,
+                lastSeen: '2026-04-01T18:00:00.000Z',
+              },
+              {
+                id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                name: 'Offline-Box',
+                os: 'windows',
+                missingCount: 1,
+                approvedMissing: 0,
+                unapprovedMissing: 1,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 1,
+                thirdPartyMissing: 0,
+                pendingReboot: true,
+                lastSeen: '2026-04-01T18:00:00.000Z',
+              },
+              {
+                id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+                name: 'Offline-NoLastSeen',
+                os: 'windows',
+                missingCount: 1,
+                approvedMissing: 0,
+                unapprovedMissing: 1,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 1,
+                thirdPartyMissing: 0,
+                pendingReboot: true,
+              },
+              {
+                id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+                name: 'Legacy-NoStatus',
+                os: 'windows',
+                missingCount: 1,
+                approvedMissing: 0,
+                unapprovedMissing: 1,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 1,
+                thirdPartyMissing: 0,
+                pendingReboot: true,
+              },
+            ],
+          },
+        });
+      }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({
+          devices: [
+            {
+              id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+              hostname: 'Online-Box',
+              osType: 'windows',
+              status: 'online',
+              lastSeenAt: '2026-04-01T18:00:00.000Z',
+            },
+            {
+              id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+              hostname: 'Offline-Box',
+              osType: 'windows',
+              status: 'offline',
+              lastSeenAt: '2026-04-01T18:00:00.000Z',
+            },
+            {
+              // Offline with no last-seen anywhere: badge must be muted but
+              // must not render "as of Invalid Date" or a dangling "as of".
+              id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+              hostname: 'Offline-NoLastSeen',
+              osType: 'windows',
+              status: 'offline',
+            },
+            {
+              // Older API payload with no status field: fail open to the
+              // unqualified live badge (pre-#2219 behavior), never to stale.
+              id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+              hostname: 'Legacy-NoStatus',
+              osType: 'windows',
+            },
+          ],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchComplianceView ringId={null} />);
+
+    await screen.findByText('Online-Box');
+
+    // Online device: unqualified orange "Yes" badge.
+    const liveBadge = screen.getByTestId('compliance-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa-pending-reboot');
+    expect(liveBadge.textContent).toBe('Yes');
+    expect(liveBadge.className).toContain('text-orange-700');
+
+    // Offline device: muted badge qualified with "as of <last seen>", not an
+    // unqualified "Yes" — and not hidden outright.
+    const staleBadge = screen.getByTestId('compliance-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb-pending-reboot-stale');
+    expect(staleBadge.textContent).toMatch(/^Yes · as of /);
+    expect(staleBadge.className).toContain('text-muted-foreground');
+    expect(staleBadge.className).not.toContain('text-orange-700');
+    expect(staleBadge).toHaveAttribute('title', expect.stringMatching(/offline.*last check-in.*stale/i));
+    expect(
+      screen.queryByTestId('compliance-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb-pending-reboot')
+    ).toBeNull();
+
+    // Offline with no last-seen anywhere: still muted, but a bare "Yes" —
+    // no dangling "as of" and no "Invalid Date".
+    const noLastSeenBadge = screen.getByTestId('compliance-cccccccc-cccc-cccc-cccc-cccccccccccc-pending-reboot-stale');
+    expect(noLastSeenBadge.textContent).toBe('Yes');
+    expect(noLastSeenBadge.className).toContain('text-muted-foreground');
+
+    // Older API payload without a status field: fail open to the unqualified
+    // live badge (pre-#2219 behavior) — never misclassified as stale.
+    const legacyBadge = screen.getByTestId('compliance-dddddddd-dddd-dddd-dddd-dddddddddddd-pending-reboot');
+    expect(legacyBadge.textContent).toBe('Yes');
+    expect(legacyBadge.className).toContain('text-orange-700');
+    expect(
+      screen.queryByTestId('compliance-dddddddd-dddd-dddd-dddd-dddddddddddd-pending-reboot-stale')
+    ).toBeNull();
+
+    // Column header explains what REBOOT actually means (agent-reported OS
+    // pending-reboot signal, any cause — not "reboot to install patches").
+    const rebootHeader = screen.getByRole('columnheader', { name: 'Reboot' });
+    expect(rebootHeader).toHaveAttribute(
+      'title',
+      expect.stringMatching(/OS reports a pending reboot.*reported by the agent/i)
+    );
+  });
+
   it('surfaces a distinct message when the install endpoint returns 409 approval failure', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

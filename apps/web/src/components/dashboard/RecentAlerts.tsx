@@ -58,7 +58,10 @@ export default function RecentAlerts() {
         setIsLoading(true);
         setError(null);
 
-        const response = await fetchWithAuth('/alerts?limit=5&sort=-createdAt');
+        // Open alerts only (active + acknowledged): resolved/suppressed/dismissed
+        // alerts must not sit on the dashboard styled red forever — that's what
+        // the Alerts page (with status filters) is for.
+        const response = await fetchWithAuth('/alerts?status=active,acknowledged&limit=5&sort=-createdAt');
 
         if (!response.ok) {
           throw response;

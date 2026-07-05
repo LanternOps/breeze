@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, sql, desc, asc, inArray } from 'drizzle-orm';
+import { and, eq, sql, desc, asc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   patchPolicies,
@@ -11,7 +11,7 @@ import {
   devicePatches,
 } from '../db/schema';
 import { resolveRingDeviceCounts, resolveRingDeviceIds } from './updateRingsHelpers';
-import { getPagination } from './patches/helpers';
+import { getPagination, inferPatchOs } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -433,8 +433,15 @@ updateRingRoutes.get(
 
     const { page, limit, offset } = getPagination(query);
 
-    const conditions = [];
-    if (query.source) conditions.push(eq(patches.source, query.source));
+    // Mirror GET /patches (patches/list.ts): track the source predicate
+    // separately so the per-source counts ignore the source filter and the
+    // chips always reflect the full breakdown of visible patches.
+    const conditions: SQL[] = [];
+    let sourcePredicate: SQL | undefined;
+    if (query.source) {
+      sourcePredicate = eq(patches.source, query.source);
+      conditions.push(sourcePredicate);
+    }
     if (query.severity) conditions.push(eq(patches.severity, query.severity));
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -448,6 +455,19 @@ updateRingRoutes.get(
         severity: patches.severity,
         category: patches.category,
         osTypes: patches.osTypes,
+        // Same device-derived OS hint as GET /patches (list.ts): the most
+        // recently checked device reporting this patch. Feeds inferPatchOs so
+        // third_party/custom patches with empty osTypes can still resolve an
+        // OS when a reporting device exists (otherwise inferPatchOs falls
+        // back to the source mapping, then 'unknown').
+        inferredOs: sql<string | null>`(
+          SELECT "devices"."os_type"
+          FROM "device_patches"
+          INNER JOIN "devices" ON "devices"."id" = "device_patches"."device_id"
+          WHERE "device_patches"."patch_id" = "patches"."id"
+          ORDER BY "device_patches"."last_checked_at" DESC NULLS LAST
+          LIMIT 1
+        )`,
         releaseDate: patches.releaseDate,
         requiresReboot: patches.requiresReboot,
         downloadSizeMb: patches.downloadSizeMb,
@@ -463,6 +483,24 @@ updateRingRoutes.get(
       .select({ count: sql<number>`count(*)` })
       .from(patches)
       .where(whereClause);
+
+    // Per-source counts for the web's source filter chips — same shape as
+    // GET /patches so the ring view doesn't render all-zero chips (#2215).
+    const sourceConditions = conditions.filter((c) => c !== sourcePredicate);
+    const sourceWhereClause = sourceConditions.length > 0 ? and(...sourceConditions) : undefined;
+    const sourceCounts = await db
+      .select({ source: patches.source, count: sql<number>`count(*)::int` })
+      .from(patches)
+      .where(sourceWhereClause)
+      .groupBy(patches.source);
+    const counts: Record<string, number> = {
+      microsoft: 0,
+      apple: 0,
+      linux: 0,
+      third_party: 0,
+      custom: 0,
+    };
+    for (const row of sourceCounts) counts[row.source] = Number(row.count);
 
     // Get ring-scoped approval statuses
     const patchIdsInPage = patchList.map((p) => p.id);
@@ -488,11 +526,15 @@ updateRingRoutes.get(
 
     const data = patchList.map((patch) => ({
       ...patch,
+      // Derived scalar `os` — same field GET /patches returns; the web's
+      // normalizePatch reads this to render the OS column (#2215).
+      os: inferPatchOs(patch.osTypes, patch.source, patch.inferredOs),
       approvalStatus: ringApprovals[patch.id] || 'pending',
     }));
 
     return c.json({
       data,
+      counts,
       pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) },
     });
   }

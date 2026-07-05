@@ -116,6 +116,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             lastInstalledAt: n?.lastInstalledAt ? String(n.lastInstalledAt) : undefined,
             lastScannedAt: n?.lastScannedAt ? String(n.lastScannedAt) : undefined,
             pendingReboot: Boolean(n?.pendingReboot),
+            status: raw.status ? String(raw.status) : undefined,
             orgId,
           });
         }
@@ -532,7 +533,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
               <th className="px-3 py-3" title="Outstanding updates from third-party or custom sources">3rd-Party</th>
               <th className="px-3 py-3" title="Outstanding patches rated critical severity">Critical</th>
               <th className="px-3 py-3" title="Most recent patch install or scan activity">Last Activity</th>
-              <th className="px-3 py-3" title="Device needs a reboot to complete patch installation">Reboot</th>
+              <th className="px-3 py-3" title="OS reports a pending reboot — any cause (Windows updates, CBS, pending file renames); reported by the agent. For offline devices this reflects the state at their last check-in.">Reboot</th>
               <th className="px-3 py-3 text-right">Actions</th>
             </tr>
           </thead>
@@ -639,10 +640,30 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                     </td>
                     <td className="px-3 py-2.5">
                       {device.pendingReboot ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-orange-500/40 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-700">
-                          <RotateCcw className="h-3 w-3" />
-                          Yes
-                        </span>
+                        device.status === 'offline' ? (
+                          // Offline: the pending-reboot flag is frozen at the last
+                          // heartbeat and may be stale, so mute it and qualify with
+                          // "as of <last seen>" rather than an unqualified "Yes".
+                          // Same rationale as the Devices list suppression
+                          // (DeviceList.tsx), but compliance still wants the
+                          // signal visible, not hidden (#2219).
+                          <span
+                            data-testid={`compliance-${device.id}-pending-reboot-stale`}
+                            title="Device is offline — this reflects the OS state at its last check-in and may be stale."
+                            className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            Yes{device.lastSeenAt ? ` · as of ${formatRelativeTime(device.lastSeenAt)}` : ''}
+                          </span>
+                        ) : (
+                          <span
+                            data-testid={`compliance-${device.id}-pending-reboot`}
+                            className="inline-flex items-center gap-1 rounded-full border border-orange-500/40 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-700"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            Yes
+                          </span>
+                        )
                       ) : (
                         <span className="text-muted-foreground">-</span>
                       )}

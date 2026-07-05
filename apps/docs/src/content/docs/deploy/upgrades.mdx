@@ -124,6 +124,24 @@ By default (`AGENT_AUTO_PROMOTE=true`), publishing or syncing a new agent releas
   Leave `AGENT_AUTO_PROMOTE` unset (or `true`) to keep the default behavior where a published release rolls out immediately. The promote action is audit-logged either way.
 </Aside>
 
+### Pinning Agent and Watchdog Versions
+
+Instead of always tracking the latest promoted release, you can pin the fleet — or a single customer — to a specific version. **Settings → Partner Defaults** and **Settings → Org Defaults** each expose an **Update version targets** card with independent **Agent target** and **Watchdog target** selectors. Each selector offers every registered version plus **Latest promoted** (track the globally promoted release, the default behavior).
+
+Pin precedence is **inherit-with-override** — deliberately different from the lock model used by the update policy and maintenance window below:
+
+- A **partner pin** is the inherited default for all of that partner's organizations.
+- Any **org can override** the partner pin with its own value — including explicitly re-selecting **Latest promoted** to move that org back to the promoted release while the rest of the fleet stays pinned.
+- Agent and watchdog pins resolve independently.
+
+This is what lets a partner pilot a new version on one customer: pin the fleet to the known-good version at the partner level, then override a single org to the candidate version (or to Latest promoted).
+
+<Aside type="caution">
+  **Pins fail closed.** If the resolved pin has no registered build for a device's platform and architecture, the update — including watchdog-recovery pushes — is withheld: the device simply stays on its current version and retries on the next heartbeat. This is surfaced only in server logs and error tracking; there is no dashboard badge for a frozen device. Before pinning broadly, verify the pinned version has builds registered for every platform/architecture in your fleet.
+</Aside>
+
+Pins gate *alongside* the update policy and maintenance window, not instead of them — a pinned update still waits for the maintenance window and respects the update policy.
+
 ## Agent Update Scheduling
 
 In addition to the per-device auto-update toggle and the partner-level controlled rollout, Breeze supports a structured **maintenance window** for agent updates. When a maintenance window is configured, agents only accept update signals from the server during the allowed window — outside of it, update prompts are deferred until the next eligible window.
@@ -142,7 +160,7 @@ Agent update maintenance windows are set in **Settings → Org Defaults** (and o
   All times are specified and stored in **UTC**. Communicate the UTC equivalent to your team to avoid scheduling confusion across time zones.
 </Aside>
 
-Org-level defaults override Partner-level defaults using the same hierarchical precedence that governs other policy settings — a per-org window takes priority over the partner-wide window.
+The update policy and maintenance window follow the same partner-locks precedence that governs other policy settings: a field set at the **Partner** level wins and locks — child organizations cannot override it. The org value applies only where the partner has left that field unset, and each field is merged independently. The update gate that agents check on heartbeat honors this merged result.
 
 <Aside>
   The maintenance window gates when the update *signal* is acted on, not when the binary is downloaded. Agents can pre-download an available update during any window but will only apply it (restart the service) during the allowed window.

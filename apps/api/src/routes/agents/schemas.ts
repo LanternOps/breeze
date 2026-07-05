@@ -549,7 +549,19 @@ const installedPatchSchema = z.object({
 export const submitPendingPatchesSchema = z.object({
   patches: z.array(pendingPatchSchema).max(5000),
   source: patchSourceSchema.optional(),
-  full: z.boolean().optional().default(false)
+  full: z.boolean().optional().default(false),
+  // Source buckets the full scan actually covered (#2217). When present on a
+  // full upload, only pending rows from these sources are swept to 'missing';
+  // sources whose providers were skipped (e.g. winget without a helper
+  // session) or failed keep their rows. Absent → legacy full sweep. Only read
+  // when full is true; ignored (harmlessly) on targeted/non-full uploads.
+  //
+  // Forward/backward compat: this object MUST stay non-strict. An old API
+  // silently drops this unknown field and falls back to sweep-all (safe
+  // degrade). If this schema is ever hardened to .strict(), a new agent's
+  // coveredSources payload would 400 and patch uploads would stop entirely —
+  // do not do that without a coordinated agent-fleet rollout.
+  coveredSources: z.array(patchSourceSchema).max(10).optional()
 });
 
 export const submitInstalledPatchesSchema = z.object({
