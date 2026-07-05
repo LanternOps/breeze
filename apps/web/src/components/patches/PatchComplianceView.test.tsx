@@ -421,6 +421,32 @@ describe('PatchComplianceView', () => {
                 pendingReboot: true,
                 lastSeen: '2026-04-01T18:00:00.000Z',
               },
+              {
+                id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+                name: 'Offline-NoLastSeen',
+                os: 'windows',
+                missingCount: 1,
+                approvedMissing: 0,
+                unapprovedMissing: 1,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 1,
+                thirdPartyMissing: 0,
+                pendingReboot: true,
+              },
+              {
+                id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+                name: 'Legacy-NoStatus',
+                os: 'windows',
+                missingCount: 1,
+                approvedMissing: 0,
+                unapprovedMissing: 1,
+                criticalCount: 0,
+                importantCount: 0,
+                osMissing: 1,
+                thirdPartyMissing: 0,
+                pendingReboot: true,
+              },
             ],
           },
         });
@@ -441,6 +467,21 @@ describe('PatchComplianceView', () => {
               osType: 'windows',
               status: 'offline',
               lastSeenAt: '2026-04-01T18:00:00.000Z',
+            },
+            {
+              // Offline with no last-seen anywhere: badge must be muted but
+              // must not render "as of Invalid Date" or a dangling "as of".
+              id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+              hostname: 'Offline-NoLastSeen',
+              osType: 'windows',
+              status: 'offline',
+            },
+            {
+              // Older API payload with no status field: fail open to the
+              // unqualified live badge (pre-#2219 behavior), never to stale.
+              id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+              hostname: 'Legacy-NoStatus',
+              osType: 'windows',
             },
           ],
         });
@@ -466,6 +507,21 @@ describe('PatchComplianceView', () => {
     expect(staleBadge).toHaveAttribute('title', expect.stringMatching(/offline.*last check-in.*stale/i));
     expect(
       screen.queryByTestId('compliance-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb-pending-reboot')
+    ).toBeNull();
+
+    // Offline with no last-seen anywhere: still muted, but a bare "Yes" —
+    // no dangling "as of" and no "Invalid Date".
+    const noLastSeenBadge = screen.getByTestId('compliance-cccccccc-cccc-cccc-cccc-cccccccccccc-pending-reboot-stale');
+    expect(noLastSeenBadge.textContent).toBe('Yes');
+    expect(noLastSeenBadge.className).toContain('text-muted-foreground');
+
+    // Older API payload without a status field: fail open to the unqualified
+    // live badge (pre-#2219 behavior) — never misclassified as stale.
+    const legacyBadge = screen.getByTestId('compliance-dddddddd-dddd-dddd-dddd-dddddddddddd-pending-reboot');
+    expect(legacyBadge.textContent).toBe('Yes');
+    expect(legacyBadge.className).toContain('text-orange-700');
+    expect(
+      screen.queryByTestId('compliance-dddddddd-dddd-dddd-dddd-dddddddddddd-pending-reboot-stale')
     ).toBeNull();
 
     // Column header explains what REBOOT actually means (agent-reported OS
