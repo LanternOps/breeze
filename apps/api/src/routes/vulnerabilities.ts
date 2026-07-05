@@ -8,8 +8,8 @@ import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
-import { computeStats, filterFindings, groupFindings } from '../services/vulnerabilityFleetAggregation';
-import { fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
+import { buildGroupDetail, computeStats, filterFindings, groupFindings, toGroupFinding } from '../services/vulnerabilityFleetAggregation';
+import { fetchCveCatalogRecord, fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
 import { writeRouteAudit } from '../services/auditEvents';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
 import { userRateLimit } from '../middleware/userRateLimit';
@@ -78,6 +78,17 @@ const softwareQuerySchema = z.object({
 });
 
 const SOFTWARE_GROUP_CAP = 500;
+
+const groupKeyParamSchema = z.object({
+  // Opaque group key: sw:<name>|<vendor> or os:<platform>. Hono decodes the
+  // URL-encoded segment before validation.
+  groupKey: z.string().min(4).max(600).regex(/^(sw:|os:)/),
+});
+
+const cveIdParamSchema = z.object({
+  // Real-world CVE ids are CVE-YYYY-NNNN+, but seeded/e2e ids use letters too.
+  cveId: z.string().trim().regex(/^CVE-\d{4}-[A-Za-z0-9-]{1,32}$/i),
+});
 
 const requireVulnerabilityWrite = requirePermission(
   PERMISSIONS.DEVICES_WRITE.resource,
@@ -395,6 +406,20 @@ vulnerabilityRoutes.get('/software', zValidator('query', softwareQuerySchema), a
   });
 });
 
+// Software-group drawer payload: group summary + per-CVE rollup + raw findings.
+vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParamSchema), async (c) => {
+  const { groupKey } = c.req.valid('param');
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  // status 'all' so the drawer can show accepted/mitigated findings alongside
+  // open ones (reopen lives in the drawers).
+  const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds });
+  const detail = buildGroupDetail(groupKey, rows);
+  if (!detail) {
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  return c.json(detail);
+});
+
 // The four stat-card numbers in one call. Needs every status: open findings
 // feed three cards, accepted findings feed the expiring-soon card.
 vulnerabilityRoutes.get('/stats', async (c) => {
@@ -423,6 +448,26 @@ vulnerabilityRoutes.get(
     return c.json({ items });
   },
 );
+
+// CVE drawer payload: catalog record + fleet findings for that CVE. Registered
+// LAST among the GET routes — a param in the first path segment would
+// otherwise shadow every static-first-segment GET route above it
+// (/software, /software/:groupKey, /stats, /devices/:deviceId).
+vulnerabilityRoutes.get('/:cveId/devices', zValidator('param', cveIdParamSchema), async (c) => {
+  const { cveId } = c.req.valid('param');
+  const cve = await fetchCveCatalogRecord(cveId);
+  if (!cve) {
+    return c.json({ error: 'CVE not found' }, 404);
+  }
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds });
+  const target = cveId.toLowerCase();
+  const findings = rows
+    .filter((r) => r.cveId.toLowerCase() === target)
+    .map(toGroupFinding)
+    .sort((a, b) => a.deviceName.localeCompare(b.deviceName));
+  return c.json({ cve, findings });
+});
 
 // POST /remediate — schedule per-device install commands for a set of findings.
 // The `*` middleware already enforces auth + scope + DEVICES_READ; this high-power

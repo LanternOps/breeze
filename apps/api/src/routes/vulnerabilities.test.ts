@@ -316,6 +316,83 @@ describe('GET /vulnerabilities/software (fleet work queue)', () => {
   });
 });
 
+describe('GET /vulnerabilities/software/:groupKey (drawer payload)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
+  });
+
+  it('404s for an unknown group', async () => {
+    const res = await app().request(`/vulnerabilities/software/${encodeURIComponent('sw:nope|')}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('400s on a key without the sw:/os: prefix', async () => {
+    const res = await app().request('/vulnerabilities/software/garbage');
+    expect(res.status).toBe(400);
+  });
+
+  it('returns group + cves + findings for a URL-encoded key, across ALL statuses', async () => {
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow(),
+      fleetRow({ deviceVulnerabilityId: 'dv-2', deviceId: 'dev-2', status: 'accepted', cveId: 'CVE-2026-0002', vulnerabilityId: 'v-2' }),
+    ]);
+    const res = await app().request(`/vulnerabilities/software/${encodeURIComponent('sw:google chrome|google llc')}`);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all' }),
+    );
+    const body = await res.json();
+    expect(body.group.groupKey).toBe('sw:google chrome|google llc');
+    expect(body.cves).toHaveLength(2);
+    expect(body.findings).toHaveLength(2);
+    expect(body.findings[0]).toMatchObject({ deviceVulnerabilityId: expect.any(String), deviceName: expect.any(String) });
+  });
+});
+
+describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
+    vi.mocked(fetchCveCatalogRecord).mockReset().mockResolvedValue(null);
+  });
+
+  it('400s on a non-CVE-shaped id', async () => {
+    const res = await app().request('/vulnerabilities/not-a-cve/devices');
+    expect(res.status).toBe(400);
+  });
+
+  it('404s when the CVE is not in the catalog', async () => {
+    const res = await app().request('/vulnerabilities/CVE-2026-0001/devices');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns the catalog record + fleet findings for the CVE (case-insensitive match)', async () => {
+    vi.mocked(fetchCveCatalogRecord).mockResolvedValue({
+      cveId: 'CVE-2026-0001',
+      description: 'Bad bug',
+      references: ['https://example.test/advisory'],
+      cvssVersion: '3.1',
+      cvssVector: 'CVSS:3.1/AV:N',
+      cvssScore: 9.1,
+      epssScore: 0.4,
+      knownExploited: true,
+      patchAvailable: true,
+      severity: 'critical',
+      publishedAt: '2026-01-01T00:00:00.000Z',
+      modifiedAt: null,
+    });
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow(),
+      fleetRow({ deviceVulnerabilityId: 'dv-2', cveId: 'CVE-2026-9999', vulnerabilityId: 'v-9' }), // other CVE — excluded
+    ]);
+    const res = await app().request('/vulnerabilities/cve-2026-0001/devices');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.cve.cveId).toBe('CVE-2026-0001');
+    expect(body.findings).toHaveLength(1);
+    expect(body.findings[0].deviceVulnerabilityId).toBe('dv-1');
+  });
+});
+
 describe('GET /vulnerabilities/stats', () => {
   beforeEach(() => {
     vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
