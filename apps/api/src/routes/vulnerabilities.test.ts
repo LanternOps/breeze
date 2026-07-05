@@ -17,6 +17,7 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'u1', email: 't@example.test' },
       orgCondition: () => undefined,
       canAccessSite: () => true,
+      canAccessOrg: (id: string) => id !== 'org-denied',
     });
     return next();
   },
@@ -61,6 +62,10 @@ vi.mock('../services/vulnerabilityFleetQueries', () => ({
   fetchCveCatalogRecord: vi.fn(async () => null),
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../services/ticketService', async () => {
+  const actual = await vi.importActual<typeof import('../services/ticketService')>('../services/ticketService');
+  return { ...actual, createTicket: vi.fn() };
+});
 vi.mock('../middleware/platformAdmin', () => ({ platformAdminMiddleware: (_c: any, next: any) => next() }));
 vi.mock('../middleware/userRateLimit', () => ({ userRateLimit: () => (_c: any, next: any) => next() }));
 vi.mock('../jobs/vulnerabilityJobs', () => ({
@@ -71,6 +76,7 @@ vi.mock('../jobs/vulnerabilityJobs', () => ({
 import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './vulnerabilities';
 import { fetchFleetFindingRows, fetchCveCatalogRecord } from '../services/vulnerabilityFleetQueries';
 import type { FleetFindingRow } from '../services/vulnerabilityFleetAggregation';
+import { createTicket, TicketServiceError } from '../services/ticketService';
 
 const ID = '11111111-1111-1111-8111-111111111111';
 
@@ -541,5 +547,96 @@ describe('GET /vulnerabilities/stats', () => {
       patchReadyFindingCount: 1,
       acceptedExpiringSoon: 1,
     });
+  });
+});
+
+describe('POST /vulnerabilities/tickets', () => {
+  const DV_ORG2 = '33333333-3333-3333-8333-333333333333';
+
+  beforeEach(() => {
+    vi.mocked(createTicket).mockReset();
+    vi.mocked(writeRouteAudit).mockClear();
+  });
+
+  it('403s without tickets:write', async () => {
+    const res = await post('/tickets', { deviceVulnerabilityIds: [DV1], title: 'Patch Chrome' });
+    expect(res.status).toBe(403);
+  });
+
+  it('400s on validation failures (missing title, >200 ids)', async () => {
+    granted.add('tickets:write');
+    expect((await post('/tickets', { deviceVulnerabilityIds: [DV1] })).status).toBe(400);
+    expect((await post('/tickets', {
+      deviceVulnerabilityIds: Array.from({ length: 201 }, () => DV1),
+      title: 'x',
+    })).status).toBe(400);
+  });
+
+  it('splits a cross-org selection into one ticket per org and stamps ticket_id', async () => {
+    granted.add('tickets:write');
+    mockBulkSelects(
+      [
+        { id: DV1, orgId: 'org-1', deviceId: 'dev-1', status: 'open' },
+        { id: DV2, orgId: 'org-1', deviceId: 'dev-1', status: 'open' },
+        { id: DV_ORG2, orgId: 'org-2', deviceId: 'dev-2', status: 'open' },
+      ],
+      [
+        { id: 'dev-1', siteId: 'site-1' },
+        { id: 'dev-2', siteId: 'site-2' },
+      ],
+    );
+    vi.mocked(createTicket)
+      .mockResolvedValueOnce({ id: 't-1' } as never)
+      .mockResolvedValueOnce({ id: 't-2' } as never);
+
+    const res = await post('/tickets', {
+      deviceVulnerabilityIds: [DV1, DV2, DV_ORG2],
+      title: 'Patch Chrome fleet-wide',
+      description: 'CVE-2026-0001',
+      priority: 'high',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.tickets).toEqual([
+      { ticketId: 't-1', orgId: 'org-1', findingCount: 2 },
+      { ticketId: 't-2', orgId: 'org-2', findingCount: 1 },
+    ]);
+    expect(vi.mocked(createTicket)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(createTicket)).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'org-1', subject: 'Patch Chrome fleet-wide', priority: 'high', source: 'manual' }),
+      expect.objectContaining({ userId: 'u1' }),
+    );
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'vulnerability.ticket_create', resourceType: 'ticket', resourceId: 't-1' }),
+    );
+  });
+
+  it('skips findings in an org the caller cannot access', async () => {
+    granted.add('tickets:write');
+    mockBulkSelects(
+      [{ id: DV1, orgId: 'org-denied', deviceId: 'dev-1', status: 'open' }],
+      [{ id: 'dev-1', siteId: 'site-1' }],
+    );
+    const res = await post('/tickets', { deviceVulnerabilityIds: [DV1], title: 'x' });
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.tickets).toEqual([]);
+    expect(body.skipped).toEqual([{ id: DV1, reason: 'access to organization denied' }]);
+    expect(vi.mocked(createTicket)).not.toHaveBeenCalled();
+  });
+
+  it('maps a TicketServiceError into per-item skips without failing the batch', async () => {
+    granted.add('tickets:write');
+    mockBulkSelects(
+      [{ id: DV1, orgId: 'org-1', deviceId: 'dev-1', status: 'open' }],
+      [{ id: 'dev-1', siteId: 'site-1' }],
+    );
+    vi.mocked(createTicket).mockRejectedValue(new TicketServiceError('Organization not found', 404));
+    const res = await post('/tickets', { deviceVulnerabilityIds: [DV1], title: 'x' });
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.skipped).toEqual([{ id: DV1, reason: 'Organization not found' }]);
   });
 });

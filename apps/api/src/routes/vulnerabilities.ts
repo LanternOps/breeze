@@ -11,6 +11,7 @@ import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
 import { buildGroupDetail, computeStats, filterFindings, groupFindings, toGroupFinding } from '../services/vulnerabilityFleetAggregation';
 import { fetchCveCatalogRecord, fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
 import { writeRouteAudit } from '../services/auditEvents';
+import { createTicket, TicketServiceError } from '../services/ticketService';
 import { platformAdminMiddleware } from '../middleware/platformAdmin';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { enqueueVulnSourceSync, enqueueVulnCorrelation } from '../jobs/vulnerabilityJobs';
@@ -80,6 +81,13 @@ const bulkAcceptRiskSchema = z.object({
 const bulkMitigateSchema = z.object({
   deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(200),
   note: z.string().trim().min(1).max(2000),
+});
+
+const bulkTicketSchema = z.object({
+  deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(200),
+  title: z.string().trim().min(1).max(255),
+  description: z.string().max(50_000).optional(),
+  priority: z.enum(['low', 'normal', 'high', 'urgent']).default('normal'),
 });
 
 const softwareQuerySchema = z.object({
@@ -664,6 +672,61 @@ vulnerabilityRoutes.post(
       }
     }
     return c.json({ success: valid.length > 0, succeeded: valid.length, skipped });
+  },
+);
+
+// POST /tickets — create native ticket(s) from vulnerability findings, splitting
+// a cross-org selection into one ticket per org (a ticket is org-owned, so
+// grouping by org avoids leaking device/finding data across tenants into a
+// single ticket). Static single-segment path — registered alongside the other
+// bulk POST routes above, before the `/:id/*` POST routes below.
+vulnerabilityRoutes.post(
+  '/tickets',
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('json', bulkTicketSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceVulnerabilityIds, title, description, priority } = c.req.valid('json');
+
+    const { valid, skipped } = await loadFindingsForBulkWrite(deviceVulnerabilityIds, auth);
+
+    const byOrg = new Map<string, BulkFindingRow[]>();
+    for (const row of valid) {
+      const bucket = byOrg.get(row.orgId);
+      if (bucket) bucket.push(row);
+      else byOrg.set(row.orgId, [row]);
+    }
+
+    const tickets: Array<{ ticketId: string; orgId: string; findingCount: number }> = [];
+    for (const [orgId, rows] of byOrg) {
+      if (!auth.canAccessOrg(orgId)) {
+        for (const r of rows) skipped.push({ id: r.id, reason: 'access to organization denied' });
+        continue;
+      }
+      try {
+        const ticket = await createTicket(
+          { orgId, subject: title, description, priority, source: 'manual' },
+          { userId: auth.user.id, name: auth.user.name, email: auth.user.email },
+        );
+        await db
+          .update(deviceVulnerabilities)
+          .set({ ticketId: ticket.id, updatedAt: new Date() })
+          .where(inArray(deviceVulnerabilities.id, rows.map((r) => r.id)));
+        writeRouteAudit(c, {
+          orgId,
+          action: 'vulnerability.ticket_create',
+          resourceType: 'ticket',
+          resourceId: ticket.id,
+          details: { deviceVulnerabilityIds: rows.map((r) => r.id), title },
+        });
+        tickets.push({ ticketId: ticket.id, orgId, findingCount: rows.length });
+      } catch (err) {
+        const reason = err instanceof TicketServiceError ? err.message : 'failed to create ticket';
+        for (const r of rows) skipped.push({ id: r.id, reason });
+      }
+    }
+
+    return c.json({ success: tickets.length > 0, tickets, skipped });
   },
 );
 
