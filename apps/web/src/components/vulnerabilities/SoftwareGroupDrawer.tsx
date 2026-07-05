@@ -3,11 +3,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { Drawer } from '../shared/Drawer';
 import { SeverityBadge } from './SeverityBadge';
 import { VulnBulkActionModal } from './VulnBulkActionModal';
+import { CreateVulnTicketModal } from './CreateVulnTicketModal';
 import { usePermissions } from '../../lib/permissions';
 import { handleActionError } from '../../lib/runAction';
 import {
   bulkAcceptVulnRisk,
   bulkMitigateVulns,
+  createVulnTicket,
   fetchSoftwareGroupDetail,
   remediateVuln,
   type SoftwareGroupDetail,
@@ -36,11 +38,13 @@ export function SoftwareGroupDrawer({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | null>(null);
   const [modal, setModal] = useState<'accept' | 'mitigate' | null>(null);
+  const [ticketModal, setTicketModal] = useState(false);
 
   const { can } = usePermissions();
   const canRemediate = can('devices', 'execute');
   const canAcceptRisk = can('vulnerabilities', 'accept_risk');
   const canMitigate = can('devices', 'write');
+  const canCreateTicket = can('tickets', 'write');
 
   const load = useCallback(async () => {
     setError(null);
@@ -240,6 +244,17 @@ export function SoftwareGroupDrawer({
               Mitigate
             </button>
           )}
+          {canCreateTicket && (
+            <button
+              type="button"
+              data-testid="vuln-action-ticket"
+              className={ACTION_BTN}
+              disabled={busy !== null || selectedIds.length === 0}
+              onClick={() => setTicketModal(true)}
+            >
+              Create ticket
+            </button>
+          )}
         </div>
       )}
 
@@ -259,6 +274,19 @@ export function SoftwareGroupDrawer({
             } else {
               void runBulk('mitigate', () => bulkMitigateVulns(selectedIds, { note: payload.note ?? '' }), 'Failed to mitigate');
             }
+          }}
+        />
+      )}
+
+      {ticketModal && detail && (
+        <CreateVulnTicketModal
+          findings={detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId))}
+          defaultTitle={`Remediate ${detail.group.name}`}
+          busy={busy !== null}
+          onCancel={() => setTicketModal(false)}
+          onSubmit={(payload) => {
+            setTicketModal(false);
+            void runBulk('ticket', () => createVulnTicket(selectedIds, payload), 'Failed to create ticket');
           }}
         />
       )}

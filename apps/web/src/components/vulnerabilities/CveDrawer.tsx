@@ -3,11 +3,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { Drawer } from '../shared/Drawer';
 import { SeverityBadge } from './SeverityBadge';
 import { VulnBulkActionModal } from './VulnBulkActionModal';
+import { CreateVulnTicketModal } from './CreateVulnTicketModal';
 import { usePermissions } from '../../lib/permissions';
 import { handleActionError } from '../../lib/runAction';
 import {
   bulkAcceptVulnRisk,
   bulkMitigateVulns,
+  createVulnTicket,
   fetchCveDevices,
   remediateVuln,
   reopenVuln,
@@ -50,11 +52,13 @@ export function CveDrawer({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | 'reopen' | null>(null);
   const [modal, setModal] = useState<'accept' | 'mitigate' | null>(null);
+  const [ticketModal, setTicketModal] = useState(false);
 
   const { can } = usePermissions();
   const canRemediate = can('devices', 'execute');
   const canAcceptRisk = can('vulnerabilities', 'accept_risk');
   const canMitigate = can('devices', 'write');
+  const canCreateTicket = can('tickets', 'write');
 
   const load = useCallback(async () => {
     setError(null);
@@ -265,6 +269,17 @@ export function CveDrawer({
               Mitigate
             </button>
           )}
+          {canCreateTicket && (
+            <button
+              type="button"
+              data-testid="vuln-action-ticket"
+              className={ACTION_BTN}
+              disabled={busy !== null || selectedIds.length === 0}
+              onClick={() => setTicketModal(true)}
+            >
+              Create ticket
+            </button>
+          )}
         </div>
       )}
 
@@ -284,6 +299,19 @@ export function CveDrawer({
             } else {
               void runBulk('mitigate', () => bulkMitigateVulns(selectedIds, { note: bulkPayload.note ?? '' }), 'Failed to mitigate');
             }
+          }}
+        />
+      )}
+
+      {ticketModal && payload && (
+        <CreateVulnTicketModal
+          findings={payload.findings.filter((f) => selected.has(f.deviceVulnerabilityId))}
+          defaultTitle={`Remediate ${cveId}`}
+          busy={busy !== null}
+          onCancel={() => setTicketModal(false)}
+          onSubmit={(ticketPayload) => {
+            setTicketModal(false);
+            void runBulk('ticket', () => createVulnTicket(selectedIds, ticketPayload), 'Failed to create ticket');
           }}
         />
       )}

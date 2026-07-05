@@ -158,6 +158,34 @@ describe('SoftwareGroupDrawer', () => {
     expect(screen.queryByTestId('vuln-action-mitigate')).toBeNull();
   });
 
+  it('create-ticket flow: opens prefilled modal, submits, refreshes chips', async () => {
+    vi.mocked(api.createVulnTicket).mockResolvedValue({ success: true, tickets: [{ ticketId: 't-1', orgId: 'org-1', findingCount: 1 }], skipped: [] });
+    const onActionComplete = vi.fn();
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={onActionComplete} onSelectCve={() => {}} />,
+    );
+    fireEvent.click(await screen.findByTestId('vuln-action-ticket'));
+    expect(screen.getByTestId('vuln-ticket-title')).toHaveValue('Remediate Google Chrome');
+    fireEvent.click(screen.getByTestId('vuln-ticket-submit'));
+    await waitFor(() =>
+      expect(api.createVulnTicket).toHaveBeenCalledWith(['dv-1'], expect.objectContaining({ title: 'Remediate Google Chrome', priority: 'normal' })),
+    );
+    await waitFor(() => expect(onActionComplete).toHaveBeenCalled());
+  });
+
+  it('hides Create ticket without tickets:write', async () => {
+    authState.permissions = [
+      { resource: 'devices', action: 'execute' },
+      { resource: 'vulnerabilities', action: 'accept_risk' },
+      { resource: 'devices', action: 'write' },
+    ];
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    await screen.findByTestId('vuln-software-drawer');
+    expect(screen.queryByTestId('vuln-action-ticket')).toBeNull();
+  });
+
   it('shows an inline retry on fetch failure', async () => {
     vi.mocked(api.fetchSoftwareGroupDetail).mockRejectedValueOnce(new Error('boom'));
     render(
