@@ -188,7 +188,11 @@ export function SoftwareGroupDrawer({
                     <span className="text-xs capitalize text-muted-foreground">{f.status}</span>
                     <span className="text-xs">{f.patchAvailable ? 'Patch' : '—'}</span>
                     {f.ticketId && (
-                      <a href={`/tickets#${f.ticketId}`} data-testid={`vuln-ticket-chip-${f.ticketId}`} className="text-xs underline">
+                      <a
+                        href={`/tickets#${f.ticketId}`}
+                        data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
+                        className="text-xs underline"
+                      >
                         Ticket
                       </a>
                     )}

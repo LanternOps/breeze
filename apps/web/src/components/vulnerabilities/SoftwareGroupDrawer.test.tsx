@@ -99,7 +99,23 @@ describe('SoftwareGroupDrawer', () => {
     expect(screen.getByTestId('vuln-drawer-cve-CVE-2026-0001')).toBeInTheDocument();
     expect(screen.getByTestId('vuln-finding-check-dv-1')).toBeChecked();       // open — pre-selected
     expect(screen.getByTestId('vuln-finding-check-dv-2')).not.toBeChecked();   // accepted — not pre-selected
+    expect(screen.getByTestId('vuln-finding-ticket-dv-2')).toBeInTheDocument();
+  });
+
+  it('renders distinct testids for the group ticket chip and a per-finding ticket link that share a ticketId', async () => {
+    const detailWithSharedTicket: SoftwareGroupDetail = {
+      ...DETAIL,
+      group: { ...DETAIL.group, ticketIds: ['t-9'] },
+    };
+    vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue(detailWithSharedTicket);
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    expect(await screen.findByTestId('vuln-software-drawer')).toHaveTextContent('Google Chrome');
+    // Group-level header chip (aggregate of group.ticketIds) — canonical vuln-ticket-chip-<ticketId>.
     expect(screen.getByTestId('vuln-ticket-chip-t-9')).toBeInTheDocument();
+    // Per-finding inline link for the finding whose own ticketId is also t-9 — distinct testid, no collision.
+    expect(screen.getByTestId('vuln-finding-ticket-dv-2')).toBeInTheDocument();
   });
 
   it('accept-risk flow: opens modal, submits selected ids, reloads and notifies', async () => {
