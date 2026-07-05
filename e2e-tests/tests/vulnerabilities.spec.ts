@@ -61,21 +61,35 @@ test.describe('Vulnerabilities', () => {
     await vulnPage.drawerClose('vuln-software-drawer').click();
     await expect(vulnPage.groupRows()).toHaveCount(groupsBefore - 1, { timeout: 15_000 });
 
-    // Restore: find the accepted finding on the CVE tab and reopen it.
+    // Restore: the accepted software group can span MULTIPLE CVEs, so drain
+    // every accepted CVE row on the CVE tab, not just the first, or seed state
+    // is only partially restored and poisons subsequent runs.
     await vulnPage.tabCves().click();
     await vulnPage.filterStatus().selectOption('accepted');
-    await expect(vulnPage.cveRows().first()).toBeVisible({ timeout: 15_000 });
-    await vulnPage.cveRows().first().click();
-    await expect(vulnPage.cveDrawer()).toBeVisible();
-    // The drawer container renders before its findings fetch resolves, so wait
-    // for a reopen button rather than counting immediately (avoids a 0-count race).
-    await expect(vulnPage.reopenButtons().first()).toBeVisible({ timeout: 15_000 });
-    const reopenCount = await vulnPage.reopenButtons().count();
-    expect(reopenCount).toBeGreaterThan(0);
-    // Reopen every accepted finding this e2e created.
-    for (let i = 0; i < reopenCount; i += 1) {
-      await vulnPage.reopenButtons().first().click();
-      await expect(vulnPage.reopenButtons()).toHaveCount(reopenCount - i - 1, { timeout: 15_000 });
+
+    const MAX_CVE_RESTORE_ITERATIONS = 20;
+    for (let iteration = 0; iteration < MAX_CVE_RESTORE_ITERATIONS; iteration += 1) {
+      const remainingCveRows = await vulnPage.cveRows().count();
+      if (remainingCveRows === 0) break;
+
+      await vulnPage.cveRows().first().click();
+      await expect(vulnPage.cveDrawer()).toBeVisible();
+      // The drawer container renders before its findings fetch resolves, so wait
+      // for a reopen button rather than counting immediately (avoids a 0-count race).
+      await expect(vulnPage.reopenButtons().first()).toBeVisible({ timeout: 15_000 });
+      const reopenCount = await vulnPage.reopenButtons().count();
+      expect(reopenCount).toBeGreaterThan(0);
+      // Reopen every accepted finding in this CVE.
+      for (let i = 0; i < reopenCount; i += 1) {
+        await vulnPage.reopenButtons().first().click();
+        await expect(vulnPage.reopenButtons()).toHaveCount(reopenCount - i - 1, { timeout: 15_000 });
+      }
+      await vulnPage.drawerClose('vuln-cve-drawer').click();
+      await expect(vulnPage.cveDrawer()).toBeHidden({ timeout: 15_000 });
     }
+
+    // Self-verify: under the still-applied accepted filter, no CVE rows remain.
+    // If this fails, restoration was incomplete and seed state is poisoned for reruns.
+    await expect(vulnPage.cveRows()).toHaveCount(0, { timeout: 15_000 });
   });
 });
