@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, or, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   alertCorrelationGroups,
@@ -20,7 +20,7 @@ import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertC
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
-import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema } from './schemas';
+import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
@@ -165,9 +165,16 @@ alertsRoutes.get(
       conditions.push(eq(alerts.orgId, query.orgId));
     }
 
-    // Additional filters
+    // Additional filters. `status` accepts a single value or a comma-separated
+    // list. With no explicit status filter, dismissed alerts are hidden — they
+    // are permanently closed and only shown when asked for by name.
     if (query.status) {
-      conditions.push(eq(alerts.status, query.status));
+      const statuses = query.status.split(',') as AlertStatusValue[];
+      conditions.push(
+        statuses.length === 1 ? eq(alerts.status, statuses[0]!) : inArray(alerts.status, statuses)
+      );
+    } else {
+      conditions.push(ne(alerts.status, 'dismissed'));
     }
 
     if (query.severity) {
@@ -303,7 +310,7 @@ alertsRoutes.get(
         if (orgIds.length === 0) {
           return c.json({
             bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
-            byStatus: { active: 0, acknowledged: 0, resolved: 0, suppressed: 0 },
+            byStatus: { active: 0, acknowledged: 0, resolved: 0, suppressed: 0, dismissed: 0 },
             total: 0
           });
         }
@@ -360,7 +367,8 @@ alertsRoutes.get(
       active: 0,
       acknowledged: 0,
       resolved: 0,
-      suppressed: 0
+      suppressed: 0,
+      dismissed: 0
     };
 
     for (const row of statusCounts) {
@@ -428,51 +436,82 @@ alertsRoutes.post(
 
     for (const alert of accessible) {
       try {
+        // Every branch guards the UPDATE with `status = <snapshotted status>` and
+        // checks the returned row: the status guards above run against a snapshot
+        // read earlier in the request, so without the precondition a concurrent
+        // state change (e.g. an operator resolving while a stale bulk-dismiss
+        // lands) would be silently clobbered yet still counted as `updated`.
+        let written: { id: string }[] = [];
         if (action === 'acknowledge') {
           if (alert.status !== 'active') {
             results.skipped++;
             continue;
           }
-          await db
+          written = await db
             .update(alerts)
             .set({
               status: 'acknowledged',
               acknowledgedAt: now,
               acknowledgedBy: auth.user.id,
             })
-            .where(eq(alerts.id, alert.id));
+            .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
+            .returning({ id: alerts.id });
         } else if (action === 'suppress') {
-          // A resolved alert can't be suppressed (matches the single endpoint).
-          if (alert.status === 'resolved') {
+          // A resolved or dismissed alert can't be suppressed (matches the single endpoint).
+          if (alert.status === 'resolved' || alert.status === 'dismissed') {
             results.skipped++;
             continue;
           }
-          await db
+          written = await db
             .update(alerts)
             .set({
               status: 'suppressed',
               suppressedUntil,
             })
-            .where(eq(alerts.id, alert.id));
-        } else {
-          if (alert.status === 'resolved') {
+            .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
+            .returning({ id: alerts.id });
+        } else if (action === 'dismiss') {
+          // Dismiss is terminal and valid from ANY other status — it exists
+          // precisely so already-resolved alerts can be cleared for good.
+          if (alert.status === 'dismissed') {
             results.skipped++;
             continue;
           }
-          await db
+          written = await db
+            .update(alerts)
+            .set({
+              status: 'dismissed',
+              dismissedAt: now,
+              dismissedBy: auth.user.id,
+            })
+            .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
+            .returning({ id: alerts.id });
+        } else {
+          if (alert.status === 'resolved' || alert.status === 'dismissed') {
+            results.skipped++;
+            continue;
+          }
+          written = await db
             .update(alerts)
             .set({
               status: 'resolved',
               resolvedAt: now,
               resolvedBy: auth.user.id,
             })
-            .where(eq(alerts.id, alert.id));
+            .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
+            .returning({ id: alerts.id });
+        }
+        if (written.length === 0) {
+          // Status changed between our snapshot and the write — don't emit
+          // events/feedback for a mutation that didn't happen.
+          results.skipped++;
+          continue;
         }
         results.updated++;
 
-        // The single suppress endpoint doesn't publish an event-bus event, only
-        // ML feedback — mirror that here and keep publishEvent for ack/resolve.
-        if (action !== 'suppress') {
+        // The single suppress/dismiss endpoints don't publish an event-bus event,
+        // only ML feedback — mirror that here and keep publishEvent for ack/resolve.
+        if (action === 'acknowledge' || action === 'resolve') {
           try {
             await publishEvent(
               action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
@@ -504,13 +543,17 @@ alertsRoutes.post(
               ? 'alert.acknowledged'
               : action === 'suppress'
                 ? 'alert.suppressed'
-                : 'alert.resolved',
+                : action === 'dismiss'
+                  ? 'alert.dismissed'
+                  : 'alert.resolved',
           outcome:
             action === 'acknowledge'
               ? 'acknowledged'
               : action === 'suppress'
                 ? 'suppressed'
-                : 'resolved',
+                : action === 'dismiss'
+                  ? 'dismissed'
+                  : 'resolved',
           actorUserId: auth.user.id,
           occurredAt: now,
           metadata: {
@@ -644,6 +687,9 @@ alertsRoutes.post(
     if (alert.status === 'resolved') {
       return c.json({ error: 'Alert is already resolved' }, 400);
     }
+    if (alert.status === 'dismissed') {
+      return c.json({ error: 'Cannot resolve a dismissed alert' }, 400);
+    }
 
     const resolvedAt = new Date();
     const [updated] = await db
@@ -753,8 +799,8 @@ alertsRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
-    if (alert.status === 'resolved') {
-      return c.json({ error: 'Cannot suppress a resolved alert' }, 400);
+    if (alert.status === 'resolved' || alert.status === 'dismissed') {
+      return c.json({ error: `Cannot suppress a ${alert.status} alert` }, 400);
     }
 
     // No `until` => indefinite ("Forever") suppression: leave suppressedUntil null.
@@ -803,6 +849,76 @@ alertsRoutes.post(
         previousStatus: alert.status,
         nextStatus: updated.status,
         suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
+      },
+    });
+
+    return c.json(updated);
+  }
+);
+
+// POST /alerts/:id/dismiss - Permanently dismiss an alert
+//
+// Dismiss is the terminal "make this go away for good" action, valid from ANY
+// other status — including 'resolved', which deliberately has no other actions.
+// Dismissed alerts are hidden from list views by default, and synthetic-alert
+// evaluators (warranty expiry) honor the dismissed row so the same condition is
+// never re-alerted (see warrantyAlertEvaluator.ts).
+alertsRoutes.post(
+  '/:id/dismiss',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  zValidator('param', alertIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: alertId } = c.req.valid('param');
+
+    const alert = await getAlertWithOrgCheck(alertId, auth);
+    if (!alert) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+
+    if (alert.status === 'dismissed') {
+      return c.json({ error: 'Alert is already dismissed' }, 400);
+    }
+
+    const dismissedAt = new Date();
+    const [updated] = await db
+      .update(alerts)
+      .set({
+        status: 'dismissed',
+        dismissedAt,
+        dismissedBy: auth.user.id
+      })
+      .where(eq(alerts.id, alertId))
+      .returning();
+    if (!updated) {
+      return c.json({ error: 'Failed to dismiss alert' }, 500);
+    }
+
+    // Like suppress: no event-bus publish (nothing should notify/escalate off a
+    // dismissal), just ML feedback + audit.
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.dismissed',
+      outcome: 'dismissed',
+      actorUserId: auth.user.id,
+      occurredAt: dismissedAt,
+      metadata: {
+        source: 'alerts.route',
+        previousStatus: alert.status,
+      },
+    });
+
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'alert.dismiss',
+      resourceType: 'alert',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: {
+        previousStatus: alert.status,
+        nextStatus: updated.status,
       },
     });
 

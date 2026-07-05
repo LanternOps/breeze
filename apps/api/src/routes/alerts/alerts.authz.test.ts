@@ -18,6 +18,7 @@ const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
   const evalPredicate = (row: Record<string, unknown>, predicate: Predicate): boolean => {
     if (!predicate) return true;
     if (predicate.op === 'eq') return row[columnKey(predicate.col)] === predicate.val;
+    if (predicate.op === 'ne') return row[columnKey(predicate.col)] !== predicate.val;
     if (predicate.op === 'inArray') return (predicate.vals ?? []).includes(row[columnKey(predicate.col)]);
     if (predicate.op === 'and') return (predicate.args ?? []).every((arg) => evalPredicate(row, arg));
     if (predicate.op === 'or') return (predicate.args ?? []).some((arg) => evalPredicate(row, arg));
@@ -95,6 +96,7 @@ const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
 
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
+  ne: (col: unknown, val: unknown) => ({ op: 'ne', col, val }),
   gte: (col: unknown, val: unknown) => ({ op: 'gte', col, val }),
   lte: (col: unknown, val: unknown) => ({ op: 'lte', col, val }),
   and: (...args: unknown[]) => ({ op: 'and', args }),
@@ -154,6 +156,7 @@ vi.mock('./helpers', () => ({
 }));
 
 import { alertsRoutes, attachAlertCorrelationSummaries } from './alerts';
+import { getAlertWithOrgCheck } from './helpers';
 
 function makeApp() {
   const app = new Hono();
@@ -392,6 +395,94 @@ describe('POST /alerts/bulk suppress', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Suppression time must be in the future' });
     expect(state.alerts.find((x) => x.id === ALERT_A)?.status).toBe('active');
+  });
+});
+
+// Permanent dismissal: valid from ANY non-dismissed status (including resolved —
+// that's the entire point), terminal once applied.
+describe('alert dismiss', () => {
+  const ORG = 'org-1';
+  const ALERT_ACTIVE = 'a1a1a1a1-1111-4111-8111-111111111111';
+  const ALERT_RESOLVED = 'a4a4a4a4-4444-4444-8444-444444444444';
+  const ALERT_DISMISSED = 'a5a5a5a5-5555-4555-8555-555555555555';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    grantedRef.current = new Set<string>(['alerts:write']);
+    authRef.current = {
+      scope: 'organization',
+      user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
+      partnerId: null, orgId: ORG, accessibleOrgIds: null,
+      allowedSiteIds: undefined, canAccessOrg: () => true,
+    } as typeof authRef.current;
+    state.devices = [];
+    state.alerts = [
+      { id: ALERT_ACTIVE, orgId: ORG, deviceId: null, status: 'active', ruleId: 'r-a', title: 'Active alert' },
+      { id: ALERT_RESOLVED, orgId: ORG, deviceId: null, status: 'resolved', ruleId: 'r-r', title: 'Warranty expired: X' },
+      { id: ALERT_DISMISSED, orgId: ORG, deviceId: null, status: 'dismissed', ruleId: 'r-d', title: 'Old dismissed' },
+    ];
+  });
+
+  it('403 on POST /alerts/:id/dismiss without ALERTS_WRITE', async () => {
+    grantedRef.current = new Set<string>();
+    const res = await makeApp().request(`/alerts/${ALERT_RESOLVED}/dismiss`, { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  it('dismisses a RESOLVED alert via POST /alerts/:id/dismiss and stamps dismissedAt/dismissedBy', async () => {
+    (getAlertWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(
+      state.alerts.find((a) => a.id === ALERT_RESOLVED)
+    );
+    const res = await makeApp().request(`/alerts/${ALERT_RESOLVED}/dismiss`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const row = state.alerts.find((a) => a.id === ALERT_RESOLVED)!;
+    expect(row.status).toBe('dismissed');
+    expect(row.dismissedAt).toBeInstanceOf(Date);
+    expect(row.dismissedBy).toBe('u-1');
+  });
+
+  it('400 when the alert is already dismissed', async () => {
+    (getAlertWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(
+      state.alerts.find((a) => a.id === ALERT_DISMISSED)
+    );
+    const res = await makeApp().request(`/alerts/${ALERT_DISMISSED}/dismiss`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Alert is already dismissed' });
+  });
+
+  it('bulk dismiss updates active + resolved alerts and skips already-dismissed ones', async () => {
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: [ALERT_ACTIVE, ALERT_RESOLVED, ALERT_DISMISSED], action: 'dismiss' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ updated: 2, skipped: 1 });
+    expect(state.alerts.find((x) => x.id === ALERT_ACTIVE)?.status).toBe('dismissed');
+    expect(state.alerts.find((x) => x.id === ALERT_RESOLVED)?.status).toBe('dismissed');
+    expect(state.alerts.find((x) => x.id === ALERT_RESOLVED)?.dismissedBy).toBe('u-1');
+  });
+
+  it('cannot resolve or suppress a dismissed alert (terminal)', async () => {
+    (getAlertWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(
+      state.alerts.find((a) => a.id === ALERT_DISMISSED)
+    );
+    const resolveRes = await makeApp().request(`/alerts/${ALERT_DISMISSED}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(resolveRes.status).toBe(400);
+
+    const suppressRes = await makeApp().request(`/alerts/${ALERT_DISMISSED}/suppress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(suppressRes.status).toBe(400);
+    expect(state.alerts.find((x) => x.id === ALERT_DISMISSED)?.status).toBe('dismissed');
   });
 });
 

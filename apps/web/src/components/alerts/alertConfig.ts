@@ -2,7 +2,7 @@ import { AlertTriangle } from 'lucide-react';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
-export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed';
+export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
 
 export const severityConfig: Record<
   AlertSeverity,
@@ -65,6 +65,10 @@ export const statusConfig: Record<AlertStatus, { label: string; color: string }>
   },
   suppressed: {
     label: 'Suppressed',
+    color: 'bg-muted text-muted-foreground border-border',
+  },
+  dismissed: {
+    label: 'Dismissed',
     color: 'bg-muted text-muted-foreground border-border',
   },
 };

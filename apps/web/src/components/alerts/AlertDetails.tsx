@@ -55,6 +55,7 @@ type AlertDetailsProps = {
   onAcknowledge?: (alert: Alert) => void;
   onResolve?: (alert: Alert, note: string) => void;
   onSuppress?: (alert: Alert) => void;
+  onDismiss?: (alert: Alert) => void;
   submitting?: boolean;
 };
 
@@ -76,6 +77,7 @@ export default function AlertDetails({
   onAcknowledge,
   onResolve,
   onSuppress,
+  onDismiss,
   submitting = false
 }: AlertDetailsProps) {
   const [resolutionNote, setResolutionNote] = useState('');
@@ -436,7 +438,7 @@ export default function AlertDetails({
             <Ticket className="mr-1.5 inline-block h-4 w-4" />
             Create ticket
           </button>
-          {alert.status !== 'suppressed' && alert.status !== 'resolved' && (
+          {alert.status !== 'suppressed' && alert.status !== 'resolved' && alert.status !== 'dismissed' && (
             <button
               type="button"
               onClick={() => onSuppress?.(alert)}
@@ -445,6 +447,17 @@ export default function AlertDetails({
               className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               Suppress
+            </button>
+          )}
+          {alert.status !== 'dismissed' && (
+            <button
+              type="button"
+              onClick={() => onDismiss?.(alert)}
+              disabled={submitting}
+              title="Dismiss permanently — hides this alert for good (warranty expiry won't re-alert for the same end date; other conditions can still open a new alert if they recur)"
+              className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              Dismiss
             </button>
           )}
           {alert.status === 'active' && (

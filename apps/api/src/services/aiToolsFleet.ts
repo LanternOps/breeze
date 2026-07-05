@@ -1548,6 +1548,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           acknowledged: sql<number>`count(*) filter (where ${alerts.status} = 'acknowledged')`,
           resolved: sql<number>`count(*) filter (where ${alerts.status} = 'resolved')`,
           suppressed: sql<number>`count(*) filter (where ${alerts.status} = 'suppressed')`,
+          dismissed: sql<number>`count(*) filter (where ${alerts.status} = 'dismissed')`,
           critical: sql<number>`count(*) filter (where ${alerts.severity} = 'critical' and ${alerts.status} = 'active')`,
           high: sql<number>`count(*) filter (where ${alerts.severity} = 'high' and ${alerts.status} = 'active')`,
           medium: sql<number>`count(*) filter (where ${alerts.severity} = 'medium' and ${alerts.status} = 'active')`,

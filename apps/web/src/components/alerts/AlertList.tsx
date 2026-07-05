@@ -65,6 +65,7 @@ type AlertListProps = {
   onAcknowledge?: (alert: Alert) => void;
   onResolve?: (alert: Alert) => void;
   onSuppress?: (alert: Alert) => void;
+  onDismiss?: (alert: Alert) => void;
   onBulkAction?: (action: string, alerts: Alert[]) => void;
   submittingId?: string | null;
   pageSize?: number;
@@ -78,6 +79,7 @@ export default function AlertList({
   onAcknowledge,
   onResolve,
   onSuppress,
+  onDismiss,
   onBulkAction,
   submittingId,
   pageSize = 25,
@@ -106,7 +108,9 @@ export default function AlertList({
           : alert.title.toLowerCase().includes(normalizedQuery) ||
             alert.message.toLowerCase().includes(normalizedQuery) ||
             alert.deviceName.toLowerCase().includes(normalizedQuery);
-      const matchesStatus = statusFilter === 'all' ? true : alert.status === statusFilter;
+      // "All Status" still hides dismissed alerts — they're permanently closed
+      // and only show when the Dismissed filter is selected explicitly.
+      const matchesStatus = statusFilter === 'all' ? alert.status !== 'dismissed' : alert.status === statusFilter;
       const matchesSeverity = severityFilter === 'all' ? true : alert.severity === severityFilter;
       const matchesDevice = deviceFilter === 'all' ? true : alert.deviceId === deviceFilter;
 
@@ -247,6 +251,7 @@ export default function AlertList({
             <option value="acknowledged">Acknowledged</option>
             <option value="resolved">Resolved</option>
             <option value="suppressed">Suppressed</option>
+            <option value="dismissed">Dismissed</option>
           </select>
           <select
             value={severityFilter}
@@ -350,6 +355,15 @@ export default function AlertList({
                 >
                   <BellOff className="h-4 w-4" />
                   Suppress
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => handleBulkAction('dismiss')}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <XCircle className="h-4 w-4" />
+                  Dismiss permanently
                 </button>
               </div>
             )}
@@ -552,7 +566,7 @@ export default function AlertList({
                                 Resolve
                               </button>
                             )}
-                            {alert.status !== 'suppressed' && alert.status !== 'resolved' && (
+                            {alert.status !== 'suppressed' && alert.status !== 'resolved' && alert.status !== 'dismissed' && (
                               <button
                                 type="button"
                                 onClick={e => {
@@ -565,6 +579,21 @@ export default function AlertList({
                               >
                                 <BellOff className="h-3.5 w-3.5" />
                                 Mute
+                              </button>
+                            )}
+                            {alert.status !== 'dismissed' && (
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  onDismiss?.(alert);
+                                }}
+                                title="Dismiss permanently — hides this alert for good (warranty expiry won't re-alert for the same end date; other conditions can still open a new alert if they recur)"
+                                aria-label={`Dismiss: ${alert.title}`}
+                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                                Dismiss
                               </button>
                             )}
                           </>

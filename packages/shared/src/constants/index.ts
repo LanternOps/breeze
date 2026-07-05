@@ -15,7 +15,7 @@ export const DEVICE_STATUSES = ['online', 'offline', 'maintenance', 'decommissio
 export const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
 // Alert Statuses
-export const ALERT_STATUSES = ['active', 'acknowledged', 'resolved', 'suppressed'] as const;
+export const ALERT_STATUSES = ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'] as const;
 
 // Script Languages
 export const SCRIPT_LANGUAGES = ['powershell', 'bash', 'python', 'cmd'] as const;

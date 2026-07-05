@@ -467,6 +467,70 @@ describe('alert routes', () => {
       const sqlText = new PgDialect().sqlToQuery(listWhere).sql.toLowerCase();
       expect(sqlText).toContain('is null'); // org-wide branch present
     });
+
+    it('excludes dismissed alerts by default when no status filter is given', async () => {
+      // Dismissed alerts are permanently closed; an unfiltered list must not
+      // surface them (the dashboard + main Alerts page rely on this).
+      let listWhere: any;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 0 }]) })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockImplementation((cond: any) => {
+                  listWhere = cond;
+                  return { orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([]) }) }) };
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const query = new PgDialect().sqlToQuery(listWhere);
+      // Rendered as a parameterized `status <> $n`; the value lives in params.
+      expect(query.sql.toLowerCase()).toContain('<>');
+      expect(query.params).toContain('dismissed'); // default exclusion present
+    });
+
+    it('accepts a comma-separated status list and filters to exactly those statuses', async () => {
+      // The dashboard Recent Alerts widget requests ?status=active,acknowledged.
+      let listWhere: any;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 0 }]) })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockImplementation((cond: any) => {
+                  listWhere = cond;
+                  return { orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([]) }) }) };
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts?status=active,acknowledged', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const query = new PgDialect().sqlToQuery(listWhere);
+      expect(query.sql.toLowerCase()).toMatch(/in \(/); // inArray over the two statuses
+      expect(query.params).toEqual(expect.arrayContaining(['active', 'acknowledged']));
+      expect(query.params).not.toContain('dismissed'); // explicit filter replaces the default exclusion
+    });
+
+    it('rejects a status list containing an unknown value (400)', async () => {
+      const res = await app.request('/alerts?status=active,bogus', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(400);
+    });
   });
 
   describe('POST /alerts/:id/acknowledge', () => {

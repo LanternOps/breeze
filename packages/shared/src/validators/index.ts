@@ -296,7 +296,7 @@ export const createAlertRuleSchema = z.object({
 });
 
 export const alertQuerySchema = paginationSchema.extend({
-  status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
+  status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed']).optional(),
   severity: z.enum(ALERT_SEVERITIES).optional(),
   deviceId: z.string().guid().optional()
 });

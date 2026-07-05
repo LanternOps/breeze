@@ -15,7 +15,7 @@ import {
   configurationPolicies,
   deviceGroupMemberships,
 } from '../db/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { publishEvent } from './eventBus';
 
 interface WarrantyAlertSettings {
@@ -219,6 +219,28 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
     return null;
   }
 
+  // A user-dismissed warranty alert is a durable opt-out for THIS warranty end
+  // date — never re-create it (that was the whole point of dismissing). Scoped
+  // to the recorded end date so a warranty that is later RENEWED and then
+  // approaches its new expiry alerts again; legacy dismissed rows with no
+  // recorded end date block re-creation unconditionally.
+  const [dismissedAlert] = await db
+    .select({ id: alerts.id })
+    .from(alerts)
+    .where(
+      and(
+        eq(alerts.deviceId, deviceId),
+        eq(alerts.configItemName, 'warranty_expiry'),
+        eq(alerts.status, 'dismissed'),
+        sql`((${alerts.context} ->> 'warrantyEndDate') IS NULL OR (${alerts.context} ->> 'warrantyEndDate') = ${warranty.warrantyEndDate})`
+      )
+    )
+    .limit(1);
+
+  if (dismissedAlert) {
+    return null;
+  }
+
   // Create alert
   const [newAlert] = await db
     .insert(alerts)
@@ -270,9 +292,18 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
  */
 async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
   // Resolve every non-terminal state the dedupe gate (line ~207) considers
-  // "open", including 'suppressed' — otherwise a stale suppressed expiry alert
-  // on a now-subscription/no-longer-expiring device would never clear yet still
-  // block a fresh alert from being created (#1320).
+  // "open" — otherwise a stale expiry alert on a now-subscription/no-longer-
+  // expiring device would never clear yet still block a fresh alert from being
+  // created (#1320). Two deliberate exclusions:
+  //   - 'dismissed' is terminal: it stays dismissed forever.
+  //   - indefinitely-suppressed rows (status 'suppressed' with NULL
+  //     suppressedUntil, i.e. the user chose "Forever" in #2110) survive
+  //     transient exits from the alert window (AppleCare flaps, refreshed end
+  //     dates). Auto-resolving them destroyed the user's mute: the next time
+  //     the device re-entered the window, a brand-new ACTIVE alert was created.
+  //     Leaving the row suppressed keeps the dedupe gate blocking re-creation,
+  //     which is exactly what "Forever" promised. Timed suppressions still
+  //     auto-resolve — their mute was never meant to outlive the condition.
   const openAlerts = await db
     .select()
     .from(alerts)
@@ -280,7 +311,10 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
       and(
         eq(alerts.deviceId, deviceId),
         eq(alerts.configItemName, 'warranty_expiry'),
-        inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
+        or(
+          inArray(alerts.status, ['active', 'acknowledged']),
+          and(eq(alerts.status, 'suppressed'), isNotNull(alerts.suppressedUntil))
+        )
       )
     );
 
