@@ -11,4 +11,8 @@ describe('buildInitializeResult', () => {
     expect(typeof r.instructions).toBe('string');
     expect(r.instructions.length).toBeGreaterThan(200);
   });
+
+  it('advertises the prompts capability', () => {
+    expect(buildInitializeResult().capabilities.prompts).toEqual({ listChanged: false });
+  });
 });
