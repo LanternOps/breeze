@@ -584,6 +584,12 @@ function evaluatePatchApproval(
     // `{ enabled: true }` row stays inert), OS patches keep full severity
     // gating, and the source, category, app-rule, and deferral gates all still
     // apply to third-party candidates.
+    // NOTE: this reads the RAW policy sources array for the literal
+    // 'third_party' selection, while isThirdPartyPatchSource matches the
+    // expanded patch-source bucket ('third_party' | 'custom'). The two stay in
+    // lockstep because buildAllowedPatchSources only admits 'custom' rows via
+    // the 'third_party' selection (or an explicit 'custom' entry) — if that
+    // expansion table ever changes, revisit this line too.
     const severityExempt =
       isThirdPartyPatchSource(patch.source) &&
       (ringConfig.sources ?? []).includes('third_party');
@@ -610,6 +616,11 @@ function isHeldByDeferral(
 ): boolean {
   if (deferralDays <= 0) return false;
 
+  // CAREFUL: new Date('garbage') is a truthy Invalid Date — validity is
+  // decided by the Number.isNaN check below, never by `!ageAnchor` alone. A
+  // present-but-unparseable releaseDate therefore does NOT fall through to the
+  // first-seen fallback; it fails closed (with a log line naming the anchor).
+  let anchorLabel = 'releaseDate';
   let ageAnchor: Date | null = patch.releaseDate ? new Date(patch.releaseDate) : null;
 
   if (!ageAnchor && isThirdPartyPatchSource(patch.source) && patch.firstSeenAt) {
@@ -619,15 +630,24 @@ function isHeldByDeferral(
     // (device_patches.createdAt) instead — a conservative proxy (never earlier
     // than the vendor release), so the patch is held at least as long as the
     // window intends. OS patches keep the fail-closed posture below.
+    anchorLabel = 'first-seen (device_patches.createdAt)';
     ageAnchor = new Date(patch.firstSeenAt);
   }
 
   if (!ageAnchor || Number.isNaN(ageAnchor.getTime())) {
     // Fail closed: with a deferral window configured, a patch without a
     // release date (or usable first-seen fallback) cannot prove its age,
-    // consistent with pin rules.
+    // consistent with pin rules. The reason names which anchor failed so a
+    // broken first-seen fallback (e.g. the column dropped from the select, a
+    // malformed timestamp) is distinguishable in logs from the routine
+    // "third-party patch has no releaseDate at all" case.
+    const reason = ageAnchor
+      ? `its ${anchorLabel} value is unparseable`
+      : isThirdPartyPatchSource(patch.source)
+        ? 'it has no releaseDate and no first-seen fallback timestamp'
+        : 'it has no releaseDate';
     console.warn(
-      `[PatchApproval] patch ${patch.patchId} held: ${source} deferral of ${deferralDays} day(s) configured but the patch has no releaseDate, so it cannot prove its age`
+      `[PatchApproval] patch ${patch.patchId} held: ${source} deferral of ${deferralDays} day(s) configured but ${reason}, so it cannot prove its age`
     );
     return true;
   }
