@@ -29,24 +29,39 @@ func NewPatchManager(providers ...PatchProvider) *PatchManager {
 
 // Scan aggregates available patches from all providers.
 func (m *PatchManager) Scan() ([]AvailablePatch, error) {
+	patches, _, err := m.ScanWithCoverage()
+	return patches, err
+}
+
+// ScanWithCoverage aggregates available patches from all providers and also
+// reports which provider IDs actually scanned. A provider that returned
+// ErrScanSkipped (couldn't run, e.g. winget without a user helper session) or
+// failed with an error is NOT covered: its previously reported patches must
+// not be treated as gone just because this scan didn't include them (#2217).
+func (m *PatchManager) ScanWithCoverage() ([]AvailablePatch, []string, error) {
 	var patches []AvailablePatch
+	covered := make([]string, 0, len(m.providers))
 	var errs []error
 
 	for _, provider := range m.providers {
 		providerPatches, err := provider.Scan()
+		if errors.Is(err, ErrScanSkipped) {
+			continue
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s scan failed: %w", provider.ID(), err))
 			continue
 		}
 
+		covered = append(covered, provider.ID())
 		patches = append(patches, m.decorateAvailable(provider.ID(), providerPatches)...)
 	}
 
 	if len(patches) == 0 && len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		return nil, covered, errors.Join(errs...)
 	}
 
-	return patches, errors.Join(errs...)
+	return patches, covered, errors.Join(errs...)
 }
 
 // Install installs a patch by ID.

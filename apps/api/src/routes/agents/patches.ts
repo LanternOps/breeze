@@ -314,7 +314,26 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
 
   await db.transaction(async (tx) => {
     if (data.full) {
-      await markPendingDevicePatchesMissing(tx, device.id, []);
+      if (data.coveredSources === undefined) {
+        // Legacy agents send full scans without coverage info: sweep all sources.
+        // Log the path so an operator can tell a legacy sweep-all from a
+        // coverage-scoped sweep when diagnosing lingering-pending rows (#2217).
+        console.log(`[PATCHES] Agent ${agentId} full scan (legacy, no coverage): sweeping ALL pending sources`);
+        await markPendingDevicePatchesMissing(tx, device.id, []);
+      } else if (data.coveredSources.length > 0) {
+        // Coverage-aware full scan (#2217): only sweep sources whose providers
+        // actually ran. Skipped providers (e.g. winget without a helper
+        // session) keep their pending rows instead of being tombstoned.
+        console.log(`[PATCHES] Agent ${agentId} full scan (coverage-scoped): sweeping only [${data.coveredSources.join(', ')}]`);
+        await markPendingDevicePatchesMissing(tx, device.id, data.coveredSources);
+      } else {
+        // full with coveredSources: [] means EVERY registered provider on the
+        // device was skipped or failed — a genuinely degraded agent. We sweep
+        // nothing (correct: don't tombstone rows nothing looked at), but warn so
+        // "why are this device's pending patches never reconciled?" is greppable
+        // instead of a silent no-op (#2217).
+        console.warn(`[PATCHES] Agent ${agentId} full scan covered ZERO sources — every provider skipped/failed; no tombstoning performed`);
+      }
     } else if (sources.length > 0) {
       await markPendingDevicePatchesMissing(tx, device.id, sources);
     }
@@ -334,6 +353,7 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
       pendingCount: data.patches.length,
       source: data.source ?? null,
       full: data.full,
+      coveredSources: data.coveredSources ?? null,
     },
   });
 

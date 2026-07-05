@@ -1,6 +1,16 @@
 package patching
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrScanSkipped is a sentinel a provider's Scan returns when the provider
+// could not run at all (e.g. winget with no connected user helper session).
+// Skipped is distinct from "scanned and found nothing": the server must not
+// tombstone a skipped provider's previously reported patches, so skipped
+// providers are excluded from scan coverage (see PatchManager.ScanWithCoverage).
+var ErrScanSkipped = errors.New("patch provider scan skipped")
 
 // ErrPreflightFailed indicates a pre-flight check failed before patching could proceed.
 type ErrPreflightFailed struct {

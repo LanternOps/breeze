@@ -2,6 +2,7 @@ package patching
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -9,6 +10,7 @@ import (
 type fakeProvider struct {
 	id            string
 	scan          []AvailablePatch
+	scanErr       error
 	installed     []InstalledPatch
 	installErr    error
 	installResult InstallResult
@@ -21,7 +23,7 @@ func (p *fakeProvider) ID() string { return p.id }
 
 func (p *fakeProvider) Name() string { return p.id }
 
-func (p *fakeProvider) Scan() ([]AvailablePatch, error) { return p.scan, nil }
+func (p *fakeProvider) Scan() ([]AvailablePatch, error) { return p.scan, p.scanErr }
 
 func (p *fakeProvider) Install(patchID string) (InstallResult, error) {
 	p.lastInstallID = patchID
@@ -66,6 +68,115 @@ func TestPatchManagerScanDecoratesProviderPatchIDs(t *testing.T) {
 	}
 	if patches[1].ID != "yum:kernel" || patches[1].Provider != "yum" {
 		t.Fatalf("unexpected second patch: %+v", patches[1])
+	}
+}
+
+func TestPatchManagerScanWithCoverage(t *testing.T) {
+	tests := []struct {
+		name        string
+		providers   []*fakeProvider
+		wantPatches int
+		wantCovered []string
+		wantErr     bool
+	}{
+		{
+			name: "all providers ran",
+			providers: []*fakeProvider{
+				{id: "windows-update", scan: []AvailablePatch{{ID: "kb1", Title: "KB1"}}},
+				{id: "winget", scan: []AvailablePatch{{ID: "Mozilla.Firefox", Title: "Firefox"}}},
+			},
+			wantPatches: 2,
+			wantCovered: []string{"windows-update", "winget"},
+		},
+		{
+			name: "empty result still counts as covered",
+			providers: []*fakeProvider{
+				{id: "windows-update"},
+			},
+			wantPatches: 0,
+			wantCovered: []string{"windows-update"},
+		},
+		{
+			name: "skipped provider is excluded from coverage without error",
+			providers: []*fakeProvider{
+				{id: "windows-update", scan: []AvailablePatch{{ID: "kb1", Title: "KB1"}}},
+				{id: "winget", scanErr: ErrScanSkipped},
+			},
+			wantPatches: 1,
+			wantCovered: []string{"windows-update"},
+		},
+		{
+			name: "wrapped skip sentinel is still a skip",
+			providers: []*fakeProvider{
+				{id: "winget", scanErr: fmt.Errorf("no helper session: %w", ErrScanSkipped)},
+			},
+			wantPatches: 0,
+			wantCovered: []string{},
+		},
+		{
+			name: "failed provider is excluded from coverage and surfaces the error",
+			providers: []*fakeProvider{
+				{id: "windows-update", scan: []AvailablePatch{{ID: "kb1", Title: "KB1"}}},
+				{id: "winget", scanErr: errors.New("timeout")},
+			},
+			wantPatches: 1,
+			wantCovered: []string{"windows-update"},
+			wantErr:     true,
+		},
+		{
+			name: "all providers skipped yields empty coverage and no error",
+			providers: []*fakeProvider{
+				{id: "winget", scanErr: ErrScanSkipped},
+				{id: "chocolatey", scanErr: ErrScanSkipped},
+			},
+			wantPatches: 0,
+			wantCovered: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			providers := make([]PatchProvider, len(tt.providers))
+			for i, p := range tt.providers {
+				providers[i] = p
+			}
+			mgr := NewPatchManager(providers...)
+
+			patches, covered, err := mgr.ScanWithCoverage()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if len(patches) != tt.wantPatches {
+				t.Fatalf("expected %d patches, got %d: %+v", tt.wantPatches, len(patches), patches)
+			}
+			if len(covered) != len(tt.wantCovered) {
+				t.Fatalf("covered = %v, want %v", covered, tt.wantCovered)
+			}
+			for i, id := range tt.wantCovered {
+				if covered[i] != id {
+					t.Fatalf("covered = %v, want %v", covered, tt.wantCovered)
+				}
+			}
+		})
+	}
+}
+
+func TestPatchManagerScanIgnoresSkippedProviders(t *testing.T) {
+	// Legacy Scan() must not surface ErrScanSkipped as a failure.
+	mgr := NewPatchManager(
+		&fakeProvider{id: "windows-update", scan: []AvailablePatch{{ID: "kb1", Title: "KB1"}}},
+		&fakeProvider{id: "winget", scanErr: ErrScanSkipped},
+	)
+
+	patches, err := mgr.Scan()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("expected 1 patch, got %d", len(patches))
 	}
 }
 

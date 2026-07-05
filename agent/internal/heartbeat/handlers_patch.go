@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
@@ -28,18 +29,35 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 		log.Info("patch scan requested", "source", source)
 	}
 
-	pendingItems, installedItems, err := h.collectPatchInventory()
+	pendingItems, installedItems, coveredSources, err := h.collectPatchInventory()
 	if err != nil && len(pendingItems) == 0 && len(installedItems) == 0 {
 		log.Error("patch scan failed", "source", source, "error", err.Error())
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
+	if err != nil {
+		// Partial success: at least one provider produced items but another
+		// scan errored. The failed provider is excluded from coveredSources, so
+		// its bucket won't be swept — surface the error so that tombstoning
+		// change is explainable rather than silently swallowed (#2217).
+		log.Warn("patch scan partial failure; some providers did not scan",
+			"source", source, "error", err.Error())
+	}
 	if source != "" {
+		// A targeted upload sweeps the source's pending rows before re-upserting.
+		// If this source's provider didn't actually scan (skipped or failed),
+		// uploading the filtered-empty result would tombstone rows the scan never
+		// looked at (#2217) — fail the command instead.
+		if coveredSources != nil && !slices.Contains(coveredSources, source) {
+			err := fmt.Errorf("patch source %q could not be scanned (provider skipped or failed)", source)
+			log.Warn("patch scan did not cover requested source", "source", source)
+			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		}
 		pendingItems = filterPatchInventoryItemsBySource(pendingItems, source)
 		installedItems = filterPatchInventoryItemsBySource(installedItems, source)
 	}
 	installedItems = installedPatchStateItems(installedItems)
 
-	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, source, source == "")
+	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, source, source == "", coveredSources)
 	if pendingErr != nil {
 		err = fmt.Errorf("pending patch inventory send failed: %w", pendingErr)
 		log.Error("patch scan inventory send failed",
