@@ -314,7 +314,16 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
 
   await db.transaction(async (tx) => {
     if (data.full) {
-      await markPendingDevicePatchesMissing(tx, device.id, []);
+      if (data.coveredSources === undefined) {
+        // Legacy agents send full scans without coverage info: sweep all sources.
+        await markPendingDevicePatchesMissing(tx, device.id, []);
+      } else if (data.coveredSources.length > 0) {
+        // Coverage-aware full scan (#2217): only sweep sources whose providers
+        // actually ran. Skipped providers (e.g. winget without a helper
+        // session) keep their pending rows instead of being tombstoned.
+        await markPendingDevicePatchesMissing(tx, device.id, data.coveredSources);
+      }
+      // full with coveredSources: [] means every provider was skipped — sweep nothing.
     } else if (sources.length > 0) {
       await markPendingDevicePatchesMissing(tx, device.id, sources);
     }
@@ -334,6 +343,7 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
       pendingCount: data.patches.length,
       source: data.source ?? null,
       full: data.full,
+      coveredSources: data.coveredSources ?? null,
     },
   });
 

@@ -589,6 +589,130 @@ describe('split patch ingest endpoints', () => {
   });
 });
 
+describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeviceLookup('windows');
+    vi.mocked(enrichmentModule.enrichFromCatalog).mockImplementation(async (input) => ({
+      title: input.title,
+      vendor: input.vendor,
+      severity: (input.severity as 'critical' | 'important' | 'moderate' | 'low' | 'unknown' | null) ?? null,
+      category: input.category ?? null,
+      matchedCatalogId: null,
+    }));
+  });
+
+  function captureUpdateWhere(tx: ReturnType<typeof mockPatchInsertTx>['tx']) {
+    const calls: unknown[] = [];
+    tx.update = vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn((condition) => {
+          calls.push(condition);
+          return Promise.resolve(undefined);
+        }),
+      })),
+    }));
+    return calls;
+  }
+
+  it('full scan with coveredSources only tombstones the covered sources and still upserts scanned patches', async () => {
+    const { tx } = mockPatchInsertTx();
+    const updateWheres = captureUpdateWhere(tx);
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        full: true,
+        coveredSources: ['microsoft'],
+        patches: [
+          { name: 'KB5000001', source: 'microsoft', externalId: 'KB5000001' },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ success: true, pending: 1 });
+
+    expect(tx.update).toHaveBeenCalledTimes(1);
+    expect(tx.update).toHaveBeenCalledWith(tables.devicePatches);
+    const conditions = (updateWheres[0] as { conds?: unknown[] }).conds ?? [];
+    expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.deviceId, right: DEVICE_ID });
+    expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.status, right: 'pending' });
+    const serialized = JSON.stringify(updateWheres[0]);
+    expect(serialized).toContain('microsoft');
+    expect(serialized).not.toContain('third_party');
+
+    // The scanned patch is still re-upserted.
+    expect(tx.insert).toHaveBeenCalledWith(tables.patches);
+    expect(tx.insert).toHaveBeenCalledWith(tables.devicePatches);
+  });
+
+  it('legacy full scan without coveredSources sweeps all sources', async () => {
+    const { tx } = mockPatchInsertTx();
+    const updateWheres = captureUpdateWhere(tx);
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        full: true,
+        patches: [
+          { name: 'KB5000001', source: 'microsoft', externalId: 'KB5000001' },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(tx.update).toHaveBeenCalledTimes(1);
+    // No source scoping: only the deviceId + pending-status conditions.
+    const conditions = (updateWheres[0] as { conds?: unknown[] }).conds ?? [];
+    expect(conditions).toHaveLength(2);
+    expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.deviceId, right: DEVICE_ID });
+    expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.status, right: 'pending' });
+    expect(tx.insert).toHaveBeenCalledWith(tables.devicePatches);
+  });
+
+  it('full scan with empty coveredSources tombstones nothing', async () => {
+    const { tx } = mockPatchInsertTx();
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        full: true,
+        coveredSources: [],
+        patches: [],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ success: true, pending: 0 });
+    expect(tx.update).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects coveredSources values outside the source enum', async () => {
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        full: true,
+        coveredSources: ['not-a-source'],
+        patches: [],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+});
+
 const patchIngestEndpoints = [
   {
     label: 'legacy combined patch ingest',

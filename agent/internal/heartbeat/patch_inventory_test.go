@@ -44,6 +44,7 @@ func TestSendPatchInventoryDataSendsPendingThenInstalled(t *testing.T) {
 		installed,
 		"microsoft",
 		false,
+		nil,
 	)
 	if pendingErr != nil {
 		t.Fatalf("pendingErr = %v", pendingErr)
@@ -104,6 +105,7 @@ func TestSendPatchInventoryDataSkipsLinuxInstalledPackageInventory(t *testing.T)
 		[]map[string]any{{"name": "openssl", "source": "linux"}},
 		"linux",
 		false,
+		nil,
 	)
 	if pendingErr != nil {
 		t.Fatalf("pendingErr = %v", pendingErr)
@@ -139,6 +141,7 @@ func TestSendPatchInventoryDataStopsWhenPendingUploadFails(t *testing.T) {
 		[]map[string]any{{"name": "pkg", "source": "linux"}},
 		"linux",
 		false,
+		nil,
 	)
 	if pendingErr == nil {
 		t.Fatal("expected pendingErr")
@@ -151,6 +154,165 @@ func TestSendPatchInventoryDataStopsWhenPendingUploadFails(t *testing.T) {
 	}
 	if requests[0].path != "/api/v1/agents/agent-1/patches/pending" {
 		t.Fatalf("path = %q", requests[0].path)
+	}
+}
+
+func TestSendPatchInventoryDataFullIncludesCoveredSources(t *testing.T) {
+	var requests []patchInventoryRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requests = append(requests, patchInventoryRequest{path: r.URL.Path, body: body})
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	h := New(&config.Config{AgentID: "agent-1", ServerURL: ts.URL, AuthToken: "token"})
+	h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
+
+	pendingErr, installedErr := h.sendPatchInventoryData(
+		[]map[string]any{{"name": "KB5000001", "source": "microsoft"}},
+		nil,
+		"",
+		true,
+		[]string{"microsoft"},
+	)
+	if pendingErr != nil {
+		t.Fatalf("pendingErr = %v", pendingErr)
+	}
+	if installedErr != nil {
+		t.Fatalf("installedErr = %v", installedErr)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requests))
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(requests[0].body, &payload); err != nil {
+		t.Fatalf("pending JSON error = %v", err)
+	}
+	if payload["full"] != true {
+		t.Fatalf("full = %#v, want true", payload["full"])
+	}
+	covered, ok := payload["coveredSources"].([]any)
+	if !ok {
+		t.Fatalf("coveredSources = %#v, want array", payload["coveredSources"])
+	}
+	if len(covered) != 1 || covered[0] != "microsoft" {
+		t.Fatalf("coveredSources = %#v, want [microsoft]", covered)
+	}
+}
+
+func TestSendPatchInventoryDataFullOmitsNilCoveredSources(t *testing.T) {
+	// Legacy collector path has no coverage info (nil): the payload must omit
+	// coveredSources entirely so the API keeps the legacy full sweep.
+	var requests []patchInventoryRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requests = append(requests, patchInventoryRequest{path: r.URL.Path, body: body})
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	h := New(&config.Config{AgentID: "agent-1", ServerURL: ts.URL, AuthToken: "token"})
+	h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
+
+	pendingErr, installedErr := h.sendPatchInventoryData(
+		[]map[string]any{{"name": "KB5000001", "source": "microsoft"}},
+		nil,
+		"",
+		true,
+		nil,
+	)
+	if pendingErr != nil {
+		t.Fatalf("pendingErr = %v", pendingErr)
+	}
+	if installedErr != nil {
+		t.Fatalf("installedErr = %v", installedErr)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requests))
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(requests[0].body, &payload); err != nil {
+		t.Fatalf("pending JSON error = %v", err)
+	}
+	if payload["full"] != true {
+		t.Fatalf("full = %#v, want true", payload["full"])
+	}
+	if _, ok := payload["coveredSources"]; ok {
+		t.Fatalf("coveredSources should be omitted for nil coverage, got %#v", payload["coveredSources"])
+	}
+}
+
+func TestCoveredPatchSources(t *testing.T) {
+	h := &Heartbeat{}
+
+	tests := []struct {
+		name        string
+		providerIDs []string
+		covered     []string
+		want        []string
+	}{
+		{
+			name:        "all providers ran",
+			providerIDs: []string{"windows-update", "winget"},
+			covered:     []string{"windows-update", "winget"},
+			want:        []string{"microsoft", "third_party"},
+		},
+		{
+			name:        "skipped winget removes third_party coverage",
+			providerIDs: []string{"windows-update", "winget"},
+			covered:     []string{"windows-update"},
+			want:        []string{"microsoft"},
+		},
+		{
+			name:        "shared bucket only covered when every provider ran",
+			providerIDs: []string{"windows-update", "chocolatey", "winget"},
+			covered:     []string{"windows-update", "chocolatey"},
+			want:        []string{"microsoft"},
+		},
+		{
+			name:        "shared bucket covered when both providers ran",
+			providerIDs: []string{"chocolatey", "winget"},
+			covered:     []string{"chocolatey", "winget"},
+			want:        []string{"third_party"},
+		},
+		{
+			name:        "nothing ran yields empty (not nil) coverage",
+			providerIDs: []string{"winget"},
+			covered:     nil,
+			want:        []string{},
+		},
+		{
+			name:        "linux providers map to linux bucket",
+			providerIDs: []string{"apt"},
+			covered:     []string{"apt"},
+			want:        []string{"linux"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := h.coveredPatchSources(tt.providerIDs, tt.covered)
+			if got == nil {
+				t.Fatal("coveredPatchSources returned nil, want non-nil slice")
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("coveredPatchSources = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("coveredPatchSources = %v, want %v", got, tt.want)
+				}
+			}
+		})
 	}
 }
 

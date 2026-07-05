@@ -1873,7 +1873,7 @@ func (h *Heartbeat) sendPolicyConfigState() {
 }
 
 func (h *Heartbeat) sendPatchInventory() {
-	pendingItems, installedItems, err := h.collectPatchInventory()
+	pendingItems, installedItems, coveredSources, err := h.collectPatchInventory()
 	if err != nil {
 		log.Warn("patch inventory collection warning", "error", err.Error())
 	}
@@ -1884,7 +1884,7 @@ func (h *Heartbeat) sendPatchInventory() {
 		return
 	}
 
-	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, "", true)
+	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, "", true, coveredSources)
 	if pendingErr != nil {
 		log.Warn("failed to send pending patch inventory", "error", pendingErr.Error())
 	}
@@ -1893,7 +1893,12 @@ func (h *Heartbeat) sendPatchInventory() {
 	}
 }
 
-func (h *Heartbeat) sendPatchInventoryData(pendingItems, installedItems []map[string]any, source string, full bool) (error, error) {
+// sendPatchInventoryData uploads pending then installed patch inventory.
+// coveredSources only applies to full uploads: when non-nil it tells the API
+// which source buckets this scan actually covered, so pending rows from
+// skipped providers (e.g. winget without a helper session) aren't swept to
+// 'missing' (#2217). A nil coveredSources preserves the legacy full sweep.
+func (h *Heartbeat) sendPatchInventoryData(pendingItems, installedItems []map[string]any, source string, full bool, coveredSources []string) (error, error) {
 	installedItems = installedPatchStateItems(installedItems)
 	pendingPayload := map[string]any{
 		"patches": pendingItems,
@@ -1902,6 +1907,9 @@ func (h *Heartbeat) sendPatchInventoryData(pendingItems, installedItems []map[st
 		pendingPayload["source"] = source
 	} else if full {
 		pendingPayload["full"] = true
+		if coveredSources != nil {
+			pendingPayload["coveredSources"] = coveredSources
+		}
 	}
 
 	pendingErr := h.sendInventoryData(
@@ -1934,28 +1942,69 @@ func installedPatchStateItems(items []map[string]any) []map[string]any {
 	return filtered
 }
 
-func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any, error) {
+// collectPatchInventory gathers pending + installed patch inventory. The third
+// return value lists the source buckets the scan actually covered (see
+// coveredPatchSources); it is nil on the legacy collector path, which carries
+// no per-provider coverage information.
+func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any, []string, error) {
 	if h.patchMgr != nil && len(h.patchMgr.ProviderIDs()) > 0 {
-		available, scanErr := h.patchMgr.Scan()
+		available, coveredProviders, scanErr := h.patchMgr.ScanWithCoverage()
 		installed, installedErr := h.patchMgr.GetInstalled()
 
 		pendingItems := h.availablePatchesToMaps(available)
 		installedItems := h.installedPatchesToMaps(installed)
+		coveredSources := h.coveredPatchSources(h.patchMgr.ProviderIDs(), coveredProviders)
 
 		if scanErr != nil && installedErr != nil {
-			return pendingItems, installedItems, fmt.Errorf("patch scan failed: %v; installed scan failed: %v", scanErr, installedErr)
+			return pendingItems, installedItems, coveredSources, fmt.Errorf("patch scan failed: %v; installed scan failed: %v", scanErr, installedErr)
 		}
 		if scanErr != nil {
-			return pendingItems, installedItems, scanErr
+			return pendingItems, installedItems, coveredSources, scanErr
 		}
 		if installedErr != nil {
-			return pendingItems, installedItems, installedErr
+			return pendingItems, installedItems, coveredSources, installedErr
 		}
 
-		return pendingItems, installedItems, nil
+		return pendingItems, installedItems, coveredSources, nil
 	}
 
-	return h.collectPatchInventoryFromCollectors()
+	pendingItems, installedItems, err := h.collectPatchInventoryFromCollectors()
+	return pendingItems, installedItems, nil, err
+}
+
+// coveredPatchSources maps the provider IDs that actually scanned to the API
+// source buckets they feed. A bucket only counts as covered when EVERY
+// registered provider mapping to it ran: multiple providers can share a bucket
+// (winget + chocolatey → third_party), and sweeping the bucket while one of
+// them was skipped would tombstone the skipped provider's rows — the exact bug
+// this guards against (#2217). Always returns a non-nil slice so a scan where
+// everything was skipped serializes as an empty coveredSources array (sweep
+// nothing) rather than being omitted (legacy sweep-all).
+func (h *Heartbeat) coveredPatchSources(providerIDs, coveredProviders []string) []string {
+	coveredSet := make(map[string]bool, len(coveredProviders))
+	for _, id := range coveredProviders {
+		coveredSet[id] = true
+	}
+
+	fullyCovered := make(map[string]bool)
+	for _, id := range providerIDs {
+		source := h.mapPatchProviderSource(id)
+		if _, seen := fullyCovered[source]; !seen {
+			fullyCovered[source] = true
+		}
+		if !coveredSet[id] {
+			fullyCovered[source] = false
+		}
+	}
+
+	sources := make([]string, 0, len(fullyCovered))
+	for source, covered := range fullyCovered {
+		if covered {
+			sources = append(sources, source)
+		}
+	}
+	slices.Sort(sources)
+	return sources
 }
 
 func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []map[string]any {
